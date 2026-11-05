@@ -560,11 +560,12 @@ creates them in your own project at `global`; push still writes only entries.
 | Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text | `<model>.files.<file>` |
 
 The model entry also carries the `kcmd-push-id` label, which names the push that
-stored the file copies. On each entry, push owns the `schema`, `semantic-*` and
-`guidelines` aspects it writes, the display name, the description and that
-label. When it updates an entry, it keeps every other label and the source
-`resource`, `system`, `platform`, `createTime` and `updateTime` another tool
-set.
+stored the file copies, and the `kcmd-push-state` label, which reads `writing`
+until the push's last write sets it to `finished`. On each entry, push owns the
+`schema`, `semantic-*` and `guidelines` aspects it writes, the display name, the
+description and those labels. When it updates an entry, it keeps every other
+label and the source `resource`, `system`, `platform`, `createTime` and
+`updateTime` another tool set.
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
@@ -962,8 +963,9 @@ Writing an entry with aspects needs permission on **both** the entry operation
 and each aspect type attached, so a push needs, on the destination entry group:
 
 * `dataplex.entries.create`, `dataplex.entries.update`, `dataplex.entries.delete`,
-  and `dataplex.entries.list` — push upserts the model / entity / metric entries
-  and deletes orphaned ones
+  `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
+  entity / metric entries, deletes orphaned ones, and reads the model entry again
+  before it labels the push finished
 * `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
   `schema-join` links, when the model has relationships
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in

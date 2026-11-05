@@ -117,6 +117,9 @@ function err(status: number, message: string): ApiResult<any> {
   return {status, message};
 }
 const EXISTS = () => err(409, 'already exists');
+// The model entry's label during a push and after it.
+const WRITING = {'kcmd-push-state': 'writing'};
+const FINISHED = {'kcmd-push-state': 'finished'};
 
 // Stubs CatalogClient entry, entry-link, and custom-type operations, returning
 // the spies so a test can assert call counts and ordering.
@@ -149,8 +152,7 @@ function stubClient(opts: {
   links?: (entry: string) => ApiResult<any>,
   // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
   delLink?: (linkId: string) => ApiResult<any>,
-  // Result of getEntry, which push makes for an entry the listing lacks when
-  // create returns 409, keyed by entry id. Default: 200 with no entrySource.
+  // Result of getEntry, keyed by entry id. Default: 200 with no entrySource.
   getEntry?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
@@ -254,7 +256,11 @@ function destProject(project: string): ApiResult<any> {
 
 describe('deployKnowledgeCatalog: happy path', () => {
   test('writes entries anchor-first, provisioning nothing', async () => {
-    const {group, create, update} = stubClient();
+    // The model entry as the push ends, with a label another writer set.
+    const held =
+        {displayName: 'sales', labels: {owner: 'data-team', ...WRITING}};
+    const {group, create, update, getEntry} =
+        stubClient({getEntry: () => ok({entrySource: held})});
 
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
@@ -266,11 +272,18 @@ describe('deployKnowledgeCatalog: happy path', () => {
     // at `init` -- so it only writes the three entries.
     expect(group).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(3);
-    expect(update).not.toHaveBeenCalled();
 
-    // The model anchor is written before its children.
-    const firstEntryId = create.mock.calls[0][3];
-    expect(firstEntryId).toBe('sales');
+    // The model anchor is written before its children, labeled as writing.
+    expect(create.mock.calls[0][3]).toBe('sales');
+    expect(create.mock.calls[0][4]!.entrySource!.labels).toEqual(WRITING);
+    // One more write labels it finished. It reads the entry first, sends back
+    // what the entry holds then, and names only the entrySource.
+    expect(getEntry.mock.calls.map(c => c.slice(3)))
+        .toEqual([['sales', undefined, {keepSourceResource: true}]]);
+    const finish = update.mock.calls.map(([e, mask]) => [e.entrySource, mask]);
+    expect(finish).toEqual([[
+      {...held, labels: {owner: 'data-team', ...FINISHED}}, ['entry_source']
+    ]]);
   });
 });
 
@@ -288,13 +301,14 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(result.created).toBe(0);
     expect(result.updated).toBe(3);
     expect(create).toHaveBeenCalledTimes(3);
-    expect(update).toHaveBeenCalledTimes(3);
+    // The fourth update labels the model entry finished.
+    expect(update).toHaveBeenCalledTimes(4);
     // Dataplex keeps an aspect that aspectKeys names and the body leaves out
     // unless deleteMissingAspects is set, so a removed guidelines aspect is
     // only deleted with it.
     // With deleteMissingAspects set, aspectKeys is what keeps aspects other
     // tools attached: it names the entry's own aspects and guidelines only.
-    for (const call of update.mock.calls) {
+    for (const call of update.mock.calls.slice(0, 3)) {
       const own = Object.keys((call[0] as any).aspects ?? {});
       expect([...(call[2] as string[])].sort())
           .toEqual([...new Set([...own, 'dataplex-types.global.guidelines'])].sort());
@@ -440,7 +454,8 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
                      models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
                     .success)
              .toBe(true);
-         expect(createdAnchor(create).entrySource.labels).toEqual(LABELS);
+         expect(createdAnchor(create).entrySource.labels)
+             .toEqual({...LABELS, ...WRITING});
          // Only the model entry carries it.
          for (const c of create.mock.calls.filter(c => c[3] !== 'sales')) {
            expect((c[4] as any).entrySource?.labels).toBeUndefined();
@@ -453,24 +468,24 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
                     .success)
              .toBe(true);
          const [entry, mask] = updated(update, 'sales');
-         expect(entry.entrySource.labels).toEqual(LABELS);
+         expect(entry.entrySource.labels).toEqual({...LABELS, ...WRITING});
          // The mask names the entrySource, so Dataplex stores the label.
          expect(mask).toContain('entry_source');
        });
 
-  test('with v2Aspects on, the model entry carries no label', async () => {
+  test('with v2Aspects on, the model entry carries no push id', async () => {
     const opts = {...OPTS, sourceFiles: COPIES, v2Aspects: true};
     const {create} = stubClient();
     expect((await deployKnowledgeCatalog(models(DOCS), CTX, opts)).success)
         .toBe(true);
-    expect(createdAnchor(create).entrySource.labels).toBeUndefined();
+    expect(createdAnchor(create).entrySource.labels).toEqual(WRITING);
 
     mock.restore();
     const {update} = stubClient({create: exists});
     expect((await deployKnowledgeCatalog(models(DOCS), CTX, opts)).success)
         .toBe(true);
     const [entry, mask] = updated(update, 'sales');
-    expect(entry.entrySource.labels).toBeUndefined();
+    expect(entry.entrySource.labels).toEqual(WRITING);
     expect(mask).toContain('entry_source');
   });
 
@@ -482,7 +497,7 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
                .success)
         .toBe(true);
     expect(updated(update, 'sales')[0].entrySource.labels)
-        .toEqual({'owner': 'data-team', 'kcmd-push-id': PUSH});
+        .toEqual({'owner': 'data-team', 'kcmd-push-id': PUSH, ...WRITING});
     expect(updated(update, ENTITY)[0].entrySource.labels)
         .toEqual({'owner': 'data-team'});
   });
@@ -546,7 +561,7 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
          expect(updated(update, 'sales')[0].entrySource).toEqual({
            system: 'other-tool',
            displayName: 'sales',
-           labels: {'owner': 'data-team', ...LABELS},
+           labels: {'owner': 'data-team', ...LABELS, ...WRITING},
          });
          // The read keeps the stored resource as it is.
          const read = getEntry.mock.calls.find((c: any[]) => c[3] === 'sales')!;
@@ -599,7 +614,7 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
                .success)
         .toBe(true);
     expect(updated(update, 'sales')[0].entrySource.labels)
-        .toEqual({'owner': 'data-team'});
+        .toEqual({'owner': 'data-team', ...WRITING});
   });
 });
 
@@ -3981,7 +3996,8 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
         expect(result.linked).toBe(3);
         expect(result.deleted).toBe(4);   // 4 old dotted entries deleted
         expect(result.unlinked).toBe(2);  // both V1 schema-join links deleted
-        expect(update).toHaveBeenCalledTimes(1);
+        // The anchor, and the label that says the push finished.
+        expect(update).toHaveBeenCalledTimes(2);
         expect(createLink.mock.calls.map(c => c[3]))
             .toEqual([STAR_SEMANTIC_LINK, ...STAR_REFERENCES]);
         expect(create.mock.calls.map(c => c[3]).sort()).toEqual([

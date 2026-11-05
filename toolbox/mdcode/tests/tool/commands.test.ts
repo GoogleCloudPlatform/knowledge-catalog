@@ -936,18 +936,30 @@ function fakeCatalog(
       yield {name: e.name, entryType: e.entryType, parentEntry: e.parentEntry};
     }
   } as any);
+  // Writes after the first `stop.after`, and writes of an entry `stop.fails`
+  // names, fail, as when a push stops partway.
+  const stop = {after: Infinity, fails: (_name: string) => false};
+  const stopped = (name = '') => stop.after-- <= 0 || stop.fails(name);
+  const INJECTED = {status: 500, message: 'injected'};
   const create = spyOn(P, 'createEntry')
                      .mockImplementation(async (...args: any[]) => {
                        const entry: Entry = args[4];
                        if (entries.has(entry.name)) return {status: 409};
+                       if (stopped(entry.name)) return INJECTED;
                        entries.set(entry.name, structuredClone(entry));
                        return {status: 200, result: entry};
                      });
-  spyOn(P, 'updateEntry').mockImplementation(async (entry: Entry) => {
-    entries.set(entry.name, structuredClone(entry));
+  // An update leaves the aspects alone when its mask does not name them.
+  spyOn(P, 'updateEntry').mockImplementation(async (entry, mask) => {
+    if (stopped(entry.name)) return INJECTED;
+    const aspects = mask?.includes('aspects') ?
+        entry.aspects :
+        entries.get(entry.name)?.aspects;
+    entries.set(entry.name, structuredClone({...entry, aspects}));
     return {status: 200, result: entry};
   });
   spyOn(P, 'deleteEntry').mockImplementation(async (...args: any[]) => {
+    if (stopped()) return INJECTED;
     for (const name of entries.keys()) {
       if (name.endsWith(`/entries/${args[3]}`)) entries.delete(name);
     }
@@ -970,11 +982,18 @@ function fakeCatalog(
                 .filter(([, a]) => (aspectTypes ?? []).includes(a.aspectType!)));
         return {status: 200, result: {...structuredClone(e), aspects}};
       });
+  // A get returns the entry without its aspects.
+  spyOn(P, 'getEntry').mockImplementation(async (...[p, l, g, id]: any[]) => {
+    const e = entries.get(
+        `projects/${p}/locations/${l}/entryGroups/${g}/entries/${id}`);
+    return e ? {status: 200, result: {...structuredClone(e), aspects: {}}} :
+               {status: 404, message: 'not found'};
+  });
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
   spyOn(P, 'createEntryLink')
-      .mockResolvedValue({status: 200, result: {}} as any);
-  return {entries, create, list, entryType, aspectType};
+      .mockImplementation(async () => stopped() ? INJECTED : {status: 200});
+  return {entries, create, list, entryType, aspectType, stop};
 }
 
 // The file copies the fake catalog holds, by file name.
@@ -987,6 +1006,13 @@ function storedCopies(entries: Map<string, Entry>): Record<string, string> {
   }
   return out;
 }
+
+// Every file under the entry group directory, with its text.
+const localFiles = (): Record<string, string> => Object.fromEntries(
+    (fs.readdirSync(entryGroupDir(), {recursive: true}) as string[])
+        .map(f => path.join(entryGroupDir(), f))
+        .filter(f => fs.statSync(f).isFile())
+        .map(f => [f, fs.readFileSync(f, 'utf8')]));
 
 // Mocks the BigQuery leg's live checks and deploy, and returns the deploy's
 // mock.
@@ -2000,33 +2026,13 @@ describe('the push id on every file copy', () => {
     }
     return out;
   };
-  // Every file under the entry group directory, with its text.
-  const localFiles = (): Record<string, string> => Object.fromEntries(
-      (fs.readdirSync(entryGroupDir(), {recursive: true}) as string[])
-          .map(f => path.join(entryGroupDir(), f))
-          .filter(f => fs.statSync(f).isFile())
-          .map(f => [f, fs.readFileSync(f, 'utf8')]));
-
   // Makes every write of the copy of `fileName` fail, or of every copy when
   // `fileName` is absent.
-  const failCopyWrites = (entries: Map<string, Entry>, fileName?: string) => {
-    const failing = (entry: Entry) => fileName === undefined ?
-        entry.name.includes('/commerce.files.') :
-        entry.name.endsWith(`/commerce.files.${fileName}`);
-    spyOn(CatalogClient.prototype, 'createEntry')
-        .mockImplementation(async (...args: any[]) => {
-          const entry: Entry = args[4];
-          if (failing(entry)) return {status: 500, message: 'injected'};
-          if (entries.has(entry.name)) return {status: 409};
-          entries.set(entry.name, structuredClone(entry));
-          return {status: 200, result: entry};
-        });
-    spyOn(CatalogClient.prototype, 'updateEntry')
-        .mockImplementation(async (entry: Entry) => {
-          if (failing(entry)) return {status: 500, message: 'injected'};
-          entries.set(entry.name, structuredClone(entry));
-          return {status: 200, result: entry};
-        });
+  const failCopyWrites = (stop: {fails: (name: string) => boolean},
+                          fileName?: string) => {
+    stop.fails = name => fileName === undefined ?
+        name.includes('/commerce.files.') :
+        name.endsWith(`/commerce.files.${fileName}`);
   };
   const PARTIAL = 'the last push of model \'commerce\' did not finish: the ' +
       'catalog holds 1 of its 2 file copies, so pull writes nothing. Push ' +
@@ -2040,8 +2046,8 @@ describe('the push id on every file copy', () => {
            'and --force-remove writes and deletes nothing',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
-         failCopyWrites(entries);
+         const {entries, stop} = fakeCatalog();
+         failCopyWrites(stop);
          expect(await push({deployment: false})).toBe(1);
          expect(storedCopies(entries)).toEqual({});
 
@@ -2065,13 +2071,13 @@ describe('the push id on every file copy', () => {
          const shop = path.join(entryGroupDir(), 'shop.yaml');
          fs.writeFileSync(
              shop, ROUND_TRIP_MODEL.replace('name: commerce', 'name: shop'));
-         const {entries} = fakeCatalog();
+         const {entries, stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.rmSync(shop);
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.yaml'), ROUND_TRIP_MODEL);
-         failCopyWrites(entries);
+         failCopyWrites(stop);
          expect(await push({deployment: false, forceRemove: true})).toBe(1);
          expect(storedCopies(entries)).toEqual({});
 
@@ -2088,7 +2094,7 @@ describe('the push id on every file copy', () => {
        async () => {
          writeRoundTripWorkspace();
          fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-         const {entries} = fakeCatalog();
+         const {entries, stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.writeFileSync(
@@ -2097,7 +2103,7 @@ describe('the push id on every file copy', () => {
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              ROUND_TRIP_PROFILE);
-         failCopyWrites(entries);
+         failCopyWrites(stop);
          expect(await push({deployment: false})).toBe(1);
          expect(Object.keys(storedCopies(entries))).toEqual(['commerce.yaml']);
 
@@ -2155,8 +2161,8 @@ describe('the push id on every file copy', () => {
            'and --force-remove keeps the profile file',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
-         failCopyWrites(entries, 'commerce.profile.prod.yaml');
+         const {entries, stop} = fakeCatalog();
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          expect(await push({deployment: false})).toBe(1);
          expect(Object.keys(storedCopies(entries))).toEqual(['commerce.yaml']);
 
@@ -2170,13 +2176,13 @@ describe('the push id on every file copy', () => {
        async () => {
          writeRoundTripWorkspace();
          fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-         const {entries} = fakeCatalog();
+         const {stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              ROUND_TRIP_PROFILE);
-         failCopyWrites(entries, 'commerce.profile.prod.yaml');
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          expect(await push({deployment: false})).toBe(1);
 
          const before = localFiles();
@@ -2217,7 +2223,7 @@ describe('the push id on every file copy', () => {
            'even under --force-remove',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
+         const {stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          // The next push edits both files, and the profile copy's write fails.
@@ -2227,15 +2233,7 @@ describe('the push id on every file copy', () => {
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              `${ROUND_TRIP_PROFILE}# edited\n`);
-         spyOn(CatalogClient.prototype, 'updateEntry')
-             .mockImplementation(async (entry: Entry) => {
-               if (entry.name.endsWith(
-                       '/commerce.files.commerce.profile.prod.yaml')) {
-                 return {status: 500, message: 'injected'};
-               }
-               entries.set(entry.name, structuredClone(entry));
-               return {status: 200, result: entry};
-             });
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
          expect(await push({deployment: false})).toBe(1);
          expect(messages(errorSpy))
@@ -2256,6 +2254,120 @@ describe('the push id on every file copy', () => {
                  'pull writes nothing. Push again, then pull.');
          expect(localFiles()).toEqual(before);
        });
+});
+
+
+describe('the push-state label on the model entry', () => {
+  const ANCHOR = 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
+      'entries/commerce';
+  for (const v2 of [true, false]) {
+    const flag = `with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}`;
+    test(`${flag}, pull refuses after a push that stopped at any write, ` +
+             'until a push finishes',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           const {entries, stop} = fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           // Rename the entity in the model file and the profile file.
+           for (const [f, text] of Object.entries(localFiles())) {
+             fs.writeFileSync(f, text.replaceAll('Customer', 'Client'));
+           }
+           const authored = localFiles();
+
+           // Each push stops one write later than the one before, until one
+           // finishes. Each pull in between writes and deletes nothing.
+           let code = 1;
+           let refused = '';
+           for (let n = 1; n < 50; n++) {
+             stop.after = n;
+             code = await push({deployment: false});
+             if (!code) break;
+             refused = await pull({forceRemove: true})
+                           .then(() => '', (e: Error) => e.message);
+             expect(refused)
+                 .toStartWith('the last push of model \'commerce\' did not ' +
+                              'finish: ');
+             expect(localFiles()).toEqual(authored);
+           }
+           expect(code).toBe(0);
+           // The push before the one that finished wrote every entry and
+           // stopped before its last write, so only the label tells.
+           expect(refused).toContain(
+               'its model entry\'s kcmd-push-state label still says writing, ' +
+               'so pull writes nothing. Push again, then pull.');
+
+           // --validate-only, which --dry-run runs too, writes nothing, so it
+           // leaves the label as it is.
+           stop.after = 0;
+           expect(await push({deployment: false, validateOnly: true})).toBe(0);
+           stop.after = Infinity;
+           expect(await pull()).toBe(0);
+           expect(Object.values(localFiles()).join()).not.toContain('Customer');
+           expect([...entries.keys()].join()).not.toContain('Customer');
+         });
+
+    test(`${flag}, a push keeps the label and the source update time ` +
+             'another writer sets on the model entry while it runs',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           const {entries} = fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           // Another writer changes the model entry right after the push
+           // writes it. Like Dataplex, the fake then refuses an entrySource
+           // update that leaves the update time out or moves it back.
+           const updateTime = '2026-11-04T08:00:00Z';
+           const update =
+               CatalogClient.prototype.updateEntry as unknown as Mock<any>;
+           const write = update.getMockImplementation()!;
+           update.mockImplementation(async (entry: Entry, mask: string[]) => {
+             const held = entries.get(entry.name)!.entrySource?.updateTime;
+             const sent = entry.entrySource?.updateTime;
+             if (held && (!sent || sent < held)) {
+               return {status: 400, message: 'update_time is required'};
+             }
+             const res = await write(entry, mask);
+             if (entry.name === ANCHOR && mask.includes('aspects')) {
+               const source = entries.get(ANCHOR)!.entrySource!;
+               source.updateTime = updateTime;
+               source.labels = {...source.labels, steward: 'data-team'};
+             }
+             return res;
+           });
+           expect(await push({deployment: false})).toBe(0);
+           expect(entries.get(ANCHOR)!.entrySource).toMatchObject({
+             updateTime,
+             labels: {'steward': 'data-team', 'kcmd-push-state': 'finished'},
+           });
+         });
+
+    // The push reads the model entry before it labels it finished. With the
+    // flag on, the read answers an error. With it off, the read throws.
+    test(`${flag}, a push that cannot label the model entry finished says ` +
+             'to push again before you pull, and that works',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           (CatalogClient.prototype.getEntry as unknown as Mock<any>)
+               .mockImplementationOnce(async () => {
+                 if (v2) return {status: 503, message: 'Service unavailable.'};
+                 throw new Error('fetch failed');
+               });
+           expect(await push({deployment: false})).toBe(1);
+           expect(messages(console.error))
+               .toBe(
+                   'Error pushing semantic model to Knowledge Catalog: Model ' +
+                   '\'commerce\': setting the kcmd-push-state label of entry ' +
+                   '\'commerce\' to finished failed: ' +
+                   (v2 ? 'Service unavailable' : 'fetch failed') +
+                   '. Push again before you pull.');
+           expect(await push({deployment: false})).toBe(0);
+           expect(await pull()).toBe(0);
+         });
+  }
 });
 
 

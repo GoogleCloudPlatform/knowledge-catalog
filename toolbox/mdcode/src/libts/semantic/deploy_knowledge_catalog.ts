@@ -43,6 +43,8 @@
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
+//   * The anchor's write labels it `kcmd-push-state: writing`, and the push's
+//     last write, after the deletions, relabels it `finished`.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -54,7 +56,7 @@ import * as crm from '../gcp/crm';
 import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
+import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_FINISHED, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
@@ -283,7 +285,11 @@ export async function applyKnowledgeCatalog(
   const written =
       await writeEmittedModels(
           cat, opts, emitted, existing, counts, isScopeProject)
-          .catch((err: any) => ({error: String(err?.message || err).trim()}));
+          .catch((err: any): WriteModelsOutcome =>
+                     ({error: String(err?.message || err).trim()}));
+  // Every file copy has landed before the last write, so its error gets no
+  // note.
+  if (written.finishFailed) return result(false, written.error);
   if (written.error) return failed(written.error);
 
   return result(true);
@@ -712,12 +718,20 @@ function planSummary(
   return lines;
 }
 
+interface WriteModelsOutcome {
+  error?: string;
+  // Set when the last write, which labels the model entry finished, failed.
+  // Every other write has landed then.
+  finishFailed?: boolean;
+}
+
 /**
  * Writes every model's entries and relationship links and deletes orphaned
  * resources in model order.
  *
  * For each model, the method performs the following actions:
- *   1. Creates or updates the model's entries (anchor first).
+ *   1. Creates or updates the model's entries (anchor first, labeled as
+ *      writing).
  *   2. Looks up the model's existing relationship links when the pre-write
  *      entry group contains entities owned by the model.
  *   3. Deletes any orphaned relationship links (no longer emitted) and stale
@@ -727,6 +741,7 @@ function planSummary(
  *   4. Creates or updates the model's relationship links.
  *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
+ *   6. Labels the anchor finished.
  *
  * Progress accumulates into `counts`, so a mid-way failure still reports what
  * had been written.
@@ -734,7 +749,7 @@ function planSummary(
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[], counts: Counts,
-    isScopeProject: ProjectMatcher): Promise<{error?: string}> {
+    isScopeProject: ProjectMatcher): Promise<WriteModelsOutcome> {
   for (const {model, resources} of emitted) {
     const entries =
         await writeEntries(cat, opts, resources.entries, existing);
@@ -847,8 +862,50 @@ async function writeEmittedModels(
             model}' failed: ${message}`,
       };
     }
+
+    if (resources.entries.length) {
+      const anchor = resources.entries[0];
+      const error =
+          await finishPush(cat, opts, anchor)
+              .catch((err: any) =>
+                         String(err?.message || err).trim() || 'unknown error');
+      if (error) {
+        return {
+          error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
+              `entry '${entryId(anchor)}' to ${PUSH_FINISHED} failed: ` +
+              `${error.replace(/\.$/, '')}. Push again before you pull.`,
+          finishFailed: true,
+        };
+      }
+    }
   }
   return {};
+}
+
+/**
+ * Labels the model entry `anchor` finished, and returns the error when that
+ * fails. It reads the entry first and sends back the entrySource the entry
+ * holds then, so what another writer set during the push stays. The update
+ * names only the entrySource.
+ */
+async function finishPush(
+    cat: CatalogClient, opts: KcDeployOptions,
+    anchor: Entry): Promise<string|undefined> {
+  const read = await cat.getEntry(
+      opts.project, opts.location, opts.entryGroup, entryId(anchor),
+      undefined, {keepSourceResource: true});
+  if (!isOkStatus(read)) return errText(read);
+  const {name, entryType} = anchor;
+  const entrySource = withPushState(read.result?.entrySource, PUSH_FINISHED);
+  const res =
+      await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
+  return isOkStatus(res) ? undefined : errText(res);
+}
+
+// `source` with its kcmd-push-state label set to `state`.
+function withPushState(
+    source: Entry['entrySource'], state: string): Entry['entrySource'] {
+  return {...source, labels: {...source?.labels, [PUSH_STATE_LABEL]: state}};
 }
 
 /**
@@ -1276,8 +1333,8 @@ interface EntriesOutcome {
  * Creates or updates a model's entries in dependency order.
  *
  * The method writes entries in three stages:
- *   1. Writes the model anchor (`entries[0]`) first, since it is the parent of
- *      every child entry.
+ *   1. Writes the model anchor (`entries[0]`) first, labeled as writing, since
+ *      it is the parent of every child entry.
  *   2. Writes independent child entries (such as entities, relationships,
  *      actions, and constraints) concurrently.
  *   3. Writes dependent child entries (`semantic-metric` via
@@ -1297,7 +1354,8 @@ async function writeEntries(
   const write = (e: Entry) => writeEntry(cat, opts, e, sources);
   const [anchor, ...children] = entries;
 
-  const anchorRes = await write(anchor);
+  const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
+  const anchorRes = await write({...anchor, entrySource});
   if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
 
   let created = anchorRes.updated ? 0 : 1;
@@ -1621,10 +1679,11 @@ const KEPT_SOURCE_FIELDS =
  * `kcmd-push-id` label. The update keeps another writer's `resource`,
  * `system`, `platform`, `createTime` and `updateTime`, and every label but
  * `kcmd-push-id`. It sets that label when `entry` carries it and drops it
- * when not. Dataplex refuses an update that leaves out an `updateTime` the
- * entry has, or moves it back. A kept field another writer changes after
- * `source` was read is written back with the old value. For `updateTime` the
- * update fails instead.
+ * when not. A label `entry` carries, such as the model entry's
+ * `kcmd-push-state`, replaces the stored one. Dataplex refuses an update that
+ * leaves out an `updateTime` the entry has, or moves it back. A kept field
+ * another writer changes after `source` was read is written back with the old
+ * value. For `updateTime` the update fails instead.
  */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,

@@ -373,11 +373,20 @@ their number differs from that count, or when the label names a push whose
 copies the catalog does not hold. Each of these means the last push stopped
 partway. Pull then writes and deletes nothing and asks you to push again.
 
+Every push, with or without `KC_V2_ASPECTS=1`, also sets the `kcmd-push-state`
+label of the model entry to `writing` when it writes the model entry, before the
+model's other entries, and to `finished` with its last write, after it deletes
+what the model no longer has. Pull refuses a model entry still labeled `writing`
+in the same way. A model with no such label, such as one an older `kcmd` pushed,
+counts as finished.
+
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.
-After a failed push, push again before you pull.
+With `--force-remove`, a push that stopped while it removed the old model can
+leave no model, and pull then finds nothing to pull. After a failed push, push
+again before you pull.
 
-A model with no label and no stored copies, such as one an older `kcmd` pushed,
+A model with no `kcmd-push-id` label and no stored copies, such as one an older `kcmd` pushed,
 is rebuilt from the catalog metadata. Pull warns that the rebuilt file may differ
 from what was pushed, and keeps every local profile file. Pull also rebuilds the
 model file when no stored copy is named after the model. That rebuild is **not** an identity

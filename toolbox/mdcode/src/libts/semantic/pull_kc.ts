@@ -23,7 +23,7 @@ import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
 import {linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf, Namer} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
 
@@ -56,8 +56,9 @@ const HYDRATE_CONCURRENCY = 8;
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, a fetch error
-// on any entry or its links, or file copies that are not one finished push's
-// -- throw, so the pull aborts rather than write a partial model.
+// on any entry or its links, a model entry still labeled as being written, or
+// file copies that are not one finished push's -- throw, so the pull aborts
+// rather than write a partial model.
 export async function pullKnowledgeCatalog(
     cat: CatalogClient, opts: KcPullOptions): Promise<KcPullResult> {
   await loadSqlEngine();
@@ -136,12 +137,22 @@ export async function pullKnowledgeCatalog(
 
   const read = modelsFromCatalogResources(
       hydrated, entryLinks, {v2Aspects: opts.v2Aspects});
+  // Every push labels the model entry as writing when it writes the model entry
+  // and as finished with its last. The hydrated entries keep the order of
+  // `targets`.
+  const anchor =
+      anchors.length ? hydrated[targets.indexOf(anchors[0])] : undefined;
+  const writingReason =
+      anchor?.entrySource?.labels?.[PUSH_STATE_LABEL] === PUSH_WRITING ?
+      `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
+      undefined;
   if (opts.v2Aspects) {
+    if (writingReason) throw notFinished(read.models[0].name, writingReason);
     warnings.push(...read.warnings);
     return {...read, warnings: [...new Set(warnings)]};
   }
   // A copy belongs to the group's one model, so with no model there are none.
-  if (!read.models.length) {
+  if (!anchor) {
     warnings.push(...read.warnings);
     return {models: [], rawFiles: [], warnings: [...new Set(warnings)]};
   }
@@ -167,9 +178,8 @@ export async function pullKnowledgeCatalog(
   // and writes that entry first. A labeled model whose copies are missing or
   // carry another id means the last push stopped before storing them.
   // Writing the copies of an earlier push, or rebuilding, would overwrite
-  // the local files. The hydrated entries keep the order of `targets`.
+  // the local files.
   const count = copies[0]?.pushFileCount;
-  const anchor = hydrated[targets.indexOf(anchors[0])];
   const label = anchor.entrySource?.labels?.[PUSH_ID_LABEL];
   const unfinished = new Set(copies.map(f => f.pushId)).size > 1 ?
       'its file copies in the catalog come from different pushes' :
@@ -183,14 +193,11 @@ export async function pullKnowledgeCatalog(
                         'the catalog holds none of its file copies') :
       label !== undefined && copies[0].pushId !== label ?
       'its model entry and its file copies come from different pushes' :
-      undefined;
+      writingReason;
   if (unfinished) {
     // A skipped copy is often why the count is off, so its warning goes with
     // the error.
-    throw new Error(
-        `the last push of model '${model}' did not finish: ${unfinished}, ` +
-        `so pull writes nothing. Push again, then pull.` +
-        skipped.map(w => ` ${w}.`).join(''));
+    throw notFinished(model, unfinished, skipped.map(w => ` ${w}.`).join(''));
   }
   if (copies.some(f => f.fileName === `${model}.yaml`)) {
     // The rebuilt model is not written, so its warnings are left out.
@@ -210,6 +217,13 @@ export async function pullKnowledgeCatalog(
               'the catalog\'s aspects and may differ from what was pushed; ' +
               'push it again to store a copy');
   return {models: read.models, rawFiles: [], warnings: [...new Set(warnings)]};
+}
+
+// The error for a model whose last push stopped partway, for `reason`.
+function notFinished(model: string, reason: string, more = ''): Error {
+  return new Error(
+      `the last push of model '${model}' did not finish: ${reason}, so pull ` +
+      `writes nothing. Push again, then pull.${more}`);
 }
 
 

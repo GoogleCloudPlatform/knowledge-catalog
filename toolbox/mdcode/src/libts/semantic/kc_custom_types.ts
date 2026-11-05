@@ -590,8 +590,15 @@ export const FILE_COPY_TYPE_ID = 'semantic-model-file';
 // The entrySource label a push puts on the model entry when it stores file
 // copies. Its value is the push id those copies carry. A model entry whose
 // label names a push the catalog holds no copies of was last written by a
-// push that stopped before storing them. kcmd owns this label and no other.
+// push that stopped before storing them.
 export const PUSH_ID_LABEL = 'kcmd-push-id';
+
+// The entrySource label every push puts on the model entry: PUSH_WRITING with
+// the model entry's write and PUSH_FINISHED as the push's last write. kcmd
+// owns this label and PUSH_ID_LABEL, and no other.
+export const PUSH_STATE_LABEL = 'kcmd-push-state';
+export const PUSH_WRITING = 'writing';
+export const PUSH_FINISHED = 'finished';
 
 // A file copy: one model or profile file's name and text.
 export interface FileCopy {
