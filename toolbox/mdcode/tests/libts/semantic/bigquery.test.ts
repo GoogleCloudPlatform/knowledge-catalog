@@ -1725,6 +1725,113 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
   });
 });
 
+describe('default behavior ignores abstract and extends with warnings', () => {
+  test('ignores abstract and extends when KCMD_GRAPH_INHERITANCE is unset, and restores lowering when set to "1"', () => {
+    const saved = process.env.KCMD_GRAPH_INHERITANCE;
+    try {
+      delete process.env.KCMD_GRAPH_INHERITANCE;
+      const model: SemanticModel = {
+        name: 'people',
+        relationships: [],
+        metrics: [
+          {
+            name: 'person_count',
+            entity: 'Person',
+            expression: 'COUNT(Person.id)',
+          },
+        ],
+        entities: [
+          {
+            name: 'Party',
+            dataSource: '',
+            keys: [],
+            abstract: true,
+            fields: [{name: 'party_code', description: 'Abstract code'}],
+          },
+          {
+            name: 'Person',
+            dataSource: 'p.d.person',
+            keys: ['id'],
+            description: 'A human being',
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'full_name', expression: 'full_name'},
+            ],
+          },
+          {
+            name: 'Customer',
+            dataSource: 'p.d.customer',
+            keys: ['id'],
+            extends: ['Person', 'Party'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'tier', expression: 'tier'},
+            ],
+          },
+        ],
+      };
+
+      const ignored = generatePropertyGraph(model, GEN_OPTS);
+      expect(ignored.ddl).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH \`sqlgen-testing.demo.people\`
+NODE TABLES (
+  \`p.d.person\` AS Person
+    KEY(id)
+    OPTIONS(description="A human being")
+    PROPERTIES(
+      id,
+      full_name,
+      MEASURE(COUNT(id)) AS person_count
+    ),
+  \`p.d.customer\` AS Customer
+    KEY(id)
+    PROPERTIES(
+      id,
+      tier
+    )
+);
+`);
+      expect(ignored.warnings).toEqual([
+        `entity 'Party': 'abstract' is not supported in BigQuery property-graph DDL generation; entity ignored`,
+        `entity 'Customer': 'extends' is not supported in BigQuery property-graph DDL generation; inheritance ignored`,
+      ]);
+
+      process.env.KCMD_GRAPH_INHERITANCE = '1';
+      const enabled = generatePropertyGraph(model, GEN_OPTS);
+      expect(enabled.ddl).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH \`sqlgen-testing.demo.people\`
+NODE TABLES (
+  \`p.d.person\` AS Person
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      full_name
+    ),
+  \`p.d.customer\` AS Customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      tier,
+      full_name
+    )
+    LABEL Person
+    PROPERTIES(
+      id,
+      full_name
+    )
+    LABEL Party
+    NO PROPERTIES
+);
+`);
+    } finally {
+      if (saved === undefined) delete process.env.KCMD_GRAPH_INHERITANCE;
+      else process.env.KCMD_GRAPH_INHERITANCE = saved;
+    }
+  });
+});
+
 describe('a field expression that names a sibling field', () => {
   // The other rules for a field that names a sibling, which both graphs
   // share, are checked in spanner.test.ts.

@@ -540,4 +540,74 @@ describe('deployBigQuery', () => {
       querySpy.mockRestore();
     }
   });
+
+  test('ignores abstract and extends with warnings during deploy when KCMD_GRAPH_INHERITANCE is unset', async () => {
+    const saved = process.env.KCMD_GRAPH_INHERITANCE;
+    const dsSpy = mockDataset();
+    let capturedSql = '';
+    const querySpy =
+        spyOn(bq.BigQueryClient.prototype, 'query')
+            .mockImplementation(async (_proj: string, sql: string) => {
+              capturedSql = sql;
+              return {status: 200, result: {jobComplete: true}} as any;
+            });
+    try {
+      delete process.env.KCMD_GRAPH_INHERITANCE;
+      const hierarchyYaml = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: people
+    deployments:
+      - name: default
+        target: ${BQ_URI}
+    entities:
+      - name: Party
+        abstract: true
+        fields:
+          - { name: party_code, datatype: String }
+      - name: Person
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/person
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: full_name, expression: full_name }
+      - name: Customer
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/customer
+        primary_key: [id]
+        extends: [Person, Party]
+        fields:
+          - { name: id, expression: id }
+          - { name: tier, expression: tier }
+`;
+      const res = await deployBigQuery(
+          models([{name: 'people', text: hierarchyYaml}]), CTX, {});
+      expect(res.success).toBe(true);
+      expect(res.deployed).toBe(1);
+      expect(capturedSql).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH \`demo.sales.sales_graph\`
+NODE TABLES (
+  \`demo.sales.person\` AS Person
+    KEY(id)
+    PROPERTIES(
+      id,
+      full_name
+    ),
+  \`demo.sales.customer\` AS Customer
+    KEY(id)
+    PROPERTIES(
+      id,
+      tier
+    )
+);
+`);
+      expect(res.warnings).toContain(
+          `[people -> sales_graph] entity 'Party': 'abstract' is not supported in BigQuery property-graph DDL generation; entity ignored`);
+      expect(res.warnings).toContain(
+          `[people -> sales_graph] entity 'Customer': 'extends' is not supported in BigQuery property-graph DDL generation; inheritance ignored`);
+    } finally {
+      if (saved === undefined) delete process.env.KCMD_GRAPH_INHERITANCE;
+      else process.env.KCMD_GRAPH_INHERITANCE = saved;
+      dsSpy.mockRestore();
+      querySpy.mockRestore();
+    }
+  });
 });

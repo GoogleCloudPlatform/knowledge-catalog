@@ -89,6 +89,16 @@ export interface GraphEngine {
   fieldExpression(field: Field): string|undefined;
 }
 
+// Entity inheritance (`abstract` and `extends`) is ignored during
+// property-graph DDL generation by default; only `KCMD_GRAPH_INHERITANCE=1`
+// enables inheritance lowering (used by tests to maintain inheritance coverage
+// while preventing `abstract`/`extends` lowering on BigQuery and Spanner
+// deployments).
+export function graphInheritanceEnabled(): boolean {
+  return typeof process !== 'undefined' &&
+      process.env?.KCMD_GRAPH_INHERITANCE === '1';
+}
+
 /**
  * Generates the property-graph DDL for a semantic model on one engine.
  *
@@ -104,34 +114,71 @@ export function generateGraphDdl(
     model: SemanticModel, engine: GraphEngine): GenerateResult {
   const warnings: string[] = [];
 
-  // Resolve entity-level inheritance (`extends`) before generating: this
-  // flattens each subclass's inherited fields down and expands `extends` to the
-  // full transitive ancestor set, so labels and property signatures can be read
-  // straight off the resolved model. Only the graph legs run this; the KC push
-  // consumes the raw model, so its output is unaffected. An inherited field
-  // that names a field of its ancestor names the subtype's field of that name,
-  // and renders from its SQL (see fieldSql).
-  const resolved = resolveInheritance(model, undefined, {requalify: true});
-  warnings.push(...resolved.warnings);
+  const inheritanceEnabled = graphInheritanceEnabled();
+  let workingModel: SemanticModel;
+  if (inheritanceEnabled) {
+    // Resolve entity-level inheritance (`extends`) before generating: this
+    // flattens each subclass's inherited fields down and expands `extends` to
+    // the full transitive ancestor set, so labels and property signatures can
+    // be read straight off the resolved model. Only the graph legs run this;
+    // the KC push consumes the raw model, so its output is unaffected. An
+    // inherited field that names a field of its ancestor names the subtype's
+    // field of that name, and renders from its SQL (see fieldSql).
+    const resolved = resolveInheritance(model, undefined, {requalify: true});
+    warnings.push(...resolved.warnings);
+    workingModel = resolved.model;
+  } else {
+    for (const entity of model.entities ?? []) {
+      if (entity.abstract) {
+        warnings.push(
+            `entity '${entity.name}': 'abstract' is not supported in ${
+                engine.name} property-graph DDL generation; entity ignored`);
+      }
+      if (entity.extends?.length) {
+        warnings.push(
+            `entity '${entity.name}': 'extends' is not supported in ${
+                engine.name} property-graph DDL generation; inheritance ignored`);
+      }
+    }
+    // Build a shallow copy so the caller's IR (e.g. for Knowledge Catalog) is
+    // not mutated. Since `resolveInheritance` is skipped here, apply
+    // `excludedFields` (such as profile `fields_exclude` entries) and drop
+    // duplicate field names directly on each entity's own fields, and clear
+    // `extends` so downstream rendering treats each concrete entity as a
+    // standalone node table with no shared supertype labels.
+    workingModel = {
+      ...model,
+      entities: (model.entities ?? []).map(e => {
+        const excluded = new Set(e.excludedFields ?? []);
+        const seen = new Set<string>();
+        const fields = (e.fields ?? []).filter(f => {
+          if (excluded.has(f.name) || seen.has(f.name)) return false;
+          seen.add(f.name);
+          return true;
+        });
+        return {...e, extends: undefined, excludedFields: undefined, fields};
+      }),
+    };
+  }
 
   // The IR requires entities/relationships/metrics, but be defensive against a
   // hand-built or partially-deserialized model rather than throwing on `.map`.
-  const entities = resolved.model.entities ?? [];
-  const relationships = resolved.model.relationships ?? [];
-  const metrics = resolved.model.metrics ?? [];
+  const entities = workingModel.entities ?? [];
+  const relationships = workingModel.relationships ?? [];
+  const metrics = workingModel.metrics ?? [];
 
   // Knowledge Catalog is the only system an action or a constraint reaches
   // (kc_actions.ts, kc_constraints.ts), so this leg emits nothing for either.
   // Warn once each, so an author who declared them learns where they go. A push
   // that leaves Knowledge Catalog out warns separately that they reach nothing
   // at all (see commands.ts).
-  const actions = resolved.model.actions ?? [];
+  const actions = workingModel.actions ?? [];
   if (actions.length) {
     warnings.push(
         `${actions.length} action(s) reach Knowledge Catalog only; the ` +
         `${engine.name} push deploys none of them.`);
   }
-  const constraints = resolved.model.constraints ?? [];
+  const constraints = workingModel.constraints ?? [];
   if (constraints.length) {
     warnings.push(
         `${constraints.length} constraint(s) reach Knowledge Catalog only; ` +
@@ -182,12 +229,14 @@ export function generateGraphDdl(
   for (const entity of validEntities) {
     for (const a of entity.extends ?? []) ancestorsUsed.add(a);
   }
-  for (const name of abstractNames) {
-    if (!ancestorsUsed.has(name)) {
-      warnings.push(
-          `abstract entity '${name}' is not a supertype of any concrete ` +
-          `entity; it has no table and no descendant to label, so it produces ` +
-          `no graph element`);
+  if (inheritanceEnabled) {
+    for (const name of abstractNames) {
+      if (!ancestorsUsed.has(name)) {
+        warnings.push(
+            `abstract entity '${name}' is not a supertype of any concrete ` +
+            `entity; it has no table and no descendant to label, so it produces ` +
+            `no graph element`);
+      }
     }
   }
 
@@ -292,7 +341,7 @@ export function generateGraphDdl(
           })
           .map(rel => renderEdgeTable(rel, entitiesByName, engine, warnings));
 
-  const graphName = engine.graphName(resolved.model);
+  const graphName = engine.graphName(workingModel);
 
   const blocks: string[] = [
     `CREATE OR REPLACE PROPERTY GRAPH ${graphName}`,

@@ -7,9 +7,9 @@
 // text -- comes from the engine.
 //
 
-import {describe, expect, test} from 'bun:test';
+import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
 
-import {generateGraphDdl, GraphEngine} from '../../../src/libts/semantic/graph_ddl';
+import {generateGraphDdl, GraphEngine, graphInheritanceEnabled} from '../../../src/libts/semantic/graph_ddl';
 import {fieldBinding, SemanticModel} from '../../../src/libts/semantic/ir';
 
 
@@ -304,6 +304,120 @@ NODE TABLES (
       skipped: ['keyless', 'party'],
       ancestorsUsed: ['party'],
       entities: ['customers', 'keyless', 'orders', 'party', 'vip'],
+    });
+  });
+
+  describe('default behavior ignores abstract and extends unless KCMD_GRAPH_INHERITANCE=1', () => {
+    let savedFlag: string|undefined;
+    beforeEach(() => {
+      savedFlag = process.env.KCMD_GRAPH_INHERITANCE;
+      delete process.env.KCMD_GRAPH_INHERITANCE;
+    });
+    afterEach(() => {
+      if (savedFlag === undefined) delete process.env.KCMD_GRAPH_INHERITANCE;
+      else process.env.KCMD_GRAPH_INHERITANCE = savedFlag;
+    });
+
+    test('graphInheritanceEnabled returns true only when KCMD_GRAPH_INHERITANCE is "1"', () => {
+      expect(graphInheritanceEnabled()).toBe(false);
+      for (const val of ['', '0', 'true', 'yes', 'false']) {
+        process.env.KCMD_GRAPH_INHERITANCE = val;
+        expect(graphInheritanceEnabled()).toBe(false);
+      }
+      process.env.KCMD_GRAPH_INHERITANCE = '1';
+      expect(graphInheritanceEnabled()).toBe(true);
+    });
+
+    test('ignores abstract entities and extends clauses with warnings, without mutating input', () => {
+      let seenAncestors: string[] = [];
+      const model: SemanticModel = {
+        name: 'shop',
+        entities: [
+          {
+            name: 'party',
+            dataSource: '',
+            keys: [],
+            abstract: true,
+            fields: [{name: 'party_name', description: 'Abstract name'}],
+          },
+          {
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['order_id'],
+            description: 'One row per order',
+            excludedFields: ['secret'],
+            fields: [
+              {name: 'order_id', expression: 'order_id'},
+              {name: 'amount', expression: 'amount', description: 'Total'},
+              {name: 'customer_id', expression: 'customer_id'},
+              {name: 'secret', expression: 'secret'},
+            ],
+          },
+          {
+            name: 'gift_orders',
+            dataSource: 'p.d.gift_orders',
+            keys: ['order_id'],
+            extends: ['orders', 'party'],
+            description: 'Orders sent as gifts',
+            fields: [
+              {name: 'order_id', expression: 'order_id'},
+              {name: 'customer_id', expression: 'buyer_id'},
+            ],
+          },
+        ],
+        relationships: [],
+        metrics: [],
+      };
+
+      const {ddl, warnings} = generateGraphDdl(model, {
+        ...MARKED,
+        placeMetrics: (_metrics, input) => {
+          seenAncestors = [...input.ancestorsUsed];
+          return new Map();
+        },
+      });
+
+      expect(ddl).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH <graph shop>
+NODE TABLES (
+  <table p.d.orders> AS orders
+    KEY(order_id)
+    <options One row per order>
+    PROPERTIES(
+      id AS order_id,
+      amount_usd AS amount <field options Total>,
+      customer_id
+    ),
+  <table p.d.gift_orders> AS gift_orders
+    KEY(order_id)
+    <options Orders sent as gifts>
+    PROPERTIES(
+      id AS order_id,
+      buyer_id AS customer_id
+    )
+);
+`);
+      expect(seenAncestors).toEqual([]);
+      expect(warnings).toEqual([
+        `entity 'party': 'abstract' is not supported in Marked property-graph DDL generation; entity ignored`,
+        `entity 'gift_orders': 'extends' is not supported in Marked property-graph DDL generation; inheritance ignored`,
+      ]);
+      // Input model is not mutated.
+      expect(model.entities[0].abstract).toBe(true);
+      expect(model.entities[2].extends).toEqual(['orders', 'party']);
+    });
+
+    test('throws cleanly when every entity is abstract, including the unsupported warning', () => {
+      const onlyAbstract: SemanticModel = {
+        name: 'empty_hierarchy',
+        entities: [
+          {name: 'party', dataSource: '', keys: [], abstract: true, fields: []},
+        ],
+        relationships: [],
+        metrics: [],
+      };
+      expect(() => generateGraphDdl(onlyAbstract, MARKED)).toThrow(
+          /every entity is abstract[\s\S]*'abstract' is not supported in Marked property-graph DDL generation/);
     });
   });
 });

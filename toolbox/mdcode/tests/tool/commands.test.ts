@@ -8,8 +8,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient, Entry} from '../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import {SemanticModelLayout} from '../../src/libts/layouts/semantic-model';
 import * as bqLeg from '../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
@@ -90,7 +92,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const k of ['KC_V2_ASPECTS', 'KC_TYPE_PROJECT']) {
+  for (const k of ['KC_V2_ASPECTS', 'KC_TYPE_PROJECT', 'KCMD_GRAPH_INHERITANCE']) {
     if (savedEnv[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
@@ -3511,4 +3513,143 @@ describe('what a push says about relationships', () => {
           .toContain(line);
     });
   }
+});
+
+describe('push ignores abstract and extends in graph DDL by default', () => {
+  test('publishes inheritance to Knowledge Catalog while omitting abstract and extends from BigQuery and Spanner DDL with warnings',
+       async () => {
+         delete process.env.KCMD_GRAPH_INHERITANCE;
+         process.env.KC_V2_ASPECTS = '1';
+         const bqDs = 'bigquery.googleapis.com/projects/test-project/datasets/d';
+         const spDb =
+             'spanner.googleapis.com/projects/test-project/instances/i/databases/db';
+         writeWorkspace();
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.yaml'),
+             `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: bq
+        target: ${bqDs}/propertyGraphs/g
+      - name: sp
+        target: ${spDb}/graphs/g
+        profile: sp
+    entities:
+      - name: Party
+        abstract: true
+        fields:
+          - { name: party_kind, datatype: String }
+      - name: Person
+        source: ${bqDs}/tables/person
+        primary_key: [person_id]
+        fields:
+          - { name: person_id, expression: person_id }
+          - { name: display_id, expression: "CAST(Person.person_id AS STRING)" }
+      - name: Customer
+        extends: [Party, Person]
+        source: ${bqDs}/tables/customer
+        primary_key: [customer_id]
+        fields:
+          - { name: customer_id, expression: customer_id }
+          - { name: person_id, expression: person_id }
+          - { name: tier, expression: tier }
+          - { name: party_kind, expression: party_kind }
+`);
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.profile.sp.yaml'),
+             `name: sp
+entities:
+  - name: Person
+    source: ${spDb}/tables/Person
+    primary_key: [person_id]
+    fields:
+      - { name: person_id, expression: person_id }
+  - name: Customer
+    source: ${spDb}/tables/Customer
+    primary_key: [customer_id]
+    fields:
+      - { name: customer_id, expression: customer_id }
+      - { name: person_id, expression: person_id }
+      - { name: tier, expression: tier }
+      - { name: party_kind, expression: party_kind }
+`);
+
+         const {entries} = fakeCatalog();
+         const bqExecutedSql: string[] = [];
+         spyOn(BigQueryClient.prototype, 'query')
+             .mockImplementation(
+                 async (_proj: string, sql: string, _loc?: string,
+                        dryRun?: boolean) => {
+                   if (!dryRun) bqExecutedSql.push(sql);
+                   return {status: 200, result: {}} as any;
+                 });
+         const spannerStatements: string[][] = [];
+         spyOn(SpannerClient.prototype, 'updateDatabaseDdl')
+             .mockImplementation(
+                 async (_p: string, _i: string, _d: string,
+                        statements: string[]) => {
+                   spannerStatements.push(statements);
+                   return {status: 200, result: {done: true}} as any;
+                 });
+         const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+         expect(await push({})).toBe(0);
+
+         // Knowledge Catalog still receives the abstract Party entity entry.
+         const entryNames = [...entries.keys()];
+         expect(entryNames.some(n => n.toLowerCase().includes('party')))
+             .toBe(true);
+
+         // BigQuery and Spanner DDL omit Party and inheritance labels, and do
+         // not flatten Person.display_id onto Customer.
+         expect(bqExecutedSql).toEqual([`\
+CREATE OR REPLACE PROPERTY GRAPH \`test-project.d.g\`
+NODE TABLES (
+  \`test-project.d.person\` AS Person
+    KEY(person_id)
+    PROPERTIES(
+      person_id,
+      CAST(person_id AS STRING) AS display_id
+    ),
+  \`test-project.d.customer\` AS Customer
+    KEY(customer_id)
+    PROPERTIES(
+      customer_id,
+      person_id,
+      tier,
+      party_kind
+    )
+);
+`]);
+
+         expect(spannerStatements).toEqual([[`\
+CREATE OR REPLACE PROPERTY GRAPH g
+NODE TABLES (
+  Person AS Person
+    KEY(person_id)
+    PROPERTIES(
+      person_id,
+      CAST(person_id AS STRING) AS display_id
+    ),
+  Customer AS Customer
+    KEY(customer_id)
+    PROPERTIES(
+      customer_id,
+      person_id,
+      tier,
+      party_kind
+    )
+)`]]);
+
+         const warnings = messages(warnSpy);
+         expect(warnings).toContain(
+             "entity 'Party': 'abstract' is not supported in BigQuery property-graph DDL generation; entity ignored");
+         expect(warnings).toContain(
+             "entity 'Customer': 'extends' is not supported in BigQuery property-graph DDL generation; inheritance ignored");
+         expect(warnings).toContain(
+             "entity 'Party': 'abstract' is not supported in Spanner property-graph DDL generation; entity ignored");
+         expect(warnings).toContain(
+             "entity 'Customer': 'extends' is not supported in Spanner property-graph DDL generation; inheritance ignored");
+       });
 });
