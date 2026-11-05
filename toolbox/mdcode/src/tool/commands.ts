@@ -196,8 +196,9 @@ export async function init(options: InitOptions): Promise<number> {
     const source = manifest.source as SemanticModelSource;
     // Provision the destination entry group now, at init, so push writes only
     // entries -- matching how the standard layout operates (its push creates
-    // entries, never the entry group). Idempotent: an already-existing group
-    // (409) is success.
+    // entries, never the entry group). Idempotent: a group that exists is
+    // success. A 409, or a 403 with a lookup that finds the group, means the
+    // group exists.
     const catalog = new dataplex.CatalogClient(ctx);
     const res = await catalog.createEntryGroup(
         source.project, source.location, source.entryGroup);
