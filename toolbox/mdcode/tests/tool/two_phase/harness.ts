@@ -151,8 +151,6 @@ type Call = any[];
 type Fallback = (a: Call, real: () => unknown) => unknown;
 const ok = (result: object) => () => ({status: 200, result});
 const none = () => [];
-// Each Spanner instance has the Enterprise edition, which Spanner Graph needs.
-export const INSTANCE = {...REGIONAL_INSTANCE, edition: 'ENTERPRISE'};
 const DEPLOYED = {success: true, ddl: [], warnings: [], deployed: 1};
 export const PREPARED = {emitted: [], existing: [], warnings: [], plan: []};
 // The method the fake replaces for each service, and its default answer.
@@ -178,7 +176,9 @@ const SERVICES = {
   // and each table's entry is found. A case of a missing table answers
   // lookupEntry with entryDenied.
   getTable: [BigQueryClient.prototype, 'getTable', ok({location: 'US'})],
-  getInstance: [SpannerClient.prototype, 'getInstance', ok(INSTANCE)],
+  // The edition check reads each Spanner instance too. This answer names no
+  // edition, so the check passes it.
+  getInstance: [SpannerClient.prototype, 'getInstance', ok(REGIONAL_INSTANCE)],
   getInstanceConfig: [SpannerClient.prototype, 'getInstanceConfig', ok(NAM3_CONFIG)],
   getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
   getHiveCatalog:

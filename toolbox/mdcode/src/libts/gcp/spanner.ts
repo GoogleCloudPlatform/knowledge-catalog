@@ -57,6 +57,8 @@ export interface SpannerType {
 // such as `us`, and not a Dataplex region.
 export interface Instance {
   name?: string;
+  // STANDARD, ENTERPRISE or ENTERPRISE_PLUS.
+  edition?: string;
   config?: string;
   replicaComputeCapacity?: Array<{
     replicaSelection?: {location?: string};
@@ -110,8 +112,8 @@ export class SpannerClient extends api.ApiClient {
         `projects/${project}/instances/${instance}/databases/${database}`);
   }
 
-  // Fetches an instance's metadata, which names its instance config and gives
-  // its edition: STANDARD, ENTERPRISE or ENTERPRISE_PLUS.
+  // Fetches an instance's metadata, which names its instance config and its
+  // edition.
   async getInstance(project: string, instance: string):
       Promise<api.ApiResult<Instance>> {
     return await this._get<Instance>(`projects/${project}/instances/${instance}`);

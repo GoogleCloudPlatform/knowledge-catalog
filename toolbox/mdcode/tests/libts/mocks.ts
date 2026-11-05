@@ -41,14 +41,13 @@ export function passGraphChecks(): void {
 // Dataplex does for a table that exists. Each BigQuery table is in `US`; each
 // Spanner instance (with a regional config, which is not read) and BigLake
 // catalog is in us-central1, shaped as the live responses in
-// gcp/location_responses.ts are. Each Spanner instance has the Enterprise
-// edition, which Spanner Graph needs.
+// gcp/location_responses.ts are.
 export function passSourceCheck(): void {
   const ok = (result: object) => ({status: 200, result}) as any;
   spyOn(bigquery.BigQueryClient.prototype, 'getTable')
       .mockResolvedValue(ok({location: 'US'}));
   spyOn(spanner.SpannerClient.prototype, 'getInstance')
-      .mockResolvedValue(ok({...REGIONAL_INSTANCE, edition: 'ENTERPRISE'}));
+      .mockResolvedValue(ok(REGIONAL_INSTANCE));
   spyOn(BigLakeClient.prototype, 'getCatalog')
       .mockResolvedValue(ok(REGIONAL_CATALOG));
   spyOn(BigLakeClient.prototype, 'getHiveCatalog')

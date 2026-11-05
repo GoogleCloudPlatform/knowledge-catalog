@@ -6,8 +6,9 @@
 import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
+import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, INSTANCE, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -20,6 +21,11 @@ const stops = (error: unknown, flags = {}) =>
 const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
+// A Spanner deployment of database test-project/i/db.
+const SPANNER_DEPLOYMENT = {
+  deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
+  profiles: {ops: boundAt(SPANNER_CUSTOMER)},
+};
 // The dialect lookup reads the database before any other check does. With
 // `error`, only the deployment's own read, the second, gets the answer.
 const spannerAnswers = (
@@ -27,8 +33,7 @@ const spannerAnswers = (
   let reads = 0;
   return {
     name: `a Spanner deployment whose database ${what} writes nothing`,
-    deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
-    profiles: {ops: boundAt(SPANNER_CUSTOMER)},
+    ...SPANNER_DEPLOYMENT,
     services: {
       getDatabase: () => !error || reads++ ? {status, message} : undefined,
     },
@@ -45,15 +50,10 @@ const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
 const NO_LOCATION = (project: string) =>
     `Warning: could not read location of dataset ${project}.d (Access ` +
     'Denied); letting BigQuery infer the query location';
-// A Spanner deployment of database test-project/i/db.
-const SPANNER_DEPLOYMENT = {
-  deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
-  profiles: {ops: boundAt(SPANNER_CUSTOMER)},
-};
-// The instance answers with `instance`.
-const instanceIs = (instance: object) =>
-    ({getInstance: {status: 200, result: instance}});
-const STANDARD = err(
+// The instance read answers REGIONAL_INSTANCE with `fields` changed.
+const instanceIs = (fields: object) =>
+    ({getInstance: {status: 200, result: {...REGIONAL_INSTANCE, ...fields}}});
+const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
     'instance. Upgrade the instance (gcloud spanner instances update i ' +
@@ -167,18 +167,14 @@ scenarios('push writes nothing when a check fails', [
     }],
   },
   {
-    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check and when the instance gives no edition, and a missing database is reported first',
+    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, and a missing database is reported first',
     ...SPANNER_DEPLOYMENT,
-    services: instanceIs({...INSTANCE, edition: 'STANDARD'}),
-    errors: [STANDARD],
+    services: instanceIs({edition: 'STANDARD'}),
+    errors: [STANDARD_REFUSED],
     called: {spannerDml: 0},
     then: [
-      {flags: {validateOnly: true}, errors: [STANDARD]},
-      {flags: {skipSourceCheck: true}, errors: [STANDARD]},
-      {
-        services: instanceIs({...INSTANCE, edition: undefined}),
-        errors: [STANDARD],
-      },
+      {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
+      {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
       {
         services: {getDatabase: {status: 404, message: 'Not found'}},
         errors: [err(`${at('sp')}: database test-project/i/db not found`)],
@@ -365,20 +361,14 @@ scenarios('how push deploys each deployment in order, and what it prints', [
              `'g': ${LIMIT}`],
   },
   {
-    name: 'a Spanner deployment deploys on an Enterprise Plus or a free trial instance, and when its instance cannot be read',
+    name: 'a Spanner deployment deploys on an Enterprise or Enterprise Plus edition instance, and under --skip-source-check when its instance cannot be read',
     ...SPANNER_DEPLOYMENT,
-    services: instanceIs({...INSTANCE, edition: 'ENTERPRISE_PLUS'}),
+    services: instanceIs({edition: 'ENTERPRISE'}),
     events: SP_DEPLOYED,
     then: [
-      {
-        services: instanceIs(
-            {...INSTANCE, edition: undefined, instanceType: 'FREE_INSTANCE'}),
-      },
+      {services: instanceIs({edition: 'ENTERPRISE_PLUS'})},
       // The source check fails when it cannot read the instance.
-      {
-        flags: {skipSourceCheck: true},
-        services: {getInstance: {status: 403, message: DISABLED}},
-      },
+      {flags: {skipSourceCheck: true}, services: {getInstance: {status: 403}}},
     ].map(step => ({code: 0, events: SP_DEPLOYED, ...step})),
   },
   {
