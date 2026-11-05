@@ -115,7 +115,8 @@ of its definition come from `Party`, and push rejects a redeclaration that
 restates them.
 
 To bind the same hierarchy to more than one store, put each binding in its own
-[profile](profiles.md). A named profile binds every concrete subtype, since
+sibling [profile file](profiles.md) (`<model>.profile.<name>.yaml`). A named
+profile binds every concrete subtype, since
 each one stands for a table the profile's database has to hold. A profile can
 bind a field the
 subtype inherits by naming it under that subtype, with no redeclaration in the

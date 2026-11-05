@@ -375,12 +375,12 @@ A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
 and they belong in different places:
 
 1. **The join columns on each edge — in the model.** The import gives every
-   relationship its endpoints (`from`/`to`) but no join columns; which columns an
-   edge joins on is a *logical* fact the model owns, not a physical binding, so
-   you add it to the imported model itself. A key and a join column each name a
-   column of the table, and the import names each key after the property it came
-   from. So change each imported key to the column its property is bound to, and
-   join on that column:
+   relationship its endpoints (`from`/`to`) but no join columns; join columns
+   are a binding, like `source`: the model file's are its inline `default`
+   binding, and each named profile states its own (step 2). A key and a join
+   column each name a column of the table, and the import names each key after
+   the property it came from. So change each imported key to the column its
+   property is bound to, and join on that column:
 
    ```yaml
    # sales.yaml: key each entity by its column, and add the join columns
@@ -399,40 +399,53 @@ and they belong in different places:
    ```
 
 2. **The physical binding — in a profile.** Which table each entity reads, which
-   column each field reads, and the deployment target go in a
-   [binding profile](profiles.md): a document in the same schema, kept beside the
-   model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
-   leaves the logical model untouched. A profile may set `source`, field
-   `expression`, and `deployment_target` — nothing logical (a `relationships`
-   block in a profile is rejected). A field the profile does not bind is left
-   unbound; there is no separate flag. The model and the profile merge by name at
+   column each field reads, and each relationship's join columns go in a
+   [binding profile](profiles.md): a sibling file kept beside the model as
+   `<model>.profile.<name>.yaml` that adds *only* the binding and leaves the
+   logical model untouched, while the model's `deployments` list pairs the
+   deployment target with that profile. A profile may set `source`,
+   `primary_key`, `unique_keys`, field `expression`, `fields_exclude`,
+   relationship `from_columns`/`to_columns`, `metrics_exclude`, and action
+   `executor` — nothing logical. The model and the profile merge by name at
    push time:
 
    ```yaml
-   # sales.profiles/warehouse.yaml — physical binding for the sales model
-   version: 0.2.0.dev0/google
-   semantic_model:
-     - name: sales
-       deployment_target: bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
-       datasets:
-         - name: Customer
-           source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
-           fields:
-             - { name: customerId, expression: c_custkey }
-             - { name: email,      expression: c_email }
-             # ... the remaining Customer fields ...
-         - name: Order
-           source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
-           fields:
-             - { name: orderId, expression: o_orderkey }
-             # ... the remaining Order fields ...
+   # sales.yaml: add the deployment entry
+   deployments:
+     - name: warehouse
+       target: bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
+       profile: warehouse
    ```
 
-With the join columns in the model and the profile in place, a single push
-deploys the graph:
+   ```yaml
+   # sales.profile.warehouse.yaml — physical binding for the sales model
+   name: warehouse
+   entities:
+     - name: Customer
+       source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
+       primary_key: [c_custkey]
+       unique_keys: [[c_email]]
+       fields:
+         - { name: customerId, expression: c_custkey }
+         - { name: email,      expression: c_email }
+         # ... the remaining Customer fields ...
+     - name: Order
+       source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
+       primary_key: [o_orderkey]
+       fields:
+         - { name: orderId, expression: o_orderkey }
+         # ... the remaining Order fields ...
+   relationships:
+     - name: placedBy
+       from_columns: [o_custkey]
+       to_columns: [c_custkey]
+   ```
+
+With the deployment in the model and the sibling profile file in place, a single
+push publishes the model and deploys the graph:
 
 ```console
-$ kcmd push --profile warehouse   # merges the binding, then CREATE OR REPLACE PROPERTY GRAPH + KC entries
+$ kcmd push --deployment warehouse   # publishes to KC + deploys CREATE OR REPLACE PROPERTY GRAPH
 ```
 
 See [One logical model, many physical bindings](profiles.md) for the full profile

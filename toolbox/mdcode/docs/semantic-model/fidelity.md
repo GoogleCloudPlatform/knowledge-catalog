@@ -7,13 +7,12 @@ can query, and `pull` can only return what the catalog was given. This page is
 the one authoritative map of what survives each direction. Keep your authored
 document.
 
-Which backend a push deploys to — BigQuery or Spanner — is set by the model's
-deployment target, or by the binding profile you select; it is not a
-command-line flag. What reaches Knowledge Catalog depends on the push as well: a
-catalog-only or purely logical push records the whole model, while a push that
-also deploys a graph records only the part the graph binds — and whichever way
-you push, only one binding is recorded, even when the model defines several. All
-three are detailed under [To Knowledge Catalog](#to-knowledge-catalog).
+Which backend a push deploys to — BigQuery or Spanner — is set by each entry's
+`target` in `deployments`, and which binding feeds it is set by that entry's
+`profile`; neither is a backend flag on the command line (see
+[Reference → push](reference.md#push) for `--deployment` and
+`--no-deployment`). Each destination has its own section below, starting with
+[To Knowledge Catalog](#to-knowledge-catalog).
 
 ## The round-trip matrix
 
@@ -29,8 +28,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
 | Field                                                          | `schema` aspect column          | ✓ (type collapses²)                            | column on the node table¹                                            | column on the node table¹                                            |
 | Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
-| Field expression (canonical SQL)                               | only with `--emit-expressions`  | only if pushed with it                         | builds the DDL                                                       | builds the DDL                                                       |
-| Field dimension role (`is_time`)                               | only with `--emit-expressions`³ | only if pushed with it³                        | noted in `OPTIONS(description)`                                      | — dropped                                                            |
+| Field expression (canonical SQL)                               | — omitted by default (`v2` only)| ✓ from stored file copy                        | builds the DDL                                                       | builds the DDL                                                       |
+| Field dimension role (`is_time`)                               | — omitted by default³           | ✓ from stored file copy³                       | noted in `OPTIONS(description)`                                      | — dropped                                                            |
 | Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | the first is `KEY(...)` when there is no primary key; else dropped   | the first is `KEY(...)` when there is no primary key; else dropped   |
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
@@ -45,8 +44,8 @@ agree on every structural row and differ only where a Spanner target has no
 | `ai_context.examples`                                          | — not stored                    | —                                              | into `OPTIONS(description)` (`Examples:` line)                       | — dropped                                                            |
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
-| Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
-| Binding profile (alternate physical binding)                   | — only the selected one¹⁴       | —¹⁴                                            | one graph per BigQuery-bound profile                                 | one graph per Spanner-bound profile                                  |
+| `deployments` (`name`, `target`, `profile`)                    | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
+| Binding profile (`<model>.profile.<name>.yaml`)                | stored as `semantic-model-file`¹⁴| ✓¹⁴                                            | one graph per BigQuery deployment                                    | one graph per Spanner deployment                                     |
 | Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | — not used; a field or metric with only vendor text is left out     | — not used; a field with only vendor text is left out               |
 | `custom_extensions` from a vendor other than GOOGLE            | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
@@ -56,18 +55,18 @@ agree on every structural row and differ only where a Spanner target has no
    `String` → un-typed. A field with no type and a `String` field both store
    `dataType STRING` (with `metadataType` `OTHER` and `STRING` respectively),
    and `pull` writes no `datatype` for either, so only `String` is lost.
-3. **Dimension role.** The default push omits the per-field `semantics` block,
-   so the dimension role is written only with `--emit-expressions` — and then
-   comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
-   default push drops the marker entirely.
+3. **Dimension role.** The default v1 catalog aspects omit the per-field
+   `semantics` block, so when rebuilding from v1 catalog metadata alone (with no
+   stored file copy) the dimension marker is absent. A normal `pull` restores
+   the exact authored `dimension` from the stored copy of the model file.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
    is rejected. It must also reduce to one supported aggregate over one
    operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
-   rejected. A push of a profile in the older `<model>.profiles/` layout
-   skips the metric with a warning instead.
-5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
-   its data type round-trips only for a concrete type (e.g. `Decimal`) — an
-   untyped, `String`, or `Opaque` metric comes back un-typed.
+   rejected.
+5. **Metric type.** When rebuilding from v1 catalog metadata alone, a metric's
+   data type round-trips only for a concrete type (e.g. `Decimal`) — an
+   untyped, `String`, or `Opaque` metric comes back un-typed. A normal `pull`
+   restores the authored file copy verbatim.
 6. **Relationship name.** Relationship names come back lowercased
    (`Places_Order` → `places_order`) — the catalog stores the name only in the
    link id. See [Writer-side follow-up](#writer-side-follow-up).
@@ -88,13 +87,14 @@ agree on every structural row and differ only where a Spanner target has no
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
     because there is no table behind it, and a relationship that carries no join
-    columns is skipped with a warning. When the same push also deploys a graph,
-    the catalog entries are first pruned to what the graph binds — see
-    [To Knowledge Catalog](#to-knowledge-catalog).
+    columns is skipped with a warning.
 11. **Vendor-dialect fallback.** What you author is the `expression.dialects[]`
-    list. `importedExpression` / `importedDialect` are not authored keys — the
-    loader *derives* them from a non-canonical dialect entry (for example the
-    MAQL or Snowflake form a metric was imported from). `kcmd import
+    list using one of the supported SQL dialects (see
+    [Model spec §2.5](model_spec.md#25-expressions)).
+    `importedExpression` / `importedDialect` are not
+    authored keys — the loader *derives* them from a non-canonical dialect entry
+    (for example the `SNOWFLAKE` or `DATABRICKS` form a metric was imported
+    from). `kcmd import
     --transpile` adds a `BIGQUERY` dialect entry to a model file's field or
     metric, translated from a vendor-only expression or from an `ANSI_SQL`
     expression that double-quotes column names. It does the same in each
@@ -145,15 +145,11 @@ agree on every structural row and differ only where a Spanner target has no
     all that push does with a constraint; what settles one is a run, and the
     runtime an application embeds is what puts each guard to a judge before the
     write.
-14. **Binding profiles.** A model may define several physical realizations, one
-    per binding profile. `--all-profiles` deploys a graph for every profile that
-    declares a deployment target, each to the backend its own target names; a
-    profile without one is skipped, and two profiles claiming the same graph are
-    rejected before anything deploys. Knowledge Catalog still records a single
-    binding — the one named by `--profile`, else the default binding, which is
-    what an `--all-profiles` run always records, the two flags being mutually
-    exclusive. A [push in two phases](reference.md#push) records the model file
-    as written instead. See [Binding profiles](profiles.md).
+14. **Binding profiles and deployments.** A model may define several physical
+    realizations in sibling `<model>.profile.<name>.yaml` files and reference
+    them from `deployments` (see [Binding profiles](profiles.md) and
+    [Reference → push](reference.md#push)); two deployments claiming the same
+    target are rejected before anything deploys.
 15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
@@ -170,51 +166,34 @@ file. Every resource type it uses is a built-in system type under
 provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
-What is recorded depends on the push. A catalog-only push (`--no-profile`), or a
-purely logical model with no bindings, records the whole model: every entity,
-metric, and relationship the document declares, apart from the relationships in
-footnote 15. A [push in two phases](reference.md#push) does too. Any other push
-that also deploys a graph
-first prunes the model to what that graph binds, so an unbound field — and any
-entity, metric, or relationship that depends on it — is left out of the catalog
-entries too. A pull still returns the authored model file from its stored copy.
-Only a model file that pull rebuilds from the catalog metadata comes back as the
-bound view.
+Every push publishes the model file as written (plus raw file copies of the
+model and every sibling `<model>.profile.<name>.yaml` file) to Knowledge
+Catalog: every entity, metric, and relationship the document declares, apart
+from the relationships in footnote 15. A `pull` returns the authored model and
+profile files from their stored
+copies; only a model file that `pull` rebuilds from catalog metadata when no
+stored copy is present comes back from the aspects alone.
 
 A logical model still produces complete entries. Each entity's `source` is
 recorded empty (`resources: []`) because there is no table behind it, and a
 relationship that carries no join columns is skipped with a warning.
 
-**One binding, not all of them.** A model may define several physical
-realizations — an analytical binding onto BigQuery and an operational one onto
-Spanner, say — and `kcmd push --all-profiles` deploys a graph for each. The
-catalog leg does not fan out with it: it runs once, against the profile named by
-`--profile`, otherwise the default binding. So a bare `kcmd push` and a
-`kcmd push --all-profiles` write the same entries and differ only in how many
-graphs they deploy. A [push in two phases](reference.md#push) records the model
-file as written instead.
+**Model file and sibling profile files.** A model may define several physical
+realizations — an analytical binding onto BigQuery (`<model>.profile.analytical.yaml`)
+and an operational one onto Spanner (`<model>.profile.operational.yaml`), say —
+and list both in `deployments`. Push stores raw copies of `<model>.yaml` and
+every `<model>.profile.<name>.yaml` as `semantic-model-file` entries (see
+[Reference → push](reference.md#push)).
 
-Nor do successive pushes accumulate. Entry ids are derived from logical names
-alone — model, entity, metric — with no profile component, so pushing a second
-profile reconciles the catalog to *that* binding rather than adding to what the
-first one wrote: shared elements have their `source` swapped to the new profile's
-tables, and — on a push that deploys a graph, and so prunes — an entity or metric
-the new binding cannot answer is deleted rather than left behind. The catalog
-therefore describes one physical realization at a time. It records that binding's
-deployment target and tables, but never the profile's name, and never that the
-other profiles exist. A `pull` returns whichever was written last. Keep the
-profile files — the catalog is not their store.
-
-By default the catalog does **not** store the SQL expressions: the published
-system-type templates do not yet carry a per-field `semantics` block or a
-`semantic-metric.expression` field, so the default push omits them. Pass
-`--emit-expressions` to write the canonical GoogleSQL/ANSI expression once the
-templates gain the fields. The catalog never stores `ai_context.synonyms` /
-`examples`, field-level `ai_context` (only model, entity, and metric
-`instructions` have a home, in the `guidelines` aspect), or the original vendor
-SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
-imported from). Those stay in your authored document. The expressions build the
-graph SQL.
+In the v1 catalog aspects, SQL expressions are omitted because the published v1
+system-type templates do not carry a per-field `semantics` block or a
+`semantic-metric.expression` field (with `KC_V2_ASPECTS=1`, expressions are
+stored in the `sql-expressions` aspect). The v1 catalog aspects also do not
+store `ai_context.synonyms` / `examples`, field-level `ai_context` (only model,
+entity, and metric `instructions` have a home, in the `guidelines` aspect), or
+the original vendor SQL (`importedExpression` — for example the `SNOWFLAKE` or
+`DATABRICKS` form a metric was imported from). All of those survive in the
+stored `semantic-model-file` copies and in your authored document.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -308,8 +287,9 @@ hierarchy, with fields flattened down) deploy exactly as they do for BigQuery,
 but with bare table and graph names. Three things do not make the trip, all by
 design:
 
-- **Metrics.** Spanner has no `MEASURE`, so every model-level metric is
-  dropped with a warning. The BigQuery-only rule that a metric resolve to one
+- **Metrics.** Spanner has no `MEASURE`, so a Spanner deployment uses a profile
+  that excludes every metric, and push rejects one that leaves a metric
+  available. The BigQuery-only rule that a metric resolve to one
   entity does not apply. Author your metrics as usual — a BigQuery target still
   emits them, and Knowledge Catalog still records each `semantic-metric` entry —
   they simply have no home in the Spanner graph.
@@ -346,9 +326,7 @@ sidecars from the metadata, and writes each metric's entity as `entity:`,
 declared or derived. See [Reference](reference.md#with-kc_v2_aspects1).
 
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
-summary. When the push deployed a graph, what push wrote was already pruned to
-the bound view (see [To Knowledge Catalog](#to-knowledge-catalog)), so pull
-returns that view. Two things about *how* it comes back:
+summary. Two things about *how* it comes back:
 
 **Normalized** — the content survives, the form changes:
 
@@ -361,9 +339,9 @@ returns that view. Two things about *how* it comes back:
   type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
   `String`, or `Opaque` metric comes back un-typed, because the metric aspect
   stores a data type but no metadata type to mark it `Opaque`.
-- A field's dimension role (present only if pushed with `--emit-expressions`)
-  comes back as a bare `dimension: {}` marker, without its detail (`is_time`, and
-  so on).
+- When rebuilding from v1 catalog metadata alone (with no stored file copy), a
+  field's dimension role is omitted because the v1 `schema` aspect carries no
+  per-field `semantics` block.
 - Ordering: field order within each entity is preserved, but the order of
   entities and metrics is not — they come back in the catalog's own order, not
   the authored one. Comments in the original YAML are not preserved.
@@ -384,10 +362,8 @@ what pull can recover. It is recorded here as a write-side follow-up; the reader
   hyphen (the entry-link id format forbids both). Pull reads each hyphen back
   as an underscore, but the original casing is lost. Returning the name verbatim
   requires adding a name field to the built-in `schema-join` aspect type in
-  Knowledge Catalog (server-side), after which the client write/read is trivial;
-  it is the same class of gap as the `semantics` field that gates
-  `--emit-expressions`.
+  Knowledge Catalog (server-side), after which the client write/read is trivial.
 
 (A deployment target in no supported form is **not** a pull gap. Every push
 rejects it at the validation gate before anything is written, a catalog-only
-push (`--no-profile`) too; see [Validation](reference.md#validation).)
+push (`--no-deployment`) too; see [Validation](reference.md#validation).)

@@ -1,17 +1,17 @@
 # One logical model, many physical bindings
 
-> **Scope.** A `deployment_target` answers two questions that are easy to
+> **Scope.** Each entry in `deployments` answers two questions that are easy to
 > conflate: where the model is *published*, and where it *runs*.
 >
-> `kcmd push` publishes. It deploys a property graph to the backend the target
-> names — BigQuery Graph or Spanner Graph — and the logical model to Knowledge
-> Catalog, which takes it under any profile.
+> `kcmd push` publishes to Knowledge Catalog and deploys each selected
+> BigQuery Graph or Spanner Graph deployment bound with its `profile` (see
+> [Reference → push](reference.md#push)).
 >
 > An action's statements run against whatever store the profile binds. All
 > three backends execute SQL DML, so all three can carry a write. What differs
-> is the **push**: an AlloyDB target runs and does not push, because AlloyDB has
-> no property-graph DDL for a push to deploy, while Spanner and BigQuery do
-> both.
+> is the **push**: an AlloyDB target runs and does not deploy a graph on push,
+> because AlloyDB has no property-graph DDL for a push to deploy, while Spanner
+> and BigQuery do both.
 >
 > A profile's sources take the forms listed under [Sources](#sources). A source
 > in any other form is rejected.
@@ -52,16 +52,17 @@ A model and its profiles form a class hierarchy, the same way an entity
 `extends` a supertype:
 
 - The **logical model** (`<model>.yaml`) is the **base**: the complete
-  declaration — entities, fields, relationships, metrics, the grain, and the
-  graph shape — with no physical binding.
-- A **binding profile** is a **subclass**: it supplies the physical facets the
-  logical model leaves open, such as each entity's `source` and key columns,
-  each field's column, and each relationship's join columns.
-- `kcmd push --profile <name>` **merges** the profile onto the logical model —
-  matching entities, fields, relationships, and metrics **by name** — and
-  deploys the result. A profile is never deployed alone: the logical model
-  supplies every declaration, and the profile supplies the bindings its store
-  provides.
+  declaration — entities, fields, relationships, metrics, the grain, the
+  graph shape, and the named `deployments` — with no physical binding required.
+- A **binding profile** (`<model>.profile.<name>.yaml`) is a **subclass**: it
+  supplies the physical facets the logical model leaves open, such as each
+  entity's `source` and key columns, each field's column or computation, and
+  each relationship's join columns.
+- `kcmd push` (or `kcmd push --deployment <name>`) **applies** each deployment's
+  profile onto the logical model — matching entities, fields, relationships, and
+  actions **by name** — and deploys the result to the deployment's `target`. A
+  profile is never deployed alone: the logical model supplies every declaration,
+  and the profile supplies the bindings its store provides.
 
 A binding may also sit inline in the logical model, as the profile named
 `default`. The layout on this page keeps the logical
@@ -150,7 +151,7 @@ leaves declaration alone.
 | an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them | |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
-| the deployment target, in the older `<model>.profiles/` layout only | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
+| whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source`; `deployments` and deployment targets |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. Key and join columns name physical
@@ -278,19 +279,98 @@ take a profile file's store from the deployments that name the profile in
 `profile`. When none does, they report that there is no database to run it
 against.
 
-The examples on this page use the older layout, which `kcmd push` still
-deploys: a `commerce.profiles/` directory whose files are `semantic_model`
-documents in the logical model's schema, each carrying only physical facets and
-its own `deployment_target`. In either layout, `--profile analytical` reads
-`commerce.yaml` plus the analytical profile, so nothing in one binding can
-affect another. Beside a profile file, `commerce.yaml` must load on its own
+Every sibling profile file (`<model>.profile.<name>.yaml`) is governed by six
+rules checked at load and push time:
+
+1. **Filename suffix equals `name:`** — the `<name>` segment in
+   `<model>.profile.<name>.yaml` must exactly match the top-level `name:`
+   inside the file.
+2. **Profile naming rule and case-insensitive uniqueness** — a profile name must
+   match `^[A-Za-z][A-Za-z0-9_-]*$` (starting with an ASCII letter, followed by
+   letters, digits, underscores, or hyphens, at most 500 characters) and must be
+   unique per model ignoring ASCII case.
+3. **`<model>` prefix matches the model's `name:`** — the `<model>` prefix of
+   `<model>.profile.<name>.yaml` must match the model's `name:` in
+   `<model>.yaml`.
+4. **Google flavor (`0.2.0.dev0/google`) only** — sibling profile files are
+   supported only for `0.2.0.dev0/google` models; a sibling profile file beside
+   a vanilla `0.2.0.dev0` model is rejected (vanilla models carry profiles in a
+   `GOOGLE` `custom_extensions` block).
+5. **No orphan profile files** — every `<model>.profile.<name>.yaml` must have a
+   sibling `<model>.yaml` in the same directory; a profile file whose `<model>`
+   prefix matches no model file beside it is rejected.
+6. **`default` is reserved** — the name `default` (in any letter case, such as
+   `DEFAULT` or `Default`) is reserved for the model file's inline bindings and
+   cannot be used as a profile name.
+
+Here is a minimal model file (`retail.yaml`) and its sibling profile file
+(`retail.profile.prod.yaml`) side by side:
+
+```yaml
+# retail.yaml
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: retail
+    deployments:
+      - name: bq_prod
+        target: bigquery.googleapis.com/projects/acme-prod/datasets/retail/propertyGraphs/retail
+        profile: prod
+    entities:
+      - name: orders
+        primary_key: [order_id]
+        fields:
+          - { name: order_id, datatype: Integer }
+          - { name: customer_id, datatype: Integer }
+          - { name: net_total, datatype: Decimal }
+      - name: customer
+        primary_key: [customer_id]
+        fields:
+          - { name: customer_id, datatype: Integer }
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+```
+
+```yaml
+# retail.profile.prod.yaml
+name: prod
+entities:
+  - name: orders
+    source: bigquery.googleapis.com/projects/acme-prod/datasets/retail/tables/orders
+    primary_key: [o_id]
+    fields:
+      - { name: order_id, expression: o_id }
+      - { name: customer_id, expression: o_cust_id }
+      - { name: net_total, expression: "o_subtotal - o_discount" }
+  - name: customer
+    source: bigquery.googleapis.com/projects/acme-prod/datasets/retail/tables/customers
+    primary_key: [c_id]
+    fields:
+      - { name: customer_id, expression: c_id }
+relationships:
+  - name: orders_to_customer
+    from_columns: [o_cust_id]
+    to_columns: [c_id]
+```
+
+Deploy `bq_prod` (and publish `retail.yaml` and `retail.profile.prod.yaml` to
+Knowledge Catalog) with:
+
+```bash
+kcmd push --deployment bq_prod
+```
+
+Beside a profile file, the model file (`retail.yaml`) must load on its own
 first. A half-bound join in it stops the push even when the profile supplies
 the missing join columns, and so does a rejected source the profile replaces.
 
 ## Example — one model, an analytical and an operational binding
 
-The logical model declares the business and nothing physical: no sources, no
-columns, no deployment target. `lifetimeValue` and `availableCredit` are both
+The logical model declares the business and its named `deployments`, with no
+inline table or column bindings. `lifetimeValue` and `availableCredit` are both
 declared here, though no single store carries both:
 
 ```yaml
@@ -298,6 +378,13 @@ declared here, though no single store carries both:
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
+    deployments:
+      - name: analytical
+        target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
+        profile: analytical
+      - name: operational
+        target: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/graphs/commerce
+        profile: operational
     entities:
       - name: Customer
         fields:
@@ -343,29 +430,26 @@ on orders but does not own them, and cancelling one means calling the service
 that does.
 
 ```yaml
-# commerce.profiles/analytical.yaml — BigQuery bindings
-version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployment_target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
-    entities:
-      - name: Customer
-        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
-        primary_key: [c_custkey]
-        fields:
-          - { name: key,             expression: c_custkey }
-          - { name: name,            expression: c_name }
-          - { name: lifetimeValue,   expression: c_ltv }
-        fields_exclude: [availableCredit]    # the warehouse holds no live credit
-      - name: Order
-        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
-        primary_key: [o_orderkey]
-        fields:
-          - { name: key,         expression: o_orderkey }
-          - { name: customerKey, expression: o_custkey }
-          - { name: orderDate,   expression: o_orderdate }
-    relationships:
-      - { name: PlacedBy, from_columns: [o_custkey], to_columns: [c_custkey] }
+# commerce.profile.analytical.yaml — BigQuery bindings
+name: analytical
+entities:
+  - name: Customer
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    primary_key: [c_custkey]
+    fields:
+      - { name: key,             expression: c_custkey }
+      - { name: name,            expression: c_name }
+      - { name: lifetimeValue,   expression: c_ltv }
+    fields_exclude: [availableCredit]    # the warehouse holds no live credit
+  - name: Order
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    primary_key: [o_orderkey]
+    fields:
+      - { name: key,         expression: o_orderkey }
+      - { name: customerKey, expression: o_custkey }
+      - { name: orderDate,   expression: o_orderdate }
+relationships:
+  - { name: PlacedBy, from_columns: [o_custkey], to_columns: [c_custkey] }
 ```
 
 The operational binding points the same model at the live Spanner store. Spanner
@@ -376,47 +460,44 @@ the order rows, so it overrides `CancelOrder` to write them directly instead of
 calling out:
 
 ```yaml
-# commerce.profiles/operational.yaml — Spanner bindings
-version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/graphs/commerce
-    entities:
-      - name: Customer
-        source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
-        primary_key: [CustomerId]
-        fields:
-          - { name: key,             expression: CustomerId }
-          - { name: name,            expression: FullName }
-          - { name: availableCredit, expression: AvailableCredit }
-        fields_exclude: [lifetimeValue]      # the live store holds no modeled value
-      - name: Order
-        source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
-        primary_key: [OrderId]
-        fields:
-          - { name: key,         expression: OrderId }
-          - { name: customerKey, expression: CustomerId }
-          - { name: orderDate,   expression: OrderDate }
-    relationships:
-      - { name: PlacedBy, from_columns: [CustomerId], to_columns: [CustomerId] }
-    actions:
-      - name: CancelOrder
-        # Overrides the model's default: this store holds the rows, so the
-        # write is DML against them. Only the executor is restated; what the
-        # action takes and what it changes stay in the logical model.
-        executor:
-          sql:
-            statements:
-              - UPDATE Orders SET Status = 'CANCELLED' WHERE OrderId = @order
-    metrics_exclude: "*"                     # Spanner Graph has no measures
+# commerce.profile.operational.yaml — Spanner bindings
+name: operational
+entities:
+  - name: Customer
+    source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
+    primary_key: [CustomerId]
+    fields:
+      - { name: key,             expression: CustomerId }
+      - { name: name,            expression: FullName }
+      - { name: availableCredit, expression: AvailableCredit }
+    fields_exclude: [lifetimeValue]      # the live store holds no modeled value
+  - name: Order
+    source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
+    primary_key: [OrderId]
+    fields:
+      - { name: key,         expression: OrderId }
+      - { name: customerKey, expression: CustomerId }
+      - { name: orderDate,   expression: OrderDate }
+relationships:
+  - { name: PlacedBy, from_columns: [CustomerId], to_columns: [CustomerId] }
+actions:
+  - name: CancelOrder
+    # Overrides the model's default: this store holds the rows, so the
+    # write is DML against them. Only the executor is restated; what the
+    # action takes and what it changes stay in the logical model.
+    executor:
+      sql:
+        statements:
+          - UPDATE Orders SET Status = 'CANCELLED' WHERE OrderId = @order
+metrics_exclude: "*"                     # Spanner Graph has no measures
 ```
 
 Each binding states the key columns and the `PlacedBy` join columns in its own
 store's column names. Neither changes the labels or the metric definitions;
-those live once in the logical model. `kcmd push
---profile operational` merges the operational bindings and deploys to their
-Spanner backend, while `--profile analytical` deploys to BigQuery — each profile
-picks its own backend. The two bindings answer different parts of the same model:
+those live once in the logical model. `kcmd push --deployment operational`
+applies the operational bindings and deploys to their Spanner backend, while
+`--deployment analytical` deploys to BigQuery — each deployment picks its target
+and profile. The two bindings answer different parts of the same model:
 
 - `order_count` depends only on `Order.key`, so it is available analytically.
   The operational profile deploys to Spanner, whose graphs have no measures, so
@@ -456,8 +537,12 @@ picks its own backend. The two bindings answer different parts of the same model
 - An entity or field named only in the logical model keeps its declaration and
   any inline column binding; a profile element whose `name` is not in the
   logical model is rejected.
-- Scalars — `source`, `expression`, and `deployment_target` in the older
-  layout — **replace**.
+- Scalars — `source` and `expression` — **replace**. A profile field's
+  `expression` can take any form a model field expression can: a bare column
+  name (`expression: c_name`), a SQL computation string (`expression: "o_subtotal - o_discount"`),
+  or a `dialects` list (`expression: { dialects: [{ dialect: BIGQUERY, expression: ... }] }`)
+  using one of the supported SQL dialects (see
+  [model spec §2.5](model_spec.md#25-expressions)).
 - A field the profile does not name **keeps** the model file's binding, which
   push accepts only when that binding reads no column. A field
   in `fields_exclude` is **unbound** under that profile. There is no `unbound`
@@ -477,58 +562,41 @@ picks its own backend. The two bindings answer different parts of the same model
 ## Command line
 
 ```bash
-kcmd push                                 # deploy the graph with the default binding + Knowledge Catalog
-kcmd push --profile analytical            # deploy the graph with the analytical bindings (BigQuery target)
-kcmd push --profile operational           # deploy the graph with the operational bindings (Spanner target)
-kcmd push --all-profiles                  # deploy the graph once per binding profile
-kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
-kcmd push --no-profile                    # publish only to Knowledge Catalog, deploy no graph
+kcmd push                                 # publish to Knowledge Catalog + deploy every deployment in deployments
+kcmd push --deployment analytical         # publish to Knowledge Catalog + deploy only the analytical deployment
+kcmd push --deployment operational        # publish to Knowledge Catalog + deploy only the operational deployment
+kcmd push --no-deployment                 # publish to Knowledge Catalog only, deploy no graph
 kcmd profiles                             # list profiles, their resolved sources, what each cannot answer, and what push would reject
+kcmd profiles --profile analytical        # inspect a single profile
+kcmd skills-generate --profile analytical # generate the agent skill under the analytical profile
 ```
 
-`--profile` chooses **which physical binding** feeds the graph, and that binding's
-`deployment_target` selects **which graph backend** the model deploys to
-(BigQuery Graph or Spanner Graph). You never name the backend on the command line
-— picking the profile is picking the backend. The binding-profile axis (how many
-profiles the graph deploys for: `--no-profile`, the default, `--profile`, or
-`--all-profiles`) is separate from the **Knowledge Catalog** axis (`--no-kc`).
-Both default on; `--no-profile --no-kc` together is an error (nothing to deploy).
-
-**Deploying to more than one binding at once.** `--all-profiles` deploys the graph
-once for every defined profile — for example the analytical (BigQuery) and
-operational (Spanner) graphs in a single run. Knowledge Catalog still records one
-canonical view of the logical model — the default binding — so a bare `kcmd push`
-and a `kcmd push --all-profiles` write the same catalog entries and differ only in
-how many graphs deploy. A [push in two phases](reference.md#push) records the
-model file as written, whatever `default_profile` names.
-
-There is always a **default binding profile**: whatever `default_profile` names,
-or — if it is unset — the model's inline bindings (the implicit `default`
-profile). Because `default` names those inline bindings, it is reserved: a
-`<model>.profiles/default.yaml` is rejected rather than silently ignored. Set the
-default so a bare `kcmd push` in CI does the right thing, in `catalog.yaml`:
-
-```yaml
-scope: semantic-model.acme.us.commerce_eg
-default_profile: analytical
-```
+Each entry in `deployments` names a `target` (which selects BigQuery Graph,
+Spanner Graph, or AlloyDB) and optionally a `profile` (defaulting to the model
+file's inline `default` bindings). You never name the backend on the command
+line — picking the deployment picks both the target and its binding profile
+(see [Reference → push](reference.md#push) for `--deployment` and
+`--no-deployment`). Because `default` names
+the model file's inline bindings, it is reserved: a `<model>.profile.default.yaml`
+file is rejected rather than silently ignored.
 
 ## Validation
 
 Profiles are checked as part of push; `--validate-only` runs the checks and
 writes nothing.
 
-- **Unknown profile** — `--profile stg` when `stg` is not defined fails and lists
-  the profiles that are.
-- **Missing or ambiguous target** — a profile that deploys a graph must resolve
-  to one `deployment_target`.
+- **Unknown deployment or profile** — `--deployment stg` when `stg` is not in
+  `deployments`, or a deployment whose `profile` is not declared, fails and
+  lists the declared names.
+- **Duplicate or invalid target** — each entry in `deployments` must name a
+  distinct, valid deployment target resource name.
 - **Declaration override** — a profile that sets a `label`, `dimension`,
   `ai_context`, a `metric`, or a relationship's `from`/`to` is rejected, naming
   the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
 - **Incomplete profile** — a push checks every named profile of each model it
-  deploys or publishes, whichever binding it deploys: each profile file, and
+  deploys or publishes, whichever deployment it deploys: each profile file, and
   each profile a vanilla model carries in its `GOOGLE` block. A profile that
   leaves an entity without a source or a relationship without join columns
   fails the push.
@@ -556,11 +624,11 @@ writes nothing.
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is
   caught at deploy, when BigQuery rejects the generated graph.
-- **Rejected DML** — where this profile deploys to Spanner or BigQuery, every
+- **Rejected DML** — where a deployment targets Spanner or BigQuery, every
   statement in an action's `sql` executor is planned against that store without
   running it, and a store that refuses one fails the push and quotes back why.
   The profile is what picks the store, so the same statement can pass under one
-  profile and fail under another. A profile deploying to **AlloyDB** is the
+  profile and fail under another. A deployment targeting **AlloyDB** is the
   exception: its statements are checked for shape but never sent anywhere, so
   nothing confirms the names in them. See
   [statements use your database names](actions.md#statements-use-your-database-names).
@@ -578,23 +646,28 @@ writes nothing.
 
 ## Notes
 
-**The deployment target is a first-class key.** Under the extended
-`0.2.0.dev0/google` profile — the version these binding examples use —
-`deployment_target:` is a native model key, so a profile in the older layout
-sets it readably. The
-vanilla `0.2.0.dev0` profile has no native key for it; there the target rides in a
-`GOOGLE` `custom_extensions` block instead. The two are the same target written
-two ways, chosen by the document's `version` (see [model
+**The `deployments` list is a first-class key.** Under the extended
+`0.2.0.dev0/google` flavor — the version these binding examples use —
+`deployments:` is a native model key. The vanilla `0.2.0.dev0` flavor has no
+native key for it; there `deployments` and `profiles` ride in a `GOOGLE`
+`custom_extensions` block instead. The two are the same declarations written two
+ways, chosen by the document's `version` (see [model
 spec](model_spec.md#1-status-and-baseline)).
 
-**Bare-string expressions.** A field's `expression` may be written as a one-line
-string (`expression: c_name`) instead of the full per-dialect object. The two
-forms mean the same thing and expand to the same wire representation.
+**Bare-string and per-dialect expressions.** A profile field's `expression` can
+take any form a model field expression can: a bare column name (`expression: c_name`),
+a SQL computation string (`expression: "o_subtotal - o_discount"`), or a
+`dialects` list (`expression: { dialects: [{ dialect: ..., expression: ... }] }`).
+In a model file, a plain-string `expression` is allowed only in
+`0.2.0.dev0/google`; in a profile binding (whether a sibling profile file or a
+vanilla `GOOGLE` block profile), a plain-string `expression` is accepted in
+either flavor and is read as a single `ANSI_SQL` entry.
 
-**Dialect comes from the store.** A profile carries no SQL dialect. The dialect
-follows from the store a profile binds to; the engine lowers each `expression` to
-that store's query language when it runs. A profile chooses the data, and the
-execution engine chooses the dialect.
+**Dialect comes from the store.** A profile carries no top-level SQL dialect.
+The dialect follows from the store a profile binds to; the engine selects the
+matching dialect entry (or `ANSI_SQL`) from each `expression` and lowers it to
+that store's query language when it runs (see
+[model spec §2.5](model_spec.md#25-expressions) for the supported SQL dialects).
 
 **An action's statements reach the store as written.** Lowering covers a
 field's `expression` and stops there. kcmd passes a `sql` executor's statements
