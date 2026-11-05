@@ -3436,8 +3436,7 @@ export function oldSourceForm(source: string): string|undefined {
 export const NO_SPACE =
     "a source can hold a space in the table's own name, but not at its end";
 
-// Why a source or a deployment target that whitespace begins or ends is not
-// accepted.
+// Why a source or a deployment target with whitespace at either end is refused.
 export const AROUND_WHITESPACE = 'begins or ends with whitespace; remove it';
 
 // The resource name of a table in each Google Cloud service a source can
@@ -3624,11 +3623,8 @@ function quotePairs(text: string): Array<[number, number]> {
 }
 
 // True when `source` holds whitespace outside a pair of backticks or double
-// quotes, which marks it as a query. A table's own name may hold a space
-// anywhere but at its end, so such a space in the last segment of a
-// table's resource name does not count, in each form that names the table
-// through it: its resource name, its resource URI, its Knowledge Catalog name
-// and its entry name in a system entry group.
+// quotes, which marks it as a query. A space in the table's own name does not
+// count (see withoutTableNameSpaces).
 export function hasUnquotedWhitespace(source: string): boolean {
   const text = withoutTableNameSpaces(source);
   let from = 0;
@@ -3639,9 +3635,9 @@ export function hasUnquotedWhitespace(source: string): boolean {
   return /\s/.test(text.slice(from));
 }
 
-// `source` without the spaces in its last segment when it names a table in a
-// form hasUnquotedWhitespace lets hold them, and that segment does not end
-// with whitespace.
+// `source` with the spaces removed from the table's own name, the last segment
+// of a resource name, resource URI, system entry name or catalog name. A name
+// that ends with whitespace is left as it is.
 function withoutTableNameSpaces(source: string): string {
   const named = RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
       !!source.match(ENTRY_NAME)?.[1].startsWith('@');

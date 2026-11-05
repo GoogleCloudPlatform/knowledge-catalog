@@ -3254,7 +3254,7 @@ describe('strict entity sources', () => {
     datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
   });
 
-  test('a source that whitespace begins or ends is rejected', () => {
+  test('a source with whitespace at either end is rejected', () => {
     expect(() => loadSource(' bigquery.googleapis.com/projects/p/datasets/d/tables/orders')).toThrow(
       "entity 'orders': source ' bigquery.googleapis.com/projects/p/datasets/d/tables/orders' " +
       'begins or ends with whitespace; remove it.');

@@ -527,9 +527,9 @@ function validateObjectNames(
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
+  const word = entityWord(doc.targetVersion);
   for (const ds of doc.datasets) {
     validateName('entity', ds.name);
-    const word = entityWord(doc.targetVersion);
     const dsScope = typeof ds.name === 'string' ? `${word} '${ds.name}'` : word;
     validateRecords('field', asRecords(ds.fields), dsScope);
   }
@@ -1625,16 +1625,15 @@ function validateOssieConversion(
 
   // 2. Reject abstract entities and require every concrete entity and field to
   // be bound.
-  const word = entityWord(doc.targetVersion);
   for (const e of model.entities) {
     if (e.abstract) {
       doc.errors.push(
-          `${prefix}: ${word} '${e.name}' is 'abstract', which version ` +
+          `${prefix}: dataset '${e.name}' is 'abstract', which version ` +
           `'${OSSIE_VERSION}' does not support.`);
       continue;
     }
     if (!e.authoredSource && !e.dataSource) {
-      doc.errors.push(`${prefix}: ${word} '${e.name}' has no 'source'.`);
+      doc.errors.push(`${prefix}: dataset '${e.name}' has no 'source'.`);
     }
     for (const f of e.fields) {
       if (!isFieldBound(f)) {

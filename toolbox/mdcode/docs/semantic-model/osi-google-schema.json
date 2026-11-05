@@ -600,7 +600,7 @@
               "$ref": "#/$defs/ProfileName"
             }
           ],
-          "description": "The profile whose bindings the deployment uses: 'default', the model file's own bindings, or a profile the model declares."
+          "description": "The profile whose bindings the deployment uses. 'default' means the model file's own bindings; any other value names a profile the model declares."
         }
       }
     },
