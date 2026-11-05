@@ -373,6 +373,11 @@ const MODEL_CASES: Case[] = [
     [2000, 2001].map((n): Case => [
       `a ${kind} description of ${n} characters`,
       base(m => { partOf(m, kind).description = 'd'.repeat(n); }), n === 2000])),
+  ['a model description of 1001 emoji', base(m => { m.description = '\u{1F600}'.repeat(1001); }),
+    true, 'Dataplex and push count UTF-16 code units; JSON Schema counts code points'],
+  ['a model description of 2000 characters with a space at either end',
+    base(m => { m.description = ` ${'d'.repeat(2000)} `; }), false,
+    'push counts the text it stores, without the whitespace around it'],
 
   // Names.
   ...([
