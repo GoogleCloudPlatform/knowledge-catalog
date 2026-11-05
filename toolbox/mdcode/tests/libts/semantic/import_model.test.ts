@@ -7,6 +7,8 @@ import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
+import {sourceDialects} from '../../../src/libts/semantic/source_dialect';
+import {entryDenied} from '../gcp/location_responses';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
@@ -261,8 +263,8 @@ describe('conversion, strict mode, and translation', () => {
           "field 'orders.order_id'", "metric 'total_orders'", "metric 'total_orders'",
           "field 'orders.order_id'",
         ]);
-        // On a Spanner table, whose dialect import does not read, the vendor
-        // field warns and the metric's double-quoted names do not.
+        // On a Spanner table whose dialect no lookup read, the vendor field
+        // warns and the metric's double-quoted names do not.
         const onSpanner = await importSemanticModelYaml(
             raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
         expect(onSpanner.errors).toEqual([]);
@@ -674,22 +676,102 @@ describe('profile checks', () => {
     expect(res.warnings).toEqual(warnings);
   });
 
-  // Import does not read a Spanner database's dialect, which push reads, so a
-  // Spanner table's field needs a text in either dialect or in ANSI_SQL.
-  test('holds a field on a Spanner table to no one dialect, in either input mode', async () => {
-    for (const input of [{}, strict]) {
-      for (const dialect of ['POSTGRES', 'SPANNER', 'SNOWFLAKE']) {
-        const res = await importSemanticModelYaml(
-            model(AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`),
-                  SPANNER_TABLE),
-            {...input, flavor: 'google'});
-        expect({dialect, errors: res.errors, warnings: res.warnings}).toEqual({
-          dialect, errors: [], warnings: dialect !== 'SNOWFLAKE' ? [] :
-              ["field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the " +
-               "Spanner table of entity 'orders' cannot run it"],
-        });
-      }
-    }
+  // Push's lookup, reading each Cloud SQL or third-party entry as `entry` and
+  // each Spanner database's dialect as `spanner`. Without them, each read gets
+  // a 403.
+  const lookup = ({entry, spanner}: {entry?: object; spanner?: string}) =>
+      (texts: string[]) => sourceDialects(texts, {
+        lookupEntry: async (_p, _l, name) => entry ? {status: 200, result: entry} : entryDenied(name),
+      }, {spanner: {getDatabase: async () => spanner ?
+          {status: 200, result: {databaseDialect: spanner}} : {status: 403, message: 'Permission denied.'}}});
+  const SNOWFLAKE_ENTRY = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+  const SQLSERVER = lookup({entry: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-sqlserver-table'}});
+  // Push's refusal of field amount, in the model file `doc`, on a `dialect` table.
+  const NO_TEXT = (dialect: string) => (doc: string) =>
+      `field 'orders.amount' in model 'retail' (${doc}) has no expression for ${dialect} or ` +
+      `ANSI_SQL, and the model file binds entity 'orders' to a ${dialect} source.`;
+  const SKIPPED = 'Import skipped the checks that need its dialect.';
+  // [label, source, the dialect of amount's one text, the lookup, push's
+  // refusal, other warnings]. The refusal is an error under --input
+  // first-party and a warning otherwise.
+  test.each([
+    ['refuses a POSTGRES field on a GoogleSQL Spanner database',
+     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'GOOGLE_STANDARD_SQL'}), NO_TEXT('SPANNER'), []],
+    ['accepts a POSTGRES field on a PostgreSQL-dialect Spanner database',
+     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'POSTGRESQL'}), undefined, []],
+    ['refuses a POSTGRES field on a Cloud SQL for SQL Server table',
+     `${CLOUDSQL_PREFIX}/tables/orders`, 'POSTGRES', SQLSERVER, NO_TEXT('SQLSERVER'), []],
+    ['refuses a POSTGRES field on a Snowflake table',
+     SNOWFLAKE_ENTRY, 'POSTGRES', lookup({entry: {fullyQualifiedName: 'snowflake:acme.retail.public.orders'}}),
+     NO_TEXT('SNOWFLAKE'), []],
+    ['refuses an entry that gives no dialect, as push does',
+     SNOWFLAKE_ENTRY, 'SNOWFLAKE', lookup({entry: {}}),
+     () => `source '${SNOWFLAKE_ENTRY}': kcmd cannot tell the table's SQL dialect from its ` +
+         'Knowledge Catalog entry, which has neither a fullyQualifiedName nor an ' +
+         "entrySource.system. kcmd reads the prefix of the entry's fullyQualifiedName " +
+         '(snowflake:, databricks:, mysql:, postgresql: or sqlserver:), or entrySource.system ' +
+         'when there is no fullyQualifiedName.', []],
+    ['warns about a Spanner database it cannot read, and skips the checks that need its dialect',
+     SPANNER_TABLE, 'SNOWFLAKE', lookup({}), undefined,
+     [`source '${SPANNER_TABLE}': kcmd reads its Spanner database's SQL dialect, and could not ` +
+      `read database acme/i/db: Permission denied. ${SKIPPED}`,
+      "field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the Spanner " +
+      "table of entity 'orders' cannot run it"]],
+    ['warns about each table when the lookup cannot start',
+     SPANNER_TABLE, 'POSTGRES', () => { throw new Error('no credentials'); }, undefined,
+     [`source '${SPANNER_TABLE}': kcmd could not read its dialect: no credentials. ${SKIPPED}`]],
+  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[]]>)(
+      '%s', async (_, source, dialect, readDialects, refusal, warnings) => {
+        const input = model(AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`), source);
+        const firstParty = await importSemanticModelYaml(
+            input, {...strict, flavor: 'google', readDialects});
+        expect([firstParty.errors, firstParty.warnings])
+            .toEqual([refusal ? [refusal('sales')] : [], warnings]);
+        const thirdParty = await importSemanticModelYaml(input, {flavor: 'google', readDialects});
+        expect([thirdParty.errors, thirdParty.warnings])
+            .toEqual([[], [...refusal ? [refusal('retail')] : [], ...warnings]]);
+      });
+
+  test('refuses a Spanner deployment on a PostgreSQL-dialect database', async () => {
+    const res = await importSemanticModelYaml(
+        model(`    deployments: [{name: g, target: ${SPANNER_TABLE.replace('tables/orders', 'graphs/g')}}]\n`,
+              SPANNER_TABLE),
+        {...strict, flavor: 'google', readDialects: lookup({spanner: 'POSTGRESQL'})});
+    expect(res.errors).toEqual([
+      "[sales] deployment 'g': database acme/i/db has the PostgreSQL dialect, and Spanner " +
+      'creates no property graph in a PostgreSQL-dialect database. Remove the deployment; push ' +
+      'still publishes the model to Knowledge Catalog.',
+    ]);
+  });
+
+  // The repair step removes a metric with no entity whose expression reaches
+  // several entities. A GoogleSQL database reads "customers" as text, so the
+  // metric reaches orders alone.
+  test('repairs an unanchored metric in the dialect it reads', async () => {
+    const input = model(AMOUNT('amount') + '      - name: customers\n' +
+        `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
+        '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n' +
+        `    metrics:\n      - {name: total, expression: 'SUM(orders.amount) + COUNT(DISTINCT "customers".id)'}\n`,
+        SPANNER_TABLE);
+    const metrics = async (readDialects: any) => (await importSemanticModelYaml(
+        input, {flavor: 'google', readDialects})).files.slice(0, 1).flatMap(
+        f => loadModels(f.content).models[0].metrics.map(m => m.name));
+    expect(await metrics(lookup({spanner: 'GOOGLE_STANDARD_SQL'}))).toEqual(['total']);
+    expect(await metrics(lookup({}))).toEqual([]);
+  });
+
+  test('reads the dialect of a table a profile file binds', async () => {
+    const profileFiles = [{fileName: 'sales.profile.pg.yaml', content: 'name: pg\nentities:\n' +
+        `  - name: orders\n    source: ${CLOUDSQL_PREFIX}/tables/orders\n    primary_key: [order_id]\n` +
+        '    fields:\n      - {name: order_id, expression: order_id}\n' +
+        AMOUNT('{dialects: [{dialect: POSTGRES, expression: amount}]}').slice(4)}];
+    const res = await importSemanticModelYaml(model(AMOUNT('amount')), {
+      ...strict, flavor: 'google', profileFiles, readDialects: SQLSERVER,
+    });
+    expect(res.errors).toEqual([
+      "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
+      "SQLSERVER or ANSI_SQL, and this profile's sources are SQLSERVER",
+    ]);
   });
 
   test('suggests no import for a field its own --transpile leaves untranslated', async () => {

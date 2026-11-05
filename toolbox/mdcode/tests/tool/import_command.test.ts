@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import * as kcmd from '../../src/libts';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as engine from '../../src/libts/semantic/import_model';
 import {Sources} from '../../src/libts/source';
 import {ImportCommandOptions, importModel} from '../../src/tool/commands';
@@ -126,7 +127,7 @@ describe('kcmd import', () => {
       expect(call.mock.calls).toEqual(
           [[model(), {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
-            listEntries: expect.any(Function),
+            listEntries: expect.any(Function), readDialects: expect.any(Function),
           }]]);
     });
   }
@@ -230,7 +231,7 @@ describe('kcmd import', () => {
   });
 
   // The command lists the entry group with the Dataplex client, which follows
-  // each page.
+  // each page, and then reads the entry's dialect as push does.
   test('completes a bare name from an entry on a later page of the --source-prefix entry group', async () => {
     const group = 'projects/acme/locations/us/entryGroups/sf';
     const page = (id: string, nextPageToken?: string) => ({
@@ -241,15 +242,30 @@ describe('kcmd import', () => {
         nextPageToken,
       },
     });
+    const lookup = 'projects/acme/locations/us:lookupEntry';
     const get = spyOn(CatalogClient.prototype as any, '_get').mockImplementation(
-        async (_: string, params: any) => params.pageToken ? page('orders') : page('items', 'T'));
+        async (name: string, params: any) => name === lookup ?
+            {status: 200, result: {fullyQualifiedName: 'snowflake:acme.retail.public.orders'}} :
+            params.pageToken ? page('orders') : page('items', 'T'));
     write('retail.yaml', model('public.orders'));
     expect(await importModel('retail.yaml', {flavor: 'ossie', sourcePrefix: group, out: 'out'}))
         .toBe(0);
-    expect(get.mock.calls.map(([name, params]: any) => [name, params.pageToken]))
-        .toEqual([[`${group}/entries`, undefined], [`${group}/entries`, 'T']]);
+    expect(get.mock.calls.map(([name, params]: any) => [name, params.pageToken ?? params.entry]))
+        .toEqual([[`${group}/entries`, undefined], [`${group}/entries`, 'T'],
+                  [lookup, `${group}/entries/orders`]]);
     expect(fs.readFileSync(path.join(dir, 'out', 'retail.yaml'), 'utf8'))
         .toContain(`source: ${group}/entries/orders\n`);
+  });
+
+  test('reads a Spanner database\'s dialect as push does', async () => {
+    const get = spyOn(SpannerClient.prototype, 'getDatabase')
+                    .mockResolvedValue({status: 200, result: {databaseDialect: 'POSTGRESQL'}});
+    write('retail.yaml', model('spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/orders')
+                             .replace('BIGQUERY', 'POSTGRES'));
+    expect(await importModel('retail.yaml', {flavor: 'ossie', input: 'first-party', out: 'out'}))
+        .toBe(0);
+    expect(get.mock.calls).toEqual([['acme', 'i', 'db']]);
+    expect([errors, warnings]).toEqual([[], []]);
   });
 
   // A profile file the import does not write would stay beside the model:

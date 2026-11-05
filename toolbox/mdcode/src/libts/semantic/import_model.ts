@@ -7,11 +7,12 @@ import {checkProfileFileName, ProfileFileError, profileNameError, profileParseEr
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {declaredProfiles, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
-import {tableFqnParts} from './source_dialect';
+import {sentence} from './parameters';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
@@ -37,6 +38,12 @@ export interface ImportSemanticModelOptions {
    * Required when `sourcePrefix` names an entry group.
    */
   listEntries?: EntryLister;
+  /**
+   * Reads the dialect of each Cloud SQL, Spanner and third-party table the
+   * files `texts` name, as `sourceDialects` does for push. Without it, the
+   * dialect of each such table is unknown.
+   */
+  readDialects?: (texts: string[]) => Promise<SourceDialects>;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -59,7 +66,7 @@ export interface ImportSemanticModelOptions {
   fileName?: string;
 }
 
-/** The one catalog call import makes. */
+/** Lists the entries of an entry group. */
 export type EntryLister =
     (project: string, location: string, entryGroup: string) =>
         AsyncIterable<{name: string; fullyQualifiedName?: string}>;
@@ -1027,11 +1034,53 @@ function repairMetric(
 }
 
 /**
+ * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
+ * third-party table the repaired model and its profile files name, as push
+ * reads them. A read that fails is one warning per table, and that table's
+ * dialect stays unknown. An entry that was read and gives no dialect is
+ * reported as push's other refusals are.
+ */
+async function readSourceDialects(
+    doc: ImportDocument,
+    opts: ImportSemanticModelOptions): Promise<DialectLoad> {
+  // The repaired sources are in `doc.root`, and JSON is YAML.
+  const texts = [
+    JSON.stringify(doc.root),
+    ...(opts.profileFiles ?? []).map(f => f.content),
+  ];
+  const sources = sourcesToLookUp(texts);
+  if (!opts.readDialects || !sources.length) return {};
+  const skipped = 'Import skipped the checks that need its dialect.';
+  let got: SourceDialects;
+  try {
+    got = await opts.readDialects(texts);
+  } catch (err: any) {
+    // The lookup could not start, for example with no credentials. gcloud
+    // prints the details, so each warning keeps the first line.
+    const why = String(err?.message ?? err).split('\n')[0];
+    for (const s of sources) {
+      doc.warnings.push(`${
+          sentence(`source '${s}': kcmd could not read its dialect: ${why}`)} ${
+          skipped}`);
+    }
+    return {};
+  }
+  for (const e of got.errors) {
+    if (got.unread.includes(e)) doc.warnings.push(`${sentence(e)} ${skipped}`);
+    else doc.warnOrError(e);
+  }
+  return {sourceDialects: got.dialects, sourceDatabases: got.databases};
+}
+
+/**
  * Phase 3 (Repair): Repairs third-party constructs in-place on `doc` (pruning
  * extra models, repairing datasets and their fields, pruning unanchored
- * metrics, and truncating descriptions > 2,000 chars).
+ * metrics, and truncating descriptions > 2,000 chars). Returns the source
+ * dialects it reads after repairing the datasets.
  */
-function repairDocument(doc: ImportDocument): void {
+async function repairDocument(
+    doc: ImportDocument,
+    opts: ImportSemanticModelOptions): Promise<DialectLoad> {
   // 1. Prune extra models after `semantic_model[0]` because `kcmd` allows only
   // a single model per document, and cap the model's `description` at 2,000
   // characters (`MAX_ENTRY_DESCRIPTION`).
@@ -1053,19 +1102,25 @@ function repairDocument(doc: ImportDocument): void {
     repairDataset(ds, doc);
   }
 
-  // 3. Infer the model's source dialect from its repaired datasets via
-  // `sourcesDialect`, and repair or prune each metric (`repairMetric`). The
-  // pruning infers each metric's entity, so it reads an ANSI_SQL text whose
-  // dialect no lookup gave as generic SQL, as the loader's inference does.
+  // 3. Read the source dialects, infer the model's source dialect from its
+  // repaired datasets via `sourcesDialect`, and repair or prune each metric
+  // (`repairMetric`). The pruning infers each metric's entity, so it reads an
+  // ANSI_SQL text whose dialect no lookup gave as generic SQL, as the loader's
+  // inference does.
+  const load = await readSourceDialects(doc, opts);
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
   const impliedDialect = sourcesDialect({
-    entities: doc.datasets.map(
-        ds => ({
-          abstract: Boolean(ds.abstract),
-          authoredSource: typeof ds.source === 'string' ? ds.source : undefined,
-          dataSource: '',
-        })),
+    entities: doc.datasets.map(ds => {
+      const source = typeof ds.source === 'string' ? ds.source : undefined;
+      const key = source && dialectLookupKey(source.trim());
+      return {
+        abstract: Boolean(ds.abstract),
+        authoredSource: source,
+        dataSource: '',
+        sourceDialect: key ? load.sourceDialects?.get(key) : undefined,
+      };
+    }),
   }) ?? undefined;
   doc.metrics = doc.metrics.filter(
       mt => repairMetric(mt, entityNames, impliedDialect, doc));
@@ -1082,6 +1137,7 @@ function repairDocument(doc: ImportDocument): void {
       truncateDescription(b, rLabel, doc);
     }
   }
+  return load;
 }
 
 /**
@@ -1687,13 +1743,14 @@ function writeDocument(
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
  * push's local checks (`localChecks`) on the model file and each profile it
- * declares. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog can
- * store each aspect. It also gives push's warnings from the Knowledge Catalog
- * entry builder, the pruning and each graph, and leaves out push's notes.
+ * declares, with the source dialects in `load`. With KC_V2_ASPECTS on, it also
+ * checks that Knowledge Catalog can store each aspect. It also gives push's
+ * warnings from the Knowledge Catalog entry builder, the pruning and each
+ * graph, and leaves out push's notes.
  */
 async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
-    opts: ImportSemanticModelOptions): Promise<void> {
+    opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
@@ -1707,6 +1764,7 @@ async function validateOutputDocument(
           bindingOptional: true,
           warnUnacceptedSource: !doc.strict,
           fieldTextChecked: true,
+          sourceDialects: load.sourceDialects,
         });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
@@ -1761,7 +1819,7 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, {})) {
+               () => profiles, declaredBy, doc.warnings, load)) {
         doc.warnOrError(error);
       }
       return;
@@ -1782,7 +1840,7 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load: {},
+          load,
         },
         warn);
     // Push prints each error once.
@@ -1840,7 +1898,8 @@ export async function importSemanticModelYaml(
       doc, opts.profileFiles ?? [], opts.fileName ?? `${doc.model.name}.yaml`);
 
   // 2. Read the `--source-prefix` entry group, if needed, and run third-party
-  // repairs (which record errors in `strict` mode).
+  // repairs (which record errors in `strict` mode) and read the source
+  // dialects.
   const listError = await listEntryTables(doc);
   if (listError) {
     return {
@@ -1850,7 +1909,7 @@ export async function importSemanticModelYaml(
       errors: [...doc.errors, listError],
     };
   }
-  repairDocument(doc);
+  const load = await repairDocument(doc, opts);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
@@ -1877,7 +1936,7 @@ export async function importSemanticModelYaml(
                 problem.message}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
-    await validateOutputDocument(files, doc, opts);
+    await validateOutputDocument(files, doc, opts, load);
   }
   return {
     ok: doc.errors.length === 0,

@@ -1434,8 +1434,8 @@ export function sourcesDialect(model: {
 // Spanner table imply the dialect a lookup gave in `lookedUp`
 // (LoadOptions.sourceDialects): the one their catalog entry or Spanner
 // database gives. When every source is such a table and none was looked up,
-// as in `kcmd import`, the dialect is null: how their database reads an
-// ANSI_SQL text is not known, so a check reads no such text.
+// as when `kcmd import` cannot read them, the dialect is null: how their
+// database reads an ANSI_SQL text is not known, so a check reads no such text.
 function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
     string|null|undefined {
   if (sources.length &&

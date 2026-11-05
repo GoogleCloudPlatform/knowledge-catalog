@@ -400,14 +400,19 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, databases, errors} = await sourceDialects(
-      texts, new dataplex.CatalogClient(ctx),
-      {spanner: new SpannerClient(ctx)});
+  const {dialects, databases, errors} = await readDialects(ctx, texts);
   if (errors.length) {
     for (const e of errors) console.error(`Error: ${e}`);
     return null;
   }
   return {sourceDialects: dialects, sourceDatabases: databases};
+}
+
+// The dialect of each source the files `texts` write, read with the clients
+// push uses. Push, kcmd profiles and kcmd import all read dialects this way.
+function readDialects(ctx: context.ApiContext, texts: string[]) {
+  return sourceDialects(
+      texts, new dataplex.CatalogClient(ctx), {spanner: new SpannerClient(ctx)});
 }
 
 // Checks that every source in the inline bindings and named profiles of
@@ -2099,6 +2104,9 @@ export async function importModel(
                  fileName: f,
                  content: fs.readFileSync(path.join(dir, f), 'utf8'),
                }));
+  // One context, made on first use.
+  let ctx: context.ApiContext|undefined;
+  const api = () => ctx ??= context.ApiContext.default();
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
     sourcePrefix: options.sourcePrefix,
@@ -2106,11 +2114,13 @@ export async function importModel(
     strict: input === 'first-party',
     profileFiles,
     fileName: path.basename(file),
-    // Called only for a --source-prefix that names an entry group, so an
-    // import that reads no catalog needs no credentials.
+    // Each is called only when needed: for a --source-prefix that names an
+    // entry group, and for files that name a Cloud SQL, Spanner or third-party
+    // table. An import that needs neither needs no credentials.
     listEntries: (project, location, entryGroup) =>
-        new dataplex.CatalogClient(context.ApiContext.default())
-            .listEntries(project, location, entryGroup),
+        new dataplex.CatalogClient(api()).listEntries(
+            project, location, entryGroup),
+    readDialects: texts => readDialects(api(), texts),
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);

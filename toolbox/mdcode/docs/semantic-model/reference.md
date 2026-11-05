@@ -130,15 +130,14 @@ graph. Import leaves out push's notes. A profile file that does not parse is
 always an error. Under `--input first-party`, a message from these checks names
 the input file that holds what it reports. The checks that read a service stay
 with push, such as whether each source names a table Knowledge Catalog knows
-about. Push reads each Cloud SQL and third-party table's engine from its
-Knowledge Catalog entry, and import does not, so the checks that need the engine
-stay with push: whether a profile's tables in one Cloud SQL instance or one
-third-party system are in one database, whether a field has SQL in its table's
-dialect, and what an `ANSI_SQL` text reads when every table of the model file or
-profile is such a table. Import does not read a Spanner database's dialect
-either, so it treats a Spanner table the same way, and push alone refuses a
-Spanner deployment on a PostgreSQL-dialect database.
-Nothing is written
+about. For its checks, import reads only each table's dialect, as push does: a
+Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
+table's from its database. Import then judges each table in that dialect. When
+it cannot read a table's dialect, it warns with push's reason and skips the
+checks that need the dialect: whether a profile's tables in one Cloud SQL
+instance or one third-party system are in one database, whether a field has SQL
+in its table's dialect, and what an `ANSI_SQL` text reads when every table of
+the model file or profile is such a table. Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import
