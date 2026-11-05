@@ -511,6 +511,22 @@ semantic_model:
 });
 
 
+test('a table whose own name holds a space is readable', () => {
+  const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: item
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/order items
+        primary_key: [id]
+        fields: [{name: id, expression: id}]
+`);
+  const runtime = rt(models[0]);
+  expect(readableEntities(runtime, dialectFor(runtime.store)).map(r => r.table))
+      .toEqual(['`order items`']);
+});
+
+
 describe('a Spanner table in a named schema', () => {
   test('is named with its schema', () => {
     const runtime = rt({name: 'm', relationships: [], metrics: [], entities: [{

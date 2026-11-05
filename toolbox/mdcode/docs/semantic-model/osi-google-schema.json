@@ -191,39 +191,36 @@
     },
     "TableSource": {
       "type": "string",
-      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @. Neither form takes double quotes or backticks, or whitespace at either end.",
+      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @. Neither form takes double quotes or backticks. Only the table's own name, the last part of a resource name, may hold a space, and only between other characters.",
       "pattern": "^[^\"`]*$",
-      "not": {
-        "pattern": "^\\s|\\s$"
-      },
       "anyOf": [
         {
           "title": "BigQuery table",
-          "pattern": "^bigquery\\.googleapis\\.com/projects/[^/]+/datasets/[^/.]+/tables/[^/.]+$"
+          "pattern": "^bigquery\\.googleapis\\.com/projects/[^/\\s]+/datasets/[^/.\\s]+/tables/[^/.\\s]+(?: +[^/.\\s]+)*$"
         },
         {
           "title": "BigLake table",
-          "pattern": "^biglake\\.googleapis\\.com/projects/[^/]+/catalogs/[^/.]+/(namespaces|databases)/[^/.]+/tables/[^/.]+$"
+          "pattern": "^biglake\\.googleapis\\.com/projects/[^/\\s]+/catalogs/[^/.\\s]+/(namespaces|databases)/[^/.\\s]+/tables/[^/.\\s]+(?: +[^/.\\s]+)*$"
         },
         {
           "title": "Spanner table",
-          "pattern": "^spanner\\.googleapis\\.com/projects/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+          "pattern": "^spanner\\.googleapis\\.com/projects/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/tables/[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "AlloyDB table",
-          "pattern": "^alloydb\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/clusters/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+          "pattern": "^alloydb\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/clusters/[^/\\s]+/databases/[^/\\s]+/schemas/[^/\\s]+/tables/[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Cloud SQL for MySQL table",
-          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/tables/[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Cloud SQL for PostgreSQL or SQL Server table",
-          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/schemas/[^/\\s]+/tables/[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Table outside Google Cloud",
-          "pattern": "^projects/[^/]+/locations/[^/]+/entryGroups/[^/@][^/]*/entries/\\S+$"
+          "pattern": "^projects/[^/\\s]+/locations/[^/\\s]+/entryGroups/[^/@\\s][^/\\s]*/entries/\\S+$"
         }
       ]
     },

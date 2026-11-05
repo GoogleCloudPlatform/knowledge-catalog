@@ -264,14 +264,20 @@ type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 // The loader accepts an empty name or description here; the schema does not.
 const EMPTY_TEXT_BUG = 'b/577102892';
 
-// One valid and one malformed case per source form, the '//' URI form, and
-// a name with double quotes or backticks.
+// One valid and one malformed case per source form, a table name with a
+// space in each form, the '//' URI form, and a name with double quotes or
+// backticks. Only a resource name's last part may hold a space.
 function sourceCases(withSource: (source: string) => any): Case[] {
   return [
     ...(Object.keys(SOURCE) as (keyof typeof SOURCE)[]).flatMap((form): Case[] => [
       [`a ${form} source`, withSource(SOURCE[form]), true],
       [`a malformed ${form} source`, withSource(BAD_SOURCE[form]), false],
+      [`a ${form} source whose table name holds a space`,
+        withSource(SOURCE[form].replace(/orders$/, 'my orders')), form !== 'thirdParty'],
     ]),
+    ['a source whose dataset name holds a space',
+      withSource(SOURCE.bigquery.replace('datasets/d/', 'datasets/d x/')), false],
+    ['a source whose table name holds a tab', withSource(SOURCE.bigquery.replace('orders', 'my\torders')), false],
     ['a source with a leading //', withSource(`//${SOURCE.bigquery}`), false],
     ['a source with a leading space', withSource(` ${SOURCE.bigquery}`), false],
     ['a source with a trailing space', withSource(`${SOURCE.bigquery} `), false],

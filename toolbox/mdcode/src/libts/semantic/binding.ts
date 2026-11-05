@@ -26,8 +26,9 @@ export type QuoteFn = (identifier: string) => string;
 
 // The table `dataSource` names within its own database: its final dotted or
 // path segment, except that a Spanner table keeps its schema (`ops.stations`),
-// each part quoted. A query, which holds whitespace, is returned in
-// parentheses with a warning.
+// each part quoted. The table's own name may hold a space when the source
+// names where the table is too. A query, which holds any other whitespace, is
+// returned in parentheses with a warning.
 export function boundTable(
     dataSource: string, warnings: string[], context: string,
     quote: QuoteFn): string {
@@ -37,19 +38,22 @@ export function boundTable(
         `${context}: empty data source; the table reference will be invalid`);
     return quote('');
   }
-  if (/\s/.test(trimmed)) {
+  // Reduce a URI to its final path segment. A Spanner source keeps every
+  // dotted part of it, and any other source keeps the last.
+  const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
+  const parts = splitDotted(source);
+  const where = trimmed.slice(0, trimmed.lastIndexOf(parts[parts.length - 1]));
+  if (/[^\S ]/.test(trimmed) ||
+      (trimmed.includes(' ') && (!where || /\s/.test(where)))) {
     warnings.push(
         `${context}: data source '${
             trimmed}' looks like a query, not a table reference; ` +
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  // Reduce a URI to its final path segment. A Spanner source keeps every
-  // dotted part of it, and any other source keeps the last.
-  const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
-  const parts = splitDotted(source).map(unquote);
+  const names = parts.map(unquote);
   const kept =
-      sourceTableOf(trimmed)?.system === 'spanner' ? parts : parts.slice(-1);
+      sourceTableOf(trimmed)?.system === 'spanner' ? names : names.slice(-1);
   return kept.map(quote).join('.');
 }
 

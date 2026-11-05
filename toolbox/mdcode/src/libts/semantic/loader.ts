@@ -3412,9 +3412,9 @@ export function oldSourceForm(source: string): string|undefined {
   if (unquoted !== undefined) {
     const quotes = 'a name with quotes in it; resource names and entry ' +
         'names take no quotes';
-    return !unquoted ? quotes :
-        /\s/.test(unquoted) ? `${quotes}, and ${NO_SPACE}` :
-                              `${quotes}, so write '${unquoted}'`;
+    return !unquoted                       ? quotes :
+        hasUnquotedWhitespace(unquoted) ? `${quotes}, and ${NO_SPACE}` :
+                                          `${quotes}, so write '${unquoted}'`;
   }
   const name = asResourceName(source);
   if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
@@ -3426,13 +3426,14 @@ export function oldSourceForm(source: string): string|undefined {
       !(isAcceptedSource(source) || isAcceptedSource(built ?? ''))) {
     return undefined;
   }
-  return plain && /\s/.test(plain) ?
+  return plain && hasUnquotedWhitespace(plain) ?
       `a Knowledge Catalog name, and ${NO_SPACE}` :
       write;
 }
 
-// Why no name to write is given when that name would hold a space.
-export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
+// Why no name to write is given when that name would hold whitespace that
+// hasUnquotedWhitespace counts.
+export const NO_SPACE = "kcmd can write a space only inside a table's own name";
 
 // Why a source or a deployment target that whitespace begins or ends is not
 // accepted.
@@ -3622,14 +3623,36 @@ function quotePairs(text: string): Array<[number, number]> {
 }
 
 // True when `source` holds whitespace outside a pair of backticks or double
-// quotes, which marks it as a query.
+// quotes, which marks it as a query. A table's own name may hold a space
+// between two other characters, so such a space in the last segment of a
+// table's resource name does not count, in each form that names the table
+// through it: its resource name, its resource URI, its Knowledge Catalog name
+// and its entry name in a system entry group.
 export function hasUnquotedWhitespace(source: string): boolean {
+  const text = withoutTableNameSpaces(source);
   let from = 0;
-  for (const [open, close] of quotePairs(source)) {
-    if (/\s/.test(source.slice(from, open))) return true;
+  for (const [open, close] of quotePairs(text)) {
+    if (/\s/.test(text.slice(from, open))) return true;
     from = close + 1;
   }
-  return /\s/.test(source.slice(from));
+  return /\s/.test(text.slice(from));
+}
+
+// `source` without the spaces in its last segment when it names a table in a
+// form hasUnquotedWhitespace lets hold them, and that segment neither starts
+// nor ends with whitespace.
+function withoutTableNameSpaces(source: string): string {
+  const named = RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
+      !!source.match(ENTRY_NAME)?.[1].startsWith('@');
+  const catalog =
+      CATALOG_NAME_FORMS.some(([prefix]) => source.startsWith(prefix));
+  const last = named ? source.lastIndexOf('/') :
+      catalog        ? source.lastIndexOf('.') :
+                       -1;
+  const name = source.slice(last + 1);
+  return last < 0 || /^\s|\s$/.test(name) ?
+      source :
+      source.slice(0, last + 1) + name.replaceAll(' ', '');
 }
 
 // The database a source lives in, for the one-database rule and source
@@ -3807,14 +3830,13 @@ export function spannerDatabaseOf(source: string): string|undefined {
 // Undefined for any other source. The entry id of a Google Cloud table in a
 // system entry group is its GCP resource name, so the message names it as the
 // source to write, without quotes. Any other id, such as a dataset's, gets an
-// example. An id that holds a space gets no name to write.
+// example.
 function systemEntrySourceError(source: string, ctx: string): string|undefined {
   const entry = source.match(ENTRY_NAME);
   if (!entry?.[1].startsWith('@')) return undefined;
   const id = entry[2].replace(/^\/\//, '').replace(/["`]/g, '');
   const where = `Semantic model load error: ${ctx}: source '${source}' is a ` +
       `Knowledge Catalog entry name in the system entry group '${entry[1]}'`;
-  if (/\s/.test(id)) return `${where}, and ${NO_SPACE}.`;
   const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
       `: '${id}'` :
       `, such as ` +
@@ -3956,24 +3978,25 @@ export function parseSource(
             `complete each bare table name from the database or Knowledge ` +
             `Catalog entry group that <prefix> names.` :
         '';
-    // A name holding a space gets no name to write. Any other name gets an
-    // example built from its parts when the loader accepts the example, and
-    // the general error below otherwise, which says so when only a quoted
-    // name's dot keeps the example out. A path in one pair of backticks counts
-    // as its parts, as import reads it under a BigQuery or BigLake prefix.
+    // A name whose example would hold whitespace kcmd cannot write gets no
+    // name to write. Any other name gets an example built from its parts when
+    // the loader accepts the example, and the general error below otherwise,
+    // which says so when only a quoted name's dot keeps the example out. A
+    // path in one pair of backticks counts as its parts, as import reads it
+    // under a BigQuery or BigLake prefix.
     const segs = bareNameSegments(trimmed, true);
     if (segs.length > 0 && segs.length <= 4 && segs.every(s => s.length > 0)) {
-      if (segs.some(s => /\s/.test(s))) {
-        throw new SemanticModelError(
-            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
-      }
       const form =
           segs.length === 4 ? TABLE_FORMS.biglake : TABLE_FORMS.bigquery;
       const write = segs.length === 4 ?
           'Write its BigLake resource name instead:' :
           "Write the table's GCP resource name instead, for example:";
       const example = fillForm(form, segs)!;
+      if (hasUnquotedWhitespace(example)) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
+      }
       if (oldSourceForm(example) === undefined && isAcceptedSource(example)) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +

@@ -1107,6 +1107,7 @@ describe('sources', () => {
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
     ['sales.orders', `${LAKE}/databases/sales`, `${LAKE}/databases/sales/tables/orders`],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
+    ['public."order items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order items`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
@@ -1137,13 +1138,17 @@ describe('sources', () => {
       ADVICE,
     ],
     [
-      'double-quoted table with a space',
-      'public."order items"',
-      {sourcePrefix: CLOUDSQL_PREFIX},
-      `kcmd cannot name a table whose name holds a space. ${PUSH} ${ADVICE}`,
+      'double-quoted schema with a space',
+      `'"my schema".orders'`,
+      {sourcePrefix: ALLOYDB_DB},
+      `kcmd can write a space only inside a table's own name. ${PUSH} ${ADVICE}`,
     ],
     ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
     ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],
+    [
+      'resource URI of a table whose name holds a space', `'//${BQ_PREFIX}/tables/order items'`, {},
+      `'//': '${BQ_PREFIX}/tables/order items'. ${PUSH}`
+    ],
     [
       'resource name with quotes', `'${BQ_PREFIX}/tables/"orders"'`, {},
       `so write '${BQ_TABLE}'. ${PUSH}`

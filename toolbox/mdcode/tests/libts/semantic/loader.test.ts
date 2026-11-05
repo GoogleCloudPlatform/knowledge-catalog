@@ -3511,19 +3511,16 @@ describe('strict entity sources', () => {
     // 1. Query-valued source. A space after a quote that never closes is
     // unquoted.
     const TABLE = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables';
-    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items',
-      `${TABLE}/"order items`, `${TABLE}/\`order items`]) {
+    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items']) {
       expect(() => loadSource(query)).toThrow(`entity 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
     }
-    // A space inside double quotes or backticks belongs to a table name, which
-    // kcmd cannot name. The message says how to write a table outside Google
-    // Cloud.
-    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
-    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"',
-      'acme.cat.ns."order items"']) {
-      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
-        'A table outside Google Cloud is written as the entry name');
-    }
+    // A space inside double quotes or backticks belongs to a name. A table's
+    // own name may hold one, and no other name may. The message then says how
+    // to write a table outside Google Cloud.
+    const NO_SPACE = "kcmd can write a space only inside a table's own name.";
+    expect(() => loadSource('"my schema".orders')).toThrow(
+      `bare table name '"my schema".orders' is not a valid source, and ${NO_SPACE} ` +
+      'A table outside Google Cloud is written as the entry name');
     // A resource name or entry name takes no double quotes or backticks; the
     // message gives the name without them.
     const quotedNames = (q: string) => [`${TABLE}/${q}orders${q}`, `${TABLE}/${q}order items${q}`,
@@ -3535,8 +3532,7 @@ describe('strict entity sources', () => {
     const QUOTES = 'is a name with quotes in it; resource names and entry names take no quotes';
     for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
       const plain = quoted.replace(/["`]/g, '');
-      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}${
-        /\s/.test(plain) ? `, and ${NO_SPACE}` : `, so write '${plain}'.`}`);
+      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}, so write '${plain}'.`);
     }
     // Quotes that fill a segment leave no name to write.
     const CLOUDSQL_TABLES = 'cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables';
@@ -3551,17 +3547,18 @@ describe('strict entity sources', () => {
     for (const [id, end] of [
       ['"orders"', "; write the table's resource name instead, such as"],
       [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
-      [`${TABLE}/"order items"`, `, and ${NO_SPACE}`],
+      [`${TABLE}/"order items"`, `; write the table's resource name instead: '${TABLE}/order items'.`],
     ]) {
       expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
     }
     // Every catalog name the loader reads is rejected, naming the resource
     // name when it can.
     for (const [fqn, end] of [
-      ['bigquery:acme.sales."a/b c"', `, and ${NO_SPACE}`],
       ['bigquery:acme.sales.``` `', `, and ${NO_SPACE}`],
-      ['bigquery:acme.raw.`order items`', `, and ${NO_SPACE}`],
-      ['bigquery:acme.raw."order items"', `, and ${NO_SPACE}`],
+      ...['bigquery:acme.raw.`order items`', 'bigquery:acme.raw."order items"'].map(fqn => [fqn,
+        "; write the table's GCP resource name: " +
+        "'bigquery.googleapis.com/projects/acme/datasets/raw/tables/order items'."]),
+      ['bigquery:acme.sales."a/b c"', "; write the table's GCP resource name."],
       ['bigquery:acme.raw.a/b', "; write the table's GCP resource name."],
       ['bigquery:acme.raw.""', "; write the table's GCP resource name."],
       ['biglake:table:acme.c.n.""', "; write the table's GCP resource name."],
@@ -3578,6 +3575,7 @@ describe('strict entity sources', () => {
     for (const [bare, hint] of [
       ['orders', 'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders'],
       ['raw.orders', 'bigquery.googleapis.com/projects/<project>/datasets/raw/tables/orders'],
+      ['public."order items"', 'bigquery.googleapis.com/projects/<project>/datasets/public/tables/order items'],
       ['acme.raw.orders', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
     ]) {
       expect(() => load(GOOGLE, {
