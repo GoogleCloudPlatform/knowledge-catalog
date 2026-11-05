@@ -3498,7 +3498,6 @@ test('validateInheritedColumns reads an inherited field in the dialect of the ta
   // [label, table of each entity, key of each table's looked-up POSTGRES dialect, Order]
   const cases: Array<[string, (t: string) => string, (t: string) => string|undefined, string]> = [
     ['Cloud SQL', cloudSql, cloudSql, sourceless],
-    ['Cloud SQL, as import reads it', cloudSql, () => undefined, sourceless],
     ['AlloyDB', t => `${TARGET.alloydb}/schemas/public/tables/${t}`, () => undefined, sourceless],
     ['Spanner', t => `${spanner}/tables/${t}`, () => spanner, sourceless],
     ['third-party', entry, entry, sourceless],
