@@ -1067,7 +1067,7 @@ async function liveErrors(
     if (read.status !== 200) {
       warnings.push(
           `could not read the edition of instance ${project}/${instance} (${
-              storeMessage(read.message, read.status)}); Spanner Graph needs ` +
+              read.message || read.status}); Spanner Graph needs ` +
           `an Enterprise or Enterprise Plus edition instance`);
     }
     if (read.status === 200 && read.result?.edition === 'STANDARD') {

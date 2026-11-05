@@ -374,7 +374,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
         services: {getInstance: {status: 403}},
         warnings: [
           'Warning: could not read the edition of instance test-project/i ' +
-          '(HTTP 403.); Spanner Graph needs an Enterprise or Enterprise Plus ' +
+          '(403); Spanner Graph needs an Enterprise or Enterprise Plus ' +
           'edition instance',
         ],
       },
