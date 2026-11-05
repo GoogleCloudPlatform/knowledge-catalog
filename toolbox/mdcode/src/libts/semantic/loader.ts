@@ -759,7 +759,7 @@ function rejectExpressionBody(
 const deploymentSchema =
     z.object({
        name: z.string(),
-       target: z.string().trim().min(1),
+       target: z.string().min(1),
        profile: z.string().min(1).optional(),
      }).strict();
 
@@ -3434,6 +3434,10 @@ export function oldSourceForm(source: string): string|undefined {
 // Why no name to write is given when that name would hold a space.
 export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
+// Why a source or a deployment target that whitespace begins or ends is not
+// accepted.
+export const AROUND_WHITESPACE = 'begins or ends with whitespace; remove it';
+
 // The resource name of a table in each Google Cloud service a source can
 // name, with a placeholder for each name in it. A Cloud SQL table has one
 // form without a schema and one with, and a BigLake table one for each kind
@@ -3886,6 +3890,10 @@ export function parseSource(
         `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
         `to a physical table using its GCP resource name (e.g. ` +
         `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>').`);
+  }
+  if (trimmed !== source) {
+    throw new SemanticModelError(`Semantic model load error: ${ctx}: source '${
+        source}' ${AROUND_WHITESPACE}.`);
   }
 
   const problem = oldSourceForm(trimmed);

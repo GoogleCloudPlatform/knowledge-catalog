@@ -273,6 +273,8 @@ function sourceCases(withSource: (source: string) => any): Case[] {
       [`a malformed ${form} source`, withSource(BAD_SOURCE[form]), false],
     ]),
     ['a source with a leading //', withSource(`//${SOURCE.bigquery}`), false],
+    ['a source with a leading space', withSource(` ${SOURCE.bigquery}`), false],
+    ['a source with a trailing space', withSource(`${SOURCE.bigquery} `), false],
     ['a source with double quotes', withSource(SOURCE.bigquery.replace('orders', '"orders"')), false],
     ['a source with backticks', withSource(SOURCE.bigquery.replace('orders', '`orders`')), false],
   ];
@@ -491,6 +493,8 @@ const MODEL_CASES: Case[] = [
       m.deployments = [{ name: 'prod', target: BAD_TARGET[form as keyof typeof TARGET] }];
     }), false],
   ]),
+  ...[` ${TARGET.bigquery}`, `${TARGET.bigquery} `].map((target): Case => [
+    `a target '${target}'`, base(m => { m.deployments = [{ name: 'prod', target }]; }), false]),
 ];
 
 describeAgreement('the Google schema and the loader agree on model documents',

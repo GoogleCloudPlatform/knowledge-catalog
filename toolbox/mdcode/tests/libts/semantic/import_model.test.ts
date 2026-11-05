@@ -1297,6 +1297,16 @@ describe('sources', () => {
     expect(await caseWarnings(bare, lowered)).toEqual([rewrote(bare, lowered + rest)]);
   });
 
+  test('removes the whitespace around a source, and refuses it in strict mode', async () => {
+    const input = ossieDoc({source: `" ${BQ_TABLE}"`});
+    const res = await importSemanticModelYaml(input, {flavor: 'google'});
+    expect(res.warnings).toEqual(
+        [`entity 'orders': removed the whitespace around source '${BQ_TABLE}'.`]);
+    expect(res.files[0].content).toContain(`source: "${BQ_TABLE}"\n`);
+    expect((await importSemanticModelYaml(input, {strict: true})).errors).toEqual(
+        [`dataset 'orders': removed the whitespace around source '${BQ_TABLE}'.`]);
+  });
+
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
       async () => {

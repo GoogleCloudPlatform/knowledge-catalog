@@ -3254,6 +3254,12 @@ describe('strict entity sources', () => {
     datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
   });
 
+  test('a source that whitespace begins or ends is rejected', () => {
+    expect(() => loadSource(' bigquery.googleapis.com/projects/p/datasets/d/tables/orders')).toThrow(
+      "entity 'orders': source ' bigquery.googleapis.com/projects/p/datasets/d/tables/orders' " +
+      'begins or ends with whitespace; remove it.');
+  });
+
   // A string with a `/` is never a bare table name, so a resource name whose
   // host is misspelled or not lowercase is rejected as its URI is.
   test('a resource name with a misspelled host is rejected, as is its URI', () => {
@@ -3679,12 +3685,12 @@ describe('deployments and inline profiles', () => {
     })).toThrow("model 'sales': duplicate deployment name 'prod'");
   });
 
-  test('duplicate deployment targets are rejected (after trimming), naming both deployments, and whitespace-only targets are rejected', () => {
+  test('duplicate deployment targets are rejected, naming both deployments', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [
         { name: 'prod', target: BQ_TARGET },
-        { name: 'staging', target: `${BQ_TARGET}  ` },
+        { name: 'staging', target: BQ_TARGET },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
     })).toThrow(

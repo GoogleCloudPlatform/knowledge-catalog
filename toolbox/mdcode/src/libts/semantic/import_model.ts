@@ -920,10 +920,11 @@ function repairField(
 }
 
 /**
- * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
- * table names against `doc.sourcePrefix` or completing them from
- * `doc.entryTables`, and warning on unaccepted sources), truncates its
- * `description`, and repairs each of its `fields`.
+ * Repairs a dataset's `source` (removing whitespace around it, removing
+ * query-valued sources, qualifying bare table names against
+ * `doc.sourcePrefix` or completing them from `doc.entryTables`, and warning on
+ * unaccepted sources), truncates its `description`, and repairs each of its
+ * `fields`.
  */
 function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
@@ -934,6 +935,13 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   const dsLabel = `${word} '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
+    // Push rejects whitespace around a source.
+    if (trimmed !== ds.source) {
+      doc.warnOrError(
+          `${dsLabel}: removed the whitespace around source '${trimmed}'.`);
+      ds.source = trimmed;
+      doc.modified = true;
+    }
     const qualified = doc.sourcePrefix ?
         qualifyTableSource(trimmed, doc.sourcePrefix) :
         undefined;
