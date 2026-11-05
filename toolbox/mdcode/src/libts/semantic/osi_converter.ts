@@ -473,8 +473,7 @@ function datasetDoc(
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
     // the key rather than emit `source: ""` (which the loader rejects). The
-    // source as written survives serialization; a legacy bare name is written
-    // as the name the load qualified it to.
+    // source as written survives serialization.
     source: writtenSource(entity) || undefined,
     // Supertype entities (entity-level inheritance); native under
     // GOOGLE_VERSION, or in the dataset's GOOGLE block under OSSIE_VERSION.

@@ -1207,17 +1207,11 @@ describe(
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
       ];
-      // Same load defaults as the OSI / KC / pull goldens.
-      const LOAD = {
-        defaultProject: 'sqlgen-testing',
-        defaultDataset: 'demo',
-        allowLegacyBareSource: true,
-      };
 
       for (const fixture of CORPUS) {
         test(fixture, () => {
           const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-          for (const authored of loadModels(text, LOAD).models) {
+          for (const authored of loadModels(text).models) {
             const {models, warnings} = roundTrip(authored);
             expect(models).toHaveLength(1);
             expect(stripToKcFloor(models[0])).toEqual(stripToKcFloor(authored));

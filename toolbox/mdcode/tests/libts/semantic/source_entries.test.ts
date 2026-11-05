@@ -396,8 +396,8 @@ describe('sourceEntryErrors', () => {
       [
         entity('party', BIGQUERY, {abstract: true}),
         entity('unbound', ''),
-        // A legacy bare name, which the load completes into `dataSource`.
-        entity('legacy', 'orders', {dataSource: `${P}.kcmd_demo.orders`}),
+        // A dotted `dataSource` with no authored source.
+        entity('dotted', '', {dataSource: `${P}.kcmd_demo.orders`}),
         // sourceDialects looks a Cloud SQL table up.
         entity('cloudsql', `cloudsql.googleapis.com/projects/${P}/locations/us-central1/instances/i/databases/d/tables/t`),
       ],

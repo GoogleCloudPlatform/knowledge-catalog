@@ -23,10 +23,6 @@ import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
-  // Fallbacks when a bare dataset `source` omits the project or dataset; used
-  // only when `allowLegacyBareSource` is enabled.
-  defaultProject?: string;
-  defaultDataset?: string;
   // Accept a purely logical model: do not require a `source` on each concrete
   // dataset. Set for a Knowledge-Catalog-only push, which governs the logical
   // model (meaning) and needs no physical binding. Graph legs
@@ -35,10 +31,6 @@ export interface LoadOptions {
   // with none is unbound and the availability pass prunes it. The
   // abstract+source contradiction stays enforced regardless.
   bindingOptional?: boolean;
-  // Temporary opt-in for existing test fixtures and legacy profile files while
-  // they are migrated (b/568184815, b/568186042): accepts bare table names and
-  // the legacy `deployment_target:` key.
-  allowLegacyBareSource?: boolean;
   // The dialects sourceDialects found before the load, keyed as
   // dialectLookupKey gives: each Cloud SQL and third-party table's, and each
   // Spanner database's. Without this map such a source implies no dialect, as
@@ -772,10 +764,6 @@ const modelBase = z.object({
   datasets: z.array(datasetBase).min(1),
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
-  // A native deployment-target key (GOOGLE_VERSION only, under
-  // allowLegacyBareSource). Folded into a GOOGLE `custom_extensions` block on
-  // the IR after validation (see convertModel).
-  deployment_target: z.string().optional(),
   // Named deployment targets (GOOGLE_VERSION only).
   deployments: z.array(deploymentSchema).optional(),
   // Model-level write operations, also GOOGLE_VERSION only (see actionSchema).
@@ -1032,7 +1020,6 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
 
   const modelExtensions = {
     ...(placement.model.deployments === 'native' ? {
-      deployment_target: z.string().optional(),
       deployments: z.array(deploymentSchema).optional(),
     } :
                                                    {}),
@@ -1180,45 +1167,27 @@ export const GOOGLE_VENDOR = 'GOOGLE';
 // to `datasets:` and `deployments:` is left in place here and folded into a
 // GOOGLE `custom_extensions` block on the IR after validation (see
 // convertModel). Operates on the parsed document before validation.
-function normalizeDocumentSugars(
-    doc: unknown, extended: boolean, allowLegacyBareSource = false): unknown {
+function normalizeDocumentSugars(doc: unknown, extended: boolean): unknown {
   if (!doc || typeof doc !== 'object') return doc;
   const cloned = structuredClone(doc) as any;
   const models = cloned.semantic_model;
   if (!Array.isArray(models)) return cloned;
   for (const m of models) {
     if (m && typeof m === 'object') {
-      normalizeModelSugars(m, extended, allowLegacyBareSource);
+      normalizeModelSugars(m, extended);
     }
   }
   return cloned;
 }
 
-function normalizeModelSugars(
-    m: any, extended: boolean, allowLegacyBareSource = false): void {
+function normalizeModelSugars(m: any, extended: boolean): void {
   const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
   const placement =
       FORMAT_VERSION_PLACEMENT[extended ? GOOGLE_VERSION : OSSIE_VERSION];
 
-  // Only a load that still accepts the legacy key can be left holding both.
-  // Elsewhere the `deployment_target:` rejection below speaks to it. The open
-  // format has neither key, so a vanilla document is told to switch flavor.
-  if (allowLegacyBareSource && m.deployment_target !== undefined &&
-      m.deployments !== undefined) {
-    throw new SemanticModelError(
-        extended ?
-            `Semantic model load error: ${label}: set either 'deployments' ` +
-                `or 'deployment_target', not both.` :
-            `Semantic model load error: ${label}: neither 'deployments' nor ` +
-                `'deployment_target' is in the open format ` +
-                `('${OSSIE_VERSION}'); set version: '${GOOGLE_VERSION}', ` +
-                `keep 'deployments' and remove 'deployment_target'.`);
-  }
-
   // `deployment_target` has been replaced by the named `deployments:` list in
-  // the extended profile (and was never in vanilla). Reject it unless
-  // `allowLegacyBareSource` is set for legacy fixtures and profile files.
-  if (m.deployment_target !== undefined && !allowLegacyBareSource) {
+  // the extended profile (and was never in vanilla).
+  if (m.deployment_target !== undefined) {
     if (!extended) {
       throw new SemanticModelError(
           `Semantic model load error: ${label}: 'deployment_target' is not ` +
@@ -1290,9 +1259,8 @@ function normalizeModelSugars(
 }
 
 // Builds the GOOGLE custom-extension block that carries a model's deployment
-// target URIs on the IR (the form the deploy leg reads). Both the native
-// `deployments:` list and (under `allowLegacyBareSource`) the legacy
-// `deployment_target:` key fold into this block after validation (see
+// target URIs on the IR (the form the deploy leg reads). The native
+// `deployments:` list folds into this block after validation (see
 // convertModel). The extended profile rejects any authored GOOGLE block (see
 // rejectGoogleBlock), so there is never a pre-existing one to reconcile with.
 function deploymentTargetsExtension(targets: string[]): CustomExtension {
@@ -1933,8 +1901,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
     throw new SemanticModelError(`Semantic model load error: ${proto}`);
   }
 
-  const normalized =
-      normalizeDocumentSugars(doc, extended, opts.allowLegacyBareSource);
+  const normalized = normalizeDocumentSugars(doc, extended);
   const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)
                      .safeParse(normalized);
   if (!result.success) {
@@ -2348,10 +2315,6 @@ function convertModel(
     }
     seenTargets.set(d.target, d.name);
   }
-  // A blank `deployment_target` names no target, as push reads it.
-  if (!deployments.length && m.deployment_target?.trim()) {
-    deployments.push({name: 'default', target: m.deployment_target.trim()});
-  }
 
   const description = composeDescription(m.description);
 
@@ -2367,9 +2330,9 @@ function convertModel(
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
   // The blocks the model keeps are carried verbatim. Under the extended
-  // profile the native `deployments` list (or legacy `deployment_target` key)
-  // is folded into a GOOGLE block appended after them; no authored GOOGLE block
-  // can collide with it, since that flavor rejects one (see rejectGoogleBlock).
+  // profile the native `deployments` list is folded into a GOOGLE block
+  // appended after them; no authored GOOGLE block can collide with it, since
+  // that flavor rejects one (see rejectGoogleBlock).
   // Vanilla deployments, read from a GOOGLE block, are not folded.
   if (block.kept) model.customExtensions = block.kept;
   const foldedTargets =
@@ -3548,9 +3511,8 @@ export function isAcceptedSource(source: string|undefined): boolean {
 }
 
 // The source an entity is written with: its `authoredSource` when that names a
-// table in a form `databaseOf` reads, and otherwise its `dataSource`, which is
-// how the load completes a legacy bare table name, shown as a resource name. A
-// model is serialized, shown and judged by it.
+// table in a form `databaseOf` reads, and otherwise its `dataSource`, shown as
+// a resource name. A model is serialized, shown and judged by it.
 export function writtenSource(
     entity: {authoredSource?: string; dataSource?: string}): string {
   const authored = entity.authoredSource?.trim();
@@ -3727,9 +3689,7 @@ export function parseSource(
     importVersion?: FormatVersion): ParsedSource {
   const trimmed = source.trim();
 
-  // Under the legacy wrapper, a space inside double quotes also marks a query.
-  if (hasUnquotedWhitespace(trimmed) || (opts.allowLegacyBareSource &&
-      hasUnquotedWhitespace(trimmed.replaceAll('"', '')))) {
+  if (hasUnquotedWhitespace(trimmed)) {
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' looks like a ` +
         `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
@@ -3789,21 +3749,6 @@ export function parseSource(
       !trimmed.includes(':');
   let dotted: string|undefined;
   if (isBareTableName) {
-    // The legacy wrapper splits at every dot outside backticks.
-    const rawSegs = catalogNameSegments(trimmed);
-    if (opts.allowLegacyBareSource && rawSegs.length > 0) {
-      const parts = rawSegs.map(unquote);
-      if (parts.length === 1 && opts.defaultDataset) {
-        parts.unshift(opts.defaultDataset);
-      }
-      if (parts.length < 3 && opts.defaultProject) {
-        parts.unshift(opts.defaultProject);
-      }
-      return {
-        authoredSource: trimmed,
-        dataSource: parts.join('.'),
-      };
-    }
     // With `importVersion`, the example also names the command that completes
     // a model file's bare names.
     const viaImport = importVersion ?
@@ -3854,10 +3799,6 @@ export function parseSource(
       `resource name (${forms.slice(0, -1).join(', ')}, or ${forms.at(-1)}), ` +
       `or, for a table outside Google Cloud, the entry name of its ` +
       `Knowledge Catalog entry ('${ENTRY_NAME_FORM}').`);
-}
-
-export function unquote(part: string): string {
-  return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
 }
 
 // The parts of a bare table name, without their quotes. A part in backticks
@@ -3936,27 +3877,18 @@ export interface LoadedModels {
  * thrown, mirroring how the deploy legs previously reported it; loader warnings
  * are prefixed with their document name.
  *
- * A document's `allowLegacyBareSource` sets that load option for that document
- * alone.
- *
  * Each document needs the SQL parser as loadModels does, so call
  * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function loadSemanticModels(
-    docs: {name: string; text: string; allowLegacyBareSource?: boolean}[],
+    docs: {name: string; text: string}[],
     opts: LoadOptions = {}): LoadedModels {
   const models: LoadedModel[] = [];
   const warnings: string[] = [];
   for (const doc of docs) {
     let loaded: LoadResult;
-    const docOpts = {
-      ...opts,
-      ...(doc.allowLegacyBareSource !== undefined ?
-              {allowLegacyBareSource: doc.allowLegacyBareSource} :
-              {}),
-    };
     try {
-      loaded = loadModels(doc.text, docOpts);
+      loaded = loadModels(doc.text, opts);
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return {

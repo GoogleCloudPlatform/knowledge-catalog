@@ -3092,13 +3092,13 @@ semantic_model:
         "field 'customer.id' has no expression for SPANNER or ANSI_SQL");
   });
 
-  // A legacy bare name names BigQuery however many parts it is written with,
-  // so pruning reads the BIGQUERY text.
-  test('a legacy bare source of one part reads the BIGQUERY text', () => {
+  // A three-part dotted `dataSource` names BigQuery, so pruning reads the
+  // BIGQUERY text.
+  test('a three-part dataSource reads the BIGQUERY text', () => {
     const model: SemanticModel = {
       name: 'shop',
       entities: [{
-        name: 'orders', dataSource: 'acme.sales.orders', authoredSource: 'orders',
+        name: 'orders', dataSource: 'acme.sales.orders',
         keys: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
@@ -3905,10 +3905,8 @@ semantic_model:
         executor:
           rest: {endpoint: https://x/close, method: POST}
 `;
-  const LOAD = {defaultProject: 'acme'};
-
   const viaApply = (model: string, profile: string) => {
-    const {models} = loadModels(model, {...LOAD, bindingOptional: true});
+    const {models} = loadModels(model, {bindingOptional: true});
     return applyProfileFile(models[0], profile, 'prod');
   };
 
@@ -4216,7 +4214,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
   });
 
   test('a profile held in memory applies as the same profile in a file', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const fromFile = applyProfileFile(base, `name: prod
 entities:
   - name: account
@@ -4245,7 +4243,7 @@ entities:
   });
 
   test('a binding held in memory with no dialect list applies as given', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const applied = applyProfile(base, {
       name: 'prod',
       entities: [{name: 'account', fields: [{name: 'note', expression: 'n'}]}],
@@ -4257,7 +4255,7 @@ entities:
   });
 
   test('a profile held in memory gets the checks a profile file gets', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const spec = (over: Partial<ProfileSpec>): ProfileSpec =>
         ({name: 'prod', entities: [], relationships: [], ...over});
     expect(() => applyProfile(base, spec({
@@ -4615,7 +4613,7 @@ entities:
   });
 
   test('a profile held in memory fails first where a profile file would', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const firstError = (spec: ProfileSpec, file: string) => {
       let inMemory = '';
       try {
@@ -4757,7 +4755,7 @@ semantic_model:
 `;
     const fromApply = (profile: string) => {
       const loaded = loadSemanticModels(
-          [{name: 'sales', text: model}], {...LOAD, bindingOptional: true});
+          [{name: 'sales', text: model}], {bindingOptional: true});
       const applied = applyProfileFile(
           loaded.models[0].model, profile, 'prod',
           {from: {document: 'sales', warnings: loaded.warnings}});
@@ -4820,7 +4818,7 @@ entities:
           - {name: reason}
 `;
     const loadedUnanchored = loadSemanticModels(
-        [{name: 'sales', text: unanchored}], {...LOAD, bindingOptional: true});
+        [{name: 'sales', text: unanchored}], {bindingOptional: true});
     const keyless = 'name: prod\nentities:\n  - name: orders\n    fields:\n      - {name: o_id, expression: id}\n';
     const ordered = applyProfileFile(
         loadedUnanchored.models[0].model, keyless, 'prod',
@@ -4850,7 +4848,7 @@ entities:
             - {dialect: ANSI_SQL, expression: SUM(orders.tax)}
 `;
     const loaded = loadSemanticModels(
-        [{name: 'sales', text: withMetric}], {...LOAD, bindingOptional: true});
+        [{name: 'sales', text: withMetric}], {bindingOptional: true});
     const metricNote = applyProfileFile(
         loaded.models[0].model, replacesAll, 'prod',
         {from: {document: 'sales', warnings: loaded.warnings}});
@@ -4889,8 +4887,8 @@ semantic_model:
             - {dialect: SPANNER, expression: SUM(orders.amount)}
 `;
   const DOC = {name: 'sales', text: HIERARCHY};
-  const loadDoc = () => loadSemanticModels(
-      [DOC], {defaultProject: 'acme', bindingOptional: true}).models[0].model;
+  const loadDoc = () =>
+      loadSemanticModels([DOC], {bindingOptional: true}).models[0].model;
 
   // Only a broken hierarchy falls back to the declared fields; any other
   // error is a bug and surfaces.
@@ -4960,7 +4958,7 @@ entities:
     source: "${SP('orders')}"
 `}], 'sp');
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
-    const loaded = loadSemanticModels([DOC], {defaultProject: 'acme', bindingOptional: true});
+    const loaded = loadSemanticModels([DOC], {bindingOptional: true});
     const own = loaded.warnings.filter(w => w.includes("metric 'spanner_total'"));
     expect(own.length).toBe(1);
     expect(res.warnings.filter(w => w.includes("metric 'spanner_total'"))).toEqual([]);

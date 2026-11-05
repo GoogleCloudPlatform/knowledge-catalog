@@ -51,8 +51,7 @@ const ACTIONS_DOCS = [{name: 'actions.yaml', text: ACTIONS_DOC}];
 // (shared with the BigQuery leg). These tests author documents, so this helper
 // parses them the way commands.ts does.
 function models(docs: {name: string; text: string}[]) {
-  const r = loadSemanticModels(
-      docs, {defaultProject: 'test-project', allowLegacyBareSource: true});
+  const r = loadSemanticModels(docs);
   if (r.error) throw new Error(r.error);
   return r.models;
 }
