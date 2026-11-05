@@ -848,19 +848,8 @@ async function provisionOne(
         ['description', 'display_name', 'metadata_template'])
         .catch((err: any): ApiResult<Operation> =>
                    ({status: 0, message: String(err?.message || err)}));
-    // Patching an existing type forward is best effort. Dataplex refuses a
-    // template change it judges backwards-incompatible -- removing a field, or
-    // renumbering one -- and the type already there is the one every published
-    // entry depends on. Leaving it alone and saying so beats aborting an init
-    // that has already created the entry group.
-    //
-    // What the warning has to carry is the way OUT, because there is no way
-    // forward: `kcmd` creates and patches aspect types and does not delete
-    // them, so a project holding a template this build cannot patch stays that
-    // way until someone removes it by hand. Naming the resource and the
-    // command is the whole of the fix; a reader who has only "left it
-    // unchanged" has to work out which of several types in which project, and
-    // then that `gcloud dataplex aspect-types` is where it lives.
+    // Patching an existing type is best effort. Published entries depend on
+    // the type already there, so a failed patch leaves it and init goes on.
     const reason = upd.status !== 200 ?
         `${upd.message || upd.status}` :
         await cat.awaitOperation(upd.result, `updating ${aspectLabel}`)
@@ -871,8 +860,9 @@ async function provisionOne(
           `no permission to update the existing ${aspectLabel} in project ` +
           `'${home.project}' (${reason}); left it unchanged`);
     } else if (upd.status === 400) {
-      // Dataplex refuses a template change with a 400, and sending the same
-      // template again gets the same answer.
+      // Dataplex refuses a backwards-incompatible template change with a 400,
+      // and the same template gets the same answer on every run. kcmd never
+      // deletes a type, so the warning names the gcloud command that does.
       const resource = customAspectTypeName(type.id, dest);
       warnings.push(
           `left the existing ${aspectLabel} unchanged (${reason}). It is ` +

@@ -240,7 +240,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
     ],
     ['a network error', async () => { throw offline; },
      id => retry(id, offline.message)],
-    // Only this row's update starts an operation, so only it polls.
+    // Only this row's operation is still running, so only this row polls.
     ['a network error while polling', async () => ok({name: OP, done: false}),
      id => retry(id, offline.message)],
     [
