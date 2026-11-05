@@ -691,9 +691,13 @@ describe('profile checks', () => {
       `field 'orders.amount' in model 'retail' (${doc}) has no expression for ${dialect} or ` +
       `ANSI_SQL, and the model file binds entity 'orders' to a ${dialect} source.`;
   const SKIPPED = 'Import skipped the checks that need its dialect.';
+  // Entity customers, on a second table in orders' Spanner database.
+  const CUSTOMERS = '      - name: customers\n' +
+      `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
+      '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n';
   // [label, source, the dialect of amount's one text, the lookup, push's
-  // refusal, other warnings]. The refusal is an error under --input
-  // first-party and a warning otherwise.
+  // refusal, other warnings, the entities after orders]. The refusal is an
+  // error under --input first-party and a warning otherwise.
   test.each([
     ['refuses a POSTGRES field on a GoogleSQL Spanner database',
      SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'GOOGLE_STANDARD_SQL'}), NO_TEXT('SPANNER'), []],
@@ -717,12 +721,14 @@ describe('profile checks', () => {
       `read database acme/i/db: Permission denied. ${SKIPPED}`,
       "field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the Spanner " +
       "table of entity 'orders' cannot run it"]],
-    ['warns about each table when the lookup cannot start',
+    ['warns once when the lookup cannot start',
      SPANNER_TABLE, 'POSTGRES', () => { throw new Error('no credentials'); }, undefined,
-     [`source '${SPANNER_TABLE}': kcmd could not read its dialect: no credentials. ${SKIPPED}`]],
-  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[]]>)(
-      '%s', async (_, source, dialect, readDialects, refusal, warnings) => {
-        const input = model(AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`), source);
+     ['kcmd could not look up table dialects: no credentials. Import skipped the checks that ' +
+      'need a dialect for the tables it could not look up.'], CUSTOMERS],
+  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[], string?]>)(
+      '%s', async (_, source, dialect, readDialects, refusal, warnings, more = '') => {
+        const input = model(
+            AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`) + more, source);
         const firstParty = await importSemanticModelYaml(
             input, {...strict, flavor: 'google', readDialects});
         expect([firstParty.errors, firstParty.warnings])
@@ -748,9 +754,7 @@ describe('profile checks', () => {
   // several entities. A GoogleSQL database reads "customers" as text, so the
   // metric reaches orders alone.
   test('repairs an unanchored metric in the dialect it reads', async () => {
-    const input = model(AMOUNT('amount') + '      - name: customers\n' +
-        `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
-        '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n' +
+    const input = model(AMOUNT('amount') + CUSTOMERS +
         `    metrics:\n      - {name: total, expression: 'SUM(orders.amount) + COUNT(DISTINCT "customers".id)'}\n`,
         SPANNER_TABLE);
     const metrics = async (readDialects: any) => (await importSemanticModelYaml(

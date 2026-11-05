@@ -1037,8 +1037,9 @@ function repairMetric(
  * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
  * third-party table the repaired model and its profile files name, as push
  * reads them. A read that fails is one warning per table, and that table's
- * dialect stays unknown. An entry that was read and gives no dialect is
- * reported as push's other refusals are.
+ * dialect stays unknown. A lookup that cannot start is one warning for the
+ * run, and every such table's dialect stays unknown. An entry that was read
+ * and gives no dialect is reported as push's other refusals are.
  */
 async function readSourceDialects(
     doc: ImportDocument,
@@ -1048,23 +1049,21 @@ async function readSourceDialects(
     JSON.stringify(doc.root),
     ...(opts.profileFiles ?? []).map(f => f.content),
   ];
-  const sources = sourcesToLookUp(texts);
-  if (!opts.readDialects || !sources.length) return {};
-  const skipped = 'Import skipped the checks that need its dialect.';
+  if (!opts.readDialects || !sourcesToLookUp(texts).length) return {};
   let got: SourceDialects;
   try {
     got = await opts.readDialects(texts);
   } catch (err: any) {
     // The lookup could not start, for example with no credentials. gcloud
-    // prints the details, so each warning keeps the first line.
+    // prints the details, so the warning keeps the first line.
     const why = String(err?.message ?? err).split('\n')[0];
-    for (const s of sources) {
-      doc.warnings.push(`${
-          sentence(`source '${s}': kcmd could not read its dialect: ${why}`)} ${
-          skipped}`);
-    }
+    doc.warnings.push(`${
+        sentence(`kcmd could not look up table dialects: ${why}`)} Import ` +
+        'skipped the checks that need a dialect for the tables it could not ' +
+        'look up.');
     return {};
   }
+  const skipped = 'Import skipped the checks that need its dialect.';
   for (const e of got.errors) {
     if (got.unread.includes(e)) doc.warnings.push(`${sentence(e)} ${skipped}`);
     else doc.warnOrError(e);
