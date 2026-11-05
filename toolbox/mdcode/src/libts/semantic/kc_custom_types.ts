@@ -36,7 +36,8 @@
 // removing an existing field breaks the update for every project that already
 // provisioned the type.
 
-import {AspectType, CatalogClient, Entry, EntryType} from '../gcp/dataplex';
+import {ApiResult} from '../gcp/api';
+import {AspectType, CatalogClient, Entry, EntryType, Operation} from '../gcp/dataplex';
 
 import {AiContext} from './ir';
 import {entryIdOf} from './kc_ids';
@@ -844,7 +845,9 @@ async function provisionOne(
           () => cat.getAspectType(home.project, home.location, type.id))) {
     const upd = await cat.updateAspectType(
         home.project, home.location, type.id, type.aspectType,
-        ['description', 'display_name', 'metadata_template']);
+        ['description', 'display_name', 'metadata_template'])
+        .catch((err: any): ApiResult<Operation> =>
+                   ({status: 0, message: String(err?.message || err)}));
     // Patching an existing type forward is best effort. Dataplex refuses a
     // template change it judges backwards-incompatible -- removing a field, or
     // renumbering one -- and the type already there is the one every published
@@ -860,13 +863,16 @@ async function provisionOne(
     // then that `gcloud dataplex aspect-types` is where it lives.
     const reason = upd.status !== 200 ?
         `${upd.message || upd.status}` :
-        await cat.awaitOperation(upd.result, `updating ${aspectLabel}`);
+        await cat.awaitOperation(upd.result, `updating ${aspectLabel}`)
+            .catch((err: any) => String(err?.message || err));
     if (upd.status === 403) {
       // The type exists, so a refusal to patch it leaves it as it is.
       warnings.push(
           `no permission to update the existing ${aspectLabel} in project ` +
           `'${home.project}' (${reason}); left it unchanged`);
-    } else if (reason) {
+    } else if (upd.status === 400) {
+      // Dataplex refuses a template change with a 400, and sending the same
+      // template again gets the same answer.
       const resource = customAspectTypeName(type.id, dest);
       warnings.push(
           `left the existing ${aspectLabel} unchanged (${reason}). It is ` +
@@ -879,6 +885,13 @@ async function provisionOne(
           `--location=${home.location}. Deleting takes the aspects of every ` +
           `entry already published with this type, so re-push those models ` +
           `afterwards.`);
+    } else if (reason) {
+      // Any other failure, such as a 429 from the write quota, a 5xx, a failed
+      // operation or a network error, can pass on a later run.
+      warnings.push(
+          `could not update the existing ${aspectLabel} in project ` +
+          `'${home.project}' (${reason}). Run this command again in a minute ` +
+          `to retry the update.`);
     }
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);
