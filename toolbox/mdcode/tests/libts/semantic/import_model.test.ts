@@ -724,11 +724,11 @@ describe('profile checks', () => {
     ['warns once when the lookup cannot start',
      SPANNER_TABLE, 'POSTGRES', () => { throw new Error('no credentials'); }, undefined,
      ['kcmd could not look up table dialects: no credentials. Import skipped the checks that ' +
-      'need a dialect for the tables it could not look up.'], CUSTOMERS],
-  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[], string?]>)(
-      '%s', async (_, source, dialect, readDialects, refusal, warnings, more = '') => {
+      "need a table's dialect."]],
+  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[]]>)(
+      '%s', async (_, source, dialect, readDialects, refusal, warnings) => {
         const input = model(
-            AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`) + more, source);
+            AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`), source);
         const firstParty = await importSemanticModelYaml(
             input, {...strict, flavor: 'google', readDialects});
         expect([firstParty.errors, firstParty.warnings])
@@ -761,7 +761,7 @@ describe('profile checks', () => {
         input, {flavor: 'google', readDialects})).files.slice(0, 1).flatMap(
         f => loadModels(f.content).models[0].metrics.map(m => m.name));
     expect(await metrics(lookup({spanner: 'GOOGLE_STANDARD_SQL'}))).toEqual(['total']);
-    expect(await metrics(lookup({}))).toEqual([]);
+    expect(await metrics(lookup({}))).toEqual(['total']);
   });
 
   test('reads the dialect of a table a profile file binds', async () => {

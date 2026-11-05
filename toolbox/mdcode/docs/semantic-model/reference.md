@@ -976,7 +976,8 @@ model is present), on the database the target names:
 whether or not it deploys to Spanner:
 
 * `spanner.databases.get` on each database those tables are in, to read the
-  database's SQL dialect. `kcmd profiles` needs it too.
+  database's SQL dialect. `kcmd profiles` needs it too, and `kcmd import` uses
+  it when it can.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
 default; skip it with `--no-kc`):

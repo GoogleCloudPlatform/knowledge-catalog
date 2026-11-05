@@ -835,7 +835,7 @@ function normalizeExpressionDialects(
  */
 function unanchoredMetricProblem(
     mt: Record<string, any>, entityNames: string[],
-    impliedDialect?: string): string|undefined {
+    impliedDialect?: string|null): string|undefined {
   // 1. Skip metrics that already declare an `entity` anchor natively or inside
   // a `GOOGLE` `custom_extensions` block.
   if (mt.entity !== undefined ||
@@ -1006,7 +1006,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
  */
 function repairMetric(
     mt: Record<string, any>, entityNames: string[],
-    impliedDialect: string|undefined, doc: ImportDocument): boolean {
+    impliedDialect: string|null|undefined, doc: ImportDocument): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
@@ -1059,8 +1059,7 @@ async function readSourceDialects(
     const why = String(err?.message ?? err).split('\n')[0];
     doc.warnings.push(`${
         sentence(`kcmd could not look up table dialects: ${why}`)} Import ` +
-        'skipped the checks that need a dialect for the tables it could not ' +
-        'look up.');
+        "skipped the checks that need a table's dialect.");
     return {};
   }
   const skipped = 'Import skipped the checks that need its dialect.';
@@ -1103,9 +1102,8 @@ async function repairDocument(
 
   // 3. Read the source dialects, infer the model's source dialect from its
   // repaired datasets via `sourcesDialect`, and repair or prune each metric
-  // (`repairMetric`). The pruning infers each metric's entity, so it reads an
-  // ANSI_SQL text whose dialect no lookup gave as generic SQL, as the loader's
-  // inference does.
+  // (`repairMetric`). An ANSI_SQL text is not read when no lookup gave its
+  // tables' dialect, as push's checks read none.
   const load = await readSourceDialects(doc, opts);
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
@@ -1120,7 +1118,7 @@ async function repairDocument(
         sourceDialect: key ? load.sourceDialects?.get(key) : undefined,
       };
     }),
-  }) ?? undefined;
+  });
   doc.metrics = doc.metrics.filter(
       mt => repairMetric(mt, entityNames, impliedDialect, doc));
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {

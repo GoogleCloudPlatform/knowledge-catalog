@@ -3477,8 +3477,8 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
       expect({source, expression, extra, errors: actual})
           .toEqual({source, expression, extra, errors});
     }
-    // A Spanner table takes its database's dialect, and one no lookup read, as
-    // in kcmd import, is not judged.
+    // A Spanner table takes its database's dialect, and one no lookup read is
+    // not judged.
     expect(check(withField(SPANNER_TABLE, dialects('SPANNER'), '', 'POSTGRES')))
         .toEqual([MISSING('e', 'POSTGRES')]);
     expect(check(withField(SPANNER_TABLE, bigQueryText, '', null))).toEqual([]);

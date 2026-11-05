@@ -2876,7 +2876,7 @@ describe('profile completeness: dialects and struct paths', () => {
     const ansi = shop(
         {expression: 'orders.id', dialects: [{dialect: 'ANSI_SQL', expression: 'orders.id'}]});
     expect(validateProfileCompleteness(ansi, atSource(SP('Orders')), [], READ)).toEqual([]);
-    // Without the lookup, as in kcmd import, a Spanner table is not judged.
+    // Without a lookup, a Spanner table is not judged.
     expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')))).toEqual([]);
   });
 

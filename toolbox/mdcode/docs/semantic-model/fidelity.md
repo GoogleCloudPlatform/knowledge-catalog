@@ -103,7 +103,8 @@ agree on every structural row and differ only where a Spanner target has no
     either kind of text on a BigQuery table. Spanner, MySQL and Databricks
     also read a double-quoted name as text, so kcmd warns about that kind on
     their tables, apart from a Spanner table in a PostgreSQL-dialect database,
-    which push and `kcmd profiles` judge as `POSTGRES`.
+    which push, `kcmd profiles` and import judge as `POSTGRES` once they read
+    its database's dialect.
     On a table in another database, it warns about a field or metric with no
     text that table runs. Push rejects such a field in the model file with an
     error in place of the warning. `kcmd import` gives push's message in place

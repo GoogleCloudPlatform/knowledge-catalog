@@ -129,6 +129,7 @@ describe('kcmd import', () => {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
             listEntries: expect.any(Function), readDialects: expect.any(Function),
           }]]);
+      expect(ApiContext.default).not.toHaveBeenCalled();
     });
   }
 
