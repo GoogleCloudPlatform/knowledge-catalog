@@ -58,6 +58,11 @@ beforeEach(() => {
       .mockImplementation(async () => ok({name: OP, done: false}));
   spyOn(CatalogClient.prototype, 'getOperation')
       .mockImplementation(async () => ok({name: OP, done: true}));
+  // A type whose create is refused is missing unless a test says otherwise.
+  spyOn(CatalogClient.prototype, 'getAspectType')
+      .mockImplementation(async () => err(404, 'not found'));
+  spyOn(CatalogClient.prototype, 'getEntryType')
+      .mockImplementation(async () => err(404, 'not found'));
 });
 
 afterEach(() => {
@@ -250,40 +255,61 @@ describe('init --semantic-model: entry-group provisioning', () => {
         .mockImplementation(async () => ok({name: 'sales-group'}));
     spyOn(CatalogClient.prototype, 'createAspectType')
         .mockImplementation(async () => err(403, 'permission denied'));
+    const warned: string[] = [];
+    spyOn(console, 'warn').mockImplementation((...args: any[]) => {
+      warned.push(args.join(' '));
+    });
 
     // Actions are one optional construct: a caller who will never declare one
     // must still be able to init, push and pull.
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
+    // The types do not exist, so init says what that stops.
+    expect(warned).toEqual([
+      `Warning: no permission to create aspect type '${CUSTOM_TYPES[0].id}' ` +
+      `in project 'proj' (permission denied); models that need it cannot be ` +
+      `pushed until it exists`,
+    ]);
   });
 
   // A teammate in a project an administrator set up may publish entries but
-  // not update types. The types exist, so push has what it needs.
-  test('init finishes when the types exist and updating them is refused',
-       async () => {
-         spyOn(CatalogClient.prototype, 'createEntryGroup')
-             .mockImplementation(async () => err(409, 'already exists'));
-         spyOn(CatalogClient.prototype, 'createAspectType')
-             .mockImplementation(async () => err(409, 'already exists'));
-         spyOn(CatalogClient.prototype, 'updateAspectType')
-             .mockImplementation(async () => err(403, 'permission denied'));
-         spyOn(CatalogClient.prototype, 'createEntryType')
-             .mockImplementation(async () => err(409, 'already exists'));
-         const warned: string[] = [];
-         spyOn(console, 'warn').mockImplementation((...args: any[]) => {
-           warned.push(args.join(' '));
-         });
+  // not create or update types. Dataplex may answer the create of a type that
+  // exists with 409 or with 403. The types exist, so push has what it needs.
+  test.each([409, 403])(
+      'init finishes when the types exist, their create answers %d and ' +
+          'updating them is refused',
+      async status => {
+        spyOn(CatalogClient.prototype, 'createEntryGroup')
+            .mockImplementation(async () => err(409, 'already exists'));
+        spyOn(CatalogClient.prototype, 'createAspectType')
+            .mockImplementation(async () => err(status, 'refused'));
+        spyOn(CatalogClient.prototype, 'updateAspectType')
+            .mockImplementation(async () => err(403, 'permission denied'));
+        spyOn(CatalogClient.prototype, 'createEntryType')
+            .mockImplementation(async () => err(status, 'refused'));
+        const found = async (project: string, location: string) =>
+            project === 'proj' && location === 'global' ?
+            ok<any>({}) :
+            err(404, 'not found');
+        spyOn(CatalogClient.prototype, 'getAspectType')
+            .mockImplementation(found);
+        spyOn(CatalogClient.prototype, 'getEntryType')
+            .mockImplementation(found);
+        const warned: string[] = [];
+        spyOn(console, 'warn').mockImplementation((...args: any[]) => {
+          warned.push(args.join(' '));
+        });
 
-         expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
-         expect(fs.existsSync('catalog.yaml')).toBe(true);
-         // The type that exists is left as it is, so the refusal is a
-         // warning.
-         expect(warned).toContain(
-             'Warning: no permission to update the existing aspect type ' +
-             '\'semantic-action\' in project \'proj\' (permission ' +
-             'denied); left it unchanged');
-       });
+        expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
+        expect(fs.existsSync('catalog.yaml')).toBe(true);
+        // Each type is left as it is, so the refused update is the only
+        // warning.
+        expect(warned).toEqual(CUSTOM_TYPES.map(
+            t => 'Warning: no permission to update the existing aspect type ' +
+                `'${t.id}' in project 'proj' (permission denied); left it ` +
+                'unchanged'));
+      });
 
   test('a type refused for lack of permission does not skip the next one',
        async () => {
