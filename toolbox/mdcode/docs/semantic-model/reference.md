@@ -653,8 +653,9 @@ sidecar is the file `<entry-id>.overview.md` in the directory that holds
 entity's is `<model>/entities/<entity>.overview.md`. The sidecar's frontmatter holds
 `contentType` and `links`, and its body is `content`. `contentType` is
 `MARKDOWN` or `HTML`. Each link has a `url` and an optional `title`. A
-malformed sidecar fails the push before anything is written. Push warns about
-a sidecar that names no entry of the model. A field's overview holds its
+malformed sidecar fails the push before anything is written. So does a
+sidecar that is not valid UTF-8. Push warns about a sidecar that names no
+entry of the model. A field's overview holds its
 examples alone. An overview edited in the console survives a push only once
 `kcmd pull` writes the edit into the sidecar. Pull writes a sidecar for each
 entry whose overview has content, a content type or links. It warns about a

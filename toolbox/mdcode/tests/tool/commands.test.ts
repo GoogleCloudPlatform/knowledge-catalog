@@ -1014,9 +1014,13 @@ describe('push checks that each file is valid UTF-8', () => {
   for (const [file, text] of [
          ['commerce.yaml', ROUND_TRIP_MODEL],
          ['commerce.profile.prod.yaml', ROUND_TRIP_PROFILE],
+         ['commerce.overview.md', 'Orders and customers.\n'],
        ]) {
     test(`a ${file} that is not valid UTF-8 fails the push, naming it`,
          async () => {
+           // Push reads the overview sidecars with the second-generation
+           // types.
+           process.env.KC_V2_ASPECTS = '1';
            writeRoundTripWorkspace();
            fs.writeFileSync(path.join(entryGroupDir(), file), latin1(text));
            const {create} = fakeCatalog();

@@ -1020,9 +1020,16 @@ async function checkBeforeWrites(
       if (error) return fail(error);
     }
   }
-  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar.
+  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar, which
+  // must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
   if (kcV2Aspects() && docs.length === 1) {
+    for (const {path: sidecar} of layout.overviewSidecarPaths()) {
+      const error = checkUtf8(
+          sidecar, fileNameOf(layout, docs[0].name, sidecar),
+          fs.readFileSync(sidecar, 'utf8'));
+      if (error) return fail(error);
+    }
     try {
       overviews = layout.overviewSidecars();
     } catch (err: any) {
