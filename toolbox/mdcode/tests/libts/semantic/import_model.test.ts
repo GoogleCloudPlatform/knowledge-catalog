@@ -1144,6 +1144,10 @@ describe('sources', () => {
       {sourcePrefix: ALLOYDB_DB},
       `a source can hold a space in the table's own name, but not at its end. ${PUSH} ${ADVICE}`,
     ],
+    [
+      'table name that ends with a space', `'shop."orders "'`, {sourcePrefix: BQ_PREFIX},
+      `a source can hold a space in the table's own name, but not at its end. ${PUSH} ${ADVICE}`,
+    ],
     // No prefix completes a name with too many parts. Its table's own name may
     // hold a space.
     [

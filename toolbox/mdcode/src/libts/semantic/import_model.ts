@@ -206,9 +206,11 @@ function sourceWarning(
     const parts = prefixSegments(source, k.form);
     return !parts.length || parts.some(p => /[`"]/.test(p));
   });
-  // Only the table's own name, the last part, may hold a space.
-  const spaced =
-      bareNameSegments(source, true).slice(0, -1).some(s => /\s/.test(s));
+  // Only the table's own name, the last part, may hold a space, and not at
+  // its end. No part may hold any other whitespace.
+  const segments = bareNameSegments(source, true);
+  const spaced = segments.slice(0, -1).some(s => /\s/.test(s)) ||
+      /[^\S ]|\s$/.test(segments.at(-1) ?? '');
   const cannot = !bare || rerun ? undefined :
       spaced                   ? NO_SPACE :
       quoted                   ? NO_QUOTE :
