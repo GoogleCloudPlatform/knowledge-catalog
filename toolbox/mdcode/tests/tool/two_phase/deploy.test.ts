@@ -369,7 +369,15 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     then: [
       {services: instanceIs({edition: 'ENTERPRISE_PLUS'})},
       // The source check fails when it cannot read the instance.
-      {flags: {skipSourceCheck: true}, services: {getInstance: {status: 403}}},
+      {
+        flags: {skipSourceCheck: true},
+        services: {getInstance: {status: 403}},
+        warnings: [
+          'Warning: could not read the edition of instance test-project/i ' +
+          '(HTTP 403.); Spanner Graph needs an Enterprise or Enterprise Plus ' +
+          'edition instance',
+        ],
+      },
     ].map(step => ({code: 0, events: SP_DEPLOYED, ...step})),
   },
   {

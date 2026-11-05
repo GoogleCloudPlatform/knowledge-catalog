@@ -1043,8 +1043,8 @@ async function checkBeforeWrites(
 // The errors of one deployment's live checks, which change nothing. They read
 // the BigQuery dataset or the Spanner database and instance, probe each
 // BigQuery source and dry-run the BigQuery DDL in the dataset's location, and
-// check each action's DML. A dataset whose location cannot be read adds a
-// warning to `warnings`.
+// check each action's DML. A dataset whose location cannot be read, or an
+// instance whose edition cannot be read, adds a warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1061,10 +1061,16 @@ async function liveErrors(
     }
     // Spanner Graph needs an Enterprise or Enterprise Plus edition instance, so
     // push refuses an instance whose edition is STANDARD. Under
-    // --skip-source-check, push skips this check when it cannot read the
-    // instance.
-    const {status, result} = await spanner.getInstance(project, instance);
-    if (status === 200 && result?.edition === 'STANDARD') {
+    // --skip-source-check, push warns and skips this check when it cannot read
+    // the instance.
+    const read = await spanner.getInstance(project, instance);
+    if (read.status !== 200) {
+      warnings.push(
+          `could not read the edition of instance ${project}/${instance} (${
+              storeMessage(read.message, read.status)}); Spanner Graph needs ` +
+          `an Enterprise or Enterprise Plus edition instance`);
+    }
+    if (read.status === 200 && read.result?.edition === 'STANDARD') {
       return [
         `${at}: instance ${project}/${instance} is a Standard edition ` +
         `instance, and Spanner Graph needs an Enterprise or Enterprise Plus ` +
