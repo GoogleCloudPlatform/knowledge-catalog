@@ -761,6 +761,33 @@ describe('profile checks', () => {
     }
   });
 
+  // Tables in two databases can have different dialects, and push reads the
+  // ANSI_SQL text of such a model as generic SQL.
+  const CUSTOMERS = (source: string, metrics = '') => '      - name: customers\n' +
+      `        source: ${source}\n        primary_key: [id]\n        fields:\n` +
+      `          - {name: id, expression: id}\n${metrics}`;
+  test.each([
+    ['reports a field that reads a missing field on Spanner and MySQL tables',
+     model(AMOUNT('orders.nope') + CUSTOMERS(MYSQL('customers')), SPANNER_TABLE),
+     ["field 'orders.amount' in model 'retail' (sales) references 'orders.nope', which is " +
+      "not a declared or inherited field of 'orders'."]],
+    ['removes a metric that reaches two entities on Spanner and MySQL tables',
+     model(AMOUNT('amount') + CUSTOMERS(MYSQL('customers'), '    metrics:\n' +
+         "      - {name: total, expression: 'SUM(orders.amount) + COUNT(customers.id)'}\n"), SPANNER_TABLE),
+     ["metric 'total': removed unanchored metric whose expression reaches multiple entities " +
+      "(orders, customers); add the metric back with an 'entity' anchor."]],
+    ['keeps a double-quoted column on Spanner and Cloud SQL tables',
+     model(AMOUNT('amount') + CUSTOMERS(`${CLOUDSQL_PREFIX}/tables/customers`, '    metrics:\n' +
+         `      - {name: total, entity: orders, expression: 'SUM("amount")'}\n`), SPANNER_TABLE), []],
+    ['keeps an inherited double-quoted column on Spanner and Cloud SQL tables',
+     googleDoc({source: SPANNER_TABLE, fieldExpr: `'"order_id"'`, extra: '      - name: items\n' +
+         `        extends: [orders]\n        source: ${CLOUDSQL_PREFIX}/tables/items\n` +
+         '        primary_key: [order_id]\n'}), []],
+  ])('%s', async (_, input, errors) => {
+    const res = await importSemanticModelYaml(input, {...strict, flavor: 'google'});
+    expect(res.errors).toEqual(errors);
+  });
+
   // Push refuses a metric with no entity whose expression reaches no entity
   // or several, so import removes it, or with --input first-party refuses it,
   // only when it does so in every dialect its tables can have. A Spanner

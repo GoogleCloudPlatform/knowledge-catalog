@@ -1362,20 +1362,32 @@ export function tableDialects(
   return undefined;
 }
 
-// The dialects that the table of every concrete entity of `entities` can
-// have, as tableDialects gives them with `withUnread`.
+// The dialects push may read an ANSI_SQL text of `entities` in when no lookup
+// read their tables: each dialect the table of every concrete entity can
+// have, as tableDialects gives them with `withUnread`, and generic SQL
+// (undefined) when tables in two databases can have different dialects.
 export function possibleDialects(
     entities: ReadonlyArray<Pick<
         Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>):
-    string[] {
-  return entities.filter(e => !e.abstract)
-             .reduce(
-                 (all: string[]|undefined, e) => {
-                   const can = tableDialects(e, true)?.dialects ?? [];
-                   return all ? all.filter(d => can.includes(d)) : can;
-                 },
-                 undefined) ??
+    Array<string|undefined> {
+  const tables = entities.filter(e => !e.abstract).map(e => {
+    const source = writtenSource(e).trim();
+    // A Cloud SQL instance has one engine, and third-party tables are
+    // taken to share a system.
+    const database = cloudSqlTableOf(source)?.resourceName.split(
+                         '/databases/')[0] ??
+        spannerDatabaseOf(source) ??
+        (thirdPartyEntryOf(source) ? 'third-party' : source);
+    return {database, can: tableDialects(e, true)?.dialects ?? []};
+  });
+  const shared = tables.reduce(
+                     (all: string[]|undefined, {can}) =>
+                         all ? all.filter(d => can.includes(d)) : can,
+                     undefined) ??
       [];
+  const differ = new Set(tables.map(t => t.database)).size > 1 &&
+      new Set(tables.flatMap(t => t.can)).size > 1;
+  return differ ? [...shared, undefined] : shared;
 }
 
 // Each field of each entity whose table `tableDialects(entity, withUnread)`

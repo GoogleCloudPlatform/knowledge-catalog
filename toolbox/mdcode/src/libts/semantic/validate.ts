@@ -23,7 +23,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, tableDialects, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -400,12 +400,11 @@ export function validateInheritedColumns(
   if (inheritanceErrorOf(model)) return [];
   const entities = model.entities ?? [];
   const dialect = sourcesDialect(model);
+  // With no dialect read, a text reads a column when it does in every
+  // dialect the model's tables can have.
+  const readIn = dialect === null ? possibleDialects(entities) : [dialect];
   const errors: string[] = [];
   for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
-    // With no dialect read, a text reads a column when it does in every
-    // dialect the entity's table can have.
-    const readIn =
-        dialect === null ? tableDialects(e, true)?.dialects ?? [] : [dialect];
     for (const f of inheritedNamesOf(model, e.name)) {
       const reads = readIn.map(d => columnBinding(model, e.name, f, d));
       const read = !e.fields.some(x => x.name === f) &&
@@ -1650,10 +1649,11 @@ function metricNoSqlError(
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
 // `flaggedMetrics` collects the name of each metric it reports, and
-// `asDialect` is the dialect an ANSI_SQL text is read in.
+// `readAs.dialect` is the dialect an ANSI_SQL text is read in, generic SQL
+// when undefined.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>, asDialect?: string): string[] {
+    flaggedMetrics?: Set<string>, readAs?: {dialect?: string}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1675,7 +1675,7 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = asDialect ?? sourcesDialect(model);
+    const impliedDialect = readAs ? readAs.dialect : sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
           // A caller that looked up no table's dialect reads no ANSI_SQL
@@ -1867,10 +1867,11 @@ export function validateExpressionReferences(
   }
   // With no dialect read, a rule that reads SQL reports what it reports in
   // every dialect the model's tables can have.
-  for (const m of asDialect ? [] : models) {
+  for (const m of readAs ? [] : models) {
     if (sourcesDialect(m.model) !== null) continue;
     const runs = possibleDialects(m.model.entities ?? []).map(
-        d => validateExpressionReferences([m], fieldsPruned, [], undefined, d));
+        dialect => validateExpressionReferences(
+            [m], fieldsPruned, [], undefined, {dialect}));
     errors.push(...(runs[0] ?? []).filter(
         e => !errors.includes(e) && runs.every(r => r.includes(e))));
   }

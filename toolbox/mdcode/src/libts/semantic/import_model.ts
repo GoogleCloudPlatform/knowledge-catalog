@@ -868,7 +868,8 @@ function unanchoredMetricProblem(
         `reaches multiple entities (${reached.join(', ')})` :
         undefined;
     if (!problem) return undefined;
-    byProblem.set(problem, [...byProblem.get(problem) ?? [], dialect ?? '']);
+    byProblem.set(
+        problem, [...byProblem.get(problem) ?? [], dialect ?? 'ANSI_SQL']);
   }
   const problems = [...byProblem];
   if (problems.length < 2) return problems[0]?.[0];
