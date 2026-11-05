@@ -146,6 +146,35 @@ scenarios('push --no-deployment', [
     report: {code: 0},
   },
   {
+    // Push publishes a profile without its actions, so it prints the
+    // warnings of one whose actions do not apply: an action the model file
+    // does not declare, an action setting a key a profile may not set, and a
+    // model file action with a sql executor.
+    name: 'prints the warnings of a profile file whose actions do not apply, and so does the report, beside its not-shown line',
+    entities: [keyAt(bqTable('customer'), 'c_key')],
+    profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', executor: null}]}},
+    flags: {validateOnly: true},
+    code: 0,
+    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    then: [{
+      profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', description: 'd'}]}},
+      flags: {validateOnly: true}, code: 0, warnings: [NOTE, quotedKey("profile 'prod': ")],
+    }, {
+      actions: [{
+        name: 'refund', parameters: [{name: 'k', type: 'Integer'}],
+        executor: {sql: {statements: ['UPDATE customer SET c_key = c_key WHERE c_key = @k']}},
+      }],
+      flags: {validateOnly: true}, code: 0,
+      warnings: [NOTE, quotedKey("profile 'prod': "), has('1 action(s) published')],
+    }],
+    report: {code: 0, check: (lines, _, warnings) => {
+      expect(lines).toContain("    not shown: [commerce.profile.prod.yaml] profile 'prod': " +
+          "action 'refund' is not in the logical model");
+      expect(warnings).toContain(
+          quotedKey('').replace('Warning: ', "  profile 'prod': warning: "));
+    }},
+  },
+  {
     // The model file binds no table, so only the profiles warn about metric
     // m, deployment d's dev among them.
     name: 'a warning that an applied and an unapplied profile both give prints once for each, under its name',

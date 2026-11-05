@@ -269,8 +269,9 @@ export interface ReportStep {
   code: number;
   // Each printed section's rejects. 'model' and '' appear only with errors.
   rejects?: Record<string, unknown[]>;
-  // Gets the log and error lines in order, and the error lines alone.
-  check?: (lines: string[], errors: string[]) => void;
+  // Gets the log and error lines in order, the error lines alone, and the
+  // warning lines.
+  check?: (lines: string[], errors: string[], warnings: string[]) => void;
 }
 
 // A push, then each push in `then` with what it changes, then the report.
@@ -402,7 +403,7 @@ function checkReport(out: Line[], step: ReportStep, runs: PushRun[]): void {
   expect(lines.filter(l => l.trim() === 'push rejects:'))
       .toHaveLength(Object.values(rejects).filter(r => r.length).length);
   expect(texts(out, 'warn').filter(w => w.startsWith('Warning: '))).toEqual([]);
-  step.check?.(lines, texts(out, 'error'));
+  step.check?.(lines, texts(out, 'error'), texts(out, 'warn'));
 }
 
 async function runCase(c: Case): Promise<void> {
