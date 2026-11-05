@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
@@ -1702,12 +1702,27 @@ async function validateOutputDocument(
     // non-strict mode, deduplicating warnings already recorded. Step 2 gives
     // push's error for a field its table cannot run, so the load does not
     // warn about it too.
-    const loaded = loadModels(
-        content, {
-          bindingOptional: true,
-          warnUnacceptedSource: !doc.strict,
-          fieldTextChecked: true,
-        });
+    const loadOptions = {
+      bindingOptional: true,
+      warnUnacceptedSource: !doc.strict,
+      fieldTextChecked: true,
+    };
+    // Spanner creates a property graph only in a GoogleSQL database, so push
+    // refuses a Spanner deployment on any other. Each Spanner deployment's
+    // database is read as SPANNER.
+    const sourceDialects = new Map<string, string>();
+    for (const m of loadModels(content, loadOptions).models) {
+      const resolved = resolveModelDeployments(m);
+      for (const d of 'error' in resolved ? [] : resolved.deployments) {
+        if (d.engine !== 'spanner') continue;
+        const {project, instance, database} = d.coordinates;
+        sourceDialects.set(
+            `spanner.googleapis.com/projects/${project}/instances/${
+                instance}/databases/${database}`,
+            'SPANNER');
+      }
+    }
+    const loaded = loadModels(content, {...loadOptions, sourceDialects});
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1782,7 +1797,7 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load: {},
+          load: {sourceDialects},
         },
         warn);
     // Push prints each error once.

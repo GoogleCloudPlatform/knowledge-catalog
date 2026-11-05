@@ -650,6 +650,12 @@ describe('profile checks', () => {
      ["field 'orders.amount' in model 'retail' (sales) has no expression for POSTGRES, " +
       "SQLSERVER or ANSI_SQL, and the model file binds entity 'orders' to a Cloud SQL source."],
      []],
+    ['reports a field with only POSTGRES text on a Spanner table a Spanner deployment deploys',
+     model(AMOUNT('{dialects: [{dialect: POSTGRES, expression: amount}]}') +
+           `    deployments: [{name: g, target: ${SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}}]\n`,
+           SPANNER_TABLE), [],
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for SPANNER or ANSI_SQL, " +
+      "and the model file binds entity 'orders' to a SPANNER source."], []],
     ["reports once a deployment's error that both its checks give",
      model(AMOUNT('amount') + `    deployments: [{name: g, target: ${ALLOYDB_DB}, profile: pg}]\n` +
            `    metrics:\n      - {name: total, entity: orders, expression: 'SUM("amount")'}\n`, MYSQL('orders')),
