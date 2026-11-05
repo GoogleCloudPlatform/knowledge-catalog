@@ -1387,9 +1387,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       let applyError: string|undefined;
       // Push publishes the profile without its actions, so a profile whose
       // actions do not apply still gives the warnings of what it publishes.
-      // Like push, it prints none for a profile with an error of its own in the
-      // local checks. Push still prints them when an error names no profile, or
-      // when its source check later rejects the profile.
+      // Like push, it prints none of them for a profile with an error of its
+      // own in the local checks. Push still prints them when an error names no
+      // profile, or when its source check later rejects the profile.
       const published = errors.length ? undefined :
           res.kind === 'error' ?
           profileForDocument(doc, available, name, load, {skipActions: true}) :
