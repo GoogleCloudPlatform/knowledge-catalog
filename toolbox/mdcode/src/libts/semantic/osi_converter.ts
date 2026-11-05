@@ -225,9 +225,14 @@ function render(doc: Record<string, any>, opts: SerializeOptions): string {
     customTags: [ONE_LINE_STRING],
   });
   yaml.visit(document, {
-    Pair(_, pair) {
+    Pair(_, pair, path) {
+      // An entity's `source`: the pair sits in an item of `entities` or
+      // `datasets`, not in an ai_context member that the author named so.
+      const list = path[path.length - 3];
       if (yaml.isScalar(pair.key) && pair.key.value === 'source' &&
-          yaml.isScalar(pair.value)) {
+          yaml.isScalar(pair.value) && yaml.isPair(list) &&
+          yaml.isScalar(list.key) &&
+          (list.key.value === 'entities' || list.key.value === 'datasets')) {
         pair.value.format = ONE_LINE;
       }
     },
@@ -235,8 +240,8 @@ function render(doc: Record<string, any>, opts: SerializeOptions): string {
   return document.toString({lineWidth: opts.lineWidth ?? 80});
 }
 
-// A `source` is written on one line whatever its length, so a table name that
-// holds a space is never folded onto the next line.
+// An entity's `source` is written on one line whatever its length, so a table
+// name that holds a space is never folded onto the next line.
 const ONE_LINE = 'ONE_LINE';
 const ONE_LINE_STRING: yaml.ScalarTag = {
   tag: 'tag:yaml.org,2002:str',

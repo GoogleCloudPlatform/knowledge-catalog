@@ -1204,14 +1204,20 @@ describe('dual-version model serialization', () => {
     ]);
   });
 
-  test('writes a source on one line whatever its length', () => {
+  test('writes an entity source on one line whatever its length', () => {
     const source = 'bigquery.googleapis.com/projects/kc-looker-external/' +
         'datasets/kcmd_loader_live_1105/tables/order items';
+    // A custom ai_context member named source is folded like any other value.
+    const note = 'the finance team owns this table, refreshes it every night and ' +
+        'answers questions about it';
     const model: SemanticModel = {
       ...emptyModel,
-      entities: [{...baseOrders, authoredSource: source}],
+      entities: [{...baseOrders, authoredSource: source,
+                  aiContext: {additionalProperties: {source: note}}}],
     };
-    expect(serializeModel(model).yaml).toContain(`source: ${source}\n`);
+    const text = serializeModel(model).yaml;
+    expect(text).toContain(`source: ${source}\n`);
+    expect(text).not.toContain(note);
   });
 
   for (const compactFlow of [false, true]) {
