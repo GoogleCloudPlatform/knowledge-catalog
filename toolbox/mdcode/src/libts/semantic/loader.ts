@@ -1919,7 +1919,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
     throw new SemanticModelError(`Semantic model load error: ${
         schemaProblems(result.error.issues, {
           schema, doc: normalized, authored: doc, extended,
-          subject: 'the document',
+          subject: 'the document', words: opts.messageFlavor,
         })}`);
   }
 
@@ -2979,6 +2979,9 @@ interface SchemaInput {
   authored: unknown;
   extended: boolean;
   subject: string;
+  // The flavor whose word for an entry of `datasets` lines use, when it is not
+  // the document's own (LoadOptions.messageFlavor).
+  words?: FormatVersion;
 }
 
 // The noun a message gives an entry of each list of named objects in a model
@@ -3056,8 +3059,8 @@ function schemaLocation(path: readonly PropertyKey[], input: SchemaInput): {
   for (const seg of path) {
     node = node?.[seg];
     const list = rest.length === 1 ? String(rest[0]) : '';
-    const noun = list === 'datasets' && input.extended ?
-        'entity' :
+    const noun = list === 'datasets' ?
+        entityWord(input.words ?? (input.extended ? GOOGLE_VERSION : OSSIE_VERSION)) :
         ENTRY_NOUNS.get(list);
     if (typeof seg !== 'number' || !noun) {
       rest.push(seg);

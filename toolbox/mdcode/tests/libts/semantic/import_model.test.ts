@@ -212,6 +212,17 @@ describe('conversion, strict mode, and translation', () => {
       `Semantic model load error: field 'orders.order_id': datatype 'integer' is not valid in a '0.2.0.dev0' document; expected exactly one of String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque.`
     ],
     [
+      'an unknown key on a vanilla dataset converted to Google in strict mode',
+      ossieDoc({extra: '        colour: red\n'}), {flavor: 'google' as const, strict: true},
+      `entity 'orders': unknown key 'colour'`
+    ],
+    [
+      'two vanilla dataset names converted to Google in strict mode',
+      ossieDoc({extra: `      - name: Orders\n        source: ${BQ_TABLE}\n`}),
+      {flavor: 'google' as const, strict: true},
+      `model 'retail': duplicate entity name 'Orders'`
+    ],
+    [
       'one-part name against an AlloyDB database prefix in strict mode',
       googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
       `entity 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`

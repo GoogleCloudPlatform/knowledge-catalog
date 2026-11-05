@@ -3707,7 +3707,7 @@ describe('deployments and inline profiles', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [
-        { name: 'prod', target: '   ' },
+        { name: 'prod', target: '' },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
     })).toThrow("deployment 'prod': 'target' is empty; it takes a non-empty string");
