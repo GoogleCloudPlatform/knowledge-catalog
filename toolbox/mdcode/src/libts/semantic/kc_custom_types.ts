@@ -860,10 +860,12 @@ async function provisionOne(
       warnings.push(
           `no permission to update the existing ${aspectLabel} in project ` +
           `'${home.project}' (${reason}); left it unchanged`);
-    } else if (upd.status === 400) {
-      // Dataplex refuses a backwards-incompatible template change with a 400,
-      // and the same template gets the same answer on every run. kcmd never
-      // deletes a type, so the warning names the gcloud command that does.
+    } else if (reason &&
+               /Backwards incompatible template change/i.test(reason)) {
+      // Dataplex refuses a backwards-incompatible template change with this
+      // message, and the same template gets the same answer on every run.
+      // kcmd never deletes a type, so the warning names the gcloud command
+      // that does.
       const resource = customAspectTypeName(type.id, dest);
       warnings.push(
           `left the existing ${aspectLabel} unchanged (${reason}). It is ` +

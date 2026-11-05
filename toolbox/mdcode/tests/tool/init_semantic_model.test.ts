@@ -215,6 +215,9 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(update.mock.calls[0][4]).toContain('metadata_template');
   });
 
+  // Dataplex's answer to a backwards-incompatible template change.
+  const REFUSED = 'com.google.apps.framework.request.BadRequestException: ' +
+      'Backwards incompatible template changes are not supported';
   const offline =
       new Error('Unable to connect. Is the computer able to access the url?');
   const retryWarning = (id: string, reason: string) =>
@@ -224,14 +227,10 @@ describe('init --semantic-model: entry-group provisioning', () => {
   test.each<[string, () => Promise<ApiResult<any>>, (id: string) => any]>([
     // What an OLDER kcmd sees against a project a newer one provisioned: its
     // template lacks the newer fields, so the patch is a field removal.
-    [
-      'a refused template change',
-      async () => err(
-          400,
-          'com.google.apps.framework.request.BadRequestException: ' +
-              'Backwards incompatible template changes are not supported'),
-      id => expect.stringContaining(`aspect-types delete ${id} --project=proj`)
-    ],
+    ['a refused template change', async () => err(400, REFUSED),
+     id => expect.stringContaining(`aspect-types delete ${id} --project=proj`)],
+    ['a 400 for another reason', async () => err(400, 'denied'),
+     id => retryWarning(id, 'denied')],
     ['a 429', async () => err(429, 'Quota exceeded'),
      id => retryWarning(id, 'Quota exceeded')],
     ['a 5xx', async () => err(503, 'unavailable'),
