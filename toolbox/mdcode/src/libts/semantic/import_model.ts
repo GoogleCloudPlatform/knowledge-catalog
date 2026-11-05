@@ -7,7 +7,7 @@ import {checkProfileFileName, ProfileFileError, profileNameError, profileParseEr
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
@@ -526,8 +526,8 @@ function validateObjectNames(
   // 2. Validate dataset/entity, field, relationship, and metric names.
   for (const ds of doc.datasets) {
     validateName('entity', ds.name);
-    const dsScope =
-        typeof ds.name === 'string' ? `dataset '${ds.name}'` : 'dataset';
+    const word = entityWord(doc.targetVersion);
+    const dsScope = typeof ds.name === 'string' ? `${word} '${ds.name}'` : word;
     validateRecords('field', asRecords(ds.fields), dsScope);
   }
   validateRecords('relationship', doc.relationships);
@@ -725,7 +725,7 @@ async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
 function completeFromEntryGroup(
     ds: Record<string, any>, source: string,
     parts: Array<{text: string; quoted: boolean}>, doc: ImportDocument): void {
-  const dsLabel = `dataset '${ds.name}'`;
+  const dsLabel = `${entityWord(doc.targetVersion)} '${ds.name}'`;
   const group = doc.entryGroup!.base;
   // Compared from the end, so a name with more parts than an entry's matches
   // none.
@@ -930,7 +930,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // Google version), qualify bare table names against `doc.sourcePrefix` or
   // complete them from `doc.entryTables`, or warn on unaccepted source
   // formats.
-  const dsLabel = `dataset '${ds.name}'`;
+  const word = entityWord(doc.targetVersion);
+  const dsLabel = `${word} '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     const qualified = doc.sourcePrefix ?
@@ -942,11 +943,11 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.errors.push(
             `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
-            `every dataset.`);
+            `every ${word}.`);
       } else {
         doc.warnOrError(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
-            `dataset is now unbound.`);
+            `${word} is now unbound.`);
         delete ds.source;
         doc.modified = true;
       }
@@ -1600,15 +1601,16 @@ function validateOssieConversion(
 
   // 2. Reject abstract entities and require every concrete entity and field to
   // be bound.
+  const word = entityWord(doc.targetVersion);
   for (const e of model.entities) {
     if (e.abstract) {
       doc.errors.push(
-          `${prefix}: entity '${e.name}' is 'abstract', which version ` +
+          `${prefix}: ${word} '${e.name}' is 'abstract', which version ` +
           `'${OSSIE_VERSION}' does not support.`);
       continue;
     }
     if (!e.authoredSource && !e.dataSource) {
-      doc.errors.push(`${prefix}: entity '${e.name}' has no 'source'.`);
+      doc.errors.push(`${prefix}: ${word} '${e.name}' has no 'source'.`);
     }
     for (const f of e.fields) {
       if (!isFieldBound(f)) {
@@ -1630,12 +1632,16 @@ function validateOssieConversion(
 
 /**
  * Loads `doc.root` into the `SemanticModel` IR for cross-version conversion,
- * recording any `SemanticModelError` on `doc.errors`.
+ * recording any `SemanticModelError` on `doc.errors` in the words of the
+ * flavor import writes.
  */
 function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
   try {
-    const loaded = fromDocument(
-        doc.root, {bindingOptional: true, warnUnacceptedSource: true});
+    const loaded = fromDocument(doc.root, {
+      bindingOptional: true,
+      warnUnacceptedSource: true,
+      messageFlavor: doc.targetVersion,
+    });
     return loaded.models[0];
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;

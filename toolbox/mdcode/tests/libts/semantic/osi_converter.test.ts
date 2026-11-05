@@ -334,15 +334,17 @@ describe('lossy edges are flagged', () => {
 
 
 describe('serialize flags loader-invalid reconstructions', () => {
-  test('a model with no entities warns that datasets is required', () => {
-    const model: SemanticModel = {
-      name: 'empty',
-      entities: [],
-      relationships: [],
-      metrics: [],
-    };
-    const {warnings} = serializeModel(model);
-    expect(warnings.some(w => /no datasets/i.test(w))).toBe(true);
+  test('a model with no entities warns in the words of its flavor', () => {
+    for (const [version, none, one] of [
+           ['0.2.0.dev0/google', 'entities', 'an entity'],
+           ['0.2.0.dev0', 'datasets', 'a dataset'],
+         ] as const) {
+      const model: SemanticModel =
+          {name: 'empty', version, entities: [], relationships: [], metrics: []};
+      expect(serializeModel(model).warnings).toContain(
+          `model 'empty': no ${none}; the document requires at least one ` +
+          `and will not load until ${one} is present.`);
+    }
   });
 
   test('a field with no expression warns that one is required', () => {

@@ -355,13 +355,13 @@ function modelDoc(
   // lossy edge is visible rather than surfacing later as an opaque load error.
   const datasets = (model.entities ??
                     []).map(e => datasetDoc(e, warnings, logical, version));
+  const tableKey = isGoogleVersion ? 'entities' : 'datasets';
   if (!datasets.length) {
     warnings.push(
-        `model '${
-            model.name}': no datasets (entities); the document requires ` +
-        `at least one and will not load until an entity is present.`);
+        `model '${model.name}': no ${tableKey}; the document requires at ` +
+        `least one and will not load until ${
+            isGoogleVersion ? 'an entity' : 'a dataset'} is present.`);
   }
-  const tableKey = isGoogleVersion ? 'entities' : 'datasets';
   // Under GOOGLE_VERSION, deployments come from `model.deployments`. Under
   // OSSIE_VERSION, named deployments and profiles go in a GOOGLE block on the
   // model.

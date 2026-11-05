@@ -214,13 +214,13 @@ describe('conversion, strict mode, and translation', () => {
     [
       'one-part name against an AlloyDB database prefix in strict mode',
       googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
-      `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
+      `entity 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
     ],
     [
       'an unquoted part against an AlloyDB prefix with a capital letter in strict mode',
       googleDoc({source: 'Sales.orders'}),
       {strict: true, sourcePrefix: `${ALLOYDB_DB}/schemas/Sales`},
-      `dataset 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
+      `entity 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
     ],
     [
       'lowercase Opaque in strict mode',
@@ -880,7 +880,7 @@ describe('profile checks', () => {
   };
   // The repair step's warning about model source 'shop.orders'.
   const UNACCEPTED =
-      "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
+      "entity 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
       "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
       'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
       "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
@@ -1307,10 +1307,16 @@ describe('sources', () => {
             ossieDoc({source: query}), {flavor: 'ossie'});
 
         expect(googleRes.ok).toBe(true);
+        expect(googleRes.warnings).toContain(
+            "entity 'orders': removed query-valued source 'SELECT * FROM " +
+            "sales.orders'; entity is now unbound.");
         const loaded =
             loadModels(googleRes.files[0].content, {bindingOptional: true});
         expect(loaded.models[0].entities[0].dataSource).toBe('');
-        expect(ossieRes.ok).toBe(false);
+        expect(ossieRes.errors).toEqual([
+          "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
+          "is not supported, and version '0.2.0.dev0' requires a table " +
+          "'source' on every dataset."]);
       });
 });
 
@@ -1972,8 +1978,8 @@ semantic_model:
           `Cannot convert 'retail' to version '0.2.0.dev0': action 'act1' is not supported in version '0.2.0.dev0'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': constraint 'con1' is not supported in version '0.2.0.dev0'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': field 'orders.amount' has no 'expression'.`,
-          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'base_entity' is 'abstract', which version '0.2.0.dev0' does not support.`,
-          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'unbound_entity' has no 'source'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': dataset 'base_entity' is 'abstract', which version '0.2.0.dev0' does not support.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': dataset 'unbound_entity' has no 'source'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': relationship 'rel_no_cols' has no join columns ('from_columns' and 'to_columns').`,
         ]);
       });
