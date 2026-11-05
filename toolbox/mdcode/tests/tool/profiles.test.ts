@@ -1547,12 +1547,12 @@ semantic_model:
         code: 1,
         errors: [
           "Profile file 'commerce.profile.staging.yaml' uses the legacy " +
-              "'semantic_model:' wrapper, which is no longer supported; " +
-              'write its entities, relationships, metrics_exclude and ' +
-              "actions at the top level under 'name: staging', and move any " +
-              "'deployment_target' to the model file as the 'target' of an " +
-              "entry under 'deployments:' with 'name: staging' and " +
-              "'profile: staging'.",
+              "'semantic_model:' wrapper, which is no longer supported. " +
+              'Write its entities, relationships, metrics_exclude and ' +
+              "actions at the top level, beside 'name: staging', and drop " +
+              "any 'version' line. Move any 'deployment_target' to the " +
+              "model file as the 'target' of an entry under 'deployments:' " +
+              "with 'name: staging' and 'profile: staging'.",
         ],
       });
     });
