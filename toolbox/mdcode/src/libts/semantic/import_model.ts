@@ -1848,12 +1848,10 @@ async function validateOutputDocument(
     // Push next builds the Knowledge Catalog entries and prints the builder's
     // warnings. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog
     // can store each aspect. The entry group does not change an aspect's size.
-    // With the flag off, the entries hold a copy of each file.
     const v2Aspects = kcV2Aspects();
     const catalog = checkCatalogAspects([withFiles], {
       project: 'p', location: 'l', entryGroup: 'g',
       systemTypeProject: process.env.KC_TYPE_PROJECT, v2Aspects,
-      sourceFiles: files,
     });
     for (const w of catalog.warnings) warn(w);
     if (v2Aspects && catalog.error) {

@@ -14,9 +14,7 @@ destination at once:
   AI agents the semantics and business context to work with your data. Governing
   needs no tables or data, so you can publish a purely logical model before it is
   bound, or govern the model together with its bindings — the catalog serves
-  either. `kcmd pull` returns the model files push stored with these entries.
-  It rebuilds the model from the entries only when no copy of the model file is
-  stored.
+  either. `kcmd pull` rebuilds the model files from these entries.
 * **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
   rather than re-deriving joins and formulas per query. The store can be
@@ -167,30 +165,25 @@ kcmd push --validate-only --print   # preview the entries and links, write nothi
 kcmd push                           # write them
 ```
 
-Push creates one entry per entity and metric, one for the model itself, one
-per model file and profile file holding a copy of that file, and a
+Push creates one entry per entity and metric, one for the model itself, and a
 `schema-join` link for each relationship:
 
 ```
-Wrote 5 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
+Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
 ```
 
 Some relationships get no link, and push warns about each one before it writes
 to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
 Knowledge Catalog keeps one `schema-join` link between two entries, so when
 several relationships join the same two entities, only the first one that push
-can publish gets a link. Pull still returns a skipped
-relationship, because it writes back the stored copy of the model file. Only a
-model file that pull rebuilds from the catalog metadata leaves it out. Push
-rejects a relationship from an entity to itself, and relationships in both
-directions between two entities.
+can publish gets a link. Push rejects a relationship from an entity to itself,
+and relationships in both directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
 gives AI agents the semantics and business context to reason over your data.
-`kcmd pull` returns the model file and profile files stored with them. It
-rebuilds the model document from them only when no copy of the model file is
-stored (see [Pull](#pull)).
+`kcmd pull` rebuilds the model file and profile files from them (see
+[Pull](#pull)).
 Governance works whether the model is purely logical or already bound: govern it
 before it has any physical home, or govern the logical model together with its
 bindings. Every store you bind it to later serves this one definition.
@@ -336,12 +329,12 @@ BigQuery line.
 
 ## Pull
 
-`kcmd pull` is the inverse of push's Knowledge Catalog leg: it writes the model
-file and profile files push stored back to
-`catalog/EntryGroups/<entryGroupId>/`. When the catalog holds no copy of the
-model file, it rebuilds `<model>.yaml` from the `semantic-*` entries instead.
-Use it to recover a workspace from a catalog someone else deployed, or to see
-what the catalog actually holds.
+`kcmd pull` is the inverse of push's Knowledge Catalog leg: it rebuilds the
+model file and profile files from the `semantic-*` entries and writes them to
+`catalog/EntryGroups/<entryGroupId>/`. Because pull rebuilds the files from
+the catalog, comments, key order and formatting are not kept. Use it to recover
+a workspace from a catalog someone else deployed, or to see what the catalog
+actually holds.
 
 ```bash
 kcmd pull
@@ -366,23 +359,12 @@ entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
 local model and replace it with the catalog's. Pull never touches the data store.
 
-Push also stores a copy of the model file and of each profile file, and pull
-writes those copies back to the paths they came from, byte for byte. A local
-profile file the catalog has no copy of would be stored again by the next push,
-so pull names it in a warning, and `--force-remove` deletes it. Each push marks
-its copies with one id and the number of copies it stored. It also puts that id
-in the `kcmd-push-id` label of the model entry, which it writes before the
-copies. Pull refuses the catalog when the copies come from two pushes, when
-their number differs from that count, or when the label names a push whose
-copies the catalog does not hold. Each of these means the last push stopped
-partway. Pull then writes and deletes nothing and asks you to push again.
-
-Every push, with or without `KC_V2_ASPECTS=0`, also sets the `kcmd-push-state`
+Every push, with or without `KC_V2_ASPECTS=0`, sets the `kcmd-push-state`
 label of the model entry to `writing` when it writes the model entry, before the
 model's other entries, and to `finished` with its last write, after it deletes
-what the model no longer has. Pull refuses a model entry still labeled `writing`
-in the same way. A model with no such label, such as one an older `kcmd` pushed,
-counts as finished.
+what the model no longer has. Pull refuses a model entry still labeled
+`writing`: it writes and deletes nothing and asks you to push again. A model
+with no such label, such as one an older `kcmd` pushed, counts as finished.
 
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.
@@ -390,10 +372,7 @@ With `--force-remove`, a push that stopped while it removed the old model can
 leave no model, and pull then finds nothing to pull. After a failed push, push
 again before you pull.
 
-A model with no `kcmd-push-id` label and no stored copies, such as one an older `kcmd` pushed,
-is rebuilt from the catalog metadata. Pull warns that the rebuilt file may differ
-from what was pushed, and keeps every local profile file. Pull also rebuilds the
-model file when no stored copy is named after the model. That rebuild is **not** an identity
+The rebuild is **not** an identity
 — see [What push and pull preserve](fidelity.md) for exactly what comes back,
 what comes back normalized, and what doesn't come back at all.
 

@@ -37,7 +37,7 @@ const planned = (result = {}) =>
 
 scenarios('push --no-deployment', [
   {
-    name: '--no-deployment passes the catalog a deployment that names a profile file, with that profile attached, and both files as copies',
+    name: '--no-deployment passes the catalog a deployment that names a profile file, with that profile attached',
     deployments: [{name: 'g', profile: 'prod'}],
     profiles: {prod: PROD},
     flags: {validateOnly: true},
@@ -47,9 +47,6 @@ scenarios('push --no-deployment', [
       expect(r.published.deployments?.map(d => [d.name, d.profile]))
           .toEqual([['g', 'prod']]);
       expect(r.published.profiles?.map(p => p.name)).toEqual(['prod']);
-      expect(r.fake.preflight.mock.calls[0][2].sourceFiles.map(
-                 (f: any) => f.fileName))
-          .toEqual(['commerce.yaml', 'commerce.profile.prod.yaml']);
     },
   },
   {

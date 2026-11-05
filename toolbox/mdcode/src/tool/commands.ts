@@ -1,7 +1,6 @@
 // CLI command handlers
 //
 
-import {randomUUID} from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -25,9 +24,9 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
-import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
-import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {SerializedFile, serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
@@ -446,80 +445,18 @@ function declaredProfilesReader(profileDocs: ProfileDocs): DeclaredProfiles {
   };
 }
 
-// The file copies of each model file and of each of its profile files: each
-// file's text exactly as read, for the catalog to store, under the name
-// fileNameOf gives it. Throws when a profile file breaks one of the layout's
-// file rules or a file is not valid UTF-8.
-function fileCopiesOf(
-    layout: SemanticModelLayout, docs: {name: string; text: string}[],
-    profileDocs: ProfileDocs): FileCopy[] {
-  const files: FileCopy[] = [];
-  for (const doc of docs) {
-    const modelPath = layout.modelPath(doc.name);
-    const copy =
-        (localPath: string, fileName: string, content: string): FileCopy => {
-          checkUtf8(localPath, fileName, content);
-          return {fileName, content};
-        };
-    files.push(
-        copy(modelPath, fileNameOf(layout, doc.name, modelPath), doc.text));
-    // profileDocuments applies the file rules, so a profile file that breaks
-    // one stops the push before anything is stored.
-    for (const p of profileDocs(doc.name)) {
-      files.push(copy(p.path, p.fileName, p.text));
-    }
-  }
-  return files;
-}
-
-// Throws, naming the file, when the file at `localPath` is not valid UTF-8,
-// since its copy could not return it byte for byte. A file read as UTF-8 has
-// each invalid byte replaced by U+FFFD, so only a text holding U+FFFD needs
-// its bytes checked.
-function checkUtf8(localPath: string, fileName: string, text: string): void {
-  if (!text.includes('\uFFFD')) return;
+// The error naming the file at `localPath` when it is not valid UTF-8, or
+// undefined when it is. A file read as UTF-8 has each invalid byte replaced by
+// U+FFFD, which the catalog would store and the next pull would write into the
+// file, so only a text holding U+FFFD needs its bytes checked.
+function checkUtf8(
+    localPath: string, fileName: string, text: string): string|undefined {
+  if (!text.includes('\uFFFD')) return undefined;
   try {
     new TextDecoder('utf-8', {fatal: true}).decode(fs.readFileSync(localPath));
+    return undefined;
   } catch {
-    throw new Error(
-        `File '${fileName}' is not valid UTF-8; push stores each model and ` +
-        `profile file exactly as written, so save it as UTF-8.`);
-  }
-}
-
-// The copies push stores of each model file in `docs` and of its profile
-// files, read and checked locally. `error` is set instead, with push's text,
-// when a copy cannot be read or fails a check.
-function checkedFileCopies(
-    layout: SemanticModelLayout, docs: {name: string; text: string}[],
-    profileDocs: ProfileDocs): {files: FileCopy[]; error?: string} {
-  let read: FileCopy[];
-  try {
-    read = fileCopiesOf(layout, docs, profileDocs);
-  } catch (err: any) {
-    return {files: [], error: `${err.message || err}`};
-  }
-  // One id and the number of copies on every copy this push stores let a
-  // pull tell a whole set from a push that stopped partway.
-  const pushId = randomUUID();
-  const files = read.map(f => ({...f, pushId, pushFileCount: read.length}));
-  const error = kc.checkFileCopies(files);
-  return error ? {files: [], error} : {files};
-}
-
-// Warns about each model whose model file is not named after it, when push
-// stores file copies. Pull writes a model to `<model>.yaml`, so it returns the
-// copy of a model file only under that name.
-function warnModelFileNames(
-    models: LoadedModel[], fileCopies: FileCopy[]): void {
-  for (const {document, model} of models) {
-    if (!fileCopies.length || document === model.name) continue;
-    console.warn(
-        `Warning: [${model.name}] model file '${document}.yaml' is not ` +
-        `named '${model.name}.yaml'. The file copy can only return a ` +
-        `model file named after its model, so pull will rebuild ` +
-        `'${model.name}.yaml' from the catalog instead of returning this ` +
-        `file; rename it '${model.name}.yaml' to keep it exact.`);
+    return `File '${fileName}' is not valid UTF-8; save it as UTF-8.`;
   }
 }
 
@@ -952,17 +889,10 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
-  const {plans, kcModels, fileCopies, leftOut, overviews} = checked;
+  const {plans, kcModels, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
-  if (fileCopies.length) {
-    const problem = await kc.checkCustomTypes(
-        new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
-    if (problem) return fail(problem);
-  }
-  warnModelFileNames(kcModels, fileCopies);
-  const kcOptions =
-      catalogDeployOptions(options, source, fileCopies, overviews);
+  const kcOptions = catalogDeployOptions(options, source, overviews);
   const preflight =
       await kc.preflightKnowledgeCatalog(kcModels, ctx, kcOptions);
   const preflightWarnings =
@@ -1028,13 +958,12 @@ async function pushInTwoPhases(
 
 // The local checks of a two-phase push, which call no service: it stops at
 // the first check that fails, and returns each selected deployment's plan, the
-// models the catalog receives, the file copies it stores, the overview sidecars
-// it writes and what pruning leaves out, or the errors that stop it. With
+// models the catalog receives, the overview sidecars it writes and what
+// pruning leaves out, or the errors that stop it. With
 // `quiet`, for the `kcmd profiles` report, it prints no warning.
 async function checkBeforeWrites(
     options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
-  plans: DeploymentPlan[]; kcModels: LoadedModel[]; fileCopies: FileCopy[];
-  leftOut: string[];
+  plans: DeploymentPlan[]; kcModels: LoadedModel[]; leftOut: string[];
   overviews?: Map<string, OverviewSidecar>;
 }|{errors: LocalCheckError[]}> {
   const {layout, source, docs, profileDocs, load} = scope;
@@ -1077,16 +1006,22 @@ async function checkBeforeWrites(
     const model = withProfileFiles(base, profileDocs);
     if ('errors' in model) return stop(model.errors);
     models.push(model);
+    // The model file and each profile file must be valid UTF-8.
+    // withProfileFiles has read the profile files, so profileDocs does not
+    // throw here.
+    const modelPath = layout.modelPath(base.document);
+    const modelFile = {
+      path: modelPath,
+      fileName: fileNameOf(layout, base.document, modelPath),
+      text: docs.find(d => d.name === base.document)!.text,
+    };
+    for (const file of [modelFile, ...profileDocs(base.document)]) {
+      const error = checkUtf8(file.path, file.fileName, file.text);
+      if (error) return fail(error);
+    }
   }
-  // With KC_V2_ASPECTS off, the catalog stores each model file and profile
-  // file as read. With it on, it writes each overview sidecar.
-  let fileCopies: FileCopy[] = [];
+  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar.
   let overviews: Map<string, OverviewSidecar>|undefined;
-  if (!kcV2Aspects() && docs.length === 1) {
-    const copies = checkedFileCopies(layout, docs, profileDocs);
-    if (copies.error) return fail(copies.error);
-    fileCopies = copies.files;
-  }
   if (kcV2Aspects() && docs.length === 1) {
     try {
       overviews = layout.overviewSidecars();
@@ -1102,7 +1037,7 @@ async function checkBeforeWrites(
   if ('errors' in checked) return checked;
   // What pruning leaves out of each deployment's model.
   const leftOut = checked.plans.flatMap(pruningLines);
-  return {plans: checked.plans, kcModels: models, fileCopies, leftOut, overviews};
+  return {plans: checked.plans, kcModels: models, leftOut, overviews};
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
@@ -1540,10 +1475,9 @@ async function pushSpanner(
 
 
 // The options the Knowledge Catalog leg takes from the push `options`, the
-// scope `source`, the file copies push stores and the overview sidecars it
-// writes.
+// scope `source` and the overview sidecars push writes.
 function catalogDeployOptions(
-    options: PushOptions, source: SemanticModelSource, sourceFiles: FileCopy[],
+    options: PushOptions, source: SemanticModelSource,
     overviews?: ReadonlyMap<string, OverviewSidecar>): kc.KcDeployOptions {
   return {
     project: source.project,
@@ -1556,11 +1490,7 @@ function catalogDeployOptions(
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
     systemTypeProject: process.env.KC_TYPE_PROJECT,
     v2Aspects: kcV2Aspects(),
-    sourceFiles,
     overviews,
-    // Push looks up the file-copy type before any graph deploys whenever it
-    // has copies to store.
-    fileCopyTypeChecked: sourceFiles.length > 0,
   };
 }
 
@@ -1610,11 +1540,9 @@ function reportCatalogResult(
 // (project.location.entryGroup). An entry group holds one model: a local
 // document with the same name is overwritten in place; a differently-named
 // local document is a conflict (pull would leave two models), so pull fails
-// unless --force-remove authorizes deleting the stale local model first. When
-// the catalog holds file copies of the model and profile files, pull writes
-// those instead of the model rebuilt from the aspects. A model rebuilt from
-// the second-generation types is written the same way, as its model file,
-// profile files and overview sidecars. With KC_V2_ASPECTS on, a model an
+// unless --force-remove authorizes deleting the stale local model first. A
+// model rebuilt from the second-generation types is written as its model
+// file, profile files and overview sidecars. With KC_V2_ASPECTS on, a model an
 // older kcmd pushed is left out with a warning, and nothing is written.
 // Returns a process exit code (0 on success).
 async function pullSemanticModel(
@@ -1643,8 +1571,6 @@ async function pullSemanticModel(
     console.warn(`Warning: ${w}`);
   }
 
-  // A pull returns file copies only with the model they belong to.
-  const rawFiles = result.rawFiles ?? [];
   if (!result.models.length) {
     console.log(
         result.firstGeneration ? 'Wrote nothing.' :
@@ -1694,12 +1620,6 @@ async function pullSemanticModel(
     }
   }
 
-  // The file copies are written instead of the model rebuilt from the
-  // aspects. Writing both would leave whichever wrote `<model>.yaml` last.
-  // The copies belong to the entry group's one model.
-  if (rawFiles.length) {
-    return writePulledFiles(layout, result.models[0].name, rawFiles, options);
-  }
   if (result.secondGeneration) {
     const pulled = result.models[0];
     // The catalog stores no profile's actions, so a profile file keeps the
@@ -1719,8 +1639,7 @@ async function pullSemanticModel(
         content: formatOverviewSidecar(sidecar),
       });
     }
-    return writePulledFiles(
-        layout, model.name, files, options, {sidecars: true});
+    return writePulledFiles(layout, model.name, files, options);
   }
 
   let created = 0;
@@ -1756,17 +1675,14 @@ async function pullSemanticModel(
       created++;
   }
 
-  // A pull that writes the rebuilt model with KC_V2_ASPECTS off returns no
-  // profile, so it keeps every local profile file, even under --force-remove,
-  // and names each one.
-  if (result.rawFiles) {
-    for (const model of result.models) {
-      const kept = layout.localProfileFiles(model.name).map(p => p.path);
-      if (!kept.length) continue;
-      console.warn(
-          `Warning: [${model.name}] the catalog holds no copy of the profile ` +
-          `files, so pull keeps the local ones: ${kept.join(', ')}.`);
-    }
+  // A pull with KC_V2_ASPECTS off returns no profile, so it keeps every local
+  // profile file, even under --force-remove, and names each one.
+  for (const model of result.models) {
+    const kept = layout.localProfileFiles(model.name).map(p => p.path);
+    if (!kept.length) continue;
+    console.warn(
+        `Warning: [${model.name}] the first-generation aspects hold no ` +
+        `profile, so pull keeps the local profile files: ${kept.join(', ')}.`);
   }
 
   console.log(
@@ -1794,27 +1710,21 @@ function localProfileActions(
 }
 
 
-// Writes the files a pull returned or rebuilt for `model`, and skips a name
-// push does not store. Then it names each local profile file, and with
-// `sidecars` each overview sidecar, that the pull did not write, or deletes it
-// under --force-remove.
+// Writes the files a pull rebuilt for `model`, and skips a name push does not
+// read. Then it names each local profile file and overview sidecar that the
+// pull did not write, or deletes it under --force-remove.
 function writePulledFiles(
-    layout: SemanticModelLayout, model: string, files: FileCopy[],
-    options: PullOptions, {sidecars = false} = {}): number {
+    layout: SemanticModelLayout, model: string, files: SerializedFile[],
+    options: PullOptions): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
-  const forms = [
-    `'${model}.yaml'`, `'${model}.profile.<name>.yaml'`,
-    `'${model}.profiles/<name>.yaml'`
-  ];
-  if (sidecars) forms.push('overview sidecars');
   for (const {fileName, content} of files) {
-    const target = pulledFileTarget(layout, model, fileName, sidecars);
+    const target = pulledFileTarget(layout, model, fileName, true);
     if (!target) {
       console.warn(
           `Warning: skipped '${fileName}' from the catalog; pull writes only ` +
-          `${forms.slice(0, -1).join(', ')} and ${forms.at(-1)} inside the ` +
-          `entry group directory.`);
+          `'${model}.yaml', '${model}.profile.<name>.yaml' and overview ` +
+          `sidecars inside the entry group directory.`);
       continue;
     }
     written.add(path.resolve(target.path));
@@ -1835,12 +1745,12 @@ function writePulledFiles(
     }
   }
 
-  // Pull writes each file back to the path it came from, so a local profile
+  // Pull writes each file to the path push reads it from, so a local profile
   // file or overview sidecar the catalog does not have is stale.
   const local: Array<{path: string; profileName?: string; kind: string}> = [
     ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
-    ...(sidecars ? layout.overviewSidecarPaths() : [])
-        .map(f => ({path: f.path, kind: 'overview sidecar'})),
+    ...layout.overviewSidecarPaths().map(
+        f => ({path: f.path, kind: 'overview sidecar'})),
   ];
   for (const stale of local) {
     if (written.has(path.resolve(stale.path))) continue;
@@ -1875,9 +1785,8 @@ function writePulledFiles(
 
 // Where pull writes the catalog's file `fileName` of `model`, and how.
 // Undefined unless the name is relative, holds no `..` segment or NUL byte, and
-// names `<model>.yaml`, `<model>.profile.<name>.yaml`,
-// `<model>.profiles/<name>.yaml` or, with `sidecars`, an overview sidecar
-// that push reads: `<model>.overview.md` or
+// names `<model>.yaml`, `<model>.profile.<name>.yaml` or, with `sidecars`, an
+// overview sidecar that push reads: `<model>.overview.md` or
 // `<model>/{entities,metrics,relationships}/<name>.overview.md`.
 function pulledFileTarget(
     layout: SemanticModelLayout, model: string, fileName: string,
@@ -1914,21 +1823,18 @@ function pulledFileTarget(
   if (!fileName.startsWith(`${model}.`)) return undefined;
   const rest = fileName.slice(model.length + 1);
   const profileName = /^profile\.(.+)\.yaml$/.exec(rest)?.[1];
-  if (profileName !== undefined) {
-    let localPath: string;
-    try {
-      // Throws when the name breaks the profile naming rule.
-      localPath = layout.profilePath(model, profileName);
-    } catch {
-      return undefined;
-    }
-    return {
-      path: localPath,
-      write: text => layout.writeProfileDocument(model, profileName, text),
-    };
+  if (profileName === undefined) return undefined;
+  let profilePath: string;
+  try {
+    // Throws when the name breaks the profile naming rule.
+    profilePath = layout.profilePath(model, profileName);
+  } catch {
+    return undefined;
   }
-  if (!/^profiles\/[^/\\]+$/.test(rest)) return undefined;
-  return {path: localPath, write: writeFile};
+  return {
+    path: profilePath,
+    write: text => layout.writeProfileDocument(model, profileName, text),
+  };
 }
 
 

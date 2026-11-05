@@ -7,7 +7,7 @@ import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -283,14 +283,6 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       expect(published.deployments!.map(d => d.name))
           .toEqual(['c', 'a', 'b']);
       expect(opts.v2Aspects).toBe(false);
-      expect(opts.sourceFiles).toHaveLength(3);
-      expect(Object.fromEntries(opts.sourceFiles.map(
-                 (f: any) => [f.fileName, f.content])))
-          .toEqual({
-            'commerce.yaml': modelFile(THREE),
-            'commerce.profile.sp.yaml': profileFile('sp', THREE.profiles.sp),
-            'commerce.profile.x.yaml': profileFile('x', THREE.profiles.x),
-          });
     },
     then: [
       // cac gives `true` for a bare --profile and for no --profile alike.

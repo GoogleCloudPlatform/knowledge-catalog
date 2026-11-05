@@ -2038,8 +2038,8 @@ export function withProfileFiles(base: LoadedModel, profileDocs: ProfileFiles):
   return {document, model: profiles.length ? {...model, profiles} : model};
 }
 
-// Runs push's offline checks that follow withProfileFiles and the file copy
-// and sidecar checks, through the graph generation. Returns the errors of the
+// Runs push's offline checks that follow withProfileFiles and the UTF-8 and
+// sidecar checks, through the graph generation. Returns the errors of the
 // first stage that finds any, or else a plan for each deployment `selected`
 // names, or for every deployment when it is unset.
 export async function localChecks(

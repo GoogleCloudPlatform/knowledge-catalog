@@ -128,20 +128,6 @@ describe('Namer.typeName and Namer.aspectRef', () => {
   });
 });
 
-describe('Namer.fileEntryId', () => {
-  test('plain model file', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.fileEntryId('retail_sales', 'retail_sales.yaml'))
-        .toBe('retail_sales.files.retail_sales.yaml');
-  });
-
-  test('profile file keeps its dots and repeats the model name', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.fileEntryId('retail_sales', 'retail_sales.profile.prod.yaml'))
-        .toBe('retail_sales.files.retail_sales.profile.prod.yaml');
-  });
-});
-
 describe('ownedEntryIdPrefixes', () => {
   test(
       'returns eight prefixes with no slash form for actions, constraints or ' +
