@@ -100,9 +100,11 @@ export class SpannerClient extends api.ApiClient {
     return await this._patch<Operation>(name, {statements});
   }
 
-  // Fetches a database's metadata.
+  // Fetches a database's metadata, which includes its databaseDialect:
+  // GOOGLE_STANDARD_SQL or POSTGRESQL.
   async getDatabase(project: string, instance: string, database: string):
-      Promise<api.ApiResult<{name?: string; [key: string]: any}>> {
+      Promise<api.ApiResult<
+          {name?: string; databaseDialect?: string; [key: string]: any}>> {
     return await this._get(
         `projects/${project}/instances/${instance}/databases/${database}`);
   }

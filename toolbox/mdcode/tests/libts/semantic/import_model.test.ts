@@ -261,16 +261,16 @@ describe('conversion, strict mode, and translation', () => {
           "field 'orders.order_id'", "metric 'total_orders'", "metric 'total_orders'",
           "field 'orders.order_id'",
         ]);
-        // On a Spanner table, the vendor field gets push's error alone.
+        // On a Spanner table, whose dialect import does not read, the vendor
+        // field gets push's error, and the metric's double-quoted names no
+        // warning.
         const onSpanner = await importSemanticModelYaml(
             raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
         expect(onSpanner.errors).toEqual([
-          "field 'orders.order_id' in model 'retail' (retail) has no expression for SPANNER " +
-              "or ANSI_SQL, and the model file binds entity 'orders' to a SPANNER source.",
+          "field 'orders.order_id' in model 'retail' (retail) has no expression for SPANNER, " +
+              "POSTGRES or ANSI_SQL, and the model file binds entity 'orders' to a Spanner source.",
         ]);
-        expect(onSpanner.warnings.map(w => w.split(/:| in /)[0])).toEqual([
-          "metric 'total_orders'", "metric 'total_orders'",
-        ]);
+        expect(onSpanner.warnings).toEqual([]);
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
           "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
@@ -632,8 +632,7 @@ describe('profile checks', () => {
     ['warns about a double-quoted name in a profile\'s metric',
      model(`    metrics:\n      - {name: total, entity: orders, expression: 'COUNT("Order Amount")'}\n`,
            SPANNER_TABLE), pg(KEYED), [],
-     [`metric 'total': ${READS('Spanner', 'SPANNER', true)}`,
-      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
+     [`profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
     ['reports a model field with no text for its table',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}')), [],
      ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
@@ -641,21 +640,30 @@ describe('profile checks', () => {
       "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
      ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' " +
       "expression as imported_expression (needs transpilation to 'BIGQUERY')"]],
-    ['warns about a model field with no text for a MySQL table read from its name',
+    ['reports a model field with no text for a MySQL table read from its name',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'), MYSQL('orders')), [],
-     [], ["field 'orders.amount': no 'MYSQL' or 'ANSI_SQL' dialect, so the MYSQL table of " +
-          "entity 'orders' cannot run it"]],
-    ['warns about a model field with no text for a Cloud SQL table import cannot read',
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for MYSQL or ANSI_SQL, " +
+      "and the model file binds entity 'orders' to a MYSQL source."], []],
+    ['reports a model field with no text for a Cloud SQL table import cannot read',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'),
            `${CLOUDSQL_PREFIX}/tables/orders`), [],
-     [], ["field 'orders.amount': no 'POSTGRES', 'SQLSERVER' or 'ANSI_SQL' dialect, so the " +
-          "Cloud SQL table of entity 'orders' cannot run it"]],
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for POSTGRES, " +
+      "SQLSERVER or ANSI_SQL, and the model file binds entity 'orders' to a Cloud SQL source."],
+     []],
+    ['reports a field with only POSTGRES text on a Spanner table a Spanner deployment deploys',
+     model(AMOUNT('{dialects: [{dialect: POSTGRES, expression: amount}]}') +
+           `    deployments: [{name: g, target: ${SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}}]\n`,
+           SPANNER_TABLE), [],
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for SPANNER or ANSI_SQL, " +
+      "and the model file binds entity 'orders' to a SPANNER source."], []],
     ["reports once a deployment's error that both its checks give",
-     model(AMOUNT('amount') + `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g, profile: pg}]\n` +
-           '    metrics:\n      - {name: total, entity: orders, expression: SUM(amount)}\n', MYSQL('orders')),
-     pg(KEYED + AMOUNT('amount').slice(4)),
+     model(AMOUNT('amount') + `    deployments: [{name: g, target: ${ALLOYDB_DB}, profile: pg}]\n` +
+           `    metrics:\n      - {name: total, entity: orders, expression: 'SUM("amount")'}\n`, MYSQL('orders')),
+     pg(KEYED + AMOUNT('amount').slice(4)).map(f => ({...f, content: f.content.replace(
+         /source: .*/, `source: ${ALLOYDB_DB}/schemas/public/tables/orders`)})),
      ["metric 'total' in model 'retail' (sales, deployment 'g'): 'amount' must be written as " +
-      "'entity.field'; a metric reads fields, never columns."], []],
+      "'entity.field'; a metric reads fields, never columns."],
+     [`metric 'total': ${READS('MySQL', 'MYSQL', true, '"amount"')}`]],
     ['reports a field that reads the column of the entity it is inherited from',
      model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
      ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
@@ -674,6 +682,153 @@ describe('profile checks', () => {
         input, {...strict, flavor: 'google', profileFiles});
     expect(res.errors).toEqual(errors);
     expect(res.warnings).toEqual(warnings);
+  });
+
+  // Import does not read a Spanner database's dialect, which push reads, so a
+  // Spanner table's field needs a text in either dialect or in ANSI_SQL, in the
+  // model file and in a profile. Push refuses one with neither, so --input
+  // first-party does too.
+  test('holds a field on a Spanner table to no one dialect, in either input mode', async () => {
+    const noText = (doc: string, where: string) =>
+        `${where}field 'orders.amount' ${doc}has no expression for SPANNER, POSTGRES or ` +
+        'ANSI_SQL, and ';
+    for (const [input, doc] of [[{}, 'retail'], [strict, 'sales']] as const) {
+      for (const dialect of ['POSTGRES', 'SPANNER', 'SNOWFLAKE']) {
+        const amount = AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`);
+        const inModel = await importSemanticModelYaml(
+            model(amount, SPANNER_TABLE), {...input, flavor: 'google'});
+        const inProfile = await importSemanticModelYaml(
+            model(AMOUNT('amount')), {...input, flavor: 'google', profileFiles: [{
+              fileName: 'sales.profile.pg.yaml',
+              content: `name: pg\nentities:\n  - name: orders\n    source: ${SPANNER_TABLE}\n` +
+                  `    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n` +
+                  amount.slice(4),
+            }]});
+        const messages = dialect !== 'SNOWFLAKE' ? [] : [
+          noText(`in model 'retail' (${doc}) `, '') +
+              "the model file binds entity 'orders' to a Spanner source.",
+          noText('', `[${doc}.profile.pg.yaml] profile 'pg': `) +
+              "this profile's sources are Spanner tables",
+        ];
+        const failed = input === strict ? messages : [];
+        expect({dialect, errors: [...inModel.errors, ...inProfile.errors],
+                warnings: [...inModel.warnings, ...inProfile.warnings]})
+            .toEqual({dialect, errors: failed, warnings: input === strict ? [] : messages});
+      }
+    }
+  });
+
+  // Push refuses each of these whatever the dialect of a Spanner or Cloud SQL
+  // table is, so import reports it on a table whose dialect it does not read.
+  test('reads the SQL of a table no lookup read in every dialect the table can have', async () => {
+    const X = '          - {name: x, expression: orders.amount + 1}\n';
+    const TOTAL = "    metrics:\n      - {name: total, entity: orders, expression: 'SUM(orders.amount)'}\n";
+    const at = "[sales.profile.pg.yaml] profile 'pg': ";
+    const cases: Array<[string, string, string]> = [
+      [AMOUNT('amount'), KEYED, `${at}field 'orders.amount' reads column 'amount' through its ` +
+          "model file expression; bind it in 'fields' for this profile, or leave it out in 'fields_exclude'"],
+      [AMOUNT('amount') + X, `${KEYED}    fields_exclude: [amount]\n`,
+       `${at}field 'orders.x' depends on 'orders.amount', which this profile excludes; exclude ` +
+           "'orders.x' too, or rebind it"],
+      [AMOUNT('amount') + TOTAL, `${KEYED}    fields_exclude: [amount]\n`,
+       `${at}metric 'total' reaches 'orders.amount', which this profile excludes; add 'total' ` +
+           "to 'metrics_exclude'"],
+      [AMOUNT('amount'), KEYED + AMOUNT('orders.nope').slice(4),
+       `${at}field 'orders.amount' reads 'orders.nope', which is not a field of 'orders'`],
+    ];
+    for (const table of [SPANNER_TABLE, `${CLOUDSQL_PREFIX}/tables/orders`]) {
+      for (const [more, body, error] of cases) {
+        const res = await importSemanticModelYaml(model(more), {...strict, flavor: 'google',
+          profileFiles: pg(body).map(f => ({...f, content: f.content.replace(/source: .*/, `source: ${table}`)}))});
+        expect({table, errors: res.errors}).toEqual({table, errors: [error]});
+      }
+      const inherited = await importSemanticModelYaml(model(
+          `      - name: items\n        extends: [orders]\n        source: ${
+              table.replace(/orders$/, 'items')}\n        primary_key: [order_id]\n`, table),
+          {...strict, flavor: 'google'});
+      expect({table, errors: inherited.errors}).toEqual({table, errors: [
+        "entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
+            "whose expression reads column 'order_id' of that entity's table; restate it with an " +
+            "expression for this entity's table."]});
+      const refs = await importSemanticModelYaml(
+          model(AMOUNT('orders.nope') + TOTAL.replace('orders.amount', 'amount'), table),
+          {...strict, flavor: 'google'});
+      expect({table, errors: refs.errors}).toEqual({table, errors: [
+        "field 'orders.amount' in model 'retail' (sales) references 'orders.nope', which is not " +
+            "a declared or inherited field of 'orders'.",
+        "metric 'total' in model 'retail' (sales): 'amount' must be written as 'entity.field'; " +
+            'a metric reads fields, never columns.']});
+    }
+  });
+
+  // Tables in two databases can have different dialects, and push reads the
+  // ANSI_SQL text of such a model as generic SQL.
+  const CUSTOMERS = (source: string, metrics = '') => '      - name: customers\n' +
+      `        source: ${source}\n        primary_key: [id]\n        fields:\n` +
+      `          - {name: id, expression: id}\n${metrics}`;
+  test.each([
+    ['reports a field that reads a missing field on Spanner and MySQL tables',
+     model(AMOUNT('orders.nope') + CUSTOMERS(MYSQL('customers')), SPANNER_TABLE),
+     ["field 'orders.amount' in model 'retail' (sales) references 'orders.nope', which is " +
+      "not a declared or inherited field of 'orders'."]],
+    ['removes a metric that reaches two entities on Spanner and MySQL tables',
+     model(AMOUNT('amount') + CUSTOMERS(MYSQL('customers'), '    metrics:\n' +
+         "      - {name: total, expression: 'SUM(orders.amount) + COUNT(customers.id)'}\n"), SPANNER_TABLE),
+     ["metric 'total': removed unanchored metric whose expression reaches multiple entities " +
+      "(orders, customers); add the metric back with an 'entity' anchor."]],
+    ['keeps a double-quoted column on Spanner and Cloud SQL tables',
+     model(AMOUNT('amount') + CUSTOMERS(`${CLOUDSQL_PREFIX}/tables/customers`, '    metrics:\n' +
+         `      - {name: total, entity: orders, expression: 'SUM("amount")'}\n`), SPANNER_TABLE), []],
+    ['keeps an inherited double-quoted column on Spanner and Cloud SQL tables',
+     googleDoc({source: SPANNER_TABLE, fieldExpr: `'"order_id"'`, extra: '      - name: items\n' +
+         `        extends: [orders]\n        source: ${CLOUDSQL_PREFIX}/tables/items\n` +
+         '        primary_key: [order_id]\n'}), []],
+  ])('%s', async (_, input, errors) => {
+    const res = await importSemanticModelYaml(input, {...strict, flavor: 'google'});
+    expect(res.errors).toEqual(errors);
+  });
+
+  // Push refuses a metric with no entity whose expression reaches no entity
+  // or several, so import removes it, or with --input first-party refuses it,
+  // only when it does so in every dialect its tables can have. A Spanner
+  // deployment's database is SPANNER.
+  // [label, expression, with a Spanner deployment, why it is removed]
+  test.each([
+    ['keeps a metric that reaches one entity in one dialect a Spanner table can have',
+     'SUM(orders.amount) + COUNT(DISTINCT "customers".id)', false, ''],
+    ['removes a metric that reaches two entities in every dialect a Spanner table can have',
+     'SUM(orders.amount) + COUNT(customers.id)', false,
+     'reaches multiple entities (orders, customers)'],
+    ['removes a metric that reaches no one entity, for a different reason in each dialect',
+     'COUNT("orders".order_id) + COUNT("customers".id)', false,
+     'reaches no declared entity as SPANNER and reaches multiple entities (orders, customers) ' +
+         'as POSTGRES'],
+    ["removes a metric that reaches no entity as SPANNER on a Spanner deployment's database",
+     'COUNT(DISTINCT "customers".id)', true, 'reaches no declared entity'],
+  ])('%s', async (_, expression, deployed, problem) => {
+    const input = model(AMOUNT('amount') + '      - name: customers\n' +
+        `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
+        '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n' +
+        (deployed ? `    deployments: [{name: g, target: ${
+                        SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}}]\n` : '') +
+        `    metrics:\n      - {name: total, expression: '${expression}'}\n`, SPANNER_TABLE);
+    const removed = problem ? [`metric 'total': removed unanchored metric whose expression ${
+        problem}; add the metric back with an 'entity' anchor.`] : [];
+    for (const opts of [{}, strict]) {
+      const res = await importSemanticModelYaml(input, {...opts, flavor: 'google'});
+      expect({
+        strict: opts === strict,
+        errors: res.errors,
+        warnings: res.warnings,
+        metrics: res.files.slice(0, 1).flatMap(
+            f => loadModels(f.content).models[0].metrics.map(m => m.name)),
+      }).toEqual({
+        strict: opts === strict,
+        errors: opts === strict ? removed : [],
+        warnings: opts === strict ? [] : removed,
+        metrics: problem ? [] : ['total'],
+      });
+    }
   });
 
   test('suggests no import for a field its own --transpile leaves untranslated', async () => {
@@ -780,6 +935,13 @@ describe('profile checks', () => {
       "propertyGraphs/<g>', 'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>' or " +
       "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.",
       UNACCEPTED, badSource('retail.profile.pg.yaml')]],
+    ["the loader warns about a source, apart from a Spanner deployment's profile",
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${
+         SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}, profile: pg}]\n`}),
+      {flavor: 'google', profileFiles: files(orders({source: SPANNER_TABLE, fields: [
+        {name: 'order_id', expression: {dialects: [{dialect: 'POSTGRES', expression: 'order_id'}]}}]}))}],
+     [UNACCEPTED, "[retail.profile.pg.yaml] profile 'pg': field 'orders.order_id' has no " +
+      "expression for SPANNER or ANSI_SQL, and this profile's sources are SPANNER"]],
   ] as const)('checks nothing more when %s', async (_, [input, opts], messages) => {
     const res = await importSemanticModelYaml(input, opts);
     expect([...res.errors, ...res.warnings]).toEqual([messages].flat());

@@ -19,6 +19,13 @@ export function stubCloudSqlEntry(status: number, type?: string) {
            {status, message: 'Permission denied (or it may not exist).'}) as any);
 }
 
+// Makes every Spanner database answer that it is GoogleSQL, as the dialect
+// lookup reads it. `mock.restore()` undoes it.
+export function stubSpannerDialect() {
+  return spyOn(spanner.SpannerClient.prototype, 'getDatabase').mockResolvedValue(
+      {status: 200, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
+}
+
 // Makes push find each graph's dataset or database, and pass each BigQuery dry
 // run.
 export function passGraphChecks(): void {
@@ -27,7 +34,7 @@ export function passGraphChecks(): void {
       .mockResolvedValue(ok({location: 'US'}));
   spyOn(bigquery.BigQueryClient.prototype, 'query').mockResolvedValue(ok({}));
   spyOn(spanner.SpannerClient.prototype, 'getDatabase')
-      .mockResolvedValue(ok({}));
+      .mockResolvedValue(ok({databaseDialect: 'GOOGLE_STANDARD_SQL'}));
 }
 
 // Makes push's source check find a Knowledge Catalog entry for every table, as

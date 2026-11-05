@@ -197,7 +197,8 @@ describe('per-dialect expressions collapse to a single string', () => {
 describe('expression warnings judge each expression on the table that runs it', () => {
   const BQ = 'bigquery.googleapis.com/projects/p/datasets/d/tables/t';
   const LAKE = 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t';
-  const SPANNER = 'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t';
+  const SPANNER_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SPANNER = `${SPANNER_DB}/tables/t`;
   const ALLOY = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/t';
   const MYSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/t';
   const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
@@ -208,10 +209,12 @@ describe('expression warnings judge each expression on the table that runs it', 
   const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
   const UNREAD_PG = PG.replace('/instances/i/', '/instances/j/');
   const UNREAD_TP = TP.replace('/orders', '/items');
+  const UNREAD_SPANNER = SPANNER.replace('/databases/db/', '/databases/other/');
   const opts: LoadOptions = {
     bindingOptional: true,
     sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [MSSQL, 'SQLSERVER'],
-                             [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
+                             [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS'],
+                             [SPANNER_DB, 'SPANNER']]),
   };
   const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
       ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
@@ -275,6 +278,10 @@ describe('expression warnings judge each expression on the table that runs it', 
      [['SNOWFLAKE', 'x']], unrunnable('Cloud SQL', "'POSTGRES', 'SQLSERVER'")],
     ['a third-party table no lookup has read, BigQuery text', UNREAD_TP, [['BIGQUERY', 'x']],
      unrunnable('third-party', "'SNOWFLAKE', 'DATABRICKS', 'MYSQL', 'POSTGRES', 'SQLSERVER'")],
+    ['a Spanner table no lookup has read, BigQuery text', UNREAD_SPANNER, [['BIGQUERY', 'x']],
+     unrunnable('Spanner', "'SPANNER', 'POSTGRES'")],
+    ['a Spanner table no lookup has read, a double-quoted name in ANSI_SQL', UNREAD_SPANNER,
+     [['ANSI_SQL', '"x"']], []],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
     ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
     ['a third-party Databricks table, a double-quoted name in ANSI_SQL', DBX,
@@ -327,7 +334,7 @@ describe('expression warnings judge each expression on the table that runs it', 
       metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
                 {name: 'n', expression: expr('COUNT(*)', 'SPANNER')},
                 {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')}],
-    }]});
+    }]}, opts);
     expect(warnings).toEqual([
       vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
       vendor('SPANNER')[1].replace("'m'", "'n'"),

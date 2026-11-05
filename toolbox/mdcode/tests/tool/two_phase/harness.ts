@@ -167,7 +167,8 @@ const SERVICES = {
   spannerDml: [validateMod, 'validateSpannerActionStatements', none],
   query: [BigQueryClient.prototype, 'query', ok({jobComplete: true})],
   getDataset: [BigQueryClient.prototype, 'getDataset', ok({location: 'US'})],
-  getDatabase: [SpannerClient.prototype, 'getDatabase', ok({})],
+  getDatabase: [SpannerClient.prototype, 'getDatabase',
+                ok({databaseDialect: 'GOOGLE_STANDARD_SQL'})],
   // The source check's reads. Each BigQuery table is in `US`, as the graph's
   // dataset is; each Spanner instance (with a regional config, which is not
   // read) and BigLake catalog is in us-central1, shaped as the live responses

@@ -1,6 +1,7 @@
 // Tests for src/libts/semantic/source_dialect.ts: a Cloud SQL or third-party
-// table's dialect read from its Knowledge Catalog entry. The catalog is faked;
-// nothing here calls a service.
+// table's dialect read from its Knowledge Catalog entry, and a Spanner
+// database's dialect. The catalog and Spanner are faked; nothing here calls a
+// service.
 
 import {describe, expect, test} from 'bun:test';
 
@@ -16,6 +17,7 @@ const POSTGRES = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/orders`;
 const POSTGRES_VIEW = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/open_orders`;
 const SQLSERVER = `${INSTANCE}/ms/databases/shop/schemas/sales/tables/orders`;
 const THIRD_PARTY = 'projects/acme/locations/us-central1/entryGroups/sf/entries/orders';
+const SPANNER = 'spanner.googleapis.com/projects/acme/instances/ops/databases';
 // A file that binds THIRD_PARTY, which is collected only as a source.
 const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
 
@@ -79,7 +81,6 @@ describe('sourceDialects', () => {
     const {catalog, calls} = fakeCatalog({});
     const {dialects, errors} = await sourceDialects([
       'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
-      'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t',
     ], catalog);
     expect(calls).toEqual([]);
     expect(dialects.size).toBe(0);
@@ -112,20 +113,43 @@ describe('sourceDialects', () => {
     ]);
   });
 
-  test('another failure is reported with its status, and a thrown error does not escape', async () => {
+  test('another failure is reported with its status, a thrown error does not escape, and a Spanner database\'s error names its first table', async () => {
     const failing: EntryLookup = {
       async lookupEntry(_p, _l, name) {
         if (name.includes('/pg/')) return {status: 503, message: 'unavailable'};
         throw new Error('socket hang up');
       },
     };
-    const {errors} = await sourceDialects([POSTGRES, MYSQL, THIRD_PARTY_FILE], failing);
+    const spanner = {getDatabase: async () => { throw new Error('socket hang up'); }};
+    const {errors} = await sourceDialects(
+        [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`,
+         `source: ${SPANNER}/x/tables/u`],
+        failing, {spanner});
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
       `source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
       `source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up`,
+      `source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
+      'dialect, and could not read database acme/ops/x: socket hang up',
     ]);
+  });
+
+  test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER, and gives SPANNER with no client', async () => {
+    const calls: string[] = [];
+    const spanner = {async getDatabase(project: string, instance: string, database: string) {
+      calls.push(`${project}/${instance}/${database}`);
+      const dialect = {pg: 'POSTGRESQL', gsql: 'GOOGLE_STANDARD_SQL'}[database];
+      return {status: 200, result: dialect ? {databaseDialect: dialect} : {}};
+    }};
+    const files = ['pg/tables/a', 'pg/tables/ops.b', 'gsql/tables/a', 'old/tables/a']
+                      .map(t => `source: ${SPANNER}/${t}`);
+    const {dialects, errors} = await sourceDialects(files, fakeCatalog({}).catalog, {spanner});
+    expect({dialects, errors}).toEqual({errors: [], dialects: new Map([
+      [`${SPANNER}/pg`, 'POSTGRES'], [`${SPANNER}/gsql`, 'SPANNER'], [`${SPANNER}/old`, 'SPANNER']])});
+    expect(calls.sort()).toEqual(['acme/ops/gsql', 'acme/ops/old', 'acme/ops/pg']);
+    expect((await sourceDialects(files, fakeCatalog({}).catalog)).dialects).toEqual(new Map(
+        ['pg', 'gsql', 'old'].map(db => [`${SPANNER}/${db}`, 'SPANNER'])));
   });
 
   test('the catalog client provides the lookup', () => {
@@ -232,7 +256,7 @@ describe('sourceDialects of a third-party table', () => {
 });
 
 describe('sourcesToLookUp', () => {
-  test('collects Cloud SQL resource names, and third-party entry names written as a source, from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
+  test('collects Cloud SQL resource names, and Spanner tables and third-party entry names written as a source, from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
@@ -242,6 +266,8 @@ semantic_model:
         source: ${MYSQL}
       - name: items
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/items
+      - name: lines
+        source: ${SPANNER}/db/tables/lines
 `;
     const vanilla = `version: "0.2.0.dev0"
 semantic_model:
@@ -259,7 +285,7 @@ entities:
     source: projects/acme/locations/us/entryGroups/@bigquery/entries/items
 `;
     expect(sourcesToLookUp([model, vanilla, profile]).sort())
-        .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
+        .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY, `${SPANNER}/db/tables/lines`].sort());
     // A file whose only source is a BigQuery table collects nothing from an
     // entry name under another key, as a `source` in a description's JSON, or
     // as a `source` inside ai_context, an action parameter's default or another
@@ -285,6 +311,7 @@ entities:
     // A name with quotes is not looked up, since the loader rejects it.
     expect(sourcesToLookUp(['"orders"', '`orders`'].flatMap(q => [
       `source: '${MYSQL.replace('orders', q)}'\n`,
-      `source: '${THIRD_PARTY.replace('orders', q)}'\n`]))).toEqual([]);
+      `source: '${THIRD_PARTY.replace('orders', q)}'\n`,
+      `source: '${SPANNER}/db/tables/${q}'\n`]))).toEqual([]);
   });
 });

@@ -28,6 +28,7 @@ import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
@@ -36,7 +37,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, pruningLines, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -91,8 +92,9 @@ export interface PushOptions {
   forceRemove?: boolean;
   // Skip the checks that every source names a table Knowledge Catalog knows
   // about and that the BigQuery and BigLake tables of each profile share a
-  // location. The lookup of a Cloud SQL or third-party table's entry, which
-  // push needs for the table's dialect, still runs. Semantic-model push only.
+  // location. Push still looks up each source's dialect: a Cloud SQL or
+  // third-party table's entry, and a Spanner table's database. Semantic-model
+  // push only.
   skipSourceCheck?: boolean;
   // No longer supported: push refuses `--no-kc`, which cac gives as false,
   // since every push publishes the model to Knowledge Catalog.
@@ -384,10 +386,9 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
   };
 }
 
-// The dialect of each Cloud SQL and third-party table the model documents
-// `docs` and their profile files write, read from the tables' Knowledge
-// Catalog entries, for every load the command makes. Makes no call when no file
-// writes one. Prints each table whose dialect cannot be read and returns null.
+// The dialects sourceDialects reads for the model documents `docs` and their
+// profile files, for every load the command makes. Prints each source whose
+// dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs): Promise<DialectLoad|null> {
@@ -399,8 +400,9 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, databases, errors} =
-      await sourceDialects(texts, new dataplex.CatalogClient(ctx));
+  const {dialects, databases, errors} = await sourceDialects(
+      texts, new dataplex.CatalogClient(ctx),
+      {spanner: new SpannerClient(ctx)});
   if (errors.length) {
     for (const e of errors) console.error(`Error: ${e}`);
     return null;
@@ -1259,9 +1261,9 @@ function printProfileReport(model: SemanticModel, name: string): void {
 // report), then each error a plain `kcmd push` gives that belongs to it.
 // Read-only: it applies and prunes each profile and runs push's local checks
 // the way push does, but deploys nothing, so a user can see coverage and
-// whether push accepts a profile before a deployment names it. Its one service
-// call is push's Cloud SQL dialect lookup. Returns a process exit code (0 on
-// success).
+// whether push accepts a profile before a deployment names it. Its only
+// service calls are push's source dialect lookups. Returns a process exit code
+// (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   ensureManifestExists('.');
   const ctx = context.ApiContext.default();
@@ -1312,8 +1314,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const defaultProject = source.project ?? ctx.project;
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
-  // A Cloud SQL or third-party table takes its dialect from its Knowledge
-  // Catalog entry, looked up once, as push does.
+  // Source dialects are looked up once, as push does.
   const load = await dialectLoad(ctx, docs, profileDocs);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and

@@ -9,9 +9,10 @@ import * as path from 'node:path';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {profiles, skillsGenerate} from '../../src/tool/commands';
-import {stubCloudSqlEntry} from '../libts/mocks';
+import {stubCloudSqlEntry, stubSpannerDialect} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER_DB =
@@ -72,6 +73,7 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('unexpected network call');
   }) as any);
+  stubSpannerDialect();
   spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
     out.push(a.join(' '));
     logs.push(a.join(' '));
@@ -135,6 +137,8 @@ describe('the profiles report and --print-store', () => {
             SPANNER_DB}/tables/Orders\n`);
     expect(await profiles({printStore: true, profile: 'prod'})).toBe(0);
     expect(out).toEqual(['acme-ops/prod/commerce']);
+    // --print-store reads no Spanner database's dialect; the report does.
+    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
     out = [];
     await profiles({profile: 'prod'});
     const target = out.find(l => l.trim().startsWith('target:'));
@@ -225,7 +229,8 @@ describe('a Cloud SQL source written as a resource name', () => {
     expect(rt[0].model.entities[0].sourceDialect).toBe('SQLSERVER');
 
     // So does a profile in a vanilla model's GOOGLE block, and one that binds
-    // nothing keeps the model file's Spanner source, which needs no lookup.
+    // nothing keeps the model file's Spanner source, which the runtime reads as
+    // SPANNER without reading its database.
     fs.rmSync(path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.profile.prod.yaml'));
     const profiles = [
       {name: 'prod', entities: [{name: 'Order', source: TABLE}]},
@@ -245,11 +250,12 @@ semantic_model:
           - name: key
             expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
 `);
-    for (const [profile, dialect] of [['prod', 'SQLSERVER'], ['logical', undefined]]) {
+    for (const [profile, dialect] of [['prod', 'SQLSERVER'], ['logical', 'SPANNER']]) {
       const block = await createSemanticRuntimes({ctx: CTX, profile});
       if ('error' in block) throw new Error(block.error);
       expect(block[0].model.entities[0].sourceDialect).toBe(dialect);
     }
+    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
   });
 
   test('stops with the Dataplex message when its entry cannot be read', async () => {

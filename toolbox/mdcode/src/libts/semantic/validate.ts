@@ -21,9 +21,9 @@ import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Exec
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
-import {bindScalar, sentence, storeCodeFor} from './parameters';
+import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -177,7 +177,7 @@ function nameAndDescriptionErrors(
 // profile it names in `model.profiles` or the model file's own bindings, and
 // returns one message per problem, naming every deployment it applies to.
 export function validateDeployments(
-    model: SemanticModel, document: string): string[] {
+    model: SemanticModel, document: string, load: DialectLoad = {}): string[] {
   // The deployments each problem applies to, keyed by the text that follows
   // their names in the message.
   const problems = new Map<string, string[]>();
@@ -200,7 +200,7 @@ export function validateDeployments(
     // The model the deployment's bindings give, less what they leave
     // unavailable. The completeness check reports a named profile that does
     // not apply, and the fields its metrics read.
-    const bound = named ? profiled(model, named) : pruneUnavailable(
+    const bound = named ? profiled(model, named, load) : pruneUnavailable(
         model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
@@ -266,10 +266,11 @@ export function validateDeployments(
 
 // `model` with `profile` applied and what it leaves unavailable pruned, or
 // undefined when the profile does not apply.
-function profiled(model: SemanticModel, profile: ProfileSpec):
+function profiled(
+    model: SemanticModel, profile: ProfileSpec, load: DialectLoad):
     ReturnType<typeof pruneUnavailable>|undefined {
   try {
-    return pruneUnavailable(applyProfile(model, profile), profile.name);
+    return pruneUnavailable(applyProfile(model, profile, {load}), profile.name);
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
     return undefined;
@@ -357,20 +358,36 @@ function measurePlacementErrors(
   return errors;
 }
 
-// Checks that each bound field of the model file has a text for the dialect
-// of its entity's source, and returns one message per field.
+// Checks that the model file's Spanner tables are all in one database, so they
+// share one dialect, and that each bound field has a text for the dialect of
+// its entity's source, or, on a table whose dialect no lookup read, for one of
+// the dialects the table can have. Returns one message per problem.
 export function validateInlineDialects(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
-  for (const {entity: e, field: f, table: {name: dialect}} of
-           fieldsOnTables(model)) {
-    if (!noTextFor(f, [dialect])) continue;
+  const databases = new Map<string, string>();
+  for (const e of model.entities ?? []) {
+    const db = databaseOf(e.authoredSource ?? '');
+    if (db?.startsWith('spanner/') && !databases.has(db)) {
+      databases.set(db, e.name);
+    }
+  }
+  if (databases.size > 1) {
+    const named = [...databases.values()].map(n => `'${n}'`).join(', ');
+    errors.push(
+        `model '${model.name}' (${document}) binds entities in more than one ` +
+        `Spanner database (${named}); bind the model file's entities to ` +
+        `tables in one Spanner database.`);
+  }
+  for (const {entity: e, field: f, table: {name, dialects}} of
+           fieldsOnTables(model, true)) {
+    if (!noTextFor(f, dialects)) continue;
     errors.push(
         `field '${e.name}.${f.name}' in model '${model.name}' (${
-            document}) has no expression for ${dialect} or ANSI_SQL, and ` +
-        `the model file binds entity '${e.name}' to ${
-            /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${
-            importHint(f, dialect, model)}.`);
+            document}) has no expression for ${dialects.join(', ')} or ` +
+        `ANSI_SQL, and the model file binds entity '${e.name}' to ${
+            /^[AEIOU]/.test(name) ? 'an' : 'a'} ${name} source${
+            importHint(f, name, model)}.`);
   }
   return errors;
 }
@@ -383,11 +400,15 @@ export function validateInheritedColumns(
   if (inheritanceErrorOf(model)) return [];
   const entities = model.entities ?? [];
   const dialect = sourcesDialect(model);
+  // With no dialect read, a text reads a column when it does in every
+  // dialect the model's tables can have.
+  const readIn = dialect === null ? possibleDialects(entities) : [dialect];
   const errors: string[] = [];
   for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
     for (const f of inheritedNamesOf(model, e.name)) {
+      const reads = readIn.map(d => columnBinding(model, e.name, f, d));
       const read = !e.fields.some(x => x.name === f) &&
-          columnBinding(model, e.name, f, dialect);
+          reads.every(r => r) && reads[0];
       if (!read) continue;
       errors.push(
           `entity '${e.name}' in model '${model.name}' (${document}): field '${
@@ -1627,10 +1648,12 @@ function metricNoSqlError(
 //
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
-// `flaggedMetrics` collects the name of each metric it reports.
+// `flaggedMetrics` collects the name of each metric it reports, and
+// `readAs.dialect` is the dialect an ANSI_SQL text is read in, generic SQL
+// when undefined.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>): string[] {
+    flaggedMetrics?: Set<string>, readAs?: {dialect?: string}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1652,7 +1675,7 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = sourcesDialect(model);
+    const impliedDialect = readAs ? readAs.dialect : sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
           // A caller that looked up no table's dialect reads no ANSI_SQL
@@ -1841,6 +1864,16 @@ export function validateExpressionReferences(
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);
     }
+  }
+  // With no dialect read, a rule that reads SQL reports what it reports in
+  // every dialect the model's tables can have.
+  for (const m of readAs ? [] : models) {
+    if (sourcesDialect(m.model) !== null) continue;
+    const runs = possibleDialects(m.model.entities ?? []).map(
+        dialect => validateExpressionReferences(
+            [m], fieldsPruned, [], undefined, {dialect}));
+    errors.push(...(runs[0] ?? []).filter(
+        e => !errors.includes(e) && runs.every(r => r.includes(e))));
   }
   return errors;
 }
@@ -2056,7 +2089,7 @@ export async function localChecks(
               ...model,
               deployments: model.deployments!.filter(
                   d => (d.profile ?? DEFAULT_PROFILE) === profile),
-            }, document))));
+            }, document, load))));
     const doc = docs.find(d => d.name === document)!;
     const declared = declaredBy(doc);
     const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
@@ -2096,12 +2129,30 @@ export async function localChecks(
               document, d.profile,
               ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
+  // Spanner creates no property graph in a PostgreSQL-dialect database, so a
+  // selected Spanner deployment there is refused by the dialect already read.
+  const dialectErrors = models.flatMap(
+      ({document}) => (selectedByDoc.get(document) ?? []).flatMap(d => {
+        if (d.engine !== 'spanner') return [];
+        const {project, instance, database} = d.coordinates;
+        const key = `spanner.googleapis.com/projects/${project}/instances/${
+            instance}/databases/${database}`;
+        if (load.sourceDialects?.get(key) !== 'POSTGRES') return [];
+        return ofProfile(
+            document, d.profile,
+            `[${document}] deployment '${d.name}': database ${project}/${
+                instance}/${database} has the PostgreSQL dialect, and ` +
+                `Spanner creates no property graph in a PostgreSQL-dialect ` +
+                `database. Remove the deployment; push still publishes the ` +
+                `model to Knowledge Catalog.`);
+      }));
+  if (dialectErrors.length) return stop(dialectErrors);
 
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
     for (const deployment of selectedByDoc.get(base.document) ?? []) {
-      const plan =
-          await deploymentPlan(base, profileDocs(base.document), deployment, warn);
+      const plan = await deploymentPlan(
+          base, profileDocs(base.document), deployment, load, warn);
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
@@ -2114,10 +2165,11 @@ export async function localChecks(
 
 // Builds and checks the model `deployment` deploys from `base`, reading its
 // profile file in `files` again with its actions, and generates its DDL
-// offline. Returns the plan, or the errors that stop the push.
+// offline. The profile applies with the source dialects in `load`. Returns
+// the plan, or the errors that stop the push.
 async function deploymentPlan(
     base: LoadedModel, files: ReturnType<ProfileFiles>,
-    deployment: ResolvedDeployment,
+    deployment: ResolvedDeployment, load: DialectLoad,
     warn: (w: string) => void): Promise<DeploymentPlan|{errors: string[]}> {
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
@@ -2139,7 +2191,7 @@ async function deploymentPlan(
       return fail(`[${file!.fileName}] ${err.message}`);
     }
     try {
-      applied = applyProfile(model, spec, {warnings});
+      applied = applyProfile(model, spec, {load, warnings});
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
@@ -2459,29 +2511,6 @@ function rejectedStatement(
              pending.index + 1} of its sql executor was rejected by ${store}: ${
              detail} Statements reach the store exactly as written, so every ` +
       `table and column has to be the name the database uses.`;
-}
-
-
-// The first line of a multi-line diagnosis. The lines after it echo the
-// statement and point a caret at the offending token, which is worth nothing
-// here: the author has the statement open in the profile, the position in
-// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
-// place once the message is embedded in a longer sentence.
-//
-// `\n` is matched in both its forms because Spanner's top-level `error.message`
-// arrives with its newlines ESCAPED -- a literal backslash and an n survive
-// JSON.parse -- while every other message uses real ones.
-function firstLine(message: string): string {
-  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
-}
-
-
-// An API error's message reduced to its first line as a sentence, such as
-// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
-export function storeMessage(
-    message: string|undefined, status: number): string {
-  const text = (message ?? '').trim();
-  return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
 }
 
 

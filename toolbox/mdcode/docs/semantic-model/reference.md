@@ -135,7 +135,16 @@ Knowledge Catalog entry, and import does not, so the checks that need the engine
 stay with push: whether a profile's tables in one Cloud SQL instance or one
 third-party system are in one database, whether a field has SQL in its table's
 dialect, and what an `ANSI_SQL` text reads when every table of the model file or
-profile is such a table. Nothing is written
+profile is such a table. Import does not read a Spanner database's dialect
+either, so it treats a Spanner table the same way, and push alone refuses a
+Spanner deployment on a PostgreSQL-dialect database.
+Import judges a table in the database a Spanner deployment targets as
+`SPANNER`, since push refuses that deployment on a PostgreSQL-dialect database.
+On a table whose dialect no lookup read, import still reports what push
+refuses whatever the dialect: a field with no text in any dialect the table can
+have and no `ANSI_SQL` text, a column or field that a text reads in every one
+of those dialects, and a metric with no entity that reaches no entity or
+several in every one of those dialects. Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import
@@ -177,16 +186,16 @@ would reject it. Some errors fail every push of the scope, such as a second
 model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
 profile, unless a plain push runs in two phases. A Cloud SQL or third-party
-table whose dialect cannot be read from its entry stops the command before the
-report. When push warns that the model file's own bindings are incomplete,
-the report prints that warning under `profile 'default'`, unless `--profile`
-names another profile.
+table whose dialect cannot be read from its entry, or a Spanner database whose
+dialect cannot be read, stops the command before the report. When push warns
+that the model file's own bindings are incomplete, the report prints that
+warning under `profile 'default'`, unless `--profile` names another profile.
 
 The command is read-only. It applies and prunes each profile and generates each
 graph as `push --validate-only` does, but deploys nothing, so you can compare
 coverage before choosing one. Like push, it reads the Knowledge Catalog entry
 of each Cloud SQL table written as its resource name and of each third-party
-table, for the table's dialect.
+table, and each Spanner database a source names, for the dialect.
 The other checks that need a service run only at push time: the BigQuery source table probe, the dry runs of action
 statements and of each BigQuery graph's DDL, the check that a deployment's
 BigQuery dataset or Spanner database exists and, on a push without
@@ -764,16 +773,30 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   field the model file binds to the table then needs SQL in that dialect or in
   `ANSI_SQL`. So does every field and metric of a profile whose sources fix
   that dialect. *(live — needs read access to the entry)*
+* **A Spanner table takes its database's dialect.** Knowledge Catalog does not
+  record whether a Spanner database is GoogleSQL or PostgreSQL, so push and
+  `kcmd profiles` read each database a source names once, with the Spanner
+  API, before they load the model:
+  `GOOGLE_STANDARD_SQL` gives `SPANNER` and `POSTGRESQL` gives `POSTGRES`. A
+  database that cannot be read stops the command before anything is written.
+  A field the model file binds to one of its tables then needs SQL in that
+  dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
+  sources are in that database. Spanner creates no property graph in a
+  PostgreSQL-dialect database, so push refuses a Spanner deployment there
+  before anything is written. *(live — needs `spanner.databases.get` on the
+  database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span
-  systems, so each entity is judged by its own source. `kcmd import
+  systems, so each entity is judged by its own source, but their Spanner tables
+  must all be in one database. `kcmd import
   --transpile` adds a BigQuery entry for a text it can translate. Every push
   runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
   the field or metric, since those databases read that token as text.
-  PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name.
+  PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name, and
+  so does a Spanner table in a PostgreSQL-dialect database.
   *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
@@ -955,6 +978,12 @@ model is present), on the database the target names:
   plans each statement on a session, and a `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
+
+**Spanner sources** — for a model whose `source` values name Spanner tables,
+whether or not it deploys to Spanner:
+
+* `spanner.databases.get` on each database those tables are in, to read the
+  database's SQL dialect. `kcmd profiles` needs it too.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
 default; skip it with `--no-kc`):
