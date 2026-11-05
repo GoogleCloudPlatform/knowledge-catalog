@@ -1141,7 +1141,13 @@ describe('sources', () => {
       'double-quoted schema with a space',
       `'"my schema".orders'`,
       {sourcePrefix: ALLOYDB_DB},
-      `kcmd can write a space only inside a table's own name. ${PUSH} ${ADVICE}`,
+      `a source can hold a space only inside the table's own name. ${PUSH} ${ADVICE}`,
+    ],
+    // No prefix completes a name with too many parts. Its table's own name may
+    // hold a space.
+    [
+      'name with too many parts and a space in its table name', `'a.b.c."order items"'`,
+      {sourcePrefix: BQ_PREFIX}, `is not a valid GCP resource name; ${PUSH} ${ADVICE}`,
     ],
     ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
     ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],

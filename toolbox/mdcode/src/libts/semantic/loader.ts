@@ -3433,7 +3433,8 @@ export function oldSourceForm(source: string): string|undefined {
 
 // Why no name to write is given when that name would hold whitespace that
 // hasUnquotedWhitespace counts.
-export const NO_SPACE = "kcmd can write a space only inside a table's own name";
+export const NO_SPACE =
+    "a source can hold a space only inside the table's own name";
 
 // Why a source or a deployment target that whitespace begins or ends is not
 // accepted.
@@ -3830,13 +3831,15 @@ export function spannerDatabaseOf(source: string): string|undefined {
 // Undefined for any other source. The entry id of a Google Cloud table in a
 // system entry group is its GCP resource name, so the message names it as the
 // source to write, without quotes. Any other id, such as a dataset's, gets an
-// example.
+// example. An id with whitespace outside the table's own name gets no name to
+// write.
 function systemEntrySourceError(source: string, ctx: string): string|undefined {
   const entry = source.match(ENTRY_NAME);
   if (!entry?.[1].startsWith('@')) return undefined;
   const id = entry[2].replace(/^\/\//, '').replace(/["`]/g, '');
   const where = `Semantic model load error: ${ctx}: source '${source}' is a ` +
       `Knowledge Catalog entry name in the system entry group '${entry[1]}'`;
+  if (hasUnquotedWhitespace(id)) return `${where}, and ${NO_SPACE}.`;
   const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
       `: '${id}'` :
       `, such as ` +

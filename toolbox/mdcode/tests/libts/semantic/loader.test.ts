@@ -3517,7 +3517,7 @@ describe('strict entity sources', () => {
     // A space inside double quotes or backticks belongs to a name. A table's
     // own name may hold one, and no other name may. The message then says how
     // to write a table outside Google Cloud.
-    const NO_SPACE = "kcmd can write a space only inside a table's own name.";
+    const NO_SPACE = "a source can hold a space only inside the table's own name.";
     expect(() => loadSource('"my schema".orders')).toThrow(
       `bare table name '"my schema".orders' is not a valid source, and ${NO_SPACE} ` +
       'A table outside Google Cloud is written as the entry name');
@@ -3542,12 +3542,13 @@ describe('strict entity sources', () => {
       }
     }
     // A quoted system entry name gets the system entry message. It names the
-    // resource name without quotes, or says kcmd cannot name the table.
+    // resource name without quotes, or says why it names none.
     const SYSTEM = 'projects/acme/locations/us/entryGroups/@bigquery/entries';
     for (const [id, end] of [
       ['"orders"', "; write the table's resource name instead, such as"],
       [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
       [`${TABLE}/"order items"`, `; write the table's resource name instead: '${TABLE}/order items'.`],
+      [TABLE.replace('sales', '"my sales"') + '/orders', `, and ${NO_SPACE}`],
     ]) {
       expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
     }
