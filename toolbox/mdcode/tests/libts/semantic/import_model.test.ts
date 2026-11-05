@@ -865,6 +865,13 @@ describe('profile checks', () => {
       "propertyGraphs/<g>', 'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>' or " +
       "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.",
       UNACCEPTED, badSource('retail.profile.pg.yaml')]],
+    ["the loader warns about a source, apart from a Spanner deployment's profile",
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${
+         SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}, profile: pg}]\n`}),
+      {flavor: 'google', profileFiles: files(orders({source: SPANNER_TABLE, fields: [
+        {name: 'order_id', expression: {dialects: [{dialect: 'POSTGRES', expression: 'order_id'}]}}]}))}],
+     [UNACCEPTED, "[retail.profile.pg.yaml] profile 'pg': field 'orders.order_id' has no " +
+      "expression for SPANNER or ANSI_SQL, and this profile's sources are SPANNER"]],
   ] as const)('checks nothing more when %s', async (_, [input, opts], messages) => {
     const res = await importSemanticModelYaml(input, opts);
     expect([...res.errors, ...res.warnings]).toEqual([messages].flat());

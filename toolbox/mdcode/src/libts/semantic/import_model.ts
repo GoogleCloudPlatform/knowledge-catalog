@@ -1776,7 +1776,7 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, {})) {
+               () => profiles, declaredBy, doc.warnings, {sourceDialects})) {
         doc.warnOrError(error);
       }
       return;
