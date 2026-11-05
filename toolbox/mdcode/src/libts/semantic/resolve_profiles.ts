@@ -1362,34 +1362,6 @@ export function tableDialects(
   return undefined;
 }
 
-// The dialects push may read an ANSI_SQL text of `entities` in when no lookup
-// read their tables: each dialect the table of every concrete entity can
-// have, as tableDialects gives them with `withUnread`, and generic SQL
-// (undefined) when tables in two databases can have different dialects.
-export function possibleDialects(
-    entities: ReadonlyArray<Pick<
-        Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>):
-    Array<string|undefined> {
-  const tables = entities.filter(e => !e.abstract).map(e => {
-    const source = writtenSource(e).trim();
-    // A Cloud SQL instance has one engine, and third-party tables are
-    // taken to share a system.
-    const database = cloudSqlTableOf(source)?.resourceName.split(
-                         '/databases/')[0] ??
-        spannerDatabaseOf(source) ??
-        (thirdPartyEntryOf(source) ? 'third-party' : source);
-    return {database, can: tableDialects(e, true)?.dialects ?? []};
-  });
-  const shared = tables.reduce(
-                     (all: string[]|undefined, {can}) =>
-                         all ? all.filter(d => can.includes(d)) : can,
-                     undefined) ??
-      [];
-  const differ = new Set(tables.map(t => t.database)).size > 1 &&
-      new Set(tables.flatMap(t => t.can)).size > 1;
-  return differ ? [...shared, undefined] : shared;
-}
-
 // Each field of each entity whose table `tableDialects(entity, withUnread)`
 // gives, with that table. An inherited field is listed on each entity that
 // inherits it.
@@ -1493,8 +1465,6 @@ export interface CompletenessOptions extends DialectLoad {
   // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
   // the caller cannot read it either.
   ownSqlOnly?: {dialect?: string|null};
-  // The dialect to judge the profile in when no lookup gave one.
-  asDialect?: string;
 }
 
 /**
@@ -1565,9 +1535,6 @@ export function validateProfileCompleteness(
   // entity the profile leaves out does not decide it.
   const databases = new Map<string, string>();
   const stated: Array<{source: string; lookedUp?: string}> = [];
-  // The dialects every table the profile binds can have, and their system.
-  let possible: string[]|undefined;
-  let tableName = '';
   const profiledByName =
       new Map((profiled.entities ?? []).map(e => [e.name, e]));
   // The entities whose source the loader's reader rejects.
@@ -1592,10 +1559,6 @@ export function validateProfileCompleteness(
     }
     const lookedUp = profiledEntity.sourceDialect;
     stated.push({source: pe.source, lookedUp});
-    const kind = tableDialects(profiledEntity, true);
-    possible = (possible ?? kind?.dialects ?? [])
-                   .filter(d => kind?.dialects.includes(d));
-    tableName = kind?.name ?? tableName;
     // One query reaches every database of a SQL Server instance, so a Cloud SQL
     // table whose engine was not looked up is keyed by its instance too. A
     // third-party table is in the database its entry's fullyQualifiedName
@@ -1620,10 +1583,7 @@ export function validateProfileCompleteness(
         `${at} binds entities in more than one database (${named}); a ` +
         `profile reads from one system a single query can reach`);
   }
-  const dialect = opts.asDialect ?? dialectOfSources(stated);
-  // The dialects the no-text rule judges in: the profile's, or with no
-  // dialect read, every one its tables can have.
-  const judged = dialect ? [dialect] : dialect === null ? possible ?? [] : [];
+  const dialect = dialectOfSources(stated);
 
 
   // The expressions of each entity the profile may bind.
@@ -1801,9 +1761,7 @@ export function validateProfileCompleteness(
       };
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
-  if (judged.length) {
-    const texts = judged.join(', ');
-    const sources = dialect ?? `${tableName} tables`;
+  if (dialect) {
     for (const e of entities) {
       if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
@@ -1813,26 +1771,25 @@ export function validateProfileCompleteness(
             JSON.stringify(expressionSources(f)) ===
                 JSON.stringify(expressionSources(asInModelFile)) &&
             sourcesDialect({entities: [e]}) === dialect;
-        if (noTextFor(f, judged) && !reported) {
+        if (noTextFor(f, [dialect]) && !reported) {
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
-                  texts} or ANSI_SQL, and this profile's sources are ${
-                  sources}${importHint(f, judged[0], baseModel)}`);
+                  dialect} or ANSI_SQL, and this profile's sources are ${
+                  dialect}${importHint(f, dialect, baseModel)}`);
         }
       }
     }
     if (profile.metricsExclude !== '*') {
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
-        if (!excludedMetrics.has(m.name) && noTextFor(m, judged)) {
-          const viaImport =
-              importTranspiles(m as Field, judged[0], baseModel) ?
+        if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
+          const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
               ` add one with '${
                   importCommand('--transpile', baseModel.version)}',` :
               '';
           errors.push(
-              `${at}: metric '${m.name}' has no expression for ${texts} or ` +
-              `ANSI_SQL, and this profile's sources are ${sources}; give it ` +
+              `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
+              `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
               `one,${viaImport} or add it to 'metrics_exclude'`);
         }
       }
@@ -1915,14 +1872,6 @@ export function validateProfileCompleteness(
     warnings.push(
         `${at}: kcmd could not read the SQL of ${what}, so the fields it ` +
         `reads were not checked`);
-  }
-  // With no dialect read, a rule that reads SQL reports what it reports in
-  // every dialect the profile's tables can have.
-  if (dialect === null && possible?.length) {
-    const runs = possible.map(d => validateProfileCompleteness(
-        baseModel, profile, [], {...opts, asDialect: d}));
-    errors.push(...runs[0].filter(
-        e => !errors.includes(e) && runs.every(r => r.includes(e))));
   }
   return errors;
 }

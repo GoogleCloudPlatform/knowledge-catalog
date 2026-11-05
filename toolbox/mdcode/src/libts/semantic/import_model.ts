@@ -5,12 +5,12 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, ParsedDeploymentTarget, parseTarget, resolveModelDeployments, targetProblem} from './deployment_target';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {declaredProfiles, loadProfileFile, namedProfileErrors, plainCopy, possibleDialects, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -822,16 +822,13 @@ function normalizeExpressionDialects(
 }
 
 /**
- * Returns why push's `validateExpressionReferences` rejects the unanchored
- * metric `mt` when its ANSI_SQL text is read in each of `dialects`
- * (`'reaches no declared entity'` or `'reaches multiple entities (...)'`), or
- * `undefined` when it is anchored or one of `dialects` accepts it. An
- * undefined dialect reads that text as generic SQL. When the reason differs
- * between dialects, it names the dialects of each.
+ * Returns why an unanchored metric `mt` is rejected by push's
+ * `validateExpressionReferences` (`'reaches no declared entity'` or
+ * `'reaches multiple entities (...)'`), or `undefined` when anchored or valid.
  */
 function unanchoredMetricProblem(
     mt: Record<string, any>, entityNames: string[],
-    dialects: ReadonlyArray<string|undefined>): string|undefined {
+    impliedDialect?: string): string|undefined {
   // 1. Skip metrics that already declare an `entity` anchor natively or inside
   // a `GOOGLE` `custom_extensions` block.
   if (mt.entity !== undefined ||
@@ -852,32 +849,20 @@ function unanchoredMetricProblem(
       sources.some(s => noSqlReason(s.text, s.dialect) !== undefined)) {
     return undefined;
   }
-  // 3. Flag the unanchored metric if, in each of `dialects`, its parsed
-  // expressions reference zero columns (for example `COUNT(*)`) or span
-  // multiple declared entities.
-  const byProblem = new Map<string, string[]>();
-  for (const dialect of dialects) {
-    const parsed =
-        sources.map(s => columnsForSource(s.text, s.dialect, dialect));
-    const allColumns = parsed.flatMap(c => c ?? []);
-    const reached = entitiesReached(allColumns, entityNames);
-    const problem =
-        parsed.every(c => c !== undefined) && allColumns.length === 0 ?
-        'reaches no declared entity' :
-        reached.length > 1 ?
-        `reaches multiple entities (${reached.join(', ')})` :
-        undefined;
-    if (!problem) return undefined;
-    byProblem.set(
-        problem, [...byProblem.get(problem) ?? [], dialect ?? 'ANSI_SQL']);
+  const parsed =
+      sources.map(s => columnsForSource(s.text, s.dialect, impliedDialect));
+  const allColumns = parsed.flatMap(c => c ?? []);
+
+  // 3. Flag the unanchored metric if its parsed expressions reference zero
+  // columns (e.g. `COUNT(*)`) or span multiple declared entities.
+  const reached = entitiesReached(allColumns, entityNames);
+  if (parsed.every(c => c !== undefined) && allColumns.length === 0) {
+    return 'reaches no declared entity';
   }
-  const problems = [...byProblem];
-  if (problems.length < 2) return problems[0]?.[0];
-  const either = (ds: string[]) => ds.length < 2 ?
-      ds[0] :
-      `${ds.slice(0, -1).join(', ')} or ${ds[ds.length - 1]}`;
-  return problems.map(([problem, ds]) => `${problem} as ${either(ds)}`)
-      .join(' and ');
+  if (reached.length > 1) {
+    return `reaches multiple entities (${reached.join(', ')})`;
+  }
+  return undefined;
 }
 
 /**
@@ -1009,12 +994,12 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
- * `false` when the metric is unanchored and reaches 0 or >1 entities in each
- * of `dialects` so the caller prunes it from `doc.metrics`.
+ * `false` when the metric is unanchored and reaches 0 or >1 entities so the
+ * caller prunes it from `doc.metrics`.
  */
 function repairMetric(
     mt: Record<string, any>, entityNames: string[],
-    dialects: ReadonlyArray<string|undefined>, doc: ImportDocument): boolean {
+    impliedDialect: string|undefined, doc: ImportDocument): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
@@ -1022,7 +1007,7 @@ function repairMetric(
         `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
     return true;
   }
-  const problem = unanchoredMetricProblem(mt, entityNames, dialects);
+  const problem = unanchoredMetricProblem(mt, entityNames, impliedDialect);
   if (problem) {
     // In strict mode nothing is written, so the author edits the input.
     const flavor = doc.strict ? doc.inputVersion : doc.targetVersion;
@@ -1039,27 +1024,6 @@ function repairMetric(
   }
   truncateDescription(mt, mtLabel, doc);
   return true;
-}
-
-/**
- * Maps the database of each Spanner deployment among `deployments` to SPANNER,
- * keyed as `LoadOptions.sourceDialects` keys a Spanner table's database.
- * Spanner creates a property graph only in a GoogleSQL database, so push
- * refuses a Spanner deployment on any other.
- */
-function spannerDeploymentDialects(
-    deployments: Iterable<ParsedDeploymentTarget|undefined>):
-    Map<string, string> {
-  const dialects = new Map<string, string>();
-  for (const d of deployments) {
-    if (d?.engine !== 'spanner') continue;
-    const {project, instance, database} = d.coordinates;
-    dialects.set(
-        `spanner.googleapis.com/projects/${project}/instances/${
-            instance}/databases/${database}`,
-        'SPANNER');
-  }
-  return dialects;
 }
 
 /**
@@ -1090,33 +1054,21 @@ function repairDocument(doc: ImportDocument): void {
   }
 
   // 3. Infer the model's source dialect from its repaired datasets via
-  // `sourcesDialect`, reading the database of each Spanner deployment the
-  // model declares as SPANNER, and repair or prune each metric
-  // (`repairMetric`). When no lookup gave the dialect, a metric is pruned only
-  // when push rejects it in every dialect the tables can have.
+  // `sourcesDialect`, and repair or prune each metric (`repairMetric`). The
+  // pruning infers each metric's entity, so it reads an ANSI_SQL text whose
+  // dialect no lookup gave as generic SQL, as the loader's inference does.
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
-  const pinned = spannerDeploymentDialects(
-      [doc.model, ...parseGoogleBlocks(doc.model.custom_extensions)]
-          .flatMap(m => asRecords(m.deployments))
-          .map(
-              d => typeof d.target === 'string' ? parseTarget(d.target.trim()) :
-                                                  undefined));
-  const entities = doc.datasets.map(ds => {
-    const source = typeof ds.source === 'string' ? ds.source : undefined;
-    const key = source && dialectLookupKey(source.trim());
-    return {
-      abstract: Boolean(ds.abstract),
-      authoredSource: source,
-      dataSource: '',
-      sourceDialect: key ? pinned.get(key) : undefined,
-    };
-  });
-  const impliedDialect = sourcesDialect({entities});
-  const dialects =
-      impliedDialect === null ? possibleDialects(entities) : [impliedDialect];
-  doc.metrics =
-      doc.metrics.filter(mt => repairMetric(mt, entityNames, dialects, doc));
+  const impliedDialect = sourcesDialect({
+    entities: doc.datasets.map(
+        ds => ({
+          abstract: Boolean(ds.abstract),
+          authoredSource: typeof ds.source === 'string' ? ds.source : undefined,
+          dataSource: '',
+        })),
+  }) ?? undefined;
+  doc.metrics = doc.metrics.filter(
+      mt => repairMetric(mt, entityNames, impliedDialect, doc));
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
@@ -1750,18 +1702,12 @@ async function validateOutputDocument(
     // non-strict mode, deduplicating warnings already recorded. Step 2 gives
     // push's error for a field its table cannot run, so the load does not
     // warn about it too.
-    const loadOptions = {
-      bindingOptional: true,
-      warnUnacceptedSource: !doc.strict,
-      fieldTextChecked: true,
-    };
-    // Each Spanner deployment's database is read as SPANNER.
-    const sourceDialects = spannerDeploymentDialects(
-        loadModels(content, loadOptions).models.flatMap(m => {
-          const resolved = resolveModelDeployments(m);
-          return 'error' in resolved ? [] : resolved.deployments;
-        }));
-    const loaded = loadModels(content, {...loadOptions, sourceDialects});
+    const loaded = loadModels(
+        content, {
+          bindingOptional: true,
+          warnUnacceptedSource: !doc.strict,
+          fieldTextChecked: true,
+        });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1815,7 +1761,7 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, {sourceDialects})) {
+               () => profiles, declaredBy, doc.warnings, {})) {
         doc.warnOrError(error);
       }
       return;
@@ -1836,7 +1782,7 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load: {sourceDialects},
+          load: {},
         },
         warn);
     // Push prints each error once.

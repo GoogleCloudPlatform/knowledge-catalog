@@ -112,13 +112,9 @@ agree on every structural row and differ only where a Spanner target has no
     up a Cloud SQL or third-party table's dialect or a Spanner database's.
     `kcmd skills-generate` and `kcmd profiles --print-store` do not look up a
     third-party table's dialect, and they read a Spanner table as `SPANNER`.
-    Import reads a Cloud SQL table whose name has no schema as MySQL. It reads
-    a table in the database a Spanner deployment targets as `SPANNER`, since
-    push refuses that deployment on a PostgreSQL-dialect database. On any
+    Import reads a Cloud SQL table whose name has no schema as MySQL. On any
     other table whose dialect a command has not looked up, kcmd warns only about
-    a field or metric with no text in any dialect the table's name allows.
-    Push rejects such a field, so `kcmd import --input first-party` gives an
-    error for it in the model file and in a profile. A
+    a field or metric with no text in any dialect the table's name allows. A
     BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
