@@ -3692,7 +3692,7 @@ describe('deployments and inline profiles', () => {
     })).toThrow("model 'sales': duplicate deployment name 'prod'");
   });
 
-  test('duplicate deployment targets are rejected, naming both deployments', () => {
+  test('duplicate deployment targets are rejected, naming both deployments, and an empty target is rejected', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [

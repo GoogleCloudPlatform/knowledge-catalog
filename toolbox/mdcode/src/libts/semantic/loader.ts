@@ -2985,7 +2985,8 @@ interface SchemaInput {
 }
 
 // The noun a message gives an entry of each list of named objects in a model
-// document. An entry of `datasets` is an entity in the Google flavor.
+// document. An entry of `datasets` takes its noun from entityWord instead,
+// since the word depends on the flavor.
 const ENTRY_NOUNS = new Map([
   ['semantic_model', 'model'], ['datasets', 'dataset'], ['fields', 'field'],
   ['relationships', 'relationship'], ['metrics', 'metric'],
