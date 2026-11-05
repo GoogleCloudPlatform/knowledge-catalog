@@ -222,12 +222,13 @@ semantic_model:
 entities:
   - name: Customer
     source: ${BQ('customer_prod')}
-    fields: [{ name: key, expression: c_key }]
+    fields: [{ name: key, expression: '"c_key"' }]
 `);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     expect(await profiles()).toBe(0);
-    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .toContain("profile 'prod': warning: [commerce] dataset 'Customer': no primary_key");
+    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n')).toContain(
+        "profile 'prod': warning: [commerce] field 'Customer.key': BigQuery " +
+        'reads "c_key"');
   });
 
   test('the runtime reports a model file that does not load alone', async () => {
@@ -349,9 +350,8 @@ entities:
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
-    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL.replace(
-        '      - name: Order\n        primary_key: [key]\n',
-        '      - name: Order\n'));
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL +
+        '    actions:\n      - name: Close\n        parameters:\n          - {name: reason}\n');
     fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
 entities:
   - name: Customer
@@ -370,7 +370,8 @@ metrics_exclude: [order_count]
     const runtimes = await createSemanticRuntimes(
         {path: dir, profile: 'analytical', ctx: CTX, onWarning: w => warnings.push(w)});
     if ('error' in runtimes) throw new Error(runtimes.error);
-    expect(warnings.join('\n')).toContain("dataset 'Order': no primary_key");
+    expect(warnings.join('\n')).toContain(
+        "action 'Close': parameter 'reason' states no 'type'");
     expect((runtimes[0].model.metrics ?? []).map(m => m.name))
         .toEqual(['avg_lifetime_value']);
   });

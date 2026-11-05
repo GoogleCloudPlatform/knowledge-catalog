@@ -419,8 +419,8 @@ semantic_model:
 });
 
 
-describe('a catalog-only push of a profile file keeps the model file\'s warnings', () => {
-  test('a key neither file states is warned about', async () => {
+describe('a push that deploys no graph gives no graph key warning', () => {
+  test('a keyless entity gets only the catalog\'s warning', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
@@ -430,18 +430,21 @@ describe('a catalog-only push of a profile file keeps the model file\'s warnings
 semantic_model:
   - name: commerce
     entities:
-      - name: Customer
-        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+      - name: Wide
         fields:
-          - { name: key, expression: c_key }
+          - { name: id }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
-                     PROD_PROFILE.replace('    primary_key: [cust_key]\n', ''));
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(await push({validateOnly: true})).toBe(0);
-    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .toContain("[commerce] dataset 'Customer': no primary_key");
+    expect(warnSpy.mock.calls.map(c => String(c[0]))).toEqual([
+      "Warning: model 'commerce' (commerce) is non-executable: the model " +
+          "file leaves entity 'Wide' without a source, and the model " +
+          'declares no named profile. It cannot be queried until it is bound.',
+      "Warning: [commerce] entity 'Wide': no keys declared in the source " +
+          'model; declare primary_key or unique_keys in the model file or ' +
+          'in a profile to record a key in Knowledge Catalog',
+    ]);
   });
 });
 
@@ -919,6 +922,7 @@ function fakeCatalog(opts: {cloudSqlEngine?: CloudSqlEngine} = {}) {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
+  spyOn(P, 'getEntryGroup').mockResolvedValue({status: 200} as any);
   // A list returns entries without their aspects.
   const list = spyOn(P, 'listEntries').mockImplementation(async function*() {
     for (const e of entries.values()) {
@@ -2460,13 +2464,8 @@ semantic_model:
     const error = "Semantic model load error: model 'commerce': the 'data' of " +
         'a GOOGLE custom_extensions block must be a JSON object.';
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-    // The loader prints its schema issues as indented JSON.
-    const loadError = JSON.stringify([{
-      expected: 'string',
-      code: 'invalid_type',
-      path: ['semantic_model', 0, 'custom_extensions', 1, 'data'],
-      message: 'Invalid input: expected string, received number',
-    }], null, 2);
+    const loadError = "model 'commerce': 'data' of entry 2 of " +
+        "'custom_extensions' is 123; it takes a string";
     expect(await push({validateOnly: true})).toBe(1);
     expect(messages(errorSpy)).toBe(
         `Error: Model document 'commerce': Semantic model load error: ${loadError}`);
@@ -2633,7 +2632,7 @@ semantic_model:
   const otherKeys = [
     ['a deployment with no target beside it', () => writeModel(JSON.stringify(
          {...JSON.parse(prod(PROD_SOURCE)), deployments: [{name: 'main'}]})),
-     "'deployments' in a GOOGLE custom_extensions block"],
+     "model 'commerce': deployment 'main': 'target' is missing; it takes a string"],
     ['a deployment with no target in a second block', () => {
        writeModel(prod(PROD_SOURCE));
        const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
@@ -2642,7 +2641,7 @@ semantic_model:
            '      - vendor_name: GOOGLE\n' +
                `        data: '{"deployments": [{"name": "main"}]}'\n    datasets:\n`));
      },
-     "'deployments' in a GOOGLE custom_extensions block"],
+     "model 'commerce': deployment 'main': 'target' is missing; it takes a string"],
     ['a key the block may not set beside it', () => writeModel(JSON.stringify(
          {...JSON.parse(prod(PROD_SOURCE)), bogus: 1})),
      "'bogus' is not a key a GOOGLE custom_extensions block takes"],

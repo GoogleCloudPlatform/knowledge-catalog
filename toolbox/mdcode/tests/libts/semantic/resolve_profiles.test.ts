@@ -1650,7 +1650,9 @@ entities:
     expect(() => loadProfileFile(
                'name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: {dialects: []}}\n',
                'prod'))
-        .toThrow("field 'a': 'expression': dialects: Too small");
+        .toThrow(
+            "field 'a': 'dialects' of 'expression' is an empty list; it " +
+            'takes at least one entry');
   });
 });
 
@@ -2040,10 +2042,14 @@ describe('profile rules', () => {
         `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: ${expression}}\n`;
     expect(() => loadProfileFile(
                file('{dialects: [{dialect: BIGQUERY, expression: x}], note: y}'), 'prod'))
-        .toThrow("field 'a': 'expression': Unrecognized key: \"note\"");
+        .toThrow(
+            "field 'a': unknown key 'note' in 'expression'; it takes " +
+            "'dialects'");
     expect(() => loadProfileFile(
                file('{dialects: [{dialect: BIGQUERY, expression: x, note: y}]}'), 'prod'))
-        .toThrow("field 'a': 'expression': dialects.0: Unrecognized key: \"note\"");
+        .toThrow(
+            "field 'a': unknown key 'note' in entry 1 of 'dialects' of " +
+            "'expression'; it takes 'dialect' and 'expression'");
   });
 
   // A blank expression, one that is only a comment and one that is only its
@@ -3543,9 +3549,6 @@ entities:
         DOC, [{name: 'prod', spec: loadProfileFile(FILE, 'prod')}], 'prod');
     expect(fromSpec).toEqual(fromFile);
     if (fromFile.kind !== 'file') throw new Error(JSON.stringify(fromFile));
-    // A profile's empty primary key warns, as the model file's would.
-    expect(fromFile.warnings)
-        .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");
   });
 
   // A profile file that binds a Cloud SQL table written as its resource name
@@ -3778,9 +3781,8 @@ describe('applyProfile options', () => {
   });
 
   test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
-    // The empty key warns. A Spanner table runs the Spanner-only text, and a
-    // BigQuery table needs it translated. Both read a double-quoted ANSI_SQL
-    // token as text.
+    // A Spanner table runs the Spanner-only text, and a BigQuery table needs
+    // it translated. Both read a double-quoted ANSI_SQL token as text.
     const quoted = base();
     quoted.metrics!.push(
         {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
@@ -3788,7 +3790,6 @@ describe('applyProfile options', () => {
     applyProfile(quoted, rebind(SP('Orders')), {
       warnings: onSpanner, load: {sourceDialects: new Map([[SP_DB, 'SPANNER']])},
     });
-    expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
     expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
     expect(onSpanner).toContain(
         `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
@@ -4303,9 +4304,8 @@ entities:
              }],
            })))
         .toThrow(
-            "profile 'prod': entity 'account': field 'note': 'expression': " +
-            "dialects.1.dialect: Duplicate dialect 'BIGQUERY' in expression " +
-            'dialects.');
+            "profile 'prod': entity 'account': field 'note': Duplicate " +
+            "dialect 'BIGQUERY' in expression dialects.");
     expect(() => applyProfile(base, spec({metricsExclude: ['*']})))
         .toThrow(`profile 'prod': 'metrics_exclude' takes "*" on its own, ` +
                  'not inside a list');
@@ -4437,10 +4437,10 @@ entities:
                shop(false),
                profile({dialects: [{dialect: 'NOPE' as any, expression: 'n'}]}))))
         .toEqual([
-          "profile 'prod': entity 'base': field 'note': 'expression': " +
-              "dialects.0.dialect: Unknown dialect 'NOPE' in expression " +
-              'dialects. Expected one of ANSI_SQL, BIGQUERY, SPANNER, MYSQL, ' +
-              'POSTGRES, ALLOYDB, SQLSERVER, SNOWFLAKE, DATABRICKS.',
+          "profile 'prod': entity 'base': field 'note': Unknown dialect " +
+              "'NOPE' in expression dialects. Expected one of ANSI_SQL, " +
+              'BIGQUERY, SPANNER, MYSQL, POSTGRES, ALLOYDB, SQLSERVER, ' +
+              'SNOWFLAKE, DATABRICKS.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.
@@ -4598,9 +4598,8 @@ entities:
         {dialect: 'BIGQUERY', expression: 'base.orders.'},
       ],
     })))).toEqual([
-      "profile 'prod': entity 'base': field 'note': 'expression': " +
-          "dialects.1.dialect: Duplicate dialect 'BIGQUERY' in expression " +
-          'dialects.',
+      "profile 'prod': entity 'base': field 'note': Duplicate dialect " +
+          "'BIGQUERY' in expression dialects.",
     ]);
     // A binding with a dialect list applies only the texts in the list.
     expect(note(validateProfileCompleteness(shop, profile({
@@ -4696,17 +4695,17 @@ actions:
       rest: {endpoint: e, method: POST}
 `);
     expect(twoKinds).toEqual({
-      error: "profile 'prod': action 'Notify' 'executor': executor requires " +
-          'exactly one kind, but 2 given (mcp, rest)',
+      error: "profile 'prod': action 'Notify': executor requires exactly " +
+          'one kind, but 2 given (mcp, rest)',
     });
     const noTool = viaApply(SHOP, `name: prod
 actions:
   - {name: Notify, executor: {mcp: {server: s}}}
 `);
-    if (!('error' in noTool)) throw new Error('expected an error');
-    expect(noTool.error)
-        .toStartWith(
-            'profile \'prod\': action \'Notify\' \'executor\': mcp.tool: ');
+    expect(noTool).toEqual({
+      error: "profile 'prod': action 'Notify': 'tool' of 'mcp' of " +
+          "'executor' is missing; it takes a string",
+    });
   });
 
   // A named profile states both join column lists itself, so one side alone
@@ -4825,8 +4824,6 @@ entities:
         {from: {document: 'sales', warnings: loadedUnanchored.warnings}});
     if ('error' in ordered) throw new Error(ordered.error);
     expect(ordered.warnings).toEqual([
-      '[sales] dataset \'orders\': no primary_key; the entity\'s KEY will be ' +
-          'empty (invalid for graph generation)',
       '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
           'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
           'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
@@ -4918,18 +4915,6 @@ semantic_model:
     } finally {
       second.mockRestore();
     }
-  });
-
-  // A concrete entity with no key warns; an abstract one, which is never a
-  // node, does not.
-  test('only a concrete entity with no key gives the missing-key warning', () => {
-    const res = profileForDocument(
-        DOC, [{name: 'prod', text: `name: prod\nentities:\n  - name: orders\n    source: "${BQ('o2')}"\n`}],
-        'prod');
-    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
-    const keyWarnings = res.warnings.filter(w => w.includes('no primary_key'));
-    expect(keyWarnings.some(w => w.includes("'orders'"))).toBe(true);
-    expect(keyWarnings.some(w => w.includes("'party'"))).toBe(false);
   });
 
   // The warnings after a profile come in the order a load gives them: a

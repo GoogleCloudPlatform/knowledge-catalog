@@ -1035,10 +1035,13 @@ needs more than push does, in the destination project:
   type that is already there, so a project set up by an older `kcmd` picks up
   template additions; an entry type that is already there is left alone.
 
-The entry group is required. When the entry group or a type already exists,
-init goes on even if you may not create or update it, and reports a refusal to
-update a type as a warning, so a teammate without these permissions can still
-run init in a project someone else set up. Actions and constraints are optional
+The entry group is required. A push to an entry group that does not exist
+stops before writing anything and asks you to run `kcmd init --semantic-model`.
+When the scope in catalog.yaml names the wrong location or group, correct the
+scope instead. When the entry group or a type already exists, init goes on even
+if you may not create or update it, and reports a refusal to update a type as a
+warning, so a teammate without these permissions can still run init in a
+project someone else set up. Actions and constraints are optional
 constructs, so init reports a refusal to create their types as a warning and
 carries on; every model that declares neither still pushes and pulls. Any other
 failure to create a type stops init, rather than leaving a later push to hit an

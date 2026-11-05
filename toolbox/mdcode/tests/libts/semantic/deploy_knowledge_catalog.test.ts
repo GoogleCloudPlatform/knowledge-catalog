@@ -124,6 +124,9 @@ const FINISHED = {'kcmd-push-state': 'finished'};
 // the spies so a test can assert call counts and ordering.
 function stubClient(opts: {
   group?: ApiResult<any>,
+  // Result of getEntryGroup, the preflight's read of the destination group.
+  // Default: 200.
+  getGroup?: ApiResult<any>,
   create?: (entryId: string) => ApiResult<any>,
   update?: ApiResult<any>,
   // Entries the destination entry group already holds (yielded by listEntries).
@@ -162,6 +165,8 @@ function stubClient(opts: {
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
+  const getGroup = spyOn(CatalogClient.prototype, 'getEntryGroup')
+                       .mockImplementation(async () => opts.getGroup ?? ok({}));
   const create = spyOn(CatalogClient.prototype, 'createEntry')
                      .mockImplementation(
                          async (_p, _l, _eg, entryId) =>
@@ -228,6 +233,7 @@ function stubClient(opts: {
               async (project) => (opts.project ?? destProject)(project));
   return {
     group,
+    getGroup,
     create,
     update,
     list,
@@ -1007,6 +1013,44 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
 
 
 describe('deployKnowledgeCatalog: failures', () => {
+  test('an entry group that does not exist stops the push before any write',
+       async () => {
+         const {getGroup, list, create} =
+             stubClient({getGroup: err(404, 'not found')});
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+         expect(result.details)
+             .toBe(
+                 "entry group 'eg' does not exist in location 'us' of " +
+                 "project 'dest'; run 'kcmd init --semantic-model " +
+                 "dest.us.eg' to create it, or correct the scope in " +
+                 'catalog.yaml.');
+         expect(getGroup).toHaveBeenCalledWith('dest', 'us', 'eg');
+         expect(list).not.toHaveBeenCalled();
+         expect(create).not.toHaveBeenCalled();
+       });
+
+  test('a refused read of the entry group lets the push go on', async () => {
+    stubClient({getGroup: err(403, 'denied')});
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+  });
+
+  test('a read of the entry group that throws stops the push', async () => {
+    const {getGroup, list} = stubClient();
+    getGroup.mockImplementation(async () => {
+      throw new TypeError('fetch failed');
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.details).toBe("reading entry group 'eg': fetch failed");
+    expect(list).not.toHaveBeenCalled();
+  });
+
   test('a failed anchor write stops before its children', async () => {
     const {create} = stubClient({
       create: (id) => id === 'sales' ? err(500, 'boom') : ok({}),

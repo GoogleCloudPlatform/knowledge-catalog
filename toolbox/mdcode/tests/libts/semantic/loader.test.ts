@@ -14,7 +14,7 @@ import {join} from 'path';
 
 import { googleDeploymentTargets } from '../../../src/libts/semantic/deployment_target';
 import {DATA_TYPES, isTimeDimension} from '../../../src/libts/semantic/ir';
-import {bareNameSegments, databaseOf, fromDocument, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, writtenSource} from '../../../src/libts/semantic/loader';
+import {bareNameSegments, databaseOf, fromDocument, googleBlockProfiles, HALF_BOUND_JOIN_PROBLEM, loadModels, LoadOptions, loadSemanticModels, writtenSource} from '../../../src/libts/semantic/loader';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
 import { loadProfileFile, validateProfileCompleteness, validateProfileConsistency } from '../../../src/libts/semantic/resolve_profiles';
 
@@ -43,12 +43,13 @@ describe('dataset source and primary key checks', () => {
     );
   });
 
-  test('a dataset without a primary key warns (its KEY would be empty)', () => {
+  // Only a graph needs a key, and its generator warns about a missing one.
+  test('a dataset without a primary key loads with no warning', () => {
     const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/a', fields: [] }] }],
     });
-    expect(warnings.some(w => w.includes('no primary_key'))).toBe(true);
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -434,7 +435,7 @@ describe('abstract datasets and their source constraint', () => {
           primary_key: ['id'], fields: [],
         }],
       }],
-    })).toThrow(/an abstract dataset has no table/);
+    })).toThrow(/an abstract entity has no table/);
   });
 
   test('an abstract dataset with no source loads and is marked abstract', () => {
@@ -1180,14 +1181,12 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
       w.includes("field 'orders.order_status_label'") && w.includes('imported_expression'))).toBe(true);
   });
 
-  test('lineitem_databricks_ext.yaml: unique_keys + no-primary-key warning', () => {
-        const {models, warnings} =
-            loadModels(fixture('lineitem_databricks_ext.yaml'));
+  test('lineitem_databricks_ext.yaml: unique_keys and custom_extensions', () => {
+        const {models} = loadModels(fixture('lineitem_databricks_ext.yaml'));
     const m = models[0];
     const orders = m.entities.find(e => e.name === 'orders')!;
     expect(orders.keys).toEqual([]);
     expect(orders.uniqueKeys).toEqual([['o_orderkey']]);
-    expect(warnings.some(w => w.includes("dataset 'lineitem'") && w.includes('no primary_key'))).toBe(true);
 
         // custom_extensions are preserved verbatim at model / field /
         // relationship / metric levels.
@@ -1509,7 +1508,7 @@ describe('a purely logical model loads only under bindingOptional', () => {
         name: 'm',
         datasets: [{ name: 'Party', abstract: true, source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/party', fields: [] }],
       }],
-    }, { bindingOptional: true })).toThrow(/an abstract dataset has no table/);
+    }, { bindingOptional: true })).toThrow(/an abstract entity has no table/);
   });
 });
 
@@ -1634,12 +1633,13 @@ semantic_model:
 
   test('Google: a bare unknown key is still rejected', () => {
     expect(() => load(GOOGLE, fullModel('dataset', { ai_context: { synonym: ['x'] } })))
-      .toThrow(/synonym/);
+      .toThrow("entity 'orders': unknown key 'synonym' in 'ai_context'; it takes 'instructions', " +
+        "'synonyms', 'examples' and 'custom'");
   });
 
   test("Google: 'custom' must be a mapping", () => {
     expect(() => load(GOOGLE, fullModel('dataset', { ai_context: { custom: ['x'] } })))
-      .toThrow(/must be a mapping/);
+      .toThrow("entity 'orders': 'custom' of 'ai_context' is a list; it takes a mapping");
   });
 
   test("Google: 'custom' cannot hold a standard member", () => {
@@ -1758,8 +1758,10 @@ describe('custom_extensions: where each vendor block is accepted', () => {
 
 describe('relationship description', () => {
   test('vanilla: a plain description is rejected, naming the GOOGLE-block form', () => {
-    expect(() => load(VANILLA, fullModel('relationship', { description: 'd' })))
-      .toThrow(/cannot carry a plain 'description'[\s\S]*vendor_name: GOOGLE/);
+    for (const description of ['d', 5]) {
+      expect(() => load(VANILLA, fullModel('relationship', { description })))
+        .toThrow(/cannot carry a plain 'description'[\s\S]*vendor_name: GOOGLE/);
+    }
   });
   test('Google: a plain description loads', () => {
     const m = load(GOOGLE, fullModel('relationship', { description: 'd' })).models[0];
@@ -2013,16 +2015,21 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
   });
 
   test('a value the Google flavor rejects for the same key fails', () => {
+    const block = 'the GOOGLE custom_extensions block';
     const cases = [
-      ['model', { deployments: [{ name: 'a' }] }],
-      ['model', { deployments: [{ name: 'a', target: G, extra: 1 }] }],
-      ['dataset', { extends: 'base_order' }],
-      ['relationship', { description: 5 }],
-      ['metric', { entity: ['orders'] }],
+      ['model', { deployments: [{ name: 'a' }] }, "deployment 'a': 'target' is missing; it takes a string"],
+      ['model', { deployments: [{ name: 'a', target: G, extra: 1 }] },
+        "deployment 'a': unknown key 'extra'; it takes 'name', 'target' and 'profile'"],
+      ['model', { deployments: null }, `${block}: 'deployments' is empty; it takes a list`],
+      ['dataset', { extends: 'base_order' }, `${block}: 'extends' is 'base_order'; it takes a list`],
+      ['dataset', { extends: [1, 2] }, `${block}: entry 1 of 'extends' is 1; it takes a string\n` +
+        `${LABEL.dataset}: ${block}: entry 2 of 'extends' is 2; it takes a string`],
+      ['relationship', { description: 5 }, `${block}: 'description' is 5; it takes a string`],
+      ['metric', { entity: ['orders'] }, `${block}: 'entity' is a list; it takes a string`],
     ] as const;
-    for (const [level, data] of cases) {
+    for (const [level, data, message] of cases) {
       expect(() => load(VANILLA, atLevel(level, google(data)))).toThrow(
-        `${LABEL[level]}: '${Object.keys(data)[0]}' in a GOOGLE custom_extensions block: `);
+        new Error(`Semantic model load error: ${LABEL[level]}: ${message}`));
     }
     expect(() => load(VANILLA, atLevel('metric', google({ entity: 'nope' })))).toThrow(
       "metric 'order_count': 'entity' names 'nope', which is not a dataset in this model.");
@@ -2096,12 +2103,6 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       .toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block sets a key twice");
   });
 
-  test('a value error is reported on one line', () => {
-    expect(() => load(VANILLA, atLevel('model', google({ deployments: null })))).toThrow(
-      "model 'm': 'deployments' in a GOOGLE custom_extensions block: Invalid input: expected array, " +
-      'received null');
-  });
-
   test("a metric's block entity fills authoredEntity and entity, so COUNT(*) gives no warning", () => {
     const { models, warnings } = load(VANILLA, fullModel('metric', {
       expression: expr('COUNT(*)'), custom_extensions: [google({ entity: 'orders' })],
@@ -2153,7 +2154,7 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
 
     // In the Google flavor, extends is still a list.
     expect(() => load(GOOGLE, fullModel('dataset', { extends: 'Party' as any }))).toThrow(
-      'expected array, received string');
+      "entity 'orders': 'extends' is 'Party'; it takes a list");
   });
 
   test("a 'Google' or 'google' block is read as a GOOGLE block", () => {
@@ -2856,6 +2857,57 @@ describe('what a vanilla document must bind', () => {
 });
 
 describe('closed objects: custom_extensions and dimension', () => {
+  // The message names the object, as its flavor calls it, and the key. A
+  // vanilla document writes an expression only as a mapping, and its lists
+  // leave out the keys only the Google flavor takes.
+  const takes = (keys: string[]) =>
+    `it takes ${keys.slice(0, -1).map(k => `'${k}'`).join(', ')} and '${keys.at(-1)}'`;
+  for (const [v, entity, expression, google] of [
+    [VANILLA, 'dataset', 'a mapping', false], [GOOGLE, 'entity', 'a string or a mapping', true]] as const) {
+    const only = (...keys: string[]) => (google ? keys : []);
+    test(`${v}: an unknown or empty key names its object and the key`, () => {
+      for (const [level, patch, message] of [
+        ['relationship', { through: 'OrderItem' }, "relationship 'orders_to_customers': unknown key 'through'; " +
+          takes(['name', 'from', 'to', 'from_columns', 'to_columns', ...only('description'), 'ai_context', 'custom_extensions'])],
+        ['dataset', { colour: 'red' }, `${entity} 'orders': unknown key 'colour'; ` + takes(['name', 'source', 'primary_key',
+          'unique_keys', 'description', 'ai_context', 'fields', 'custom_extensions', ...only('extends', 'abstract')])],
+        ['metric', { colour: 'red' }, "metric 'order_count': unknown key 'colour'; " + takes(['name', 'expression',
+          'datatype', 'description', 'ai_context', 'custom_extensions', ...only('entity')])],
+        ['dataset', { custom_extensions: null }, `${entity} 'orders': 'custom_extensions' is empty; it takes a list`],
+        ['field', { colour: 'red', size: 3 }, "field 'orders.customer_id': unknown keys 'colour' and 'size'; it takes " +
+          "'name', 'expression', 'datatype', 'description', 'label', 'dimension', 'ai_context' and 'custom_extensions'"],
+        ['dataset', { name: undefined }, `${entity} number 1: 'name' is missing; it takes a string`],
+        ['field', { name: undefined }, `field number 2 of ${entity} 'orders': 'name' is missing; it takes a string`],
+        ['dataset', { primary_key: { id: 1 } }, `${entity} 'orders': 'primary_key' is a mapping; it takes a list`],
+        ['dataset', { primary_key: 'id\nname' }, `${entity} 'orders': 'primary_key' is a string; it takes a list`],
+        ['metric', { expression: 5 }, `metric 'order_count': 'expression' is 5; it takes ${expression}`],
+        ['field', { dimension: { is_time: 'yes' } }, "field 'orders.customer_id': 'is_time' of 'dimension' is 'yes'; it takes true or false"],
+        ['relationship', { from_columns: '' }, "relationship 'orders_to_customers': 'from_columns' is ''; it takes a list"],
+        ['relationship', { to_columns: undefined }, `relationship 'orders_to_customers': ${HALF_BOUND_JOIN_PROBLEM}`],
+      ] as const) {
+        expect(() => load(v, fullModel(level, patch))).toThrow(new Error(`Semantic model load error: ${message}`));
+      }
+    });
+  }
+  test("Google: the message names an 'entities' list, a constraint, an action and its parameter", () => {
+    expect(() => load(GOOGLE, { name: 'm', entities: [] })).toThrow(
+      "model 'm': 'entities' is an empty list; it takes at least one entry");
+    expect(() => load(GOOGLE, { name: 'm', datasets: [] })).toThrow(
+      "model 'm': 'datasets' is an empty list; it takes at least one entry");
+    expect(() => load(GOOGLE, { name: 'm', entites: [] })).toThrow(new Error(
+      "Semantic model load error: model 'm': 'entities' is missing; it takes a list\n" +
+      "model 'm': unknown key 'entites'; it takes 'name', 'description', 'ai_context', 'entities', " +
+      "'relationships', 'metrics', 'custom_extensions', 'deployments', 'actions' and 'constraints'"));
+    expect(() => load(GOOGLE, { ...fullModel(), constraints: [{ name: 'c', severity: 'HIGH', colour: 'red' }],
+      actions: [{ name: 'close', executor: { mcp: { server: 's', tool: 't', extra: 1 } },
+        parameters: [{ name: 'reason', colour: 'red' }] }] })).toThrow(
+      "action 'close': unknown key 'extra' in 'mcp' of 'executor'; it takes 'server' and 'tool'\n" +
+      "parameter 'reason' of action 'close': unknown key 'colour'; it takes 'name', 'type', 'datatype', " +
+      "'concept', 'field', 'description', 'label', 'ai_context', 'required' and 'default'\n" +
+      "constraint 'c': 'severity' is 'HIGH'; it takes 'critical', 'high', 'medium' or 'low'\n" +
+      "constraint 'c': unknown key 'colour'; it takes 'name', 'judgment', 'description', 'on_violation', 'severity' " +
+      "and 'ai_context'");
+  });
   for (const v of FLAVORS) {
     test(`${v}: an unknown key inside a custom_extensions entry is rejected`, () => {
       expect(() => load(v, fullModel('dataset', {
@@ -3121,7 +3173,9 @@ describe('per-engine expression lists', () => {
             },
           }],
         }],
-      })).toThrow(/unrecognized_keys|Unrecognized key/i);
+      })).toThrow(
+          "field 'orders.id': unknown key 'note' in entry 1 of 'dialects' of 'expression'; it takes " +
+          "'dialect' and 'expression'");
     }
   });
 
@@ -3603,7 +3657,7 @@ describe('deployments and inline profiles', () => {
         { name: 'prod', target: '   ' },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
-    })).toThrow('Too small: expected string to have >=1 characters');
+    })).toThrow("deployment 'prod': 'target' is empty; it takes a non-empty string");
   });
 
   test('a deployment entry with an unknown key or an empty name or profile is rejected', () => {
@@ -3613,7 +3667,7 @@ describe('deployments and inline profiles', () => {
         { name: 'prod', target: BQ_TARGET, profle: 'spanner_binding' },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
-    })).toThrow(/Unrecognized key.*profle/);
+    })).toThrow("deployment 'prod': unknown key 'profle'; it takes 'name', 'target' and 'profile'");
 
     expect(() => load(GOOGLE, {
       name: 'sales',
@@ -3629,7 +3683,7 @@ describe('deployments and inline profiles', () => {
         { name: 'prod', target: BQ_TARGET, profile: '' },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
-    })).toThrow('Too small: expected string to have >=1 characters');
+    })).toThrow("deployment 'prod': 'profile' is empty; it takes a non-empty string");
   });
 
   test(

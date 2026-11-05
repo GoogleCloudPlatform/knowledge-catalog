@@ -201,7 +201,9 @@ export function generateCatalogResources(
     entityEntryName.set(entity.name, names.entry(entityId));
     if (v2 ? lacksKeys(model, entity) : !entity.keys || !entity.keys.length) {
       warnings.push(
-          `entity '${entity.name}': no keys declared in the source model`);
+          `entity '${entity.name}': no keys declared in the source model; ` +
+          `declare primary_key or unique_keys in the model file or in a ` +
+          `profile to record a key in Knowledge Catalog`);
     }
     entries.push({
       name: names.entry(entityId),

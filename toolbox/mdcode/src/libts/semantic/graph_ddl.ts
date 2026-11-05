@@ -149,8 +149,7 @@ export function generateGraphDdl(
   // A graph node table requires a non-empty KEY: the entity's primary key, else
   // its first unique key (nodeKey). An entity with neither cannot form a valid
   // node, so skip it (and, below, any edge that references it) rather than emit
-  // `KEY()` — invalid DDL. The loader already warns about the missing key; this
-  // records the resulting structural drop.
+  // `KEY()` — invalid DDL.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
     // An abstract entity is intentionally table-less: skip its node table (it
