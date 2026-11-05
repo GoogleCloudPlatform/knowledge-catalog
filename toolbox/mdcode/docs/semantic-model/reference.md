@@ -76,7 +76,7 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. With the second-generation types (the default), it also deletes a local profile file or overview sidecar the pull did not write. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write. |
 
 ### import
 
@@ -623,9 +623,11 @@ the metadata stores and what is never stored, see
 
 ### The second-generation types
 
-Push and pull use a newer set of Knowledge Catalog types by default.
-`KC_V2_ASPECTS=0` temporarily restores the first-generation types described
-above; that path will be removed.
+Push and pull use a newer set of Knowledge Catalog types.
+`KC_V2_ASPECTS=0` temporarily makes push write the first-generation types
+described above instead; that path will be removed. Pull always reads the
+newer types: it rebuilds no model pushed with the first-generation types, and
+warns about it instead.
 
 Each relationship other than a many-to-many association has an entry of its
 own. Entry ids are `<model>`, `<model>/entities/<entity>`,

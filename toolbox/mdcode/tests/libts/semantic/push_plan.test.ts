@@ -25,6 +25,7 @@ import {profiles, pull, push} from '../../../src/tool/commands';
 
 describe('push, profiles and pull', () => {
   const CTX = new ApiContext('test-project', 'us', 'test-token');
+  const KC_OPTS = {project: 'test-project', location: 'us', entryGroup: 'sales_eg', v2Aspects: true};
   let dir = '';
   let cwd = '';
 
@@ -156,7 +157,7 @@ semantic_model:
     expect(errors).not.toContain('spanner_binding');
   });
 
-  test('pull reconstructs deployments in declaration order, warns that deployment names were not recovered, and round-trips each store\'s source cleanly (one database per model)', async () => {
+  test('pull writes deployments back as declared, and each store\'s source as written (one database per model)', async () => {
     const eg = setupWorkspace();
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -164,9 +165,8 @@ semantic_model:
     const bqGraph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
 
-    // Primary model pushed without `emitExpressions` (the default push) and
-    // pulled through the CLI: a BigQuery entity and two deployments in
-    // [Spanner, BigQuery] order.
+    // Primary model pushed and pulled through the CLI: a BigQuery entity and
+    // two deployments in [Spanner, BigQuery] order.
     const salesYaml = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -182,36 +182,28 @@ semantic_model:
         fields: [{ name: id, expression: id }]
 `;
     const {models: [sales]} = loadModels(salesYaml);
-    const {entries, entryLinks} = generateCatalogResources(
-        sales, {project: 'test-project', location: 'us', entryGroup: 'sales_eg'});
-    const pulled = modelsFromCatalogResources(entries, entryLinks);
+    const {entries} = generateCatalogResources(sales, KC_OPTS);
+    const pulled = modelsFromCatalogResources(entries);
 
     spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue(pulled);
 
     const code = await pull();
     expect(code).toBe(0);
 
-    const warnings = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(warnings).toContain('deployment names were not recovered');
-    expect(warnings).not.toContain('no representation');
+    expect(warnSpy).not.toHaveBeenCalled();
 
+    // The rebuilt file loads and keeps the deployments as declared, the field's
+    // expression and the source as written.
     const written = fs.readFileSync(path.join(eg, 'sales.yaml'), 'utf8');
-    expect(written).not.toContain('deployment_target');
-    expect(written).not.toContain('deploymentTargets');
-    expect(written).not.toContain('custom_extensions');
-
-    // The rebuilt file (whose fields came back unbound because the default push
-    // omits `emitExpressions`) loads and preserves deployment targets in
-    // declaration order and the source as written.
     const loaded = loadModels(written);
     expect(loaded.models).toHaveLength(1);
     const m = loaded.models[0];
     expect(m.deployments).toEqual([
-      {name: 'deployment_1', target: spGraph},
-      {name: 'deployment_2', target: bqGraph},
+      {name: 'sp_prod', target: spGraph},
+      {name: 'bq_prod', target: bqGraph},
     ]);
     const byName = new Map(m.entities.map(e => [e.name, e]));
-    expect(byName.get('bq_uri')!.fields[0].expression).toBeUndefined();
+    expect(byName.get('bq_uri')!.fields[0].expression).toBe('id');
     expect(byName.get('bq_uri')!.authoredSource)
         .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/items');
     expect(byName.get('bq_uri')!.dataSource).toBe('p.d.items');
@@ -261,16 +253,13 @@ ${sys.target ? `    deployments:\n      - name: prod\n        target: ${sys.targ
         fields: [{ name: id, expression: id }]
 `;
       const [authoredSys] = loadModels(sysYaml).models;
-      const kcRes = generateCatalogResources(
-          authoredSys,
-          {project: 'test-project', location: 'us', entryGroup: 'sales_eg', emitExpressions: true});
-      const [recovered] =
-          modelsFromCatalogResources(kcRes.entries, kcRes.entryLinks).models;
+      const {entries} = generateCatalogResources(authoredSys, KC_OPTS);
+      const [recovered] = modelsFromCatalogResources(entries).models;
       const {yaml: serialized, warnings: serWarnings} = serializeModel(recovered);
       expect(serWarnings).toEqual([]);
       const [reloaded] = loadModels(serialized).models;
       expect(reloaded.deployments).toEqual(
-          sys.target ? [{name: 'default', target: sys.target}] : undefined);
+          sys.target ? [{name: 'prod', target: sys.target}] : undefined);
       expect(reloaded.entities[0].authoredSource).toBe(sys.source);
       expect(reloaded.entities[0].dataSource).toBe(sys.expectedDataSource);
     }

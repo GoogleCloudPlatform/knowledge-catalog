@@ -1,20 +1,18 @@
-// The entries and the entry link a push with KC_V2_ASPECTS off (first-
-// generation aspects plus a file copy) writes for a tiny model, captured from
-// production so tests need not build them with the first-generation emitter.
+// The entries a push with KC_V2_ASPECTS off (first-generation aspects plus a
+// file copy) writes for a tiny model, captured from production so tests need
+// not build them with the first-generation emitter.
 //
 // Captured 2026-11-04 (b/575695037): `kcmd push` with KC_V2_ASPECTS unset, at
 // main 075d6d3a, of the model in FIRST_GEN_MODEL_FILE into
 // projects/kc-looker-external/locations/global/entryGroups/
 // kcmd-v1-prod-test-20261104 (kept), then read back with the Dataplex REST API:
-// list, lookupEntry view=ALL per entry, and lookupEntryLinks per entry.
+// list, and lookupEntry view=ALL per entry.
 //
 // Trimmed to what kcmd reads: create/update times and empty aspectSource are
 // dropped. The entries are as CatalogClient returns them, after _fixEntry: the
 // project numbers 655216118709 (dataplex-types) and 634224303705
 // (kc-looker-external) in entry and aspect types are replaced by the project
-// ids, and aspects are keyed `<project>.<location>.<type>`. The link is as
-// lookupEntryLinks returns it, unfixed, so its name, types and entry
-// references keep the project numbers.
+// ids, and aspects are keyed `<project>.<location>.<type>`.
 //
 // What production stores, as captured:
 // - the model entry `shop`: its semantic-model aspect holds no data, and so no
@@ -27,10 +25,10 @@
 // - the file copy `shop.files.shop.yaml`, of the custom semantic-model-file
 //   type in the destination project;
 // - the relationship as a `schema-join` entry link between the two entity
-//   entries, carrying the schema-join aspect;
+//   entries, which is not kept here, since pull reads no entry link;
 // - the entry group's own entry, which Dataplex lists with the others.
 
-import type {Entry, EntryLink} from '../../../../src/libts/gcp/dataplex';
+import type {Entry} from '../../../../src/libts/gcp/dataplex';
 
 // Where the entries were captured.
 export const FIRST_GEN_OPTS = {
@@ -181,45 +179,8 @@ const ENTRIES: Entry[] = [
   },
 ];
 
-const NUMBERED_GROUP =
-    'projects/634224303705/locations/global/entryGroups/kcmd-v1-prod-test-20261104';
-const LINKS: EntryLink[] = [{
-  name: `${NUMBERED_GROUP}/entryLinks/shop-placed-by`,
-  entryLinkType: 'projects/655216118709/locations/global/entryLinkTypes/schema-join',
-  aspects: {
-    '655216118709.global.schema-join': {
-      aspectType: 'projects/655216118709/locations/global/aspectTypes/schema-join',
-      data: {
-        joins: [{
-          source: {
-            name: 'kc-looker-external.kcmd_demo.orders',
-            fields: ['customer_id'],
-          },
-          target: {
-            name: 'kc-looker-external.kcmd_demo.customers',
-            fields: ['customer_id'],
-          },
-          type: 'FOREIGN_KEY',
-          inferenceSource: 'USER',
-        }],
-        userManaged: true,
-      },
-    },
-  },
-  // schema-join is undirected, and Dataplex returns its references with no
-  // `type`, which EntryReference requires.
-  entryReferences: [
-    {name: `${NUMBERED_GROUP}/entries/shop.entities.orders`},
-    {name: `${NUMBERED_GROUP}/entries/shop.entities.customers`},
-  ] as EntryLink['entryReferences'],
-}];
-
 // A fresh copy of the captured entries, which a test may change.
 export function firstGenEntries(): Entry[] {
   return structuredClone(ENTRIES);
 }
 
-// A fresh copy of the captured schema-join link.
-export function firstGenLinks(): EntryLink[] {
-  return structuredClone(LINKS);
-}

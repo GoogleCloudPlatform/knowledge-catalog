@@ -98,12 +98,12 @@ export function actionOwnedPrefix(modelId: string): string {
 //     drops an unbound field while keeping the entity whose key still binds,
 //     and a projected parameter no longer prunes its action, so the entry goes
 //     out naming a field the `schema` aspect does not carry;
-//   - the concept is a relationship. Pull rebuilds relationships from
-//     `schema-join` entry links alone, and a link records its two endpoints
-//     and nothing else, so an association's own fields come back from no
-//     entry. The parameter still publishes intact either way -- the loader
-//     resolved its type and wording before any of this -- so what is lost is
-//     only the projection, and only on the way back.
+//   - the concept is a relationship. A relationship's entry records its
+//     endpoints and join columns but no fields of its own, and an association
+//     has no entry, so an association's own fields come back from no entry.
+//     The parameter still publishes intact either way -- the loader resolved
+//     its type and wording before any of this -- so what is lost is only the
+//     projection, and only on the way back.
 function unrecoverable(
     concept: string, field: string|undefined, relationships: Set<string>,
     published: Map<string, DeclaredConcept>|null,
@@ -462,10 +462,10 @@ function parseDefaultFromAspect(raw: unknown): unknown {
 // so there is nothing to recover.
 //
 // Unlike readParameter, this resolves nothing against the pulled model. It
-// could not do so honestly if it tried: a pull recovers relationships from the
-// schema-join entry links, so a many-to-many edge is never among them, and
-// every entry naming one would look unresolvable on a model that is perfectly
-// well-formed. Nothing here needs the answer, so nothing asks.
+// could not do so honestly if it tried: a pull recovers relationships from
+// their own entries, and a many-to-many edge has none, so every entry naming
+// one would look unresolvable on a model that is perfectly well-formed.
+// Nothing here needs the answer, so nothing asks.
 function readAffectedConcept(raw: any, actionName: string, warnings: string[]):
     AffectedConcept|undefined {
   const concept = typeof raw?.concept === 'string' ? raw.concept : '';

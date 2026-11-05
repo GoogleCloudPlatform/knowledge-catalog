@@ -63,21 +63,7 @@ function yamlFixtures(dir: string): string[] {
 // that reason, so a new mistake in one of them is still caught.
 type SchemaError = NonNullable<ValidateFunction['errors']>[number];
 const EXCLUDED:
-    Array<{files: Set<string>; reason: (e: SchemaError) => boolean}> = [
-      // Pull goldens that record the fallback output of pull rebuilding a model
-      // from first-generation aspects, which hold no metric expression. They
-      // are fallback output rather than authored documents, so they stay
-      // excluded.
-      {
-        files: new Set([
-          'actions_place_order.pull.golden.yaml',
-          'sales_bq_graph_target.pull.golden.yaml',
-          'star_orders_customer.pull.golden.yaml',
-        ]),
-        reason: e => e.keyword === 'required' &&
-            e.params.missingProperty === 'expression',
-      },
-    ];
+    Array<{files: Set<string>; reason: (e: SchemaError) => boolean}> = [];
 
 // The schema's errors, one per line.
 const describeErrors = (errors: SchemaError[]) =>

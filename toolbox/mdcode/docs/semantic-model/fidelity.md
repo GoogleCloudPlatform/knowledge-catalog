@@ -58,19 +58,19 @@ agree on every structural row and differ only where a Spanner target has no
 3. **Expressions and dimension role.** The second-generation types (the
    default) store each field's expression in its entity's `sql-expressions`
    aspect, and its dimension role and `is_time` in the `schema` aspect, and
-   `pull` rebuilds both from there. The first-generation types
-   (`KC_V2_ASPECTS=0`) omit the per-field `semantics` block, so a model pushed
-   with them comes back with no field expression and no dimension marker.
+   `pull` rebuilds both from there. The first-generation types that a push
+   with `KC_V2_ASPECTS=0` writes omit the per-field `semantics` block, and
+   pull rebuilds no model pushed with them.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
    is rejected. It must also reduce to one supported aggregate over one
    operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
    rejected.
-5. **Metric type.** When rebuilding from v1 catalog metadata, a metric's
-   data type round-trips only for a concrete type (e.g. `Decimal`) — an
-   untyped, `String`, or `Opaque` metric comes back un-typed.
+5. **Metric type.** A metric's data type round-trips only for a concrete type
+   (e.g. `Decimal`) — an untyped, `String`, or `Opaque` metric comes back
+   un-typed.
 6. **Relationship name.** Relationship names come back lowercased
    (`Places_Order` → `places_order`) — the catalog stores the name only in the
-   link id. See [Writer-side follow-up](#writer-side-follow-up).
+   link id.
 7. **Guidelines aspect.** The `guidelines` aspect exists only for the model,
    entities, and metrics — not fields or relationships, so field- and
    relationship-level `ai_context.instructions` has no Knowledge Catalog home (a
@@ -153,8 +153,8 @@ agree on every structural row and differ only where a Spanner target has no
     the model's entries, and `pull` rebuilds one profile file per named
     profile from them. The catalog stores no profile's actions, so a pulled
     profile file keeps the actions the local one binds. The first-generation
-    types (`KC_V2_ASPECTS=0`) hold no profile, so a pull with them writes no
-    profile file and keeps the local ones.
+    types (`KC_V2_ASPECTS=0`) hold no profile, and pull rebuilds no model
+    pushed with them.
 15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
@@ -192,8 +192,8 @@ second-generation types, the default, expressions are stored in the
 `ai_context.synonyms` / `examples`, field-level `ai_context` (only model,
 entity, and metric `instructions` have a home, in the `guidelines` aspect), or
 the original vendor SQL (`importedExpression` — for example the `SNOWFLAKE` or
-`DATABRICKS` form a metric was imported from). A pull of a model pushed with
-them cannot return any of those; they survive only in your authored document.
+`DATABRICKS` form a metric was imported from). Pull rebuilds no model pushed
+with them, so those survive only in your authored document.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -231,8 +231,8 @@ that first pass is byte-for-byte stable.
 pull intact. Whether a `concept` is an entity or an edge is not recorded, so
 nothing about it has to be re-resolved — and nothing can go stale. That matters
 most for a many-to-many relationship, which never reaches the catalog at all: a
-pull recovers relationships from the schema-join entry links, which carry the
-foreign-key edges only, so a concept naming an M:N edge would look unresolvable
+pull recovers each relationship from its own entry, and a many-to-many
+relationship has none, so a concept naming an M:N edge would look unresolvable
 on a model that is perfectly well-formed. It comes back untouched instead.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
@@ -317,50 +317,30 @@ and round-trip losslessly through `pull` — see
 section describes. Comments, key order and formatting are not kept.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
-With the second-generation types (the default), pull rebuilds the model file,
-profile files and overview sidecars from the metadata, and writes each metric's
-entity as `entity:`, declared or derived. See
-[Reference](reference.md#the-second-generation-types). A model an older `kcmd`
-pushed is left out with a warning.
+Pull reads the second-generation types. It rebuilds the model file, profile
+files and overview sidecars from the metadata, and writes each metric's entity
+as `entity:`, declared or derived. See
+[Reference](reference.md#the-second-generation-types). A model an older
+`kcmd` pushed with the first-generation types is left out with a warning.
 
-`pull` returns what push wrote — the **Recovered by `pull`** column above is the
-summary. Two things about *how* it comes back:
+`pull` returns what push wrote. When the push deployed a graph, what push
+wrote was already pruned to the bound view (see
+[To Knowledge Catalog](#to-knowledge-catalog)), so pull returns that view.
 
 **Normalized** — the content survives, the form changes:
 
-- Relationship *names* come back lowercased (`Places_Order` →
-  `places_order`); the catalog stores the name only in the link id. See
-  [Writer-side follow-up](#writer-side-follow-up).
-- Field types round-trip except one collapse: a field authored as `String`
-  comes back un-typed (both no type and `String` store `dataType STRING`, and
-  `pull` writes no `datatype` for either; see footnote ²). A metric's data
-  type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
-  `String`, or `Opaque` metric comes back un-typed, because the metric aspect
-  stores a data type but no metadata type to mark it `Opaque`.
-- When rebuilding from v1 catalog metadata (`KC_V2_ASPECTS=0`), a field's
-  dimension role is omitted because the v1 `schema` aspect carries no
-  per-field `semantics` block.
-- Ordering: field order within each entity is preserved, but the order of
-  entities and metrics is not — they come back in the catalog's own order, not
-  the authored one. Comments in the original YAML are not preserved.
+- A field or metric typed `Opaque` comes back with no `datatype`, since push
+  stores one with no type as `Opaque` too.
+- `ai_context` comes back in the object form, and its custom members come
+  back sorted by name.
+- A profile's `metrics_exclude` comes back as `"*"` when it excludes every
+  metric, and otherwise as a list in name order.
+- Entities, relationships and metrics come back sorted by name. Field order
+  within each entity is kept.
 
 **So a file rebuilt from the metadata is not your original file.** Treat a
 rebuilt document as a faithful copy of the catalog metadata rather than of the
 authored model, and keep the authored document as the source of truth.
-
-## Writer-side follow-up
-
-One reduction above is a limit of what push currently *writes* rather than of
-what pull can recover. It is recorded here as a write-side follow-up; the reader
-(pull) already returns everything the catalog holds.
-
-- **Relationship names.** The `schema-join` aspect type's `metadataTemplate` has
-  no field for the relationship name, so push cannot store it and pull recovers
-  it from the link id — which is lowercased, with each underscore written as a
-  hyphen (the entry-link id format forbids both). Pull reads each hyphen back
-  as an underscore, but the original casing is lost. Returning the name verbatim
-  requires adding a name field to the built-in `schema-join` aspect type in
-  Knowledge Catalog (server-side), after which the client write/read is trivial.
 
 (A deployment target in no supported form is **not** a pull gap. Every push
 rejects it at the validation gate before anything is written, a catalog-only

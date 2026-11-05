@@ -3698,9 +3698,8 @@ export function writtenSource(
 // first. A BigQuery or BigLake resource URI becomes the dot-separated table
 // string. A Spanner, AlloyDB or Cloud SQL resource URI is returned as the URI,
 // with the leading `//`. Anything else is returned trimmed. Shared by the
-// loader (`parseSource`) and the Knowledge Catalog reader
-// (`dataSourceFromResource`) so `readRelationships` matches `Entity.dataSource`
-// against the `schema-join` aspect's table names.
+// loader (`parseSource`) and the Knowledge Catalog reader (`readEntityV2`), so
+// a pulled entity gets the `dataSource` loading its source would give.
 export function sourceToDataSource(source: string): string {
   const value = asResourceUri(source.trim());
   const bqUri = value.match(BIGQUERY_TABLE_URI);
