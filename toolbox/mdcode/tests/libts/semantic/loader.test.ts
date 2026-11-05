@@ -3547,13 +3547,14 @@ describe('strict entity sources', () => {
         expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
       }
     }
-    // A quoted system entry name gets the system entry message. It names the
-    // resource name without quotes, or says why it names none.
+    // A system entry name, quoted or not, gets the system entry message. It
+    // names the resource name without quotes only when the loader accepts it.
     const SYSTEM = 'projects/acme/locations/us/entryGroups/@bigquery/entries';
     for (const [id, end] of [
       ['"orders"', "; write the table's resource name instead, such as"],
       [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
       [`${TABLE}/"order items"`, `; write the table's resource name instead: '${TABLE}/order items'.`],
+      [`${TABLE}/ order.items`, "; write the table's resource name instead, such as"],
       [TABLE.replace('sales', '"my sales"') + '/orders', `, and ${NO_SPACE}`],
     ]) {
       expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
