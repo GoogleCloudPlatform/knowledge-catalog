@@ -44,6 +44,7 @@
 // columns) is serialized; the junction detail is dropped with a note.
 
 import * as yaml from 'yaml';
+import {stringifyString} from 'yaml/util';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, OSSIE_VERSION, writtenSource} from './loader';
@@ -217,12 +218,37 @@ export function serializeModel(
 // `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
 // round-trip across tools.
 function render(doc: Record<string, any>, opts: SerializeOptions): string {
-  return opts.compactFlow ? renderCompact(doc) : yaml.stringify(doc, {
+  if (opts.compactFlow) return renderCompact(doc);
+  const document = new yaml.Document(doc, {
     aliasDuplicateObjects: false,
     compat: 'yaml-1.1',
-    lineWidth: opts.lineWidth ?? 80,
+    customTags: [ONE_LINE_STRING],
   });
+  yaml.visit(document, {
+    Pair(_, pair) {
+      if (yaml.isScalar(pair.key) && pair.key.value === 'source' &&
+          yaml.isScalar(pair.value)) {
+        pair.value.format = ONE_LINE;
+      }
+    },
+  });
+  return document.toString({lineWidth: opts.lineWidth ?? 80});
 }
+
+// A `source` is written on one line whatever its length, so a table name that
+// holds a space is never folded onto the next line.
+const ONE_LINE = 'ONE_LINE';
+const ONE_LINE_STRING: yaml.ScalarTag = {
+  tag: 'tag:yaml.org,2002:str',
+  format: ONE_LINE,
+  default: true,
+  identify: value => typeof value === 'string',
+  resolve: value => value,
+  stringify: (item, ctx, onComment, onChompKeep) => stringifyString(
+      item as yaml.Scalar,
+      {...ctx, actualString: true, options: {...ctx.options, lineWidth: 0}},
+      onComment, onChompKeep),
+};
 
 // Renders "leaf" collections in flow style so the output matches the compact
 // convention the semantic-model guides author by hand: a sequence whose items

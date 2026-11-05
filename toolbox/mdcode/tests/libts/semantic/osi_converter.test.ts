@@ -1204,6 +1204,16 @@ describe('dual-version model serialization', () => {
     ]);
   });
 
+  test('writes a source on one line whatever its length', () => {
+    const source = 'bigquery.googleapis.com/projects/kc-looker-external/' +
+        'datasets/kcmd_loader_live_1105/tables/order items';
+    const model: SemanticModel = {
+      ...emptyModel,
+      entities: [{...baseOrders, authoredSource: source}],
+    };
+    expect(serializeModel(model).yaml).toContain(`source: ${source}\n`);
+  });
+
   for (const compactFlow of [false, true]) {
     test(
         `quotes YAML 1.1 booleans and dates (compactFlow=${compactFlow})`,
