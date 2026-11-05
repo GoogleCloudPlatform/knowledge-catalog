@@ -2242,18 +2242,19 @@ semantic_model:
 
     // A BigQuery graph turns each metric into a measure. A vanilla model
     // anchors a metric in its GOOGLE block.
-    test('rejects a BigQuery metric that is not one aggregate, or on an entity with no key, on push and in the report', async () => {
+    test('rejects a BigQuery metric that cannot be a measure, or on an entity with no key, on push and in the report', async () => {
       const MEASURE = "model 'commerce' (commerce) deployment 'prod' targets " +
           'BigQuery, where metric ';
       writeScope({
         'commerce.yaml':
-            withMetric('{ name: half, expression: "SUM(purchase.p_id) / 2" }'),
+            withMetric('{ name: spread, expression: "STDDEV(purchase.p_id)" }'),
       });
-      const half = `${MEASURE}'half' cannot be a measure: it is not SUM, ` +
-          'AVG, COUNT, MIN or MAX over one operand.';
-      expect(await pushResult()).toEqual({code: 1, errors: [half]});
+      const spread = `${MEASURE}'spread' cannot be a measure: it uses ` +
+          'STDDEV, which BigQuery does not allow in a measure (SUM, AVG, ' +
+          'COUNT, MIN, MAX).';
+      expect(await pushResult()).toEqual({code: 1, errors: [spread]});
       expect(await profiles()).toBe(1);
-      expect(rejects(section(NO_PROFILES))).toEqual([half]);
+      expect(rejects(section(NO_PROFILES))).toEqual([spread]);
       const block = (data: object) =>
           `custom_extensions: [{vendor_name: GOOGLE, data: '${
               JSON.stringify(data)}'}]`;

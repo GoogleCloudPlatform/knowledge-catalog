@@ -931,10 +931,10 @@ describe('profile checks', () => {
     const [input, opts] = build(
         [{name: 'a', target: BQ_GRAPH}, {name: 'b', target: `${BQ_GRAPH}2`, profile: 'pg'}], PG);
     const res = await importSemanticModelYaml(
-        input.replace('COUNT(orders.order_id)', 'COUNT(orders.order_id) / 2'), opts);
+        input.replace('COUNT(orders.order_id)', 'STDDEV(orders.order_id)'), opts);
     expect(res.errors).toEqual(['a', 'b'].map(d => `model 'retail' (sales) deployment '${d}' ` +
-        "targets BigQuery, where metric 'total' cannot be a measure: it is not SUM, AVG, COUNT, " +
-        'MIN or MAX over one operand.'));
+        "targets BigQuery, where metric 'total' cannot be a measure: it uses STDDEV, which " +
+        'BigQuery does not allow in a measure (SUM, AVG, COUNT, MIN, MAX).'));
   });
 
   // A deployment to `target` under a profile file that declares no name.

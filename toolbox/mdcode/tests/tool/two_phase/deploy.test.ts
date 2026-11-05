@@ -559,9 +559,9 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     warnings: [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
-      "Warning: [commerce -> g] metric 'broken' expression 'SUM((x' is not " +
-          'a single supported aggregate (SUM, AVG, COUNT, MIN, MAX) over one ' +
-          'operand; skipped (cannot be a single MEASURE)',
+      "Warning: [commerce -> g] metric 'broken' expression 'SUM((x' cannot " +
+          'be a measure: the SQL parser cannot read it as one expression; ' +
+          'skipped',
     ],
   },
   {

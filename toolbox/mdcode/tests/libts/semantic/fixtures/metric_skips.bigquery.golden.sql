@@ -7,7 +7,8 @@ NODE TABLES (
       customer_id,
       status,
       amount,
-      MEASURE(SUM(amount)) AS revenue
+      MEASURE(SUM(amount)) AS revenue,
+      MEASURE(SUM(amount) / COUNT(o_orderkey)) AS aov
     ),
   `sqlgen-testing.demo.customers` AS customers
     KEY(c_custkey)
@@ -25,6 +26,5 @@ EDGE TABLES (
 
 -- warnings --
 -- metric 'clv' spans multiple tables (orders, customers); skipped (cannot be a single MEASURE)
--- metric 'aov' expression 'SUM(amount) / COUNT(o_orderkey)' is not a single supported aggregate (SUM, AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a single MEASURE)
--- metric 'spread' expression 'STDDEV(amount)' is not a single supported aggregate (SUM, AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a single MEASURE)
+-- metric 'spread' expression 'STDDEV(amount)' cannot be a measure: it uses STDDEV, which BigQuery does not allow in a measure (SUM, AVG, COUNT, MIN, MAX); skipped
 -- metric 'status' collides with an existing property of entity 'orders'; skipped (rename the metric to avoid a duplicate graph property)

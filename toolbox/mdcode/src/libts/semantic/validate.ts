@@ -22,7 +22,7 @@ import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNON
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
@@ -265,9 +265,13 @@ function measureProblem(
       entities.some(e => e.extends?.includes(entity.name))) {
     return undefined;
   }
-  if (!isSingleAggregate(text, 'BIGQUERY')) {
-    return 'it is not SUM, AVG, COUNT, MIN or MAX over one operand';
-  }
+  // Read as the generator reads it (see bigquery.ts placeMetric), with the
+  // entity's qualifier renamed to a name the SQL parser does not reserve, as
+  // in `SUM(Date.days)`.
+  const read = measureAggregates(
+      requalified(text, entity.name, unusedName(text, 'kcmd_entity')),
+      'BIGQUERY');
+  if ('problem' in read) return read.problem;
   if (!statesKey(entity.keys, entity.uniqueKeys)) {
     return `it belongs to entity '${entity.name}', which has no primary key ` +
         `or unique key, so the graph has no node table for it`;
