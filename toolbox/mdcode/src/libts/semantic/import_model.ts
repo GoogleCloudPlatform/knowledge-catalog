@@ -1036,10 +1036,11 @@ function repairMetric(
 /**
  * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
  * third-party table the repaired model and its profile files name, as push
- * reads them. A read that fails is one warning per table, and that table's
- * dialect stays unknown. A lookup that cannot start is one warning for the
- * run, and every such table's dialect stays unknown. An entry that was read
- * and gives no dialect is reported as push's other refusals are.
+ * reads them. A read that fails is one warning per table, or per database for
+ * Spanner, and the dialect of the tables it reads stays unknown. A lookup that
+ * cannot start is one warning for the run, and every such table's dialect
+ * stays unknown. An entry that was read and gives no dialect is reported as
+ * push's other refusals are.
  */
 async function readSourceDialects(
     doc: ImportDocument,
