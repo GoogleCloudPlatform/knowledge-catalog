@@ -761,6 +761,49 @@ describe('profile checks', () => {
     }
   });
 
+  // Push refuses a metric with no entity whose expression reaches no entity
+  // or several, so import removes it, or with --input first-party refuses it,
+  // only when it does so in every dialect its tables can have. A Spanner
+  // deployment's database is SPANNER.
+  // [label, expression, with a Spanner deployment, why it is removed]
+  test.each([
+    ['keeps a metric that reaches one entity in one dialect a Spanner table can have',
+     'SUM(orders.amount) + COUNT(DISTINCT "customers".id)', false, ''],
+    ['removes a metric that reaches two entities in every dialect a Spanner table can have',
+     'SUM(orders.amount) + COUNT(customers.id)', false,
+     'reaches multiple entities (orders, customers)'],
+    ['removes a metric that reaches no one entity, for a different reason in each dialect',
+     'COUNT("orders".order_id) + COUNT("customers".id)', false,
+     'reaches no declared entity as SPANNER and reaches multiple entities (orders, customers) ' +
+         'as POSTGRES'],
+    ["removes a metric that reaches no entity as SPANNER on a Spanner deployment's database",
+     'COUNT(DISTINCT "customers".id)', true, 'reaches no declared entity'],
+  ])('%s', async (_, expression, deployed, problem) => {
+    const input = model(AMOUNT('amount') + '      - name: customers\n' +
+        `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
+        '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n' +
+        (deployed ? `    deployments: [{name: g, target: ${
+                        SPANNER_TABLE.replace(/tables\/orders$/, 'graphs/g')}}]\n` : '') +
+        `    metrics:\n      - {name: total, expression: '${expression}'}\n`, SPANNER_TABLE);
+    const removed = problem ? [`metric 'total': removed unanchored metric whose expression ${
+        problem}; add the metric back with an 'entity' anchor.`] : [];
+    for (const opts of [{}, strict]) {
+      const res = await importSemanticModelYaml(input, {...opts, flavor: 'google'});
+      expect({
+        strict: opts === strict,
+        errors: res.errors,
+        warnings: res.warnings,
+        metrics: res.files.slice(0, 1).flatMap(
+            f => loadModels(f.content).models[0].metrics.map(m => m.name)),
+      }).toEqual({
+        strict: opts === strict,
+        errors: opts === strict ? removed : [],
+        warnings: opts === strict ? [] : removed,
+        metrics: problem ? [] : ['total'],
+      });
+    }
+  });
+
   test('suggests no import for a field its own --transpile leaves untranslated', async () => {
     const toChar = (fmt: string) =>
         AMOUNT(`{dialects: [{dialect: POSTGRES, expression: "TO_CHAR(amount, '${fmt}')"}]}`);

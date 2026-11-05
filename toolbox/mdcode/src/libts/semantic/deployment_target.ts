@@ -153,7 +153,7 @@ export type ResolvedDeployment = ParsedDeploymentTarget&{
 // Parses a deployment target written as a GCP resource name. Returns undefined
 // for any other form, the resource URI with its leading `//` included. `uri`
 // in the result is the target as written.
-function parseTarget(uri: string): ParsedDeploymentTarget|undefined {
+export function parseTarget(uri: string): ParsedDeploymentTarget|undefined {
   if (uri.startsWith('//')) return undefined;
   const resource = asResourceUri(uri);
   const bq = resource.match(BQ_GRAPH_TARGET);

@@ -23,7 +23,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, tableDialects, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, tableDialects, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -1869,13 +1869,7 @@ export function validateExpressionReferences(
   // every dialect the model's tables can have.
   for (const m of asDialect ? [] : models) {
     if (sourcesDialect(m.model) !== null) continue;
-    const possible = (m.model.entities ?? []).filter(e => !e.abstract).reduce(
-        (all: string[]|undefined, e) => {
-          const can = tableDialects(e, true)?.dialects ?? [];
-          return all ? all.filter(d => can.includes(d)) : can;
-        },
-        undefined) ?? [];
-    const runs = possible.map(
+    const runs = possibleDialects(m.model.entities ?? []).map(
         d => validateExpressionReferences([m], fieldsPruned, [], undefined, d));
     errors.push(...(runs[0] ?? []).filter(
         e => !errors.includes(e) && runs.every(r => r.includes(e))));

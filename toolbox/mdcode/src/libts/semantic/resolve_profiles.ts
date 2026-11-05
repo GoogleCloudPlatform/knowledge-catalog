@@ -1362,6 +1362,22 @@ export function tableDialects(
   return undefined;
 }
 
+// The dialects that the table of every concrete entity of `entities` can
+// have, as tableDialects gives them with `withUnread`.
+export function possibleDialects(
+    entities: ReadonlyArray<Pick<
+        Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>):
+    string[] {
+  return entities.filter(e => !e.abstract)
+             .reduce(
+                 (all: string[]|undefined, e) => {
+                   const can = tableDialects(e, true)?.dialects ?? [];
+                   return all ? all.filter(d => can.includes(d)) : can;
+                 },
+                 undefined) ??
+      [];
+}
+
 // Each field of each entity whose table `tableDialects(entity, withUnread)`
 // gives, with that table. An inherited field is listed on each entity that
 // inherits it.
