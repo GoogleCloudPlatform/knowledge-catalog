@@ -45,7 +45,7 @@ export const DEFAULT_PROFILE = 'default';
 // Keys a profile may carry at each level. Everything else is a logical
 // declaration the model owns; setting it in a profile is rejected so swapping a
 // profile can move data but never change what the model means.
-const PROFILE_FILE_KEYS = new Set([
+export const PROFILE_FILE_KEYS = new Set([
   'name', 'entities', 'relationships', 'metrics_exclude', 'actions',
 ]);
 const PROFILE_ENTITY_KEYS = new Set([
