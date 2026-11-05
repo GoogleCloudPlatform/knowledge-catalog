@@ -1108,6 +1108,7 @@ describe('sources', () => {
     ['sales.orders', `${LAKE}/databases/sales`, `${LAKE}/databases/sales/tables/orders`],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
     ['public."order items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order items`],
+    ['shop." orders"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/shop/tables/ orders`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
@@ -1141,7 +1142,7 @@ describe('sources', () => {
       'double-quoted schema with a space',
       `'"my schema".orders'`,
       {sourcePrefix: ALLOYDB_DB},
-      `a source can hold a space only inside the table's own name. ${PUSH} ${ADVICE}`,
+      `a source can hold a space in the table's own name, but not at its end. ${PUSH} ${ADVICE}`,
     ],
     // No prefix completes a name with too many parts. Its table's own name may
     // hold a space.

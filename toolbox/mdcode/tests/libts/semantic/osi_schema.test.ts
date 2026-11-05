@@ -266,7 +266,8 @@ const EMPTY_TEXT_BUG = 'b/577102892';
 
 // One valid and one malformed case per source form, a table name with a
 // space in each form, the '//' URI form, and a name with double quotes or
-// backticks. Only a resource name's last part may hold a space.
+// backticks. Only a resource name's last part may hold a space, and not at
+// its end.
 function sourceCases(withSource: (source: string) => any): Case[] {
   return [
     ...(Object.keys(SOURCE) as (keyof typeof SOURCE)[]).flatMap((form): Case[] => [
@@ -274,6 +275,8 @@ function sourceCases(withSource: (source: string) => any): Case[] {
       [`a malformed ${form} source`, withSource(BAD_SOURCE[form]), false],
       [`a ${form} source whose table name holds a space`,
         withSource(SOURCE[form].replace(/orders$/, 'my orders')), form !== 'thirdParty'],
+      [`a ${form} source whose table name begins with a space`,
+        withSource(SOURCE[form].replace(/orders$/, ' orders')), form !== 'thirdParty'],
     ]),
     ['a source whose dataset name holds a space',
       withSource(SOURCE.bigquery.replace('datasets/d/', 'datasets/d x/')), false],

@@ -3309,13 +3309,16 @@ describe('strict entity sources', () => {
   // A resource URI or a Knowledge Catalog name of a table kcmd reads is
   // rejected, and the message names the resource name to write.
   test('a resource URI or a catalog name is rejected, naming the resource name to write', () => {
+    const lead = BQ.replace(/orders$/, ' orders');
     for (const [written, kind, name] of [
       [`//${BQ}`, 'uri', BQ],
+      [`//${lead}`, 'uri', lead],
       [`//${SPANNER}`, 'uri', SPANNER],
       [`//${MYSQL}`, 'uri', MYSQL],
       [`//${HIVE}`, 'uri', HIVE],
       ['bigquery:acme.raw.orders', 'fqn', BQ],
       ['bigquery:acme.raw."orders"', 'fqn', BQ],
+      ['bigquery:acme.raw. orders', 'fqn', lead],
       ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
       ['spanner:acme.regional-us-central1.inst.db.orders', 'fqn', SPANNER],
       ['alloydb:acme.us-central1.cl.db.public.orders', 'fqn', ALLOYDB],
@@ -3344,6 +3347,7 @@ describe('strict entity sources', () => {
   test('an entry name in a system entry group is rejected, naming the resource name', () => {
     for (const [group, name] of [
       ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
+      ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/ orders'],
       ['@spanner', 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
       ['@biglake', HIVE],
     ]) {
@@ -3515,12 +3519,14 @@ describe('strict entity sources', () => {
       expect(() => loadSource(query)).toThrow(`entity 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
     }
     // A space inside double quotes or backticks belongs to a name. A table's
-    // own name may hold one, and no other name may. The message then says how
-    // to write a table outside Google Cloud.
-    const NO_SPACE = "a source can hold a space only inside the table's own name.";
-    expect(() => loadSource('"my schema".orders')).toThrow(
-      `bare table name '"my schema".orders' is not a valid source, and ${NO_SPACE} ` +
-      'A table outside Google Cloud is written as the entry name');
+    // own name may hold one, but not at its end, and no other name may. The
+    // message then says how to write a table outside Google Cloud.
+    const NO_SPACE = "a source can hold a space in the table's own name, but not at its end.";
+    for (const bare of ['"my schema".orders', 'public."orders "']) {
+      expect(() => loadSource(bare)).toThrow(
+        `bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
+        'A table outside Google Cloud is written as the entry name');
+    }
     // A resource name or entry name takes no double quotes or backticks; the
     // message gives the name without them.
     const quotedNames = (q: string) => [`${TABLE}/${q}orders${q}`, `${TABLE}/${q}order items${q}`,
@@ -3577,6 +3583,7 @@ describe('strict entity sources', () => {
       ['orders', 'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders'],
       ['raw.orders', 'bigquery.googleapis.com/projects/<project>/datasets/raw/tables/orders'],
       ['public."order items"', 'bigquery.googleapis.com/projects/<project>/datasets/public/tables/order items'],
+      ['shop." orders"', 'bigquery.googleapis.com/projects/<project>/datasets/shop/tables/ orders'],
       ['acme.raw.orders', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
     ]) {
       expect(() => load(GOOGLE, {

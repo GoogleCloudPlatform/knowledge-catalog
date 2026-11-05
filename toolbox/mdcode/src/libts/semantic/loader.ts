@@ -3434,7 +3434,7 @@ export function oldSourceForm(source: string): string|undefined {
 // Why no name to write is given when that name would hold whitespace that
 // hasUnquotedWhitespace counts.
 export const NO_SPACE =
-    "a source can hold a space only inside the table's own name";
+    "a source can hold a space in the table's own name, but not at its end";
 
 // Why a source or a deployment target that whitespace begins or ends is not
 // accepted.
@@ -3625,7 +3625,7 @@ function quotePairs(text: string): Array<[number, number]> {
 
 // True when `source` holds whitespace outside a pair of backticks or double
 // quotes, which marks it as a query. A table's own name may hold a space
-// between two other characters, so such a space in the last segment of a
+// anywhere but at its end, so such a space in the last segment of a
 // table's resource name does not count, in each form that names the table
 // through it: its resource name, its resource URI, its Knowledge Catalog name
 // and its entry name in a system entry group.
@@ -3640,8 +3640,8 @@ export function hasUnquotedWhitespace(source: string): boolean {
 }
 
 // `source` without the spaces in its last segment when it names a table in a
-// form hasUnquotedWhitespace lets hold them, and that segment neither starts
-// nor ends with whitespace.
+// form hasUnquotedWhitespace lets hold them, and that segment does not end
+// with whitespace.
 function withoutTableNameSpaces(source: string): string {
   const named = RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
       !!source.match(ENTRY_NAME)?.[1].startsWith('@');
@@ -3651,7 +3651,7 @@ function withoutTableNameSpaces(source: string): string {
       catalog        ? source.lastIndexOf('.') :
                        -1;
   const name = source.slice(last + 1);
-  return last < 0 || /^\s|\s$/.test(name) ?
+  return last < 0 || /\s$/.test(name) ?
       source :
       source.slice(0, last + 1) + name.replaceAll(' ', '');
 }
