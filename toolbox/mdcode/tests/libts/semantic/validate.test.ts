@@ -3409,6 +3409,36 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                      `      - name: dev\n        target: ${BQ_TARGET}2\n`))
           .toEqual([IN(NINE, 'BigQuery', 'dev')]);
     });
+
+    test('when KCMD_GRAPH_INHERITANCE is unset, checks concrete supertypes as standalone node tables and skips abstract entities', () => {
+      const prev = process.env.KCMD_GRAPH_INHERITANCE;
+      delete process.env.KCMD_GRAPH_INHERITANCE;
+      try {
+        // With inheritance ignored, `customer` keeps its own OPTIONS even when
+        // `vip` extends it, while abstract `placed_by` is omitted from the
+        // graph (neither its >1024 description nor its name matching
+        // relationship `placed_by` is a graph DDL error).
+        expect(errorsAfter(m => {
+          m.entities.push(
+              {
+                name: 'placed_by',
+                abstract: true,
+                dataSource: '',
+                keys: [],
+                fields: [],
+                description: x(2000),
+              },
+              {...m.entities[0], name: 'vip', extends: ['customer']});
+          m.entities[0].description = x(1025);
+        })).toEqual([LONG("entity 'customer'", 1025)]);
+      } finally {
+        if (prev === undefined) {
+          delete process.env.KCMD_GRAPH_INHERITANCE;
+        } else {
+          process.env.KCMD_GRAPH_INHERITANCE = prev;
+        }
+      }
+    });
   });
 });
 

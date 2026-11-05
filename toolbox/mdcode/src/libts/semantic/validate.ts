@@ -17,6 +17,7 @@ import {elementDescription, fieldDescription} from './bigquery';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {graphInheritanceEnabled} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
@@ -498,6 +499,24 @@ function metricFieldCollisionError(
       `namespace.`;
 }
 
+// The keyed node-table entities as the graph DDL generator sees them: with
+// inheritance resolved when KCMD_GRAPH_INHERITANCE=1 is enabled, else each
+// non-abstract entity's own non-excluded fields.
+function graphTableEntities(model: SemanticModel): Entity[] {
+  if (graphInheritanceEnabled()) {
+    return resolvedEntities(model).filter(
+        e => !e.abstract && statesKey(e.keys, e.uniqueKeys));
+  }
+  return (model.entities ?? [])
+      .filter(e => !e.abstract && statesKey(e.keys, e.uniqueKeys))
+      .map(e => {
+        const excluded = new Set(e.excludedFields ?? []);
+        return excluded.size ?
+            {...e, fields: (e.fields ?? []).filter(f => !excluded.has(f.name))} :
+            e;
+      });
+}
+
 // The names a graph on `engine` cannot hold in `model`, compared ignoring
 // case, each as the end of a sentence about a deployment. A metric named like
 // a field of its own entity is left to metricFieldCollisionError.
@@ -505,9 +524,11 @@ function graphNameProblems(
     model: SemanticModel, engine: 'bigquery'|'spanner'): string[] {
   const at = `targets ${engine === 'bigquery' ? 'BigQuery' : 'Spanner'}, where`;
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const inheritanceEnabled = graphInheritanceEnabled();
   const problems: string[] = [];
   for (const r of model.relationships ?? []) {
-    const e = model.entities?.find(e => same(e.name, r.name));
+    const e = model.entities?.find(
+        e => (inheritanceEnabled || !e.abstract) && same(e.name, r.name));
     if (!e) continue;
     problems.push(
         `${at} entity '${e.name}' and relationship '${r.name}' cannot both ` +
@@ -515,8 +536,7 @@ function graphNameProblems(
         `compared ignoring case; rename one.`);
   }
   if (engine === 'spanner') return problems;
-  const tables =
-      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  const tables = graphTableEntities(model);
   for (const m of model.metrics ?? []) {
     const owner = m.authoredEntity ?? m.entity;
     for (const e of tables.filter(e => e.name !== owner)) {
@@ -581,9 +601,10 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           check(
               kind, x.name, elementDescription(x.description, x.aiContext),
               x.aiContext?.synonyms);
-  const tables =
-      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
-  const extended = new Set(tables.flatMap(e => e.extends ?? []));
+  const tables = graphTableEntities(model);
+  const extended = graphInheritanceEnabled() ?
+      new Set(tables.flatMap(e => e.extends ?? [])) :
+      new Set<string>();
   for (const e of tables) {
     if (!extended.has(e.name)) element('entity', e);
     for (const f of e.fields) {
