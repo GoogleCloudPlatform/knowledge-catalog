@@ -846,13 +846,14 @@ async function provisionOne(
     const upd = await cat.updateAspectType(
         home.project, home.location, type.id, type.aspectType,
         ['description', 'display_name', 'metadata_template'])
+        // A thrown error, such as a network failure, gets the retry warning.
         .catch((err: any): ApiResult<Operation> =>
                    ({status: 0, message: String(err?.message || err)}));
     // Patching an existing type is best effort. Published entries depend on
     // the type already there, so a failed patch leaves it and init goes on.
     const reason = upd.status !== 200 ?
         `${upd.message || upd.status}` :
-        await cat.awaitOperation(upd.result, `updating ${aspectLabel}`)
+        await cat.awaitOperation(upd.result, 'the update operation')
             .catch((err: any) => String(err?.message || err));
     if (upd.status === 403) {
       // The type exists, so a refusal to patch it leaves it as it is.

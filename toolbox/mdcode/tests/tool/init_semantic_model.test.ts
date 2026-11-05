@@ -215,34 +215,37 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(update.mock.calls[0][4]).toContain('metadata_template');
   });
 
-  // Dataplex's answer to a backwards-incompatible template change.
-  const REFUSED = 'com.google.apps.framework.request.BadRequestException: ' +
-      'Backwards incompatible template changes are not supported';
   const offline =
       new Error('Unable to connect. Is the computer able to access the url?');
-  const retry = (id: string, reason: string) =>
+  const retryWarning = (id: string, reason: string) =>
       `Warning: could not update the existing aspect type '${id}' in project ` +
       `'proj' (${reason}). Run this command again in a minute to retry the ` +
       'update.';
   test.each<[string, () => Promise<ApiResult<any>>, (id: string) => any]>([
     // What an OLDER kcmd sees against a project a newer one provisioned: its
     // template lacks the newer fields, so the patch is a field removal.
-    ['a refused template change', async () => err(400, REFUSED),
-     id => expect.stringContaining(`aspect-types delete ${id} --project=proj`)],
+    [
+      'a refused template change',
+      async () => err(
+          400,
+          'com.google.apps.framework.request.BadRequestException: ' +
+              'Backwards incompatible template changes are not supported'),
+      id => expect.stringContaining(`aspect-types delete ${id} --project=proj`)
+    ],
     ['a 429', async () => err(429, 'Quota exceeded'),
-     id => retry(id, 'Quota exceeded')],
+     id => retryWarning(id, 'Quota exceeded')],
     ['a 5xx', async () => err(503, 'unavailable'),
-     id => retry(id, 'unavailable')],
+     id => retryWarning(id, 'unavailable')],
     [
       'a failed operation',
       async () => ok({name: OP, done: true, error: {message: 'internal'}}),
-      id => retry(id, `updating aspect type '${id}': internal`)
+      id => retryWarning(id, 'the update operation: internal')
     ],
     ['a network error', async () => { throw offline; },
-     id => retry(id, offline.message)],
+     id => retryWarning(id, offline.message)],
     // Only this row's operation is still running, so only this row polls.
     ['a network error while polling', async () => ok({name: OP, done: false}),
-     id => retry(id, offline.message)],
+     id => retryWarning(id, offline.message)],
     [
       'a 403', async () => err(403, 'permission denied'),
       id => `Warning: no permission to update the existing aspect type '${
