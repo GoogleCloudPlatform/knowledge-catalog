@@ -530,8 +530,10 @@ Spanner Graph needs an Enterprise or Enterprise Plus edition instance, or a
 free trial instance. In its first phase, push reads each Spanner deployment's
 instance. It refuses a deployment on a Standard edition instance before
 anything is written, also under `--validate-only` and `--skip-source-check`.
-When push cannot read the instance, it skips this check, and Spanner refuses
-the graph in the second phase, after Knowledge Catalog is written.
+When push cannot read the instance under `--skip-source-check`, it skips this
+check. A graph on a Standard edition instance then fails in the second phase,
+after Knowledge Catalog is written. Without that flag, the source check reads
+the same instance first and stops the push when it cannot.
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
 Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
