@@ -1160,11 +1160,15 @@ async function printStore(
       const profileDocs = profileDocsReader(layout);
       // The check reads each source's dialect as push does. When a read
       // fails, the check skips the dialect rules for that source, so a script
-      // can still get the store of a database it has not created yet.
+      // can still get the store of a database it has not created yet. An
+      // entry that reads but gives no dialect or names no table gets push's
+      // error.
       const read = await readDialects(ctx, [
         ...docs.map(d => d.text),
         ...docs.flatMap(d => profileDocs(d.name).map(p => p.text)),
       ]);
+      refused = read.errors.filter(e => !read.unread.includes(e));
+      if (refused.length) return false;
       const load = {
         sourceDialects: read.dialects,
         sourceDatabases: read.databases,

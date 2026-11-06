@@ -705,8 +705,9 @@ entities:
 
   // --print-store judges a profile file's text in the dialect push reads for
   // its tables: POSTGRES on a PostgreSQL-dialect Spanner database, and the
-  // dialect a third-party table's entry names. A database a script has not
-  // created yet still gets its store.
+  // dialect a third-party table's entry names. It refuses, as push does, an
+  // entry that gives no dialect or names no table. A database a script has
+  // not created yet still gets its store.
   test('a profile file on a PostgreSQL-dialect Spanner database or a third-party table: --print-store agrees with push',
        async () => {
          const PG = SPANNER_DB.replace('/commerce', '/pg');
@@ -714,11 +715,13 @@ entities:
          spyOn(SpannerClient.prototype, 'getDatabase').mockImplementation(
              (async (_p: string, _i: string, db: string) => ({status: 200, result: {
                databaseDialect: db === 'pg' ? 'POSTGRESQL' : 'GOOGLE_STANDARD_SQL'}})) as any);
-         spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue(
-             {status: 200, result: {fullyQualifiedName: 'snowflake:a.db.public.o'}} as any);
-         for (const [source, dialect, code] of [
-                  [ENTRY, 'DATABRICKS', 1],
-                  [`${PG}/tables/orders`, 'POSTGRES', 0]] as const) {
+         for (const [source, dialect, fqn, code] of [
+                  [ENTRY, 'DATABRICKS', 'snowflake:a.db.public.o', 1],
+                  [ENTRY, 'SNOWFLAKE', undefined, 1],
+                  [ENTRY, 'SNOWFLAKE', 'snowflake:a.db', 1],
+                  [`${PG}/tables/orders`, 'POSTGRES', undefined, 0]] as const) {
+           spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue(
+               {status: 200, result: {fullyQualifiedName: fqn}} as any);
            fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
            writeScope({
              'commerce.yaml': `version: "0.2.0.dev0/google"
