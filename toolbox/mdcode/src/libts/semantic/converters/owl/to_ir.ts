@@ -40,6 +40,7 @@
 // graph").
 
 import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {listed, plural} from '../../loader';
 
 import {OwlModel, OwlOntology} from './model';
 
@@ -383,10 +384,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
                        .filter(n => under.has(n) && !subclasses.has(n))
                        .map(n => `'${n}'`);
     if (!leaves.length) return `Every class under '${name}' has subclasses.`;
-    return leaves.length > 1 ?
-        `The classes under '${name}' with no subclasses are ${
-            leaves.join(', ')}.` :
-        `The class under '${name}' with no subclasses is ${leaves[0]}.`;
+    return `The ${plural(leaves.length, 'class', 'classes')} under '${
+        name}' with no subclasses ${plural(leaves.length, 'is', 'are')} ${
+        listed(leaves)}.`;
   };
 
   // Object properties -> relationships (edges). Both endpoints must be known
@@ -406,21 +406,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `rdfs:range; skipped (a relationship needs both endpoints).`);
       continue;
     }
-    // A relationship maps ONE source to ONE destination. Multiple domains or
-    // ranges mean an intersection in OWL, which has no clean single-edge shape,
-    // so keep the first of each and say what was dropped rather than losing it
-    // silently.
-    const ignored = [
-      ...p.domains.slice(1).map(d => `domain '${d}'`),
-      ...p.ranges.slice(1).map(r => `range '${r}'`),
-    ];
-    if (ignored.length) {
-      warnings.push(
-          `object property '${p.localName}' declares more than one endpoint ` +
-          `(${ignored.join(', ')}); a relationship maps one source to one ` +
-          `destination, so only domain '${domain}' -> range '${
-              range}' is kept.`);
-    }
     if (!classNames.has(domain) || !classNames.has(range)) {
       warnings.push(
           `object property '${p.localName}' references a non-class endpoint ` +
@@ -439,8 +424,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         r => r.source.entity === range && r.destination.entity === domain);
     let problem: string|undefined;
     if (parents.length) {
-      problem = `it connects ${parents.map(c => `'${c}'`).join(' and ')}, ${
-                    parents.length > 1 ? 'which have' : 'which has'} ` +
+      problem = `it connects ${listed(parents.map(c => `'${c}'`))}, ${
+                    plural(parents.length, 'which has', 'which have')} ` +
           `subclasses, and a relationship may connect only classes with no ` +
           `subclasses. ${parents.map(leavesSentence).join(' ')}`;
     } else if (domain === range) {
@@ -455,6 +440,21 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       warnings.push(
           `object property '${p.localName}' is not imported: ${problem}`);
       continue;
+    }
+    // A relationship maps ONE source to ONE destination. Multiple domains or
+    // ranges mean an intersection in OWL, which has no clean single-edge shape,
+    // so keep the first of each and say what was dropped rather than losing it
+    // silently.
+    const ignored = [
+      ...p.domains.slice(1).map(d => `domain '${d}'`),
+      ...p.ranges.slice(1).map(r => `range '${r}'`),
+    ];
+    if (ignored.length) {
+      warnings.push(
+          `object property '${p.localName}' declares more than one endpoint ` +
+          `(${ignored.join(', ')}); a relationship maps one source to one ` +
+          `destination, so only domain '${domain}' -> range '${
+              range}' is kept.`);
     }
     const relationship: Relationship = {
       name: p.localName,

@@ -404,13 +404,13 @@ describe('import leaves out each object property push would reject', () => {
       ex:replaces a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Order .
       ex:takenBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Staff .
       ex:takes a owl:ObjectProperty ; rdfs:domain ex:Staff ; rdfs:range ex:Order .`;
-    const {warnings, stats} = convertOwlToOsi(ttl, 'x');
+    const {warnings, stats, yaml} = convertOwlToOsi(ttl, 'x');
     expect(warnings).toEqual([
       `object property 'referredBy' is not imported: it connects ` +
           `'Customer' and 'Person', which have subclasses, and a relationship ` +
           `may connect only classes with no subclasses. The class under ` +
           `'Customer' with no subclasses is 'Vip'. The classes under 'Person' ` +
-          `with no subclasses are 'Vip', 'Staff'.`,
+          `with no subclasses are 'Vip' and 'Staff'.`,
       `object property 'replaces' is not imported: it runs from 'Order' to ` +
           `itself, and a relationship must join two different classes.`,
       `object property 'takes' is not imported: it runs from 'Staff' to ` +
@@ -418,7 +418,18 @@ describe('import leaves out each object property push would reject', () => {
           `relationships between two classes must run in one direction.`,
     ]);
     expect(stats.objectProperties).toBe(1);
-    expect(loadOwl(ttl).relationships.map(r => r.name)).toEqual(['takenBy']);
+    expect(load(yaml).models[0].relationships.map(r => r.name)).toEqual([
+      'takenBy'
+    ]);
+  });
+
+  test('a subclass cycle has no class with no subclasses', () => {
+    const cycle = `${PREFIXES}
+      ex:A a owl:Class ; rdfs:subClassOf ex:B . ex:B a owl:Class ; rdfs:subClassOf ex:A .
+      ex:X a owl:Class . ex:r a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:X .`;
+    expect(convertOwlToOsi(cycle, 'x').warnings).toEqual([
+      expect.stringContaining("Every class under 'A' has subclasses.")
+    ]);
   });
 
   const files = fs.readdirSync(FIXTURES).filter(f => f.endsWith('.owl.ttl'));
@@ -426,6 +437,7 @@ describe('import leaves out each object property push would reject', () => {
     const text = convertOwlToOsi(readFixture(file), 'model').yaml;
     const docs = [{name: 'model', text}];
     const loaded = loadSemanticModels(docs, {bindingOptional: true});
+    expect(loaded.error).toBeUndefined();
     const scope = {
       docs, loaded, models: loaded.models, profileDocs: () => [],
       declaredBy: () => [], load: {},
