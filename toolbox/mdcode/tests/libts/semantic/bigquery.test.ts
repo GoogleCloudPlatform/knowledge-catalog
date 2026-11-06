@@ -33,6 +33,7 @@ import * as path from 'path';
 import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Field, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -844,17 +845,22 @@ semantic_model:
 });
 
 
-describe('descriptive metadata: structured synonyms vs folded description', () => {
-  // A two-entity model with an FK edge, exercising ai_context on every element
-  // kind (entity label, field property, measure, edge label) plus the model.
-  // BigQuery's PropertyGraph{Label,Property}Options carry a structured
-  // `synonyms` array (verified live), so synonyms are emitted as their own
-  // option; instructions and examples (which have no dedicated option) still
-  // fold into `description`.
+describe('descriptive metadata: structured synonyms and ai_context extensions', () => {
+  // A two-entity model with an FK edge and an M:N association edge, exercising
+  // ai_context on every element kind (entity label, node field property, M:N
+  // edge property, measure, 1:N and M:N edge labels) plus the model. BigQuery's
+  // PropertyGraph{Label,Property}Options carry structured `synonyms` and
+  // `extensions` (`ARRAY<STRUCT<STRING, STRING>>`) options, so `synonyms` emits
+  // as `synonyms=[...]` and `instructions`/`examples` emit as `(key, value)`
+  // pairs in `extensions=[...]` instead of folding into `description`.
   const model = (): SemanticModel => ({
     name: 'm',
     description: 'MODEL_LEVEL_DESC',
-    aiContext: {instructions: 'model help', synonyms: ['modelsyn']},
+    aiContext: {
+      instructions: 'model help',
+      synonyms: ['modelsyn'],
+      examples: ['model example'],
+    },
     entities: [
       {
         name: 'orders',
@@ -872,7 +878,29 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
             name: 'amount',
             expression: 'amount',
             label: 'Order amount',
-            aiContext: {synonyms: ['total', 'value']},
+            description: 'Gross order value',
+            aiContext: {
+              instructions: 'In USD.',
+              synonyms: ['total', 'value'],
+              examples: ['100.00', '250.50'],
+            },
+          },
+          {
+            name: 'segment',
+            expression: 'segment',
+            description: 'Marketing segment',
+            aiContext: {
+              synonyms: ['tier'],
+              examples: ['gold', 'silver'],
+            },
+          },
+          {
+            name: 'order_date',
+            expression: 'order_date',
+            type: 'Date',
+            dimension: {isTime: true},
+            description: 'Date placed',
+            aiContext: {instructions: 'UTC calendar date.'},
           },
         ],
       },
@@ -883,17 +911,49 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
         fields: [{name: 'c_custkey', expression: 'c_custkey'}],
       },
     ],
-    relationships: [{
-      name: 'placed_by',
-      source: {entity: 'orders', columns: ['o_custkey']},
-      destination: {entity: 'customers', columns: ['c_custkey']},
-      aiContext: {synonyms: ['belongs to']},
-    }],
+    relationships: [
+      {
+        name: 'placed_by',
+        source: {entity: 'orders', columns: ['o_custkey']},
+        destination: {entity: 'customers', columns: ['c_custkey']},
+        description: 'Buyer link',
+        aiContext: {
+          instructions: 'Join orders to buyer.',
+          synonyms: ['belongs to'],
+          examples: ['orders by customer'],
+        },
+      },
+      {
+        name: 'tagged_for',
+        source: {entity: 'orders', columns: ['o_orderkey']},
+        destination: {entity: 'customers', columns: ['c_custkey']},
+        aiContext: {
+          instructions: 'Shared account tag.',
+          examples: ['co-buyers'],
+        },
+        association: {
+          dataSource: 'order_customer_tags',
+          keys: ['tag_id'],
+          sourceColumns: ['o_orderkey'],
+          destinationColumns: ['c_custkey'],
+          fields: [{
+            name: 'tier_override',
+            expression: 'tier_override',
+            aiContext: {examples: ['gold', 'silver']},
+          }],
+        },
+      },
+    ],
     metrics: [{
       name: 'total_amount',
       expression: 'SUM(orders.amount)',
       entity: 'orders',
-      aiContext: {synonyms: ['revenue', 'sales']},
+      description: 'Sum of order amounts',
+      aiContext: {
+        instructions: 'Exclude cancelled orders.',
+        synonyms: ['revenue', 'sales'],
+        examples: ['total revenue last quarter'],
+      },
     }],
   });
 
@@ -912,41 +972,258 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
       });
 
   test(
-      'instructions and examples still fold into the description option',
+      'instructions and examples emit in OPTIONS(extensions=[...]) on every element kind, not folded into description',
       () => {
         const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
-        expect(ddl).toContain('one row per order');  // entity instructions
-        expect(ddl).toContain('Examples: how many orders?');
-        expect(ddl).toContain('Order amount');  // field label leads
+        // Entity DEFAULT LABEL: separate description, synonyms and extensions.
+        expect(ddl).toContain(
+            '    OPTIONS(description="the orders", synonyms=["ord", "purchase"], ' +
+            'extensions=[("instructions", "one row per order"), ' +
+            '("examples", "[\\"how many orders?\\"]")])\n');
+        // Node field with label, description, synonyms, instructions and
+        // examples.
+        expect(ddl).toContain(
+            '      amount OPTIONS(description="Order amount\\n\\nGross order value", ' +
+            'synonyms=["total", "value"], ' +
+            'extensions=[("instructions", "In USD."), ' +
+            '("examples", "[\\"100.00\\",\\"250.50\\"]")]),\n');
+        // Node field with examples=["gold", "silver"] and no instructions.
+        expect(ddl).toContain(
+            '      segment OPTIONS(description="Marketing segment", ' +
+            'synonyms=["tier"], ' +
+            'extensions=[("examples", "[\\"gold\\",\\"silver\\"]")]),\n');
+        // Temporal dimension field: `Time dimension.` still folds into
+        // description while `instructions` goes to extensions.
+        expect(ddl).toContain(
+            '      order_date OPTIONS(description="Time dimension.\\n\\nDate placed", ' +
+            'extensions=[("instructions", "UTC calendar date.")]),\n');
+        // Metric MEASURE(...) AS <metric> with description, synonyms and
+        // extensions.
+        expect(ddl).toContain(
+            '      MEASURE(SUM(amount)) AS total_amount OPTIONS(' +
+            'description="Sum of order amounts", synonyms=["revenue", "sales"], ' +
+            'extensions=[("instructions", "Exclude cancelled orders."), ' +
+            '("examples", "[\\"total revenue last quarter\\"]")])\n');
+        // 1:N relationship DEFAULT LABEL with description, synonyms and
+        // extensions.
+        expect(ddl).toContain(
+            '    OPTIONS(description="Buyer link", synonyms=["belongs to"], ' +
+            'extensions=[("instructions", "Join orders to buyer."), ' +
+            '("examples", "[\\"orders by customer\\"]")])\n');
+        // M:N relationship DEFAULT LABEL and M:N edge property.
+        expect(ddl).toContain(
+            '    OPTIONS(extensions=[("instructions", "Shared account tag."), ' +
+            '("examples", "[\\"co-buyers\\"]")])\n');
+        expect(ddl).toContain(
+            '      tier_override OPTIONS(extensions=[("examples", "[\\"gold\\",\\"silver\\"]")])\n');
+        // Legacy `Examples:` line is gone from descriptions everywhere.
+        expect(ddl).not.toContain('Examples:');
       });
 
   test(
-      'examples render as a joined line and custom ai_context members stay out of the DDL',
+      'elements with only instructions or only examples emit OPTIONS(extensions=[...]), and blank/custom-only ai_context emits nothing',
+      () => {
+        const onlyExtensions: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'orders',
+            keys: ['id'],
+            aiContext: {instructions: '  Exclude test accounts.\n'},
+            fields: [
+              {
+                name: 'id',
+                expression: 'id',
+                aiContext: {
+                  instructions: '   \n\t  ',
+                  examples: [],
+                  additionalProperties: {custom_hint: 'internal-only'},
+                },
+              },
+              {
+                name: 'status',
+                expression: 'status',
+                aiContext: {examples: ['open', 'closed']},
+              },
+            ],
+          }],
+          relationships: [],
+          metrics: [{
+            name: 'order_count',
+            expression: 'COUNT(*)',
+            entity: 'orders',
+            aiContext: {instructions: 'Count distinct orders.'},
+          }],
+        };
+        const {ddl} = generatePropertyGraph(onlyExtensions, GEN_OPTS);
+        expect(ddl).toContain(
+            '    OPTIONS(extensions=[("instructions", "Exclude test accounts.")])\n');
+        expect(ddl).toContain('      id,\n');
+        expect(ddl).not.toContain('id OPTIONS');
+        expect(ddl).toContain(
+            '      status OPTIONS(extensions=[("examples", "[\\"open\\",\\"closed\\"]")]),\n');
+        expect(ddl).toContain(
+            '      MEASURE(COUNT(id)) AS order_count ' +
+            'OPTIONS(extensions=[("instructions", "Count distinct orders.")])\n');
+        expect(ddl).not.toContain('custom_hint');
+        expect(ddl).not.toContain('internal-only');
+      });
+
+  test(
+      'special characters in instructions and examples serialize losslessly inside BigQuery string literals',
+      () => {
+        const trickyExamples = [
+          'semi; colon',
+          'quote "inside" text',
+          'back\\slash\\path',
+          'line1\nline2\r\tend',
+        ];
+        const trickyInstructions =
+            'Use "UTC"\\ISO dates;\nignore\ttest\raccounts.';
+        const special: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'orders',
+            keys: ['id'],
+            aiContext: {
+              instructions: trickyInstructions,
+              examples: trickyExamples,
+            },
+            fields: [{name: 'id', expression: 'id'}],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+        const {ddl} = generatePropertyGraph(special, GEN_OPTS);
+        // Read the two SQL string literals back out of extensions=[...] and
+        // unescape them to check the round-trip.
+        const unescapeSqlString = (literal: string): string =>
+            literal.replace(/\\([\\"nrt])/g, (_, ch: string) => {
+              switch (ch) {
+                case 'n':
+                  return '\n';
+                case 'r':
+                  return '\r';
+                case 't':
+                  return '\t';
+                default:
+                  return ch;
+              }
+            });
+        const match = ddl.match(
+            /extensions=\[\("instructions", "((?:\\.|[^"\\])*)"\), \("examples", "((?:\\.|[^"\\])*)"\)\]/);
+        expect(match).not.toBeNull();
+        expect(unescapeSqlString(match![1])).toBe(trickyInstructions);
+        expect(JSON.parse(unescapeSqlString(match![2]))).toEqual(trickyExamples);
+        // Raw unescaped newlines/tabs/CRs never leak into the OPTIONS line.
+        const optsLine = ddl.split('\n').find(l => l.includes('extensions=['))!;
+        expect(optsLine).not.toContain('\r');
+        expect(optsLine).not.toContain('\t');
+      });
+
+  test(
+      'custom ai_context members stay out of the DDL, model-level metadata is omitted, and Spanner DDL stays unchanged',
       () => {
         const m = model();
-        m.entities[0].fields[1].aiContext = {
-          instructions: 'Use for net revenue',
-          synonyms: ['total', 'value'],
-          examples: ['net revenue last month', 'revenue by region'],
-          additionalProperties: {
-            custom_hint: 'prioritize verified orders',
-          },
+        m.entities[0].fields[1].aiContext!.additionalProperties = {
+          custom_hint: 'prioritize verified orders',
         };
         const {ddl} = generatePropertyGraph(m, GEN_OPTS);
-        expect(ddl).toContain(
-            'Examples: net revenue last month; revenue by region');
-        // A custom member has no slot in a property-graph deployment; it
-        // reaches Knowledge Catalog only.
         expect(ddl).not.toContain('custom_hint');
         expect(ddl).not.toContain('prioritize verified orders');
+        expect(ddl).not.toContain('MODEL_LEVEL_DESC');
+        expect(ddl).not.toContain('model help');
+        expect(ddl).not.toContain('modelsyn');
+        expect(ddl).not.toContain('model example');
+
+        const spanner = generateSpannerPropertyGraph(m);
+        expect(spanner.ddl).not.toContain('OPTIONS');
+        expect(spanner.ddl).not.toContain('extensions');
       });
+});
+
+
+describe('ai_context loaded from a model file reaches OPTIONS(extensions)', () => {
+  // Loaded rather than hand-built, so the test covers the loader's half too:
+  // the map form keeps `instructions`, `synonyms` and `examples` apart; the
+  // bare-string shorthand reads as `instructions`; a block scalar's trailing
+  // newline and a shorthand's padding are trimmed; a whitespace-only shorthand
+  // emits nothing; and a `custom` member stays out of the DDL.
+  beforeAll(loadSqlEngine);
 
   test(
-      'model-level metadata is not emitted (BigQuery drops statement-level graph OPTIONS)',
+      'the map form and the bare-string shorthand emit on labels, properties and measures',
       () => {
-        const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
-        expect(ddl).not.toContain('MODEL_LEVEL_DESC');
-        expect(ddl).not.toContain('modelsyn');
+        const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        primary_key: [order_id]
+        description: One row per order
+        ai_context:
+          instructions: |
+            Exclude test orders.
+            Amounts include tax.
+          synonyms: [purchase]
+          examples: [orders last week, biggest order]
+        fields:
+          - {name: order_id, expression: order_id}
+          - {name: customer_id, expression: customer_id}
+          - name: amount
+            expression: amount
+            description: Order total
+            ai_context: "  Amounts are in USD.  "
+          - name: status
+            expression: status
+            ai_context: "   "
+      - name: customers
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/customers
+        primary_key: [customer_id]
+        fields:
+          - {name: customer_id, expression: customer_id}
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+        ai_context: Join each order to its buyer.
+    metrics:
+      - name: total_amount
+        expression: SUM(orders.amount)
+        ai_context:
+          instructions: Completed orders only.
+          examples: [revenue last quarter]
+          custom: {owner: finance}
+`);
+        const {ddl, warnings} =
+            generatePropertyGraph(models[0], {project: 'acme', dataset: 'graphs'});
+        expect(warnings).toEqual([]);
+        // Entity label, from the map form.
+        expect(ddl).toContain(
+            '    OPTIONS(description="One row per order", synonyms=["purchase"], ' +
+            'extensions=[("instructions", "Exclude test orders.\\nAmounts include tax."), ' +
+            '("examples", "[\\"orders last week\\",\\"biggest order\\"]")])\n');
+        // Field property, from the bare-string shorthand, trimmed.
+        expect(ddl).toContain(
+            '      amount OPTIONS(description="Order total", ' +
+            'extensions=[("instructions", "Amounts are in USD.")]),\n');
+        // A whitespace-only shorthand gives the field no OPTIONS at all.
+        expect(ddl).toContain('      status,\n');
+        expect(ddl).not.toContain('status OPTIONS');
+        // Measure, from the map form; its custom member is left out.
+        expect(ddl).toContain(
+            '      MEASURE(SUM(amount)) AS total_amount OPTIONS(' +
+            'extensions=[("instructions", "Completed orders only."), ' +
+            '("examples", "[\\"revenue last quarter\\"]")])\n');
+        expect(ddl).not.toContain('finance');
+        // Edge label, from the bare-string shorthand.
+        expect(ddl).toContain(
+            '    OPTIONS(extensions=[("instructions", "Join each order to its buyer.")])\n' +
+            '    NO PROPERTIES\n');
       });
 });
 
@@ -1203,6 +1480,49 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
             .toBe(true);
         expect(ddl).not.toContain('Ghost');
       });
+
+  test(
+      'an abstract supertype\'s own metadata is dropped from its shared label with a warning on BigQuery, and Spanner does not warn',
+      () => {
+        const dropped =
+            `entity 'Party' is an abstract supertype in a class hierarchy; ` +
+            `its metadata is dropped from the shared 'Party' label (BigQuery ` +
+            `forbids OPTIONS on a label bound by multiple tables)`;
+        // Only instructions and examples, with no description or synonyms: the
+        // label still has metadata to lose, so the author is told.
+        const model = partyModel();
+        model.entities[0].aiContext = {
+          instructions: 'Prefer the legal name.',
+          examples: ['ACME Corp'],
+        };
+        const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+        expect(warnings).toContain(dropped);
+        expect(ddl).not.toContain('Prefer the legal name.');
+        expect(ddl).not.toContain('ACME Corp');
+        // A description alone is dropped and warned the same way.
+        const described = partyModel();
+        described.entities[0].description = 'A person or an organization';
+        const res = generatePropertyGraph(described, GEN_OPTS);
+        expect(res.warnings).toContain(dropped);
+        expect(res.ddl).not.toContain('A person or an organization');
+        // Nothing is dropped, so nothing is warned: no metadata, or only custom
+        // members, which never reach the DDL.
+        const customOnly = partyModel();
+        customOnly.entities[0].aiContext = {
+          additionalProperties: {custom_hint: 'internal-only'},
+        };
+        for (const m of [partyModel(), customOnly]) {
+          expect(generatePropertyGraph(m, GEN_OPTS)
+                     .warnings.some(w => w.includes('abstract supertype')))
+              .toBe(false);
+        }
+        // Spanner writes no OPTIONS on any element, so it has nothing to drop.
+        const spanner = generateSpannerPropertyGraph(model);
+        expect(spanner.warnings.some(w => w.includes('abstract supertype')))
+            .toBe(false);
+        expect(spanner.ddl).not.toContain('Prefer the legal name.');
+        expect(spanner.ddl).not.toContain('ACME Corp');
+      });
 });
 
 
@@ -1247,6 +1567,22 @@ describe('supertype shared-label constraints (inheritance)', () => {
         .toBe(true);
     // The shared supertype still uses an explicit DEFAULT LABEL.
     expect(ddl).toContain('DEFAULT LABEL');
+
+    // A supertype with only instructions and examples still produces
+    // OPTIONS(extensions=[...]), which is dropped with a warning.
+    const extOnly = hierModel();
+    delete extOnly.entities[0].description;
+    extOnly.entities[0].aiContext = {
+      instructions: 'Shared supertype guidance',
+      examples: ['who is a person?'],
+    };
+    const res = generatePropertyGraph(extOnly, GEN_OPTS);
+    expect(res.ddl).not.toContain('Shared supertype guidance');
+    expect(res.ddl).not.toContain('who is a person?');
+    expect(res.warnings.some(
+               w => w.includes(`entity 'Person' is a supertype`) &&
+                   w.includes('metadata is dropped from the shared')))
+        .toBe(true);
   });
 
   test('a metric targeting a supertype is skipped (with a warning)', () => {
@@ -1371,7 +1707,7 @@ describe('inherited property rendering (shared-label consistency)', () => {
             warnings.some(
                 w =>
                     w.includes(
-                        `overrides the description/synonyms of inherited property 'email'`) &&
+                        `overrides the metadata of inherited property 'email'`) &&
                     w.includes('metadata is used')))
             .toBe(true);
         // Not mislabeled as a structural remap...
@@ -1379,6 +1715,21 @@ describe('inherited property rendering (shared-label consistency)', () => {
             .toBe(false);
         // ...and the subclass metadata is dropped, not emitted.
         expect(ddl).not.toContain('Customer-specific email');
+
+        // Overriding only instructions and examples raises the same warning
+        // and drops the subclass extensions.
+        delete model.entities[1].fields[1].description;
+        model.entities[1].fields[1].aiContext = {
+          instructions: 'Use verified customer email',
+          examples: ['alice@example.com'],
+        };
+        const extRes = generatePropertyGraph(model, GEN_OPTS);
+        expect(extRes.warnings.some(
+                   w => w.includes(
+                       `overrides the metadata of inherited property 'email'`)))
+            .toBe(true);
+        expect(extRes.ddl).not.toContain('Use verified customer email');
+        expect(extRes.ddl).not.toContain('alice@example.com');
       });
 
   test(

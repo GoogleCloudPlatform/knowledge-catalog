@@ -57,10 +57,11 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
     table: qualifyTable,
     graphName: model => qualifyGraph(model, opts),
     placeMetrics,
-    elementOptions: (description, ai) =>
-        optionsClause(elementDescription(description, ai), ai?.synonyms),
-    fieldOptions: field =>
-        optionsClause(fieldDescription(field), field.aiContext?.synonyms),
+    elementOptions: (description, ai) => optionsClause(
+        elementDescription(description), ai?.synonyms, aiExtensions(ai)),
+    fieldOptions: field => optionsClause(
+        fieldDescription(field), field.aiContext?.synonyms,
+        aiExtensions(field.aiContext)),
     dialect: 'BIGQUERY',
     fieldExpression,
   };
@@ -346,8 +347,8 @@ function placeMetric(
           quoteIfReserved(exposeOperand(lowering, reads[i], metric.name))})`);
 
   const opts = optionsClause(
-      elementDescription(metric.description, metric.aiContext),
-      metric.aiContext?.synonyms);
+      elementDescription(metric.description), metric.aiContext?.synonyms,
+      aiExtensions(metric.aiContext));
   const measure = `MEASURE(${body}) AS ${quoteIfReserved(metric.name)}`;
   lowering.measures.push(opts ? `${measure} ${opts}` : measure);
 }
@@ -511,38 +512,40 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 }
 
 
-// Composes the folded `description` text for a graph element from its base
-// description and the AI-first annotations that have no dedicated BigQuery
-// option: instructions and examples. Synonyms are NOT folded in here --
-// BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
-// array, so they are emitted as their own option (see optionsClause and the
-// call sites).
-export function elementDescription(
-    description?: string, ai?: AiContext): string|undefined {
-  return composeText([
-    description,
-    ai?.instructions,
-    examplesLine(ai?.examples),
-  ]);
+// Trims a graph element's base description, returning undefined when blank.
+// BigQuery's PropertyGraph{Label,Property}Options carry dedicated `synonyms`
+// and `extensions` options, so `synonyms`, `instructions` and `examples` are
+// emitted there rather than folded into `description` (see optionsClause and
+// aiExtensions).
+export function elementDescription(description?: string): string|undefined {
+  return composeText([description]);
 }
 
 // A field additionally carries a human `label` and a temporal-dimension role,
-// which lead the composed text (matching the authored order) ahead of its
-// description and instructions/examples. Synonyms are emitted structurally, as
-// for elementDescription.
+// which lead the composed text ahead of its description. Synonyms,
+// instructions and examples are emitted in `synonyms` and `extensions`, as for
+// elementDescription.
 export function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
     field.description,
-    field.aiContext?.instructions,
-    examplesLine(field.aiContext?.examples),
   ]);
 }
 
-function examplesLine(examples?: string[]): string|undefined {
-  return examples && examples.length ? `Examples: ${examples.join('; ')}` :
-                                       undefined;
+// The `(key, value)` pairs for BigQuery's `extensions` option from an
+// element's AI context: trimmed `instructions` and JSON-serialized `examples`.
+// Whitespace-only instructions, an empty `examples` list and custom
+// `ai_context` members emit nothing.
+function aiExtensions(ai?: AiContext): Array<[string, string]> {
+  if (!ai) return [];
+  const out: Array<[string, string]> = [];
+  const instructions = ai.instructions?.trim();
+  if (instructions) out.push(['instructions', instructions]);
+  if (ai.examples && ai.examples.length) {
+    out.push(['examples', JSON.stringify(ai.examples)]);
+  }
+  return out;
 }
 
 // Joins the non-empty parts into one description, separated by blank lines so
@@ -553,20 +556,26 @@ function composeText(parts: (string|undefined)[]): string|undefined {
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
-// Renders the trailing `OPTIONS(...)` clause for a graph element -- a folded
-// `description` string and/or a structured `synonyms` array -- or undefined
-// when there is nothing to emit. Both map to BigQuery's
+// Renders the trailing `OPTIONS(...)` clause for a graph element from its
+// `description`, `synonyms` and `(key, value)` `extensions` pairs, or returns
+// undefined when all three are empty. All three map to BigQuery's
 // PropertyGraph{Label,Property}Options (`description` singular, `synonyms`
-// repeated), honored on element-table labels (DEFAULT LABEL, before PROPERTIES)
-// and on derived properties and measures (after the alias). Statement-level
-// graph OPTIONS is intentionally not emitted: it parses but BigQuery silently
-// drops it (verified live; create_property_graph_options is off for BigQuery).
-function optionsClause(description?: string, synonyms?: string[]): string|
-    undefined {
+// repeated, `extensions` repeated `(STRING, STRING)` pairs), honored on
+// element-table labels (DEFAULT LABEL, before PROPERTIES) and on derived
+// properties and measures (after the alias). Statement-level graph OPTIONS is
+// not emitted: it parses, but BigQuery silently drops it.
+function optionsClause(
+    description?: string, synonyms?: string[],
+    extensions?: ReadonlyArray<readonly [string, string]>): string|undefined {
   const parts: string[] = [];
   if (description) parts.push(`description=${quote(description)}`);
   if (synonyms && synonyms.length) {
     parts.push(`synonyms=[${synonyms.map(quote).join(', ')}]`);
+  }
+  if (extensions && extensions.length) {
+    const pairs =
+        extensions.map(([k, v]) => `(${quote(k)}, ${quote(v)})`).join(', ');
+    parts.push(`extensions=[${pairs}]`);
   }
   return parts.length ? `OPTIONS(${parts.join(', ')})` : undefined;
 }

@@ -547,7 +547,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
   const element =
       (kind: string, x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
           check(
-              kind, x.name, elementDescription(x.description, x.aiContext),
+              kind, x.name, elementDescription(x.description),
               x.aiContext?.synonyms);
   const tables =
       resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));

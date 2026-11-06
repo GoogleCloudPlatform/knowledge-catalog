@@ -3324,27 +3324,36 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const LONG = (what: string, n = 1025) => IN(
         `the description kcmd writes for ${what} is ${n} characters long; ` +
         "a label or property's description holds at most 1024.");
-    // 1001 characters and an instruction, or 1012 and an example, give 1025.
-    const instructed = {
-      description: x(1001),
-      aiContext: {instructions: 'Exclude test accounts.'},
-    };
     const timeField = {dimension: {isTime: true}, description: x(1000)};
     test.each<[string, (m: SemanticModel) => void, string[]]>([
-      ['past 1024 characters with what kcmd adds', m => {
-        Object.assign(m.entities[0], instructed);
+      ['past 1024 characters, counting what kcmd adds to a field', m => {
+        m.entities[0].description = x(1025);
         Object.assign(
             m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
-        Object.assign(
-            m.relationships[0],
-            {description: x(1012), aiContext: {examples: ['a']}});
-        Object.assign(m.metrics![0], instructed);
+        m.relationships[0].description = x(1025);
+        m.metrics![0].description = x(1025);
       }, [
         "entity 'customer'", "field 'purchase.amount'",
         "relationship 'placed_by'", "metric 'revenue'",
       ].map(what => LONG(what))],
-      ['of 1001 characters with no instruction', m => {
-        m.entities[0].description = x(1001);
+      ['at 1024 characters alongside instructions and examples', m => {
+        Object.assign(m.entities[0], {
+          description: x(1024),
+          aiContext: {instructions: 'Exclude test accounts.', examples: ['a']},
+        });
+        Object.assign(m.entities[1].fields[1], {
+          label: 'Amount',
+          description: x(1016),
+          aiContext: {instructions: 'Net of tax.', examples: ['100.00']},
+        });
+        Object.assign(m.relationships[0], {
+          description: x(1024),
+          aiContext: {instructions: 'Join key.', examples: ['placed by']},
+        });
+        Object.assign(m.metrics![0], {
+          description: x(1024),
+          aiContext: {instructions: 'Completed only.', examples: ['revenue?']},
+        });
       }, []],
       ['of a field with a label and a time role', m => {
         Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});

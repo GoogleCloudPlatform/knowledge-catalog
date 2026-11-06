@@ -435,7 +435,7 @@ The boundaries:
 - **A shared supertype label carries no OPTIONS and no measures.** A supertype's
   label is bound by every subclass table, and BigQuery forbids a label carried by
   more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
-  a supertype's own `description`/synonyms are dropped from its label (with a
+  a supertype's own `description` and `ai_context` are dropped from its label (with a
   warning). For the same reason push rejects a metric that belongs to an
   abstract entity or to one that another entity extends. Attach metrics to a
   leaf class instead. Subclass and leaf labels are unaffected.
@@ -511,8 +511,8 @@ differs from BigQuery Graph in five ways:
   not apply to a Spanner target (see [Validation](#validation)).
   Push refuses a Spanner deployment that names no profile in a model with
   metrics; name a profile with `metrics_exclude: "*"`.
-- **No per-element `OPTIONS`.** `description` / `synonyms` are not emitted into
-  the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
+- **No per-element `OPTIONS`.** `description` and `ai_context` are not emitted
+  into the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
   [What push and pull preserve](fidelity.md#to-spanner).
 - **Its own SQL.** A field reads its `SPANNER` expression, else its `ANSI_SQL`
@@ -750,8 +750,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   names match ignoring case. A BigQuery graph also cannot hold a metric named
   like a field of another entity, ignoring case. BigQuery limits the options
   kcmd writes on each label and property, too. The description holds at most
-  1,024 characters, counting the field label, the time-dimension line, and the
-  instructions and examples kcmd adds to it. An element holds at most eight
+  1,024 characters, counting the field label and the time-dimension line kcmd
+  adds to it. An element holds at most eight
   synonyms of one to 300 characters each. No two of them may match ignoring
   case, and none may match the element's own name.
   A deployment that names a profile is held to the measure rule under that
