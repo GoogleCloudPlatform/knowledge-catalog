@@ -24,7 +24,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
-import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
@@ -190,18 +190,16 @@ export async function init(options: InitOptions): Promise<number> {
     const source = manifest.source as SemanticModelSource;
     // Provision the destination entry group now, at init, so push writes only
     // entries -- matching how the standard layout operates (its push creates
-    // entries, never the entry group). Idempotent: an already-existing group
-    // (409) is success.
+    // entries, never the entry group). Idempotent: a group that exists is
+    // success. A 409, or a 403 with a lookup that finds the group, means the
+    // group exists.
     const catalog = new dataplex.CatalogClient(ctx);
     const res = await catalog.createEntryGroup(
         source.project, source.location, source.entryGroup);
-    // A caller without create permission may be refused the create of an
-    // entry group that exists. A lookup tells the two apart.
-    const exists = res.status === 409 ||
-        (res.status === 403 &&
-         (await catalog.getEntryGroup(
-              source.project, source.location, source.entryGroup))
-                 .status === 200);
+    const exists = await existsAfterCreate(
+        res.status,
+        () => catalog.getEntryGroup(
+            source.project, source.location, source.entryGroup));
     if (res.status !== 200 && !exists) {
       console.error(
           `Error: failed to create entry group '${source.name}': ` +
@@ -1025,10 +1023,17 @@ async function checkBeforeWrites(
       if (error) return fail(error);
     }
   }
-  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar.
+  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar, which
+  // must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
   if (kcV2Aspects() && docs.length === 1) {
     try {
+      for (const {path: sidecar} of layout.overviewSidecarPaths()) {
+        const error = checkUtf8(
+            sidecar, fileNameOf(layout, docs[0].name, sidecar),
+            fs.readFileSync(sidecar, 'utf8'));
+        if (error) return fail(error);
+      }
       overviews = layout.overviewSidecars();
     } catch (err: any) {
       return fail(err.message);

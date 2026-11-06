@@ -1012,15 +1012,19 @@ function messages(spy: any): string {
 // The catalog answers a Cloud SQL table's entry with its engine's type, which
 // gives the push the table's dialect, as it answers every other table's.
 describe('push checks that each file is valid UTF-8', () => {
-  // A Latin-1 é in a comment. Read as UTF-8, it becomes U+FFFD.
+  // A first line holding a Latin-1 é. Read as UTF-8, it becomes U+FFFD.
   const latin1 = (text: string) => Buffer.concat(
       [Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from(`\n${text}`)]);
   for (const [file, text] of [
          ['commerce.yaml', ROUND_TRIP_MODEL],
          ['commerce.profile.prod.yaml', ROUND_TRIP_PROFILE],
+         ['commerce.overview.md', 'Orders and customers.\n'],
        ]) {
     test(`a ${file} that is not valid UTF-8 fails the push, naming it`,
          async () => {
+           // Push reads overview sidecars only with the second-generation
+           // types.
+           process.env.KC_V2_ASPECTS = '1';
            writeRoundTripWorkspace();
            fs.writeFileSync(path.join(entryGroupDir(), file), latin1(text));
            const {create} = fakeCatalog();
@@ -1036,8 +1040,11 @@ describe('push checks that each file is valid UTF-8', () => {
   }
 
   test('a file holding U+FFFD as text is pushed', async () => {
+    process.env.KC_V2_ASPECTS = '1';
     writeRoundTripWorkspace(
         `# \uFFFD marks a lost character.\n${ROUND_TRIP_PROFILE}`);
+    fs.writeFileSync(
+        path.join(entryGroupDir(), 'commerce.overview.md'), '\uFFFD\n');
     fakeCatalog();
 
     expect(await push({deployment: false})).toBe(0);

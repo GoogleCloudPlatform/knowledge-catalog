@@ -475,6 +475,8 @@ describe('SemanticModelLayout overview sidecars', () => {
              '  - url: https://x.test\n    title: Guide\n' +
              '  - url: https://y.test\n---\n<p>Hi</p>\n';
          expect(formatOverviewSidecar(read(text))).toBe(text);
+         // A byte order mark before the frontmatter is skipped.
+         expect(read(`\uFEFF${text}`)).toEqual(read(text));
          // Content that opens with a `---` line gets an empty frontmatter.
          const ruled = {content: '---\ntitle: Orders\n---\nOne row.'};
          expect(read(formatOverviewSidecar(ruled))).toEqual(ruled);
