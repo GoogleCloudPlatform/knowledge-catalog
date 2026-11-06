@@ -2076,9 +2076,9 @@ export async function importModel(
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
     // The input itself may be in the entry group under another name.
-    const {files: docs, error} = otherModelFiles(layout, model, file);
+    const {inputThere, error} = otherModelFiles(layout, model, file);
     const refusals = error ? [error] : [];
-    if (docs.some(p => path.resolve(p) === path.resolve(file))) {
+    if (inputThere) {
       refusals.push(
           `the input file ${file} sits in the entry group, so the import ` +
           `would leave this model in two files there, ${file} and ${
@@ -2153,21 +2153,21 @@ async function workspaceLayout(): Promise<SemanticModelLayout|string> {
   return snapshot.layout as SemanticModelLayout;
 }
 
-// The files of the models in `layout`'s entry group other than `model`, and
-// the error that refuses to write `model` beside them, since an entry group
-// holds one model. Importing a model again replaces its own file. The error
-// does not name the input file `input`, which kcmd import refuses on its own
-// when it sits in the entry group.
+// Refuses to write `model` into `layout`'s entry group beside another
+// model's file, since an entry group holds one model. `inputThere` says
+// whether the input file `input` is one of those files. The error leaves it
+// out, since kcmd import refuses it on its own.
 function otherModelFiles(
     layout: SemanticModelLayout, model: string,
-    input: string): {files: string[]; error?: string} {
+    input: string): {inputThere: boolean; error?: string} {
   const files = layout.modelDocuments()
                     .map(d => layout.modelPath(d.name))
                     .filter(p => p !== layout.modelPath(model));
   const others = files.filter(p => path.resolve(p) !== path.resolve(input));
-  if (!others.length) return {files};
+  const inputThere = others.length < files.length;
+  if (!others.length) return {inputThere};
   return {
-    files,
+    inputThere,
     error: `the entry group already holds another model's file (${
                others.join(', ')}), and an entry group holds one model; ` +
         `remove it if this model replaces it, pass --out <path> to write ` +
