@@ -236,10 +236,14 @@ appears nowhere above.
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import. An object property that declares *more than one* `rdfs:domain`
-or `rdfs:range` is kept — a relationship maps one source to one destination, so
-the first of each is used and the extra endpoints are dropped with a warning
-(unlike a multi-domain *datatype* property, which lands on every domain).
+the whole import. Import also leaves out each object property push would reject,
+with a warning: one on a class with subclasses, one whose `rdfs:domain` and
+`rdfs:range` are one class, and one that runs opposite to an object property
+imported before it. An object property that declares *more than one*
+`rdfs:domain` or `rdfs:range` is kept — a relationship maps one source to one
+destination, so the first of each is used and the extra endpoints are dropped
+with a warning (unlike a multi-domain *datatype* property, which lands on every
+domain).
 
 ### Datatypes (`rdfs:range`)
 
@@ -361,10 +365,7 @@ Two boundaries to be clear about:
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in. Import leaves out each object
-property push would reject and warns about it: one on a class with subclasses,
-one whose `rdfs:domain` and `rdfs:range` are one class, and the second of two
-that join the same two classes in opposite directions.
+fields, and keys) with nothing more to fill in.
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog

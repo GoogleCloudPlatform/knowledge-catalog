@@ -393,9 +393,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // classes. The edge is logical: it carries only its direction (source entity
   // -> destination entity), no join columns. The foreign-key / key columns are
   // added to the model (logical grain, not a binding) before a graph deploy.
-  // A property that push would reject as a relationship is left out with a
-  // warning: one that connects a class with subclasses, one from a class to
-  // itself, and one that runs opposite to a relationship already written.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     const domain = p.domains[0];
@@ -419,6 +416,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `name; skipped (relationship names must be unique).`);
       continue;
     }
+    // Leave out, with a warning, a property push rejects as a relationship.
     const parents = dedupe([domain, range]).filter(c => subclasses.has(c));
     const back = relationships.find(
         r => r.source.entity === range && r.destination.entity === domain);
