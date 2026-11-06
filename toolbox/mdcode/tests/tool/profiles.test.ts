@@ -1138,25 +1138,23 @@ semantic_model:
       expect(await profiles()).toBe(1);
       expect(rejects(profileSection('staging'))).toEqual(errors);
       expect(section(INLINE)).toEqual([]);
+      logs.length = 0;
+      expect(await profiles({printStore: true})).toBe(1);
+      expect(logs).toEqual(errors.map(e => `Error: ${e}`));
     });
 
-    // --print-store prints no store for a scope push refuses for an
-    // incomplete profile or for a join that covers no key, and gives push's
-    // errors.
+    // --print-store prints no store for a scope push refuses for a join that
+    // covers no key, and gives push's errors.
     test('and --print-store refuses the scope with push\'s errors', async () => {
-      const cases: Array<Record<string, string>> = [
-        {'commerce.profile.staging.yaml': STAGING},
-        {'commerce.profile.a.yaml': profileFile('a'),
-         'commerce.profile.b.yaml': joinOnEmail(profileFile('b'))},
-      ];
-      for (const files of cases) {
-        fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
-        writeScope({'commerce.yaml': commerce({targets: 1}), ...files});
-        const {code, errors} = await pushResult();
-        expect(code).toBe(1);
-        expect(await profiles({printStore: true})).toBe(1);
-        expect(logs).toEqual(errors.map(e => `Error: ${e}`));
-      }
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}),
+        'commerce.profile.a.yaml': profileFile('a'),
+        'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
+      });
+      const {code, errors} = await pushResult();
+      expect(code).toBe(1);
+      expect(await profiles({printStore: true})).toBe(1);
+      expect(logs).toEqual(errors.map(e => `Error: ${e}`));
     });
 
     // The completeness check also requires each field a profile binds to hold
