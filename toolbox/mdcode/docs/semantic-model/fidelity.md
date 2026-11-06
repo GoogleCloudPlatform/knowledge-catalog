@@ -111,7 +111,9 @@ agree on every structural row and differ only where a Spanner target has no
     that table, push rejects the field or metric instead. When import cannot
     read a table's dialect, it warns and skips the checks that need it.
     `kcmd skills-generate` and `kcmd profiles --print-store` do not look up a
-    third-party table's dialect, and they read a Spanner table as `SPANNER`.
+    third-party table's dialect for their warnings, and they read a Spanner
+    table as `SPANNER`. The check `--print-store` runs on the named profiles
+    reads each table's dialect as push does.
     Import reads a Cloud SQL table it cannot look up as MySQL when the name has
     no schema. On any
     other table whose dialect a command has not looked up, kcmd warns only about

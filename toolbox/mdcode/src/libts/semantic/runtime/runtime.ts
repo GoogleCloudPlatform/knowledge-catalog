@@ -24,7 +24,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -112,13 +112,11 @@ export interface CreateRuntimeOptions {
   /** The scope, already loaded. Defaults to a load of `path`. */
   snapshot?: CatalogSnapshot;
   /**
-   * A check of the caller's own. It runs once the models load and each
-   * deployment names a declared profile. It runs before any profile file loads
-   * on its own, before `oneModel` is checked and before any store is looked
-   * up. It takes the dialects the runtime read. When it returns false, the
-   * result is an empty list.
+   * A check of the caller's own. It runs before the runtime loads each profile
+   * file on its own, checks `oneModel` or looks up a store. When it returns
+   * false, the result is an empty list.
    */
-  proceed?: (load: DialectLoad) => boolean;
+  proceed?: () => Promise<boolean>;
 }
 
 
@@ -247,7 +245,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     const error = undeclaredProfileError(document, model, declared);
     if (error) return {error};
   }
-  if (options.proceed && !options.proceed(load)) return [];
+  if (options.proceed && !await options.proceed()) return [];
 
   // Push then loads every profile file, whichever profile it deploys, and
   // refuses one that does not load.

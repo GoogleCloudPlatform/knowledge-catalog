@@ -1154,9 +1154,21 @@ async function printStore(
     ctx,
     oneModel: true,
     snapshot,
-    proceed: load => {
+    proceed: async () => {
       const layout = snapshot.layout as SemanticModelLayout;
       const docs = layout.modelDocuments();
+      const profileDocs = profileDocsReader(layout);
+      // The check reads each source's dialect as push does. When a read
+      // fails, the check skips the dialect rules for that source, so a script
+      // can still get the store of a database it has not created yet.
+      const read = await readDialects(ctx, [
+        ...docs.map(d => d.text),
+        ...docs.flatMap(d => profileDocs(d.name).map(p => p.text)),
+      ]);
+      const load = {
+        sourceDialects: read.dialects,
+        sourceDatabases: read.databases,
+      };
       const {models} =
           loadSemanticModels(docs, {bindingOptional: true, ...load});
       // Push refuses several models, or a deployment target in no accepted
@@ -1165,7 +1177,6 @@ async function printStore(
           models.some(m => 'error' in resolveModelDeployments(m.model))) {
         return true;
       }
-      const profileDocs = profileDocsReader(layout);
       refused = namedProfileErrors(
                     docs, new Map(models.map(m => [m.document, m.model])),
                     profileDocs, declaredProfilesReader(profileDocs), [], load)

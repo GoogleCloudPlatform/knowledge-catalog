@@ -142,8 +142,6 @@ describe('the profiles report and --print-store', () => {
         profileFile('prod', `${SPANNER_DB}/tables/Orders`));
     expect(await profiles({printStore: true, profile: 'prod'})).toBe(0);
     expect(out).toEqual(['acme-ops/prod/commerce']);
-    // --print-store reads no Spanner database's dialect; the report does.
-    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
     out = [];
     await profiles({profile: 'prod'});
     const target = out.find(l => l.trim().startsWith('target:'));

@@ -117,8 +117,10 @@ tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner
 API: `GOOGLE_STANDARD_SQL` gives `SPANNER` and `POSTGRESQL` gives `POSTGRES`.
 Push and `kcmd profiles` read each database once before they load the model,
 which needs `spanner.databases.get` on it. When the database cannot be read,
-the command stops and says so. `kcmd import` reads it too, and when it cannot,
-it warns and skips the checks that need the dialect.
+the command stops and says so. `kcmd profiles --print-store` reads it too, and
+when it cannot, it skips the checks that need the dialect. `kcmd import` reads
+it too, and when it cannot, it warns and skips the checks that need the
+dialect.
 
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL

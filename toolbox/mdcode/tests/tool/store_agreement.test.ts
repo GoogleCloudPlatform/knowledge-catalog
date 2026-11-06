@@ -40,6 +40,7 @@ import * as yaml from 'yaml';
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
@@ -700,6 +701,54 @@ entities:
              "'Nope' is not in the logical model");
          expect(r.printStore.out).toBe(r.push.out);
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
+       });
+
+  // --print-store judges a profile file's text in the dialect push reads for
+  // its tables: POSTGRES on a PostgreSQL-dialect Spanner database, and the
+  // dialect a third-party table's entry names. A database a script has not
+  // created yet still gets its store.
+  test('a profile file on a PostgreSQL-dialect Spanner database or a third-party table: --print-store agrees with push',
+       async () => {
+         const PG = SPANNER_DB.replace('/commerce', '/pg');
+         const ENTRY = 'projects/test-project/locations/us/entryGroups/sf/entries/o';
+         spyOn(SpannerClient.prototype, 'getDatabase').mockImplementation(
+             (async (_p: string, _i: string, db: string) => ({status: 200, result: {
+               databaseDialect: db === 'pg' ? 'POSTGRESQL' : 'GOOGLE_STANDARD_SQL'}})) as any);
+         spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue(
+             {status: 200, result: {fullyQualifiedName: 'snowflake:a.db.public.o'}} as any);
+         for (const [source, dialect, code] of [
+                  [ENTRY, 'DATABRICKS', 1],
+                  [`${PG}/tables/orders`, 'POSTGRES', 0]] as const) {
+           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+           writeScope({
+             'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/graphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+             'commerce.profile.other.yaml': `name: other
+entities:
+  - name: Order
+    source: ${source}
+    primary_key: [o_id]
+    fields: [{ name: key, expression: {dialects: [{dialect: ${dialect}, expression: o_id}]} }]
+`,
+           });
+           const r = await runAll();
+           expect([r.push.code, r.printStore.code]).toEqual([code, code]);
+           if (code) expect(r.printStore.out).toBe(r.push.out);
+         }
+         spyOn(SpannerClient.prototype, 'getDatabase')
+             .mockResolvedValue({status: 404, message: 'not found'} as any);
+         expect(await profiles({printStore: true})).toBe(0);
        });
 
   test('a profile file that sets a key a profile may not set: every command refuses',
