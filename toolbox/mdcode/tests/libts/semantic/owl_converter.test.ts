@@ -1110,7 +1110,10 @@ describe('the owl import handler writes into the workspace without --out', () =>
     fs.writeFileSync(path.join(dir, 'sales.owl.ttl'), readFixture('sales.owl.ttl'));
     spyOn(ApiContext, 'default')
         .mockReturnValue(new ApiContext('test-project', 'us', 'test-token'));
-    spyOn(console, 'log').mockImplementation(() => {});
+    const logs: string[] = [];
+    spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.join(' '));
+    });
     process.chdir(dir);
     try {
       expect(await owl('import', 'sales.owl.ttl', {})).toBe(0);
@@ -1125,7 +1128,9 @@ describe('the owl import handler writes into the workspace without --out', () =>
       spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
         errors.push(a.join(' '));
       });
+      logs.length = 0;
       expect(await owl('import', 'shop.owl.ttl', {})).toBe(1);
+      expect(logs).toEqual([]);
       expect(errors).toEqual([expect.stringContaining(
           `Error: the entry group already holds another model's file (${written})`)]);
       expect(fs.readdirSync(path.dirname(written))).toEqual(['sales.yaml']);

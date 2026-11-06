@@ -1928,6 +1928,14 @@ export async function owl(
     return 1;
   }
 
+  // Without --out, the model goes into the scope's entry group, which holds
+  // one model. A second model is refused before the summary, as above.
+  const layout = options.out ? undefined : await workspaceLayout();
+  if (layout && typeof layout !== 'string') {
+    const {error} = otherModelFiles(layout, modelName, file);
+    if (error) return printErrors(error);
+  }
+
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +
       `${objectProperties} ` +
@@ -1942,14 +1950,12 @@ export async function owl(
   // layout places the document under the scope's entry group so `kcmd push`
   // finds it.
   let writtenPath: string;
-  if (options.out) {
-    writeFileAt(options.out, result.yaml);
-    writtenPath = options.out;
+  if (!layout) {
+    writeFileAt(options.out!, result.yaml);
+    writtenPath = options.out!;
+  } else if (typeof layout === 'string') {
+    return printErrors(layout);
   } else {
-    const layout = await workspaceLayout();
-    if (typeof layout === 'string') return printErrors(layout);
-    const {error} = otherModelFiles(layout, modelName, file);
-    if (error) return printErrors(error);
     layout.writeModelDocument(modelName, result.yaml);
     writtenPath = layout.modelPath(modelName);
   }
