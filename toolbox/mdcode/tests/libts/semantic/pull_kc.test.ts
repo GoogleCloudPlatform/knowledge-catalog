@@ -35,9 +35,6 @@ const OPTS = {
   entryGroup: 'eg'
 };
 
-// What a second-generation push into OPTS's entry group writes.
-const V2 = {...OPTS, v2Aspects: true};
-
 const SALES: SemanticModel = {
   name: 'sales',
   aiContext: {instructions: 'Use for order analysis.'},
@@ -72,7 +69,7 @@ const SALES: SemanticModel = {
 
 // The entries a second-generation push writes for a model.
 function entriesFor(model: SemanticModel): Entry[] {
-  return generateCatalogResources(model, V2).entries;
+  return generateCatalogResources(model, OPTS).entries;
 }
 
 function ok<T>(result?: T): ApiResult<T> {
@@ -271,7 +268,7 @@ describe('pullKnowledgeCatalog: second-generation models', () => {
       `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const GRAPH = (g: string) =>
       `bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${g}`;
-  // A model with everything a flag-on push stores. Its entities, metrics and
+  // A model with everything a push stores. Its entities, metrics and
   // relationships are in name order, as a pull returns them, since
   // relationship order reaches the links and the DDL.
   const SHOP = `version: "0.2.0.dev0/google"
@@ -449,7 +446,7 @@ semantic_model:
         expression: ${ANSI('COUNT(*)')}
         custom_extensions: [${DBT(7)}, ${GOOGLE({entity: 'customers'})}]
 `;
-  // A model file and its profile files, as a flag-on push publishes them.
+  // A model file and its profile files, as a push publishes them.
   function loaded(
       text = SHOP, profiles: Record<string, string> = PROFILES): SemanticModel {
     const model = loadModels(text).models[0];
@@ -459,11 +456,11 @@ semantic_model:
     }
     return model;
   }
-  // What a flag-on push of `model` generates: its entries and links, and the
+  // What a push of `model` generates: its entries and links, and the
   // BigQuery and Spanner DDL of the model under each of its bindings.
   function pushed(model: SemanticModel, overviews?: Map<string, any>) {
     const {entries, entryLinks} =
-        generateCatalogResources(model, {...V2, overviews});
+        generateCatalogResources(model, {...OPTS, overviews});
     const bindings =
         [model, ...(model.profiles ?? []).map(p => applyProfile(model, p))];
     const graphs = [generatePropertyGraph, generateSpannerPropertyGraph];
@@ -568,8 +565,7 @@ semantic_model:
   test('each entry is read with the aspects of its type, and no link is read',
        async () => {
          const opts = {...OPTS, systemTypeProject: 'types'};
-         const {entries} =
-             generateCatalogResources(loaded(), {...opts, v2Aspects: true});
+         const {entries} = generateCatalogResources(loaded(), opts);
          const {lookup, lookupLinks} = stubClient(entries, entries);
          await pullKnowledgeCatalog(cat, OPTS);
          // The aspect types read for the model, an entity, a metric and a
@@ -621,7 +617,7 @@ semantic_model:
           relationships: [],
           metrics: [],
         };
-        const {entries} = generateCatalogResources(model, V2);
+        const {entries} = generateCatalogResources(model, OPTS);
         const {lookup} = stubClient(entries, entries);
         // The per-type reads run one at a time.
         const serve = lookup.getMockImplementation();

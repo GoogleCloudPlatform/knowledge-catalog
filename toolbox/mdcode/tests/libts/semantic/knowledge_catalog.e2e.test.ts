@@ -48,7 +48,6 @@ const GEN_OPTS = {
   project: 'sqlgen-testing',
   location: 'us',
   entryGroup: 'semantic',
-  v2Aspects: true
 };
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {

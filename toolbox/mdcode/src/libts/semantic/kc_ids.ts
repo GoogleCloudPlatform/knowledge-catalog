@@ -42,9 +42,6 @@ export interface NamerOptions {
   entryGroup: string;
   systemTypeProject?: string;
   systemTypeLocation?: string;
-  // Not read: the IDs are always the second-generation ones. It goes with
-  // KC_V2_ASPECTS (b/575695037).
-  v2Aspects?: boolean;
 }
 
 /**

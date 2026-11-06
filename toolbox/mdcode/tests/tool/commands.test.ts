@@ -1,5 +1,4 @@
-// Tests for `kcV2Aspects()` and forwarding of `v2Aspects` through `kcmd push`,
-// and for the files a push reads and a pull writes
+// Tests for the files a push reads and a pull writes
 // (src/tool/commands.ts, src/libts/semantic/deploy_knowledge_catalog.ts).
 
 import {afterEach, beforeEach, describe, expect, mock, Mock, spyOn, test} from 'bun:test';
@@ -15,14 +14,12 @@ import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as spannerLeg from '../../src/libts/semantic/deploy_spanner';
 import {SemanticModel} from '../../src/libts/semantic/ir';
 import {entryIdOf} from '../../src/libts/semantic/kc_ids';
-import * as kcEmit from '../../src/libts/semantic/knowledge_catalog';
 import * as loaderMod from '../../src/libts/semantic/loader';
 import * as osi from '../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
-import {kcV2Aspects} from '../../src/libts/semantic/validate';
 import {profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
@@ -51,7 +48,6 @@ entities:
 
 let dir = '';
 let cwd = '';
-let savedEnv: NodeJS.ProcessEnv = {};
 
 function writeWorkspace(): void {
   fs.writeFileSync(
@@ -71,8 +67,6 @@ beforeEach(() => {
   cwd = process.cwd();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-commands-'));
   process.chdir(dir);
-  savedEnv = {...process.env};
-  delete process.env.KC_V2_ASPECTS;
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation(() => {});
   spyOn(console, 'error').mockImplementation(() => {});
@@ -91,28 +85,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const k of ['KC_V2_ASPECTS', 'KC_TYPE_PROJECT']) {
-    if (savedEnv[k] === undefined) delete process.env[k];
-    else process.env[k] = savedEnv[k];
-  }
   process.chdir(cwd);
   if (dir) fs.rmSync(dir, {recursive: true, force: true});
   dir = '';
   mock.restore();
-});
-
-describe('kcV2Aspects', () => {
-  // Second generation is the default; only '0' turns it off.
-  for (const [value, on] of [
-    [undefined, true], ['1', true], ['0', false],
-  ] as const) {
-    test(`returns ${on} when KC_V2_ASPECTS is ${JSON.stringify(value)}`,
-         () => {
-           if (value === undefined) delete process.env.KC_V2_ASPECTS;
-           else process.env.KC_V2_ASPECTS = value;
-           expect(kcV2Aspects()).toBe(on);
-         });
-  }
 });
 
 describe('push prints Knowledge Catalog warnings', () => {
@@ -163,41 +139,6 @@ describe('push prints Knowledge Catalog warnings', () => {
     ]);
   });
 });
-
-describe('v2Aspects forwarding', () => {
-  test(
-      'push forwards v2Aspects: false when KC_V2_ASPECTS is "0"',
-      async () => {
-        process.env.KC_V2_ASPECTS = '0';
-        writeWorkspace();
-        const preflightSpy = spyOn(kc, 'preflightKnowledgeCatalog');
-        const emitSpy = spyOn(kcEmit, 'generateCatalogResources');
-
-        const code = await push({validateOnly: true});
-
-        expect(code).toBe(0);
-        expect(preflightSpy).toHaveBeenCalledTimes(1);
-        expect(preflightSpy.mock.calls[0][2].v2Aspects).toBe(false);
-        expect(emitSpy).toHaveBeenCalledTimes(1);
-        expect(emitSpy.mock.calls[0][1].v2Aspects).toBe(false);
-      });
-
-  test('push forwards v2Aspects: true when KC_V2_ASPECTS is unset', async () => {
-    writeWorkspace();
-    delete process.env.KC_V2_ASPECTS;
-    const preflightSpy = spyOn(kc, 'preflightKnowledgeCatalog');
-    const emitSpy = spyOn(kcEmit, 'generateCatalogResources');
-
-    const code = await push({validateOnly: true});
-
-    expect(code).toBe(0);
-    expect(preflightSpy).toHaveBeenCalledTimes(1);
-    expect(preflightSpy.mock.calls[0][2].v2Aspects).toBe(true);
-    expect(emitSpy).toHaveBeenCalledTimes(1);
-    expect(emitSpy.mock.calls[0][1].v2Aspects).toBe(true);
-  });
-});
-
 
 describe('push preflights under a deployment\'s profile', () => {
   // Each live preflight gets documents labeled with the deployment, so its
@@ -1052,8 +993,8 @@ describe('a push of overview sidecars', () => {
   // deployments list and a --no-deployment push both write each overview
   // sidecar into its entry's overview aspect, and a malformed sidecar stops
   // them before they read the catalog.
-  test('with KC_V2_ASPECTS on, push writes the overview sidecars, with ' +
-           '--no-deployment too; a malformed sidecar or profile file fails it',
+  test('push writes the overview sidecars, with --no-deployment too; a ' +
+           'malformed sidecar or profile file fails it',
        async () => {
          writeRoundTripWorkspace();
          const write = (name: string, text: string) => {
@@ -1934,10 +1875,8 @@ entities:
     expect(bqSpy).toHaveBeenCalledTimes(1);
   });
 
-  // With KC_V2_ASPECTS on, push checks every aspect's size before any graph
-  // deploys.
-  test('a graph push with KC_V2_ASPECTS on stops at an aspect too large ' +
-           'before the graph deploys',
+  // Push checks every aspect's size before any graph deploys.
+  test('a graph push stops at an aspect too large before the graph deploys',
        async () => {
          const model = ltvUnbound(['staging']).replace(
              'propertyGraphs/staging" }', 'propertyGraphs/staging", profile: staging }');

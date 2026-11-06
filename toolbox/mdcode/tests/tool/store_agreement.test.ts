@@ -64,7 +64,6 @@ entities:
 let dir = '';
 let cwd = '';
 let logs: string[] = [];
-let savedV2Aspects: string|undefined;
 
 function eg(): string {
   return path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
@@ -119,8 +118,6 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-store-agreement-'));
   process.chdir(dir);
   logs = [];
-  savedV2Aspects = process.env.KC_V2_ASPECTS;
-  delete process.env.KC_V2_ASPECTS;
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   for (const channel of ['log', 'warn', 'error'] as const) {
     spyOn(console, channel).mockImplementation((...a: unknown[]) => {
@@ -145,11 +142,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (savedV2Aspects === undefined) {
-    delete process.env.KC_V2_ASPECTS;
-  } else {
-    process.env.KC_V2_ASPECTS = savedV2Aspects;
-  }
   process.chdir(cwd);
   if (dir) fs.rmSync(dir, {recursive: true, force: true});
   dir = '';

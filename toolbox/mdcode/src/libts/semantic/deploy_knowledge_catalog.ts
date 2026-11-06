@@ -74,9 +74,6 @@ export interface KcDeployOptions {
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
-  // Not read: push always writes the second-generation types. It goes with
-  // KC_V2_ASPECTS (b/575695037).
-  v2Aspects?: boolean;
   // The overview sidecar of each entry, by entry id, which the emitter writes
   // into the entry's overview.
   overviews?: ReadonlyMap<string, OverviewSidecar>;
@@ -560,7 +557,6 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
       entryGroup: opts.entryGroup,
       systemTypeProject: opts.systemTypeProject,
       systemTypeLocation: opts.systemTypeLocation,
-      v2Aspects: opts.v2Aspects,
       overviews: opts.overviews,
     });
     for (const w of resources.warnings) warnings.push(`[${model.name}] ${w}`);

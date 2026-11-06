@@ -615,7 +615,7 @@ describe('a projection is only emitted when it will supply a type', () => {
 
   test('keeps a standalone parameter typed Opaque', () => {
     // The entity as the loader gives it, with the source as written and the
-    // expression's dialect form, which a second-generation push stores.
+    // expression's dialect form, which push stores.
     const model = projectionModel(
         {
           authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/o',
@@ -632,7 +632,6 @@ describe('a projection is only emitted when it will supply a type', () => {
       project: 'p',
       location: 'us',
       entryGroup: 'eg',
-      v2Aspects: true,
     });
     const rebuilt = modelsFromCatalogResources(entries).models[0];
 

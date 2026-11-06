@@ -25,7 +25,7 @@ import {profiles, pull, push} from '../../../src/tool/commands';
 
 describe('push, profiles and pull', () => {
   const CTX = new ApiContext('test-project', 'us', 'test-token');
-  const KC_OPTS = {project: 'test-project', location: 'us', entryGroup: 'sales_eg', v2Aspects: true};
+  const KC_OPTS = {project: 'test-project', location: 'us', entryGroup: 'sales_eg'};
   let dir = '';
   let cwd = '';
 

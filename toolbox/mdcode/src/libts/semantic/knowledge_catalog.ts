@@ -60,9 +60,6 @@ export interface KcGenerateOptions {
   entryGroup: string;  // destination entry group
   systemTypeProject?: string;   // default 'dataplex-types'
   systemTypeLocation?: string;  // default 'global'
-  // Not read: the emitter always writes the second-generation types. It goes
-  // with KC_V2_ASPECTS (b/575695037).
-  v2Aspects?: boolean;
   // The overview sidecar of each entry, by entry id, which fills its overview
   // beside the examples.
   overviews?: ReadonlyMap<string, OverviewSidecar>;
@@ -121,15 +118,15 @@ export function generateCatalogResources(
   // order. Reserve its id up front so nothing else can claim it.
   const modelId = names.modelId(model);
   const modelEntryName = names.entry(modelId);
-  claim(seen, modelId, 'entry', `model '${model.name}'`, warnings);
+  claim(seen, modelId, `model '${model.name}'`, warnings);
 
   const entries: Entry[] = [{
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
     aspects: aspectMap(names, {
-      'semantic-model': modelAspectDataV2(model),
-      ...objectAspectsV2(model),
+      'semantic-model': modelAspectData(model),
+      ...objectAspects(model),
     }),
   }];
 
@@ -139,7 +136,7 @@ export function generateCatalogResources(
   const entityEntryName = new Map<string, string>();
   for (const entity of entities) {
     const entityId = names.entityId(model, entity);
-    if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
+    if (!claim(seen, entityId, `entity '${entity.name}'`, warnings))
       continue;
     entityEntryName.set(entity.name, names.entry(entityId));
     if (lacksKeys(model, entity)) {
@@ -155,24 +152,24 @@ export function generateCatalogResources(
       entrySource: source(entity.name, entity.description),
       // semantic-entity and schema are required. The file header lists the
       // optional aspects.
-      aspects: aspectMap(names, entityAspectsV2(model, entity)),
+      aspects: aspectMap(names, entityAspects(model, entity)),
     });
   }
 
   for (const metric of metrics) {
     const metricId = names.metricId(model, metric);
-    if (!claim(seen, metricId, 'entry', `metric '${metric.name}'`, warnings))
+    if (!claim(seen, metricId, `metric '${metric.name}'`, warnings))
       continue;
     entries.push({
       name: names.entry(metricId),
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectMap(names, metricAspectsV2(model, metric)),
+      aspects: aspectMap(names, metricAspects(model, metric)),
     });
   }
 
-  const relationships = relationshipResourcesV2(
+  const relationships = relationshipResources(
       names, model, modelEntryName, entityEntryName, warnings);
   entries.push(...relationships.entries);
   // Each entry's sidecar fills the rest of its overview, beside the examples.
@@ -201,8 +198,7 @@ export function generateCatalogResources(
     project: opts.project,
     entry: (id: string) => names.entry(id),
     anchor: modelEntryName,
-    claim: (id: string, label: string) =>
-        claim(seen, id, 'entry', label, warnings),
+    claim: (id: string, label: string) => claim(seen, id, label, warnings),
   }, warnings));
 
   // One entry per constraint, on the same footing as an action: no built-in
@@ -212,8 +208,7 @@ export function generateCatalogResources(
     project: opts.project,
     entry: (id: string) => names.entry(id),
     anchor: modelEntryName,
-    claim: (id: string, label: string) =>
-        claim(seen, id, 'entry', label, warnings),
+    claim: (id: string, label: string) => claim(seen, id, label, warnings),
   }, warnings));
 
   return {
@@ -233,11 +228,11 @@ const ASSOCIATION_REASON =
     `many-to-many (association) edges are not published to ` +
     `Knowledge Catalog yet; the edge lives in the BigQuery property graph.`;
 
-// The relationship entries and their links under the second-generation
-// types: an entry per relationship except an association, a semantic-link per
-// ordered entity pair listing its relationships in order, and a reference link
-// from each relationship entry to each of its two entities.
-function relationshipResourcesV2(
+// The relationship entries and their links: an entry per relationship except
+// an association, a semantic-link per ordered entity pair listing its
+// relationships in order, and a reference link from each relationship entry to
+// each of its two entities.
+function relationshipResources(
     names: Namer, model: SemanticModel, modelEntryName: string,
     entityEntryName: ReadonlyMap<string, string>,
     warnings: string[]): {entries: Entry[]; links: EntryLink[]} {
@@ -261,7 +256,7 @@ function relationshipResourcesV2(
       entrySource: source(rel.name, rel.description),
       aspects: aspectMap(names, {
         'semantic-relationship': relationshipAspectData(model, rel),
-        ...objectAspectsV2(rel),
+        ...objectAspects(rel),
       }),
     });
     const from = rel.source.entity;
@@ -405,12 +400,12 @@ function lacksKeys(model: SemanticModel, entity: Entity): boolean {
 // The guidelines, semantic-extensions and overview aspects of an object's
 // entry, each left out when the object has nothing for it. For a field's
 // aspects, `at` is `@Schema.<field>`, and each key ends in it.
-function objectAspectsV2(
+function objectAspects(
     object: {aiContext?: AiContext; customExtensions?: CustomExtension[]},
     at = ''): Record<string, any> {
   const examples = object.aiContext?.examples ?? [];
   return compact({
-    [`guidelines${at}`]: guidelinesAspectDataV2(object.aiContext),
+    [`guidelines${at}`]: guidelinesAspectData(object.aiContext),
     [`semantic-extensions${at}`]: extensionsAspectData(object.customExtensions),
     [`overview${at}`]: examples.length ?
         {examples: examples.map(content => ({content}))} :
@@ -418,10 +413,10 @@ function objectAspectsV2(
   });
 }
 
-// The guidelines aspect under the second-generation types: the object's
-// instructions, and in `data` its custom ai_context members by name, leaving
-// out those `unstorableValue` names. Undefined when the object has neither.
-function guidelinesAspectDataV2(ai: AiContext|undefined): Record<string, any>|
+// The guidelines aspect: the object's instructions, and in `data` its custom
+// ai_context members by name, leaving out those `unstorableValue` names.
+// Undefined when the object has neither.
+function guidelinesAspectData(ai: AiContext|undefined): Record<string, any>|
     undefined {
   const members = Object.entries(ai?.additionalProperties ?? {})
                       .filter(([, value]) => !unstorableValue(value));
@@ -439,8 +434,8 @@ function extensionsAspectData(extensions: CustomExtension[]|undefined):
   return blocks.length ? {customExtensions: blocks} : undefined;
 }
 
-// The semantic-model aspect of the second-generation types.
-function modelAspectDataV2(model: SemanticModel): Record<string, any> {
+// The semantic-model aspect.
+function modelAspectData(model: SemanticModel): Record<string, any> {
   const declared: DeploymentSpec[] = model.deployments ?? [];
   const deployments = declared.map(d => compact({
     name: d.name,
@@ -455,24 +450,24 @@ function modelAspectDataV2(model: SemanticModel): Record<string, any> {
   });
 }
 
-// The aspects of an entity entry under the second-generation types. Its schema
-// lists the fields it declares, each with its own aspects at its path.
-function entityAspectsV2(
+// The aspects of an entity entry. Its schema lists the fields it declares, each
+// with its own aspects at its path.
+function entityAspects(
     model: SemanticModel, entity: Entity): Record<string, Record<string, any>> {
   const fields = declaredFields(model, entity);
   return compact({
-    'semantic-entity': entityAspectDataV2(model, entity),
-    'schema': schemaAspectDataV2(fields),
-    ...objectAspectsV2(entity),
+    'semantic-entity': entityAspectData(model, entity),
+    'schema': schemaAspectData(fields),
+    ...objectAspects(entity),
     ...Object.assign(
-        {}, ...fields.map(f => objectAspectsV2(f, `@Schema.${f.name}`))),
+        {}, ...fields.map(f => objectAspects(f, `@Schema.${f.name}`))),
     'sql-expressions': fieldExpressionsData(model, entity),
   });
 }
 
-// The built-in schema aspect under the second-generation types, one record per
-// field. `is_time` is written only when the document declares it.
-function schemaAspectDataV2(fields: Field[]): Record<string, any> {
+// The built-in schema aspect, one record per field. `is_time` is written only
+// when the document declares it.
+function schemaAspectData(fields: Field[]): Record<string, any> {
   return {
     fields: fields.map(f => {
       const type = f.type ?? 'Opaque';
@@ -493,11 +488,11 @@ function schemaAspectDataV2(fields: Field[]): Record<string, any> {
   };
 }
 
-// semantic-entity under the second-generation types: the entity's source and
-// keys as written, its direct parents, whether it is abstract, its synonyms,
-// and one record per named profile that lists it, holding what that profile
-// states. Anything empty is left out.
-function entityAspectDataV2(
+// The semantic-entity aspect: the entity's source and keys as written, its
+// direct parents, whether it is abstract, its synonyms, and one record per
+// named profile that lists it, holding what that profile states. Anything
+// empty is left out.
+function entityAspectData(
     model: SemanticModel, entity: Entity): Record<string, any> {
   const profiles = namedProfiles(model).flatMap(p => {
     const bound = p.entities.find(b => b.name === entity.name);
@@ -553,20 +548,20 @@ function fieldExpressionsData(
   return fieldExpressions.length ? {fieldExpressions} : undefined;
 }
 
-// The aspects of a metric entry under the second-generation types.
-function metricAspectsV2(
+// The aspects of a metric entry.
+function metricAspects(
     model: SemanticModel, metric: Metric): Record<string, any> {
   const expressions = expressionRecords(metric);
   return compact({
-    'semantic-metric': metricAspectDataV2(model, metric),
-    ...objectAspectsV2(metric),
+    'semantic-metric': metricAspectData(model, metric),
+    ...objectAspects(metric),
     'sql-expressions': expressions.length ? {expressions} : undefined,
   });
 }
 
-// The semantic-metric aspect of the second-generation types. `entity` is the
-// metric's entity, declared or derived.
-function metricAspectDataV2(
+// The semantic-metric aspect. `entity` is the metric's entity, declared or
+// derived.
+function metricAspectData(
     model: SemanticModel, metric: Metric): Record<string, any> {
   const type = metric.type ?? 'Opaque';
   const excludedIn = namedProfiles(model)
@@ -668,11 +663,11 @@ function compact<T extends Record<string, any>>(obj: T): T {
 // entries sharing one name would otherwise have the later write silently
 // overwrite the earlier one on publish.
 function claim(
-    seen: Set<string>, id: string, kind: string, label: string,
+    seen: Set<string>, id: string, label: string,
     warnings: string[]): boolean {
   if (seen.has(id)) {
     warnings.push(
-        `${label}: generated ${kind} id '${id}' duplicates an earlier one; ` +
+        `${label}: generated entry id '${id}' duplicates an earlier one; ` +
         `skipped (rename to avoid overwriting it on publish)`);
     return false;
   }

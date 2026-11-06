@@ -407,12 +407,9 @@ function checkReport(out: Line[], step: ReportStep, runs: PushRun[]): void {
 
 async function runCase(c: Case): Promise<void> {
   const cwd = process.cwd();
-  const saved = process.env.KC_V2_ASPECTS;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-two-phase-'));
   process.chdir(dir);
   try {
-    // With KC_V2_ASPECTS unset, push writes the second-generation layout.
-    delete process.env.KC_V2_ASPECTS;
     const runs: PushRun[] = [];
     for (const step of [c, ...c.then ?? []]) {
       const own = step === c ? {} : step;
@@ -430,8 +427,6 @@ async function runCase(c: Case): Promise<void> {
   } finally {
     mock.restore();
     process.chdir(cwd);
-    if (saved === undefined) delete process.env.KC_V2_ASPECTS;
-    else process.env.KC_V2_ASPECTS = saved;
     fs.rmSync(dir, {recursive: true, force: true});
   }
 }

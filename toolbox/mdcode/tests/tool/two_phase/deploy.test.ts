@@ -312,7 +312,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
         expect(model.entities[0].dataSource).toBe(source);
         expect(model.profiles!.map(p => p.name).sort()).toEqual(['sp', 'x']);
       }
-      const [[models, , opts]] = r.fake.preflight.mock.calls;
+      const [[models]] = r.fake.preflight.mock.calls;
       expect(models).toHaveLength(1);
       const published = r.published;
       expect(published.entities[0].dataSource).toBe('test-project.d.customer');
@@ -320,7 +320,6 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           .toEqual(['sp', 'x']);
       expect(published.deployments!.map(d => d.name))
           .toEqual(['c', 'a', 'b']);
-      expect(opts.v2Aspects).toBe(true);
     },
     then: [
       // cac gives `true` for a bare --profile and for no --profile alike.

@@ -910,8 +910,7 @@ describe('profile checks', () => {
     expect([...res.errors, ...res.warnings]).toEqual([messages].flat());
   });
 
-  // [mistake, input, push's message about it in document `doc`], each run with
-  // KC_V2_ASPECTS on
+  // [mistake, input, push's message about it in document `doc`]
   const MODEL_MISTAKES: Array<[string, string, (doc: string) => string]> = [
     ['a metric that reads a column, not a field',
      googleDoc({extra: "    metrics:\n      - {name: revenue, expression: 'SUM(orders.amount)'}\n"}),
@@ -945,17 +944,10 @@ describe('profile checks', () => {
   test.each(MODEL_MISTAKES.flatMap(([mistake, input, message]) => [true, false].map(
       first => [mistake, first ? 'first-party' : 'third-party', first, input, message] as const)))(
       'reports %s in a %s import, as push does', async (_, __, first, input, message) => {
-        const saved = process.env.KC_V2_ASPECTS;
-        process.env.KC_V2_ASPECTS = '1';
-        try {
-          const res = await importSemanticModelYaml(
-              input, first ? {...strict, flavor: 'google'} : {flavor: 'google'});
-          expect(res.errors).toEqual(first ? [message('sales')] : []);
-          if (!first) expect(res.warnings.at(-1)).toBe(message('retail'));
-        } finally {
-          if (saved === undefined) delete process.env.KC_V2_ASPECTS;
-          else process.env.KC_V2_ASPECTS = saved;
-        }
+        const res = await importSemanticModelYaml(
+            input, first ? {...strict, flavor: 'google'} : {flavor: 'google'});
+        expect(res.errors).toEqual(first ? [message('sales')] : []);
+        if (!first) expect(res.warnings.at(-1)).toBe(message('retail'));
       });
 
   // [what push's line is about, input, profile files, the line push prints

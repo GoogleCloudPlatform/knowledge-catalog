@@ -22,7 +22,6 @@ const OPTS = {
   project: 'dest',
   location: 'us',
   entryGroup: 'eg',
-  v2Aspects: true
 };
 
 function loadFixtureModel(name: string): SemanticModel {
