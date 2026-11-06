@@ -589,10 +589,12 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
 
   test(
       'a 404 on reading the link after a 409 on createEntryLink fails the ' +
-          'push because another link holds those endpoints, with no update',
+          'push with the 409\'s text and no update when the lookup finds no ' +
+          'link between the two entries',
       async () => {
         // No link holds the ID, so the 409 came from another link on the
-        // pair. The error carries the create's own text.
+        // pair, which is gone by the time push looks it up. This push deleted
+        // nothing, so the error has no push-again hint.
         const {createLink, updateLink} = stubClient({
           createLink: starLinkExists(
               'EntryLink already exists, for the given entry reference and ' +
@@ -608,12 +610,9 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
         expect(result.linked).toBe(2);
         expect(result.details)
             .toBe(
-                'Model \'sales\': failed to create entry link ' +
-                `'${STAR_SEMANTIC_LINK}' because another 'semantic-link' ` +
-                'link already connects \'sales/entities/orders\' and ' +
-                '\'sales/entities/customer\' (Knowledge Catalog returned: ' +
+                `Model 'sales': entry link '${STAR_SEMANTIC_LINK}': ` +
                 'EntryLink already exists, for the given entry reference and ' +
-                'link type); delete that link, then push again');
+                'link type');
         expect(createLink).toHaveBeenCalledTimes(3);
         expect(updateLink).not.toHaveBeenCalled();
       });
@@ -2220,13 +2219,15 @@ describe(
       // at supplier.
       const FROM_SUPPLIER =
           semanticLinkId('link', 'sales', 'supplier', 'customer');
+      const SOURCE_LINKS = [
+        semanticLink(FROM_SUPPLIER, 'supplier', 'customer'),
+        ...references('orders_to_customer', 'supplier', 'customer'),
+      ];
       const SOURCE_MOVED = {
         existing: [
           ...V2_ENTRIES, {id: 'sales/entities/supplier', type: ENTITY_TYPE},
         ],
-        links: linksTo(
-            semanticLink(FROM_SUPPLIER, 'supplier', 'customer'),
-            ...references('orders_to_customer', 'supplier', 'customer')),
+        links: linksTo(...SOURCE_LINKS),
         // The target reference link still exists.
         createLink: (id: string) =>
             id === STAR_REFERENCES[1] ? EXISTS() : ok({}),
@@ -2336,27 +2337,40 @@ describe(
           });
 
       // The create of the source reference link, whose stale link the push
-      // deleted, returns 409 and the read returns 404: another tool's link
-      // holds the two entries. Each case fails with `details`.
+      // deleted, returns 409 and the read returns 404: another link held the
+      // two entries. FOREIGN is another tool's link between them, which
+      // push's lookup through the entities leaves alone. Each case fails with
+      // `details`.
       const DUPLICATE =
           'EntryLink already exists, for the given entry reference and link type';
+      const FOREIGN = directed(
+          'reference', 'catalog-reference-1',
+          'sales/relationships/orders_to_customer', 'sales/entities/orders');
+      // A link of another type between the same two entries, which does not
+      // block a reference link.
+      const RELATED = {...FOREIGN, entryLinkType: FOREIGN.entryLinkType.replace(
+          /reference$/, 'related')};
       for (const [name, links, createLink, details] of [
-        ['a 409 on creating the ID of a deleted stale link blames another ' +
+        ['a 409 on creating the ID of a deleted stale link names the other ' +
              'link and says to delete it, with no push-again hint',
-         SOURCE_MOVED.links,
+         linksTo(...SOURCE_LINKS, FOREIGN),
          (id: string) => id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :
                                                       SOURCE_MOVED.createLink(id),
          `Model 'sales': failed to create entry link '${STAR_REFERENCES[0]}' ` +
-             `because another 'reference' link already connects ` +
-             `'sales/relationships/orders_to_customer' and ` +
-             `'sales/entities/orders' (Knowledge Catalog returned: ${
-                 DUPLICATE}); delete that link, then push again`],
+             `because another 'reference' link 'catalog-reference-1' already ` +
+             `goes from 'sales/relationships/orders_to_customer' to ` +
+             `'sales/entities/orders'; delete that link, then push again`],
+        ['a 409 on creating the ID of a deleted stale link, with no other ' +
+             'link of its type between the two entries any more, gives the ' +
+             '409\'s text and the push-again hint',
+         linksTo(...SOURCE_LINKS, RELATED),
+         (id: string) => id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :
+                                                      SOURCE_MOVED.createLink(id),
+         `Model 'sales': entry link '${STAR_REFERENCES[0]}': ${DUPLICATE} ` +
+             `(push again to restore the link)`],
         ['a link a deleted orphan made way for still gets the push-again ' +
              'hint when another link is blocked',
-         linksTo(
-             semanticLink(FROM_SUPPLIER, 'supplier', 'customer'),
-             ...references('orders_to_customer', 'supplier', 'customer'),
-             BACK_LINK),
+         linksTo(...SOURCE_LINKS, BACK_LINK, FOREIGN),
          (id: string) => id === STAR_SEMANTIC_LINK ?
              err(500, 'backend unavailable') :
              id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :

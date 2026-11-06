@@ -1236,8 +1236,8 @@ interface LinksOutcome {
   linked: number;
   // IDs of the links written.
   written: Set<string>;
-  // IDs of the links another link blocks: their create returned 409, and no
-  // link holds their ID.
+  // IDs of the links another link blocks: their create returned 409, no link
+  // holds their ID, and a lookup found the other link between their entries.
   blocked: Set<string>;
   // Existing links deleted so that an emitted link with new endpoints could
   // take their ID. The caller uses them for the push-again hint.
@@ -1250,11 +1250,12 @@ interface LinksOutcome {
  *
  * Both endpoint entries already exist because `writeEntries` runs first, and
  * any orphaned or stale links the lookup found have already been deleted. The
- * emitter gives each pair of entries at most one link of a type. A stale link
- * the lookup missed is replaced during these writes, so a link that needs the
- * pair it frees can fail with the duplicate-endpoints error, which says to
- * delete the link holding the pair and push again; once the replace is done,
- * pushing again is enough. Uses `Promise.allSettled` so a thrown network
+ * emitter gives each pair of entries at most one link of a type, so a 409 on a
+ * link whose ID no link holds means another link joined its two entries when
+ * push wrote it. Once every write is done, `blockedOutcome` looks that link
+ * up. A stale link the lookup missed is replaced during these writes, so the
+ * link in the way may be gone by then, and pushing again is enough. Uses
+ * `Promise.allSettled` so a thrown network
  * error on one link waits for any in-flight link writes to finish and reports
  * the link ID in the returned error. `current` holds the emitted IDs whose
  * looked-up link has the same endpoints.
@@ -1269,12 +1270,18 @@ async function writeEntryLinks(
   if (!entryLinks.length) return {linked: 0, written, blocked, deleted};
   const settled = await Promise.allSettled(
       entryLinks.map(l => writeEntryLink(cat, opts, l, current)));
-  const res = settled.map((s, i): LinkWriteOutcome => {
-    if (s.status === 'fulfilled') return s.value;
-    const id = linkId(entryLinks[i]);
-    const msg = s.reason?.message || String(s.reason);
-    return {error: `entry link '${id}': ${msg}`};
-  });
+  const res = await Promise.all(settled.map((s, i): LinkWriteOutcome |
+                                              Promise<LinkWriteOutcome> => {
+    if (s.status === 'rejected') {
+      const id = linkId(entryLinks[i]);
+      const msg = s.reason?.message || String(s.reason);
+      return {error: `entry link '${id}': ${msg}`};
+    }
+    const {conflict} = s.value;
+    return conflict === undefined ?
+        s.value :
+        blockedOutcome(cat, opts, entryLinks[i], conflict);
+  }));
   res.forEach((r, i) => {
     if (r.deleted) deleted.push(r.deleted);
     if (r.blocked) blocked.add(linkId(entryLinks[i]));
@@ -1298,6 +1305,9 @@ interface LinkWriteOutcome {
   deleted?: EntryLink;
   // True when another link holds the two entries of the emitted link.
   blocked?: boolean;
+  // The text of a 409 on creating a link whose ID no link holds.
+  // `writeEntryLinks` turns it into `error` once every write is done.
+  conflict?: string;
   error?: string;
 }
 
@@ -1324,8 +1334,8 @@ async function writeEntryLink(
   if (read.error) return {error: read.error};
   if (!read.existing) {
     // No link holds the ID. Dataplex allows one link of a type between two
-    // entries, so the 409 means another link already joins them.
-    return {error: duplicateEndpointsError(link, errText(res)), blocked: true};
+    // entries, so the 409 means another link joined them.
+    return {conflict: errText(res)};
   }
   // The update patches only the aspects, and a link's references are
   // immutable. A link whose endpoints changed is deleted and created again.
@@ -1405,18 +1415,47 @@ async function updateEntryLink(
 }
 
 /**
- * Returns the error when `createEntryLink` returns 409 because another link
- * under a different ID already connects the same endpoints. `createError` is
- * the text of that 409.
+ * The outcome of `link`, whose create returned 409 with the text `conflict`
+ * although no link holds its ID. Looks up the links of its first entry for
+ * another link of its type between its two entries. When one is there, the
+ * error names it and says to delete it. Otherwise the link that was in the way
+ * is gone, and the error gives the 409's own text, which the caller gives the
+ * push-again hint when a delete of this push left the link missing. A failed
+ * lookup counts as finding nothing.
  */
-function duplicateEndpointsError(link: EntryLink, createError: string): string {
+async function blockedOutcome(
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    conflict: string): Promise<LinkWriteOutcome> {
   const id = linkId(link);
-  const endpoints =
-      link.entryReferences.map(r => `'${entryId(r)}'`).join(' and ');
-  return `failed to create entry link '${id}' because another '${
-             linkTypeId(link)}' link already connects ${endpoints} ` +
-      `(Knowledge Catalog returned: ${createError}); delete that link, then ` +
-      `push again`;
+  // Dataplex spells a looked-up link's references with the project number.
+  const ends = (l: EntryLink) =>
+      l.entryReferences.map(r => r.name.replace(/^projects\/[^/]+\//, ''))
+          .sort()
+          .join('|');
+  const found = await cat
+                    .lookupEntryLinks(
+                        opts.project, opts.location,
+                        {entry: link.entryReferences[0].name})
+                    .catch(() => undefined);
+  const other = found && isOkStatus(found) ?
+      (found.result ?? [])
+          .find(
+              l => linkId(l) !== id && linkTypeId(l) === linkTypeId(link) &&
+                  ends(l) === ends(link)) :
+      undefined;
+  if (!other) return {error: `entry link '${id}': ${conflict}`};
+  const source = other.entryReferences.find(r => r.type === 'SOURCE');
+  const target = other.entryReferences.find(r => r.type === 'TARGET');
+  const joins = source && target ?
+      `goes from '${entryId(source)}' to '${entryId(target)}'` :
+      `connects ${
+          other.entryReferences.map(r => `'${entryId(r)}'`).join(' and ')}`;
+  return {
+    error: `failed to create entry link '${id}' because another '${
+               linkTypeId(link)}' link '${linkId(other)}' already ${joins}; ` +
+        `delete that link, then push again`,
+    blocked: true,
+  };
 }
 
 /**

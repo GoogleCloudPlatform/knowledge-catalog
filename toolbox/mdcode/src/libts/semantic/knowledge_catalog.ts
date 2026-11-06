@@ -8,9 +8,11 @@
 // `deploy_bigquery.ts`) drives this emitter and writes the resulting resources
 // via the Knowledge Catalog client.
 //
-// The `semantic-*` entry, aspect and entry link types, and the other types this
-// emitter references (the `schema`, `guidelines`, `overview` and
-// `sql-expressions` aspect types and the `reference` entry link type), are
+// The `semantic-model`, `semantic-entity`, `semantic-metric` and
+// `semantic-relationship` entry and aspect types, the `semantic-link` entry
+// link and aspect types, and the other types this emitter references (the
+// `schema`, `guidelines`, `semantic-extensions`, `overview` and
+// `sql-expressions` aspect types and the `reference` entry link type) are
 // built-in system types under `dataplex-types/global`. This emitter references
 // them; it never provisions them.
 //

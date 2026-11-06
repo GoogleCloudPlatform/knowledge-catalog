@@ -109,9 +109,9 @@ constraints. They also cover the model file's own bindings and each profile
 import writes. For each deployment they cover its profile, bindings, metrics,
 tables and graph. A profile file beside a vanilla `<file>` and a
 `<model>.profiles/` directory beside `<file>` are checked too. The checks also
-make sure Knowledge Catalog can store each
-aspect push writes. The deployment checks include the names a BigQuery or
-Spanner graph cannot hold and BigQuery's description and synonym limits. Import
+make sure Knowledge Catalog can store each aspect push writes. The deployment
+checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
+description and synonym limits. Import
 reports what these checks reject as an error under
 `--input first-party` and as a warning otherwise, except a deployment target in
 no accepted form, which is an error either way. It reports their warnings as
