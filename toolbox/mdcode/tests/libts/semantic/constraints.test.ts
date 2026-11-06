@@ -195,10 +195,6 @@ describe('loader parses constraints', () => {
 describe('validatePushRequirements gates constraints', () => {
   const target =
       'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: [target]})
-  };
 
   function loaded(constraints: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -212,7 +208,7 @@ describe('validatePushRequirements gates constraints', () => {
       relationships: [],
       metrics: [],
       constraints,
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -416,7 +412,7 @@ describe('validatePushRequirements gates constraints', () => {
       relationships: [],
       metrics: [],
       constraints: [{name: 'C', judgment, onViolation: 'reject'}],
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }

@@ -1,10 +1,8 @@
 // Reads where a model deploys and classifies each declared target.
 //
 // A semantic model names where it deploys with its `deployments:` list. Each
-// entry has a name, a target and optionally the binding profile it uses. The
-// loader also folds every target into `deploymentTargets` in a GOOGLE
-// `custom_extensions` block, which is also where a vanilla document's GOOGLE
-// block carries them. Three destination types are recognized here, each a
+// entry has a name, a target and optionally the binding profile it uses. Three
+// destination types are recognized here, each a
 // GCP resource name, written with no leading `//`:
 //
 //   BigQuery Graph:
@@ -33,13 +31,10 @@
 // matches neither destination type is collected as `malformed` (rejected by the
 // validator and named in errors) rather than silently skipped.
 
-import {CustomExtension, DeploymentSpec, SemanticModel} from './ir';
+import {DeploymentSpec, SemanticModel} from './ir';
 import {asResourceName, asResourceUri, resourceUriFix} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
-
-// Our own vendor tag in the Ossie `custom_extensions` list.
-const GOOGLE_VENDOR = 'GOOGLE';
 
 // A BigQuery Graph deployment target.
 const BQ_GRAPH_TARGET =
@@ -120,8 +115,7 @@ export interface AlloyDbTarget {
 }
 
 export interface GoogleDeploymentTargets {
-  // Every declared target, in declaration order. A GOOGLE block target is
-  // trimmed, and a non-string one is kept as its JSON text.
+  // Every declared target, in declaration order.
   uris: string[];
   // The subset that parse as BigQuery Graph targets.
   bigQuery: BigQueryGraphTarget[];
@@ -205,15 +199,6 @@ export function deploymentTargetError(
   return targetError(
       `Model '${model.name}': deployment '${d.name}' targets '${d.target}'`,
       d.target);
-}
-
-/** Why a target in a GOOGLE block's `deploymentTargets` is not accepted. */
-export function googleBlockTargetError(
-    model: SemanticModel, target: string): string {
-  return targetError(
-      `Model '${model.name}': the GOOGLE custom_extension's ` +
-          `'deploymentTargets' lists '${target}'`,
-      target);
 }
 
 // The Dataplex name of a Spanner graph `target` names with `propertyGraphs`,
@@ -333,57 +318,13 @@ export function resolveModelDeployments(
 
 // Memoizes the parse per model object so the several callers within one push
 // (validation, source-project lookup, per-leg routing, each deploy leg) share a
-// single parse rather than re-running JSON.parse + the regexes once per reader.
+// single parse rather than re-running the regexes once per reader.
 // Keyed by model identity: the IR object is stable through a push (the loader
 // and inheritance passes each hand on a fixed set of objects) and
-// neither its deployments nor its customExtensions are mutated after loading.
+// its deployments are not mutated after loading.
 // A caller that narrows `deployments` builds a new model object. The returned
 // value is read-only by convention -- no caller mutates its arrays.
 const targetsCache = new WeakMap<SemanticModel, GoogleDeploymentTargets>();
-
-// The targets in a model's GOOGLE custom_extension(s). The extension `data` is
-// an opaque, vendor-serialized JSON string (the loader keeps it verbatim); we
-// own its `deploymentTargets` shape. Throws on malformed extension JSON.
-function extensionTargets(model: SemanticModel): string[] {
-  return googleBlockTargets(model.customExtensions, model.name);
-}
-
-// The targets listed in the GOOGLE blocks among `exts`, in order. A string
-// target is trimmed, and a blank one is dropped. A padded target is the same
-// target, so trimming here keeps the duplicate check and the stored list in
-// step. An entry that is not a string is kept as its JSON text, which parses
-// as no supported destination. Throws when a GOOGLE block's data is not valid
-// JSON.
-export function googleBlockTargets(
-    exts: readonly CustomExtension[]|undefined, modelName: string): string[] {
-  const uris: string[] = [];
-  for (const ext of exts ?? []) {
-    if (ext.vendorName !== GOOGLE_VENDOR) {
-      continue;
-    }
-
-    let data: any;
-    try {
-      data = JSON.parse(ext.data);
-    } catch {
-      throw new Error(`Model '${
-          modelName}': GOOGLE custom_extension 'data' is not valid JSON.`);
-    }
-
-    const list = data?.deploymentTargets;
-    if (!Array.isArray(list)) {
-      continue;
-    }
-    for (const uri of list) {
-      if (typeof uri !== 'string') {
-        uris.push(JSON.stringify(uri));
-      } else if (uri.trim() !== '') {
-        uris.push(uri.trim());
-      }
-    }
-  }
-  return uris;
-}
 
 // Deployments for targets whose names are not known: a pull reads only the
 // targets back from the catalog. One target is `default`; several are
@@ -405,18 +346,13 @@ export function unnamedDeployments(targets: readonly string[]):
 }
 
 // Reads a model's deployment targets in a single pass and returns the facts
-// every caller derives from them. The targets come from `model.deployments`
-// when the model has it, and otherwise from its GOOGLE custom_extension(s).
-// Never both: in the Google flavor, the loader's GOOGLE block holds a copy of
-// the list. Throws on malformed extension JSON.
+// every caller derives from them. The targets come from `model.deployments`.
 export function googleDeploymentTargets(model: SemanticModel):
     GoogleDeploymentTargets {
   const cached = targetsCache.get(model);
   if (cached) return cached;
 
-  const uris = model.deployments !== undefined ?
-      model.deployments.map(d => d.target) :
-      extensionTargets(model);
+  const uris = (model.deployments ?? []).map(d => d.target);
   const bigQuery: BigQueryGraphTarget[] = [];
   const spanner: SpannerGraphTarget[] = [];
   const alloyDb: AlloyDbTarget[] = [];

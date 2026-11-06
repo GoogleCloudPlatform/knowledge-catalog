@@ -170,16 +170,14 @@ describe('a binding that disagrees with the target', () => {
 // not in doubt -- only Spanner accepts a write -- so the pair resolves. Two
 // destinations of the SAME backend is the case nothing here can decide.
 describe('a model that declares more than one deployment target', () => {
-  // A vanilla model, whose targets sit in a GOOGLE block.
+  // A vanilla model, whose deployments sit in a GOOGLE block.
   function targets(uris: string[], source: string): SemanticModel {
     return {
       ...bound(`${DB}/graphs/g`, source),
       version: '0.2.0.dev0',
-      deployments: undefined,
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: uris}),
-      }],
+      deployments: uris.length ?
+          uris.map((target, i) => ({name: `d_${i + 1}`, target})) :
+          undefined,
     };
   }
 
@@ -200,6 +198,8 @@ describe('a model that declares more than one deployment target', () => {
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
          expect(store.error).toContain('2 Spanner deployment targets');
+         expect(store.error)
+             .toContain('in its GOOGLE block\'s \'deployments\'');
          expect(store.error).toContain('the runtime uses exactly one deployment for now.');
        });
 
@@ -214,6 +214,7 @@ describe('a model that declares more than one deployment target', () => {
     if (!('error' in store)) return;
     expect(store.error).toContain('1 Spanner and 1 AlloyDB');
     expect(store.error).toContain('two operational backends');
+    expect(store.error).toContain('in its GOOGLE block\'s \'deployments\'');
     expect(store.error).toContain('the runtime uses exactly one deployment for now.');
   });
 
@@ -233,11 +234,10 @@ describe('a model that declares more than one deployment target', () => {
     expect(store.error).toContain('2 BigQuery deployment targets');
   });
 
-  // The loader removes every GOOGLE block, so a vanilla model with no target is
-  // told about 'deployments'.
-  test('a vanilla model with no deploymentTargets block is told about deployments', () => {
-    const none = {...targets([], `${DB}/tables/Customer`), customExtensions: undefined};
-    expect(resolveStore(none)).toEqual({
+  // A vanilla model with no target is told how to list a deployment in a
+  // GOOGLE block.
+  test('a vanilla model with no target is told about deployments', () => {
+    expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
       error: "Model 'm' declares no deployment target in 'deployments', so " +
           'there is no store to run against. In a GOOGLE custom_extensions ' +
           "block on the model, declare a deployment in 'deployments' whose " +
@@ -245,55 +245,38 @@ describe('a model that declares more than one deployment target', () => {
     });
   });
 
-  // A GOOGLE block names no deployment, so the message names the block. Push
-  // rejects each of these models, so the store fails rather than being none.
-  test('a GOOGLE block target in no accepted form is reported, alone or beside one that gives a store',
+  // Push rejects each of these models, so the store fails rather than being
+  // none.
+  test('a target in no accepted form is reported, alone or beside one that gives a store',
        () => {
          const typo =
              'spanner.googleapis.com/projects/p/instance/i/databases/d/graphs/g';
-         const notAccepted = {
-           error: `Model 'm': the GOOGLE custom_extension's ` +
-               `'deploymentTargets' lists '${typo}', which is not a BigQuery ` +
-               `graph, a Spanner graph or an AlloyDB database. Write a ` +
-               `GCP resource name: ` +
+         const notAccepted = (name: string) => ({
+           error: `Model 'm': deployment '${name}' targets '${typo}', which ` +
+               `is not a BigQuery graph, a Spanner graph or an AlloyDB ` +
+               `database. Write a GCP resource name: ` +
                `'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>', ` +
                `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>' ` +
                `or 'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.`,
            named: true,
            rejected: true,
-         };
+         });
          expect(resolveStore(targets(
                     [`${DB}/graphs/g`, typo], `${DB}/tables/Customer`)))
-             .toEqual(notAccepted);
+             .toEqual(notAccepted('d_2'));
          expect(resolveStore(targets([typo], `${DB}/tables/Customer`)))
-             .toEqual(notAccepted);
+             .toEqual(notAccepted('d_1'));
          expect(resolveStore(targets(
                     ['spanner:graph:p.regional-us.i.d.g'],
                     `${DB}/tables/Customer`)))
              .toEqual({
-               error: `Model 'm': the GOOGLE custom_extension's ` +
-                   `'deploymentTargets' lists 'spanner:graph:p.regional-us.i.d.g', ` +
-                   `which is a Knowledge Catalog name. Write the GCP resource ` +
-                   `name instead: ` +
+               error: `Model 'm': deployment 'd_1' targets ` +
+                   `'spanner:graph:p.regional-us.i.d.g', which is a Knowledge ` +
+                   `Catalog name. Write the GCP resource name instead: ` +
                    `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>'.`,
                named: true,
                rejected: true,
              });
-       });
-
-  // Push reports the same JSON error.
-  test('a GOOGLE block whose data is not valid JSON is reported, not thrown',
-       () => {
-         const broken: SemanticModel = {
-           ...bound(`${DB}/graphs/g`, `${DB}/tables/Customer`),
-           deployments: undefined,
-           customExtensions: [{vendorName: 'GOOGLE', data: '{not-json'}],
-         };
-         expect(resolveStore(broken)).toEqual({
-           error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
-           named: true,
-           rejected: true,
-         });
        });
 });
 
@@ -475,18 +458,19 @@ describe('the store a profile uses', () => {
     });
   });
 
-  // A vanilla model keeps its targets in a GOOGLE block, which names no
-  // profile, so they are for the model's own bindings.
-  test('a GOOGLE block gives no store to a named profile', () => {
+  // A vanilla model keeps its deployments in a GOOGLE block, and one that
+  // names no profile is for the model's own bindings.
+  test('a GOOGLE block deployment with no profile gives no store to a named profile', () => {
     const vanilla: SemanticModel = {
       ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
       version: '0.2.0.dev0',
-      deployments: undefined,
     };
     expect(resolveStore(vanilla, 'prod'))
         .toEqual({
           error: "binding profile 'prod' is a named profile, which names no " +
-              'deployment target, so there is no database to run it against',
+              "deployment target, and no deployment in its GOOGLE block's " +
+              "'deployments' uses it, so there is no database to run it " +
+              'against',
         });
     const store = resolveStore(vanilla, 'default');
     if ('error' in store) throw new Error(store.error);

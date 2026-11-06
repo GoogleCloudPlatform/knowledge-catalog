@@ -504,10 +504,6 @@ describe('loader parses actions', () => {
 describe('validatePushRequirements gates actions', () => {
   const target =
       'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: [target]})
-  };
 
   function loaded(actions: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -521,7 +517,7 @@ describe('validatePushRequirements gates actions', () => {
       relationships: [],
       metrics: [],
       actions,
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -1226,10 +1222,7 @@ describe('a published statement and a run read the verb the same way', () => {
           executor: {kind: 'sql', sql: {statements: [sql]}},
           parameters: [],
         }],
-        customExtensions: [{
-          vendorName: 'GOOGLE',
-          data: JSON.stringify({deploymentTargets: [target]}),
-        }],
+        deployments: [{name: 'default', target}],
       } as SemanticModel,
     };
   }
@@ -1319,10 +1312,7 @@ describe('a lone projection is not blamed for a duplication', () => {
                 {name: 'quantity', type: 'Integer', description: 'How many.'},
               ],
             }],
-            customExtensions: [{
-              vendorName: 'GOOGLE',
-              data: JSON.stringify({deploymentTargets: [target]}),
-            }],
+            deployments: [{name: 'default', target}],
           } as SemanticModel,
         }]);
         expect(errs.length).toBe(1);
@@ -1355,10 +1345,7 @@ describe('a lone projection is not blamed for a duplication', () => {
              type: 'Integer'},
           ],
         }],
-        customExtensions: [{
-          vendorName: 'GOOGLE',
-          data: JSON.stringify({deploymentTargets: [target]}),
-        }],
+        deployments: [{name: 'default', target}],
       } as SemanticModel,
     }]);
     expect(errs.length).toBe(1);

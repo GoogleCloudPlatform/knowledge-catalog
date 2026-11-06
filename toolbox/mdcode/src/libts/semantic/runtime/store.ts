@@ -17,7 +17,7 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
@@ -169,13 +169,13 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
  * set with it when the deployments give no store whatever the model is used
- * for: a target in no accepted form in any deployment, a GOOGLE block whose
- * data is not valid JSON, or several targets for the profile. `named` alone
- * means the model binds a table outside its Spanner or AlloyDB store.
+ * for: a target in no accepted form in any deployment, or several targets for
+ * the profile. `named` alone means the model binds a table outside its Spanner
+ * or AlloyDB store.
  *
  * Neither is set when the profile names no store, unless a target is in no
- * accepted form, or a GOOGLE block is not valid JSON. Neither is set either
- * when a BigQuery model binds a table outside the graph's dataset.
+ * accepted form. Neither is set either when a BigQuery model binds a table
+ * outside the graph's dataset.
  */
 export interface StoreError {
   error: string;
@@ -188,21 +188,18 @@ export interface StoreError {
  * The store a model runs against under binding profile `profile`, which
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
- * name none or `default` for `default`. A model with no `deployments` list
- * names no profile for any of its targets, so they are all for `default`.
- * With several targets, the store is the single operational one, Spanner or
- * AlloyDB.
+ * name none or `default` for `default`. With several targets, the store is the
+ * single operational one, Spanner or AlloyDB.
  *
- * Fails six ways:
+ * Fails five ways:
  *
- * 1. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
- * 2. A target names no supported destination. Push checks the target of every
+ * 1. A target names no supported destination. Push checks the target of every
  *    deployment, so this fails the store under every profile.
- * 3. No deployment uses the profile.
- * 4. There are several targets and no single operational one, so which store
+ * 2. No deployment uses the profile.
+ * 3. There are several targets and no single operational one, so which store
  *    is meant is ambiguous.
- * 5. There is no target, so there is nothing to run against.
- * 6. The model binds a table outside the store. For a Spanner or AlloyDB
+ * 4. There is no target, so there is nothing to run against.
+ * 5. The model binds a table outside the store. For a Spanner or AlloyDB
  *    store, a write would land in the wrong place, and the error is named. A
  *    BigQuery graph may read tables in any dataset, so
  *    for a BigQuery store the error is not named.
@@ -212,14 +209,7 @@ export function resolveStore(
     StoreError {
   // Push checks the target of every deployment the model declares, so the
   // targets of every deployment are read before the profile's are picked.
-  let all: GoogleDeploymentTargets;
-  try {
-    all = googleDeploymentTargets(model);
-  } catch (err: any) {
-    // It throws when a GOOGLE block's data is not valid JSON. Push reports
-    // that as an error, so the store fails.
-    return {error: `${err?.message || err}`, named: true, rejected: true};
-  }
+  const all = googleDeploymentTargets(model);
 
   // The loader reads a vanilla model's `deployments` out of its GOOGLE block,
   // so a message names the block's `deployments`, as push does.
@@ -232,17 +222,19 @@ export function resolveStore(
   // a store, whichever profile its deployment is for.
   if (all.malformed.length) {
     const unparsed =
-        model.deployments?.find(d => d.target === all.malformed[0]);
-    const error = unparsed ? deploymentTargetError(model, unparsed) :
-                             googleBlockTargetError(model, all.malformed[0]);
-    return {error, named: true, rejected: true};
+        model.deployments!.find(d => d.target === all.malformed[0])!;
+    return {
+      error: deploymentTargetError(model, unparsed),
+      named: true,
+      rejected: true,
+    };
   }
 
   const used = deploymentsFor(model, profile);
   if ('error' in used) return used;
   const scoped = used.model;
-  // The profile's targets are among those read above. So this does not
-  // throw, and none of them is in no accepted form.
+  // The profile's targets are among those read above, so none of them is in no
+  // accepted form.
   const targets = googleDeploymentTargets(scoped);
   const {spanner, alloyDb, bigQuery} = targets;
   const declared = spanner.length + alloyDb.length + bigQuery.length;
@@ -301,9 +293,7 @@ export function resolveStore(
 
 
 // The model with only the deployments `profile` uses, or why there are none.
-// A model with no `deployments` list keeps every target in its GOOGLE block
-// for `default`. An empty list names no deployment. Either way, any other
-// profile has none.
+// A model with no or empty `deployments` list names no deployment.
 function deploymentsFor(model: SemanticModel, profile: string):
     {model: SemanticModel}|{error: string} {
   const nothingToRun = `so there is no database to run it against`;
@@ -338,9 +328,7 @@ function deploymentsFor(model: SemanticModel, profile: string):
 
 /**
  * The targets binding profile `profile` uses, as resolveStore reads them: its
- * deployments' targets, or every target in a GOOGLE block for `default` when
- * the model has no `deployments` list. Empty when no deployment is for the
- * profile. Throws when a GOOGLE block's data is not valid JSON.
+ * deployments' targets. Empty when no deployment is for the profile.
  */
 export function profileTargets(model: SemanticModel, profile: string):
     string[] {
@@ -349,13 +337,11 @@ export function profileTargets(model: SemanticModel, profile: string):
 }
 
 
-// The deployments whose targets are `uris`, for a message, or nothing when
-// the targets come from a GOOGLE block, which names none. `profile` is the
+// The deployments whose targets are `uris`, for a message. `profile` is the
 // profile they are for.
 function deploymentNames(
     model: SemanticModel, uris: string[], profile: string): string {
-  const deployments = model.deployments;
-  if (!deployments) return '';
+  const deployments = model.deployments ?? [];
   const names =
       uris.map(uri => deployments.find(d => d.target === uri)?.name ?? uri);
   return ` for profile '${profile}' (${names.join(', ')})`;

@@ -65,32 +65,6 @@ function entryName(id: string, project = 'dest'): string {
   return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
-// A loader-valid VANILLA (0.2.0.dev0) model. The loader rejects a GOOGLE
-// custom_extension whose data is not JSON, so the test that needs one sets it
-// on the loaded model, as a model built in memory could carry it. The emitter
-// (via googleDeploymentTargets) then throws while building the semantic-model
-// aspect.
-const VANILLA_SALES = `
-version: "0.2.0.dev0"
-semantic_model:
-  - name: sales
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
-        primary_key: [o_orderkey]
-        fields:
-          - name: o_orderkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
-          - name: o_totalprice
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_totalprice }]
-    metrics:
-      - name: total_revenue
-        expression:
-          dialects: [{ dialect: BIGQUERY, expression: "SUM(orders.o_totalprice)" }]
-`;
-
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
 const OPTS = {
   project: 'dest',
@@ -1090,25 +1064,6 @@ describe('deployKnowledgeCatalog: failures', () => {
             .toBe('Model \'sales\': entry \'sales.entities.customer\': boom');
         expect(create).toHaveBeenCalledTimes(3);  // dependent metrics skipped
         expect(update).toHaveBeenCalledTimes(1);
-      });
-
-  test(
-      'a model that throws during emit fails with the model + document named',
-      async () => {
-        // A model whose GOOGLE extension is invalid JSON makes the emitter
-        // throw; the publisher must report it, not crash the push.
-        const {create} = stubClient();
-        const loaded =
-            models([{name: 'broken.yaml', text: VANILLA_SALES}]);
-        loaded[0].model.customExtensions =
-            [{vendorName: 'GOOGLE', data: 'not valid json'}];
-
-        const result = await deployKnowledgeCatalog(loaded, CTX, OPTS);
-
-        expect(result.success).toBe(false);
-        expect(result.details).toContain('broken.yaml');
-        expect(result.details).toContain('sales');  // the model name
-        expect(create).not.toHaveBeenCalled();
       });
 
   test(

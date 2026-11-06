@@ -37,15 +37,6 @@ function deployed(entries: string, source = `${DB}/tables/Customer`):
       `          - {name: id, datatype: Integer, expression: id}\n`);
 }
 
-function vanilla(data: string): SemanticModel {
-  return {
-    ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
-    version: '0.2.0.dev0',
-    deployments: undefined,
-    customExtensions: [{vendorName: 'GOOGLE', data}],
-  };
-}
-
 
 describe('deployments and the profiles they name', () => {
   // `profile: default` names the model file's own bindings, so resolveStore
@@ -81,17 +72,6 @@ describe('deployments and the profiles they name', () => {
 
 
 describe('targets', () => {
-  // A non-string entry is a target in no accepted form, to push and to the
-  // runtime.
-  test('a non-string GOOGLE block target fails the store', () => {
-    const store = resolveStore(vanilla(JSON.stringify({deploymentTargets: [42]})));
-    expect(store).toEqual({
-      error: expect.stringContaining('deploymentTargets'),
-      named: true,
-      rejected: true,
-    });
-  });
-
   // Push checks the target of every deployment a model declares, so a target
   // in no accepted form fails the store under every profile.
   test('a target in no accepted form for another profile fails the store',
@@ -102,17 +82,6 @@ describe('targets', () => {
              `      - {name: prod, target: "${typo}", profile: prod}\n`);
          expect(resolveStore(m, 'default')).toEqual({
            error: expect.stringContaining(`deployment 'prod' targets '${typo}'`),
-           named: true,
-           rejected: true,
-         });
-       });
-
-  // So does a GOOGLE block that is not valid JSON, under a profile no
-  // deployment uses.
-  test('a GOOGLE block that is not valid JSON fails the store under every profile',
-       () => {
-         expect(resolveStore(vanilla('{not-json'), 'prod')).toEqual({
-           error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
            named: true,
            rejected: true,
          });
@@ -131,15 +100,15 @@ describe('targets', () => {
              .toEqual({error: resolved.error, named: true, rejected: true});
        });
 
-  // A programmatic empty list hides the GOOGLE block, the same way push
-  // reads it, so both see no target.
-  test('an empty deployments list beside a GOOGLE block reads no target', () => {
+  // An empty deployments list names no target.
+  test('an empty deployments list reads no target', () => {
     const m: SemanticModel = {
-      ...vanilla(JSON.stringify({deploymentTargets: [SPANNER_GRAPH]})),
+      ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
       deployments: [],
     };
     const store = resolveStore(m);
-    expect('error' in store && store.error).toContain('declares no deployment target');
+    expect('error' in store && store.error)
+        .toContain('declares no deployment target');
   });
 });
 

@@ -50,22 +50,22 @@ const OSSIE_DATAPLEX_ONLY =
 const OSSIE_BAD_TARGET =
     OSSIE.replace('/propertyGraphs/sales_graph', '/propertyGraph/sales_graph');
 
-// A model carrying only a single custom_extension.
-function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
+// A model carrying deployments.
+function modelWithDeployments(...targets: string[]): SemanticModel {
   return {
     name: 'm',
     entities: [],
     relationships: [],
     metrics: [],
-    customExtensions: [{vendorName: vendor, data}],
+    deployments: targets.map((target, i) => ({name: `d_${i}`, target})),
   };
 }
 
 
 describe('bigQueryGraphTargets', () => {
   test('parses a BigQuery Graph deployment target', () => {
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [BQ_URI]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(BQ_URI));
     expect(targets).toEqual([
       {
         project: 'demo',
@@ -77,39 +77,27 @@ describe('bigQueryGraphTargets', () => {
     expect(malformed).toEqual([]);
   });
 
-  test('ignores non-GOOGLE vendor extensions', () => {
-    const {targets} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [BQ_URI]}), 'DATABRICKS'));
-    expect(targets).toEqual([]);
-  });
-
   test('reports a non-BigQuery deployment target as malformed', () => {
     // We only support BigQuery Graph targets, so any other URI does not parse
     // as one and is collected as malformed (rejected), not silently ignored.
     const dataplexUri =
         'projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph';
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [dataplexUri]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(dataplexUri));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([dataplexUri]);
   });
 
-  test('returns [] for a model with no custom extensions', () => {
+  test('returns [] for a model with no deployments', () => {
     const {targets} = bigQueryGraphTargets(
         {name: 'm', entities: [], relationships: [], metrics: []});
     expect(targets).toEqual([]);
   });
 
-  test('throws on malformed extension JSON', () => {
-    expect(() => bigQueryGraphTargets(modelWithExtension('{not json')))
-        .toThrow(/not valid JSON/);
-  });
-
   test('collects multiple targets in order', () => {
     const uri2 =
         'bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
-    const {targets} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [BQ_URI, uri2]})));
+    const {targets} = bigQueryGraphTargets(modelWithDeployments(BQ_URI, uri2));
     expect(targets.map(t => t.graphName)).toEqual(['sales_graph', 'g2']);
   });
 
@@ -120,8 +108,8 @@ describe('bigQueryGraphTargets', () => {
     // than silently dropped.
     const evil =
         'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(evil));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([evil]);
   });
@@ -134,8 +122,8 @@ describe('bigQueryGraphTargets', () => {
         '//bigquery.googleapis.co/projects/demo/datasets/sales/propertyGraphs/g';
     const scheme =
         'https://bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g';
-    const {targets, malformed} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [hostTypo, scheme]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(hostTypo, scheme));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([hostTypo, scheme]);
   });
@@ -446,7 +434,7 @@ describe('deployBigQuery', () => {
       'names an unparseable BigQuery target instead of reporting none',
       async () => {
         // A typo'd URI that carries the BigQuery prefix must be reported as
-        // unparseable, not as "declares no deploymentTarget".
+        // unparseable, not as "declares no deployment target".
         const res = await deployBigQuery(
             models([{name: 'sales', text: OSSIE_BAD_TARGET}]), CTX,
             {validateOnly: true});

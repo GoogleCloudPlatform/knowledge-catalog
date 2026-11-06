@@ -235,13 +235,8 @@ describe('the loader rejects an entry that states no single fact', () => {
 
 
 describe('validatePushRequirements checks every affected concept', () => {
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({
-      deploymentTargets:
-          ['bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
-    }),
-  };
+  const target =
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   // Two entities, one plain foreign-key edge, and one many-to-many edge with a
   // property of its own -- the three things an entry can name.
@@ -280,7 +275,7 @@ describe('validatePushRequirements checks every affected concept', () => {
         parameters: [],
         affects,
       }],
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }

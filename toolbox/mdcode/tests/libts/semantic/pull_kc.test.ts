@@ -682,12 +682,10 @@ semantic_model:
         ]);
         const {entries, pulled} = await roundTrip(SHOP, PROFILES, overviews);
 
-        // Push folds no GOOGLE block and leaves out a member it cannot store.
+        // Push leaves out a member it cannot store.
         // Each profile's metrics_exclude comes back as '*' or a sorted list,
         // and each metric's entity as declared.
         const expected = loaded();
-        expected.customExtensions =
-            expected.customExtensions!.filter(x => x.vendorName !== 'GOOGLE');
         delete expected.aiContext!.additionalProperties!.limit;
         expected.profiles![0].metricsExclude = '*';
         expected.profiles![1].metricsExclude = ['avg_amount', 'revenue'];

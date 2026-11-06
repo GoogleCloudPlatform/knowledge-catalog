@@ -30,9 +30,8 @@
 // `guidelines` aspect, on the model/entity/metric), each metric's attach entity
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
-// (from the semantic-model aspect, back into `deployments` and the GOOGLE
-// `custom_extensions` block), and 1:1 / 1:N relationships (from the
-// `schema-join` entry links a pull fetched -- see
+// (from the semantic-model aspect, back into `deployments`), and 1:1 / 1:N
+// relationships (from the `schema-join` entry links a pull fetched -- see
 // `modelsFromCatalogResources`'s `entryLinks` argument).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
@@ -60,7 +59,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
 import {targetProblem, unnamedDeployments} from './deployment_target';
-import {Action, AiContext, Constraint, CustomExtension, DATA_TYPES, DataType, DeploymentSpec, Entity, Field, FIELD_BINDING_KEYS, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Constraint, DATA_TYPES, DataType, DeploymentSpec, Entity, Field, FIELD_BINDING_KEYS, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {entryIdOf} from './kc_ids';
@@ -220,13 +219,11 @@ export function modelsFromCatalogResources(
     if (description !== undefined) model.description = description;
     readActionsAndConstraints(
         model, children(actionEntries), children(constraintEntries), warnings);
-    // Deployment targets ride back in both the GOOGLE custom_extensions block
-    // and as synthesized `deployments` entries (`default` when one,
-    // `deployment_1`, `deployment_2`, ... when several).
-    const targets = readDeploymentTargets(anchor, name, warnings);
-    if (targets) {
-      model.customExtensions = [targets.extension];
-      model.deployments = targets.deployments;
+    // Deployment targets ride back as synthesized `deployments` entries
+    // (`default` when one, `deployment_1`, `deployment_2`, ... when several).
+    const deployments = readDeploymentTargets(anchor, name, warnings);
+    if (deployments) {
+      model.deployments = deployments;
     }
     const ai = readAiContext(anchor);
     if (ai) model.aiContext = ai;
@@ -806,13 +803,13 @@ function aspectDataOf(
 
 
 // Recovers the model's deployment targets from its semantic-model aspect back
-// into both the GOOGLE custom_extension shim and a `deployments` list (`default`
-// when there is one target, `deployment_1`, `deployment_2`, ... when there are
-// several), warning that the original deployment names were not recovered.
-// Returns undefined when the model has none.
+// into a `deployments` list (`default` when there is one target,
+// `deployment_1`, `deployment_2`, ... when there are several), warning that the
+// original deployment names were not recovered. Returns undefined when the
+// model has none.
 function readDeploymentTargets(
-    anchor: Entry, modelName: string, warnings: string[]):
-    {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
+    anchor: Entry, modelName: string, warnings: string[]): DeploymentSpec[]|
+    undefined {
   const deployments: DeploymentSpec[] = unnamedDeployments(
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
           .filter((t): t is string => typeof t === 'string'));
@@ -824,18 +821,11 @@ function readDeploymentTargets(
         `model '${modelName}': stored deployment target '${target}'`, target);
     if (problem !== undefined) warnings.push(problem);
   }
-  const targets = deployments.map(d => d.target);
   warnings.push(
       `model '${modelName}': deployment names were not recovered (the ` +
       `catalog stores target URIs only); using ${
           deployments.map(d => `'${d.name}'`).join(', ')}`);
-  return {
-    extension: {
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({deploymentTargets: targets}),
-    },
-    deployments,
-  };
+  return deployments;
 }
 
 

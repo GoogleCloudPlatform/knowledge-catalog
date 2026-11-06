@@ -1,7 +1,6 @@
 // Tests for reading a model's named deployments (deployment_target.ts): the
 // `--deployment` selection, resolving each entry's target to its engine and
-// coordinates, and googleDeploymentTargets reading the list instead of the
-// GOOGLE block the loader folds it into.
+// coordinates, and googleDeploymentTargets reading model.deployments.
 
 import {describe, expect, test} from 'bun:test';
 
@@ -18,8 +17,7 @@ const ALLOY =
 const ALLOY_INSTANCE =
     'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main/instances/primary/databases/sales';
 
-// A Google-flavor model loaded from `deployments:` entries, so it carries the
-// GOOGLE block the loader folds the targets into.
+// A Google-flavor model loaded from `deployments:` entries.
 function modelWith(
     deployments: Array<{name: string; target: string; profile?: string}>):
     SemanticModel {
@@ -210,15 +208,13 @@ describe('resolveModelDeployments: profiles and selection', () => {
 
 
 describe('googleDeploymentTargets reads the named list', () => {
-  test('three deployments give three targets, not six', () => {
+  test('three deployments give three targets', () => {
     const model = modelWith([
       {name: 'bq_prod', target: BQ},
       {name: 'spanner_prod', target: SPANNER},
       {name: 'alloy_prod', target: ALLOY},
     ]);
-    // The loader also folds the three targets into a GOOGLE block.
-    expect(JSON.parse(model.customExtensions![0].data).deploymentTargets)
-        .toEqual([BQ, SPANNER, ALLOY]);
+    expect(model.customExtensions).toBeUndefined();
     const targets = googleDeploymentTargets(model);
     expect(targets.uris).toEqual([BQ, SPANNER, ALLOY]);
     expect(targets.bigQuery).toHaveLength(1);
@@ -236,23 +232,11 @@ describe('googleDeploymentTargets reads the named list', () => {
     expect(googleDeploymentTargets(narrowed).uris).toEqual([SPANNER]);
   });
 
-  test('a catalog name is malformed, in a list or in a GOOGLE block', () => {
+  test('a catalog name in deployments is malformed', () => {
     const target = 'bigquery:graph:acme.sales.retail';
     const listed = googleDeploymentTargets(
         modelWith([{name: 'bq_prod', target}]));
     expect(listed.bigQuery).toEqual([]);
     expect(listed.malformed).toEqual([target]);
-    const vanilla = googleDeploymentTargets({
-      name: 'm',
-      entities: [],
-      relationships: [],
-      metrics: [],
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [target]}),
-      }],
-    });
-    expect(vanilla.bigQuery).toEqual([]);
-    expect(vanilla.malformed).toEqual([target]);
   });
 });

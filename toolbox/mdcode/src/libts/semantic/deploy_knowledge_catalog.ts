@@ -197,21 +197,6 @@ export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const emit = emitModels(models, opts);
-  if (emit.error) {
-    return {
-      result: {
-        success: false,
-        details: emit.error,
-        warnings: emit.warnings,
-        created: 0,
-        updated: 0,
-        deleted: 0,
-        linked: 0,
-        unlinked: 0,
-        plan: [],
-      },
-    };
-  }
   return preflightEmittedModels(emit.emitted, emit.warnings, ctx, opts);
 }
 
@@ -460,16 +445,15 @@ export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
 const MAX_SCHEMA_ASPECT_DATA_BYTES = 2 * 1024 * 1024;
 
 /**
- * The emitter's warnings for `models`, and an emit error or the first aspect
- * too large to store. With v2Aspects on, that error is why push's catalog leg
- * cannot write them. Calls no service.
+ * The emitter's warnings for `models`, and the first aspect too large to
+ * store. With v2Aspects on, that error is why push's catalog leg cannot write
+ * them. Calls no service.
  */
 export function checkCatalogAspects(
     models: LoadedModel[],
     opts: KcDeployOptions): {error?: string; warnings: string[]} {
   const emit = emitModels(models, opts);
-  const error =
-      emit.error ?? emit.emitted.map(emittedAspectsError).find(e => e);
+  const error = emit.emitted.map(emittedAspectsError).find(e => e);
   return {error, warnings: emit.warnings};
 }
 
@@ -573,35 +557,23 @@ async function checkCustomTypes(
  * Turns every authored model into its catalog resources.
  *
  * Pure (no network I/O), so the dry-run plan and any generation warnings are
- * produced even when a later write fails. A malformed GOOGLE
- * `custom_extension` (reached via the `semantic-model` aspect) throws; report
- * it against its document, as the BigQuery leg does, rather than letting it
- * escape as an uncaught stack trace.
+ * produced even when a later write fails.
  */
 function emitModels(models: LoadedModel[], opts: KcDeployOptions):
-    {emitted: EmittedModel[]; warnings: string[]; error?: string} {
+    {emitted: EmittedModel[]; warnings: string[]} {
   const emitted: EmittedModel[] = [];
   const warnings: string[] = [];
-  for (const {document, model} of models) {
-    let resources: kcEmit.KcResources;
-    try {
-      resources = kcEmit.generateCatalogResources(model, {
-        project: opts.project,
-        location: opts.location,
-        entryGroup: opts.entryGroup,
-        systemTypeProject: opts.systemTypeProject,
-        systemTypeLocation: opts.systemTypeLocation,
-        emitExpressions: opts.emitExpressions,
-        v2Aspects: opts.v2Aspects,
-        overviews: opts.overviews,
-      });
-    } catch (err: any) {
-      return {
-        emitted,
-        warnings,
-        error: `Model '${model.name}' (${document}): ${err.message || err}`,
-      };
-    }
+  for (const {model} of models) {
+    const resources = kcEmit.generateCatalogResources(model, {
+      project: opts.project,
+      location: opts.location,
+      entryGroup: opts.entryGroup,
+      systemTypeProject: opts.systemTypeProject,
+      systemTypeLocation: opts.systemTypeLocation,
+      emitExpressions: opts.emitExpressions,
+      v2Aspects: opts.v2Aspects,
+      overviews: opts.overviews,
+    });
     for (const w of resources.warnings) warnings.push(`[${model.name}] ${w}`);
     emitted.push({model: model.name, resources});
   }

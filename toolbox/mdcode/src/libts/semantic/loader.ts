@@ -1163,8 +1163,7 @@ function composeDescription(...parts: (string|undefined)[]): string|undefined {
 }
 
 
-// The vendor tag for Google-specific extension blocks (kept in sync with the
-// deploy leg's reader). A model-level `deployments:` list folds into one.
+// The vendor tag for Google-specific extension blocks.
 export const GOOGLE_VENDOR = 'GOOGLE';
 
 // Rewrites the author-friendly sugar forms into the canonical wire shape the
@@ -1172,9 +1171,7 @@ export const GOOGLE_VENDOR = 'GOOGLE';
 // front with actionable messages: the removed `deployment_target:` key,
 // inline `profiles:` in either flavor, and `deployments:` or
 // `entities:` in vanilla. Under the extended profile, `entities:` is rewritten
-// to `datasets:` and `deployments:` is left in place here and folded into a
-// GOOGLE `custom_extensions` block on the IR after validation (see
-// convertModel). Operates on the parsed document before validation.
+// to `datasets:`. Operates on the parsed document before validation.
 function normalizeDocumentSugars(doc: unknown, extended: boolean): unknown {
   if (!doc || typeof doc !== 'object') return doc;
   const cloned = structuredClone(doc) as any;
@@ -1264,18 +1261,6 @@ function normalizeModelSugars(m: any, extended: boolean): void {
     m.datasets = m.entities;
     delete m.entities;
   }
-}
-
-// Builds the GOOGLE custom-extension block that carries a model's deployment
-// target URIs on the IR (the form the deploy leg reads). The native
-// `deployments:` list folds into this block after validation (see
-// convertModel). The extended profile rejects any authored GOOGLE block (see
-// rejectGoogleBlock), so there is never a pre-existing one to reconcile with.
-function deploymentTargetsExtension(targets: string[]): CustomExtension {
-  return {
-    vendorName: GOOGLE_VENDOR,
-    data: JSON.stringify({deploymentTargets: targets}),
-  };
 }
 
 // The levels a `custom_extensions` block may sit on.
@@ -2330,20 +2315,8 @@ function convertModel(
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
-  // The blocks the model keeps are carried verbatim. Under the extended
-  // profile the native `deployments` list is folded into a GOOGLE block
-  // appended after them; no authored GOOGLE block can collide with it, since
-  // that flavor rejects one (see rejectGoogleBlock).
-  // Vanilla deployments, read from a GOOGLE block, are not folded.
+  // The blocks the model keeps are carried verbatim.
   if (block.kept) model.customExtensions = block.kept;
-  const foldedTargets =
-      version === GOOGLE_VERSION ? deployments.map(d => d.target) : [];
-  if (foldedTargets.length) {
-    model.customExtensions = [
-      ...(model.customExtensions ?? []),
-      deploymentTargetsExtension(foldedTargets),
-    ];
-  }
   return model;
 }
 

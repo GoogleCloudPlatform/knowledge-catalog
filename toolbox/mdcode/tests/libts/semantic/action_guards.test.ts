@@ -153,13 +153,8 @@ describe('loader parses an action\'s guards', () => {
 
 
 describe('validatePushRequirements resolves every guard', () => {
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({
-      deploymentTargets:
-          ['bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
-    }),
-  };
+  const target =
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   function loaded(guards: string[], constraintNames: string[]): LoadedModel {
     const model: SemanticModel = {
@@ -184,7 +179,7 @@ describe('validatePushRequirements resolves every guard', () => {
                                              'The customer.balance must not go below zero.',
                                          onViolation: 'reject' as const,
                                        })),
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }

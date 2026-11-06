@@ -112,9 +112,6 @@ describe('serialized document structure', () => {
 
   const bqTarget =
       'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-  const spTarget =
-      'spanner.googleapis.com/projects/p/instances/i/databases/db' +
-      '/graphs/g';
   const ordersEntity: Entity = {
     name: 'orders',
     dataSource: 'p.d.orders',
@@ -123,16 +120,12 @@ describe('serialized document structure', () => {
     fields: [{name: 'id', expression: 'id'}],
   };
 
-  test('keeps a deployment profile and omits deploymentTargets', () => {
+  test('keeps a deployment profile', () => {
     const withProfile: SemanticModel = {
       name: 'sales',
       deployments: [
         {name: 'staging', target: bqTarget, profile: 'spanner_binding'},
       ],
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [bqTarget]}),
-      }],
       entities: [{...ordersEntity, fields: []}],
       relationships: [],
       metrics: [],
@@ -146,101 +139,7 @@ describe('serialized document structure', () => {
       {name: 'staging', target: bqTarget, profile: 'spanner_binding'},
     ]);
     expect(parsed.semantic_model[0].custom_extensions).toBeUndefined();
-    expect(text).not.toContain('deploymentTargets');
   });
-
-  test('numbers multiple GOOGLE targets under 0.2.0.dev0/google', () => {
-    const googleModel: SemanticModel = {
-      name: 'sales',
-      version: '0.2.0.dev0/google',
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [spTarget, bqTarget]}),
-      }],
-      entities: [ordersEntity],
-      relationships: [],
-      metrics: [],
-    };
-
-    const serialized = serializeModel(googleModel);
-    const parsed = yaml.parse(serialized.yaml);
-
-    expect(serialized.warnings).toEqual([]);
-    expect(parsed.semantic_model[0].deployments).toEqual([
-      {name: 'deployment_1', target: spTarget},
-      {name: 'deployment_2', target: bqTarget},
-    ]);
-  });
-
-  // A padded repeat of a target is the same target, and a blank one names
-  // none. Written out as they are, either gives a file that fails to load.
-  test('deduplicates padded GOOGLE targets and drops blanks', () => {
-    const data =
-        JSON.stringify({deploymentTargets: [bqTarget, '  ', ` ${bqTarget} `]});
-    const model: SemanticModel = {
-      name: 'sales',
-      version: '0.2.0.dev0/google',
-      customExtensions: [{vendorName: 'GOOGLE', data}],
-      entities: [ordersEntity],
-      relationships: [],
-      metrics: [],
-    };
-
-    const serialized = serializeModel(model);
-    const parsed = yaml.parse(serialized.yaml);
-    const reloaded = loadModels(serialized.yaml).models[0];
-
-    const expected = [{name: 'default', target: bqTarget}];
-    expect(parsed.semantic_model[0].deployments).toEqual(expected);
-    expect(reloaded.deployments).toEqual(expected);
-  });
-
-  test('keeps valid GOOGLE targets past an invalid JSON block', () => {
-    const validData = JSON.stringify({deploymentTargets: [bqTarget]});
-    const model: SemanticModel = {
-      name: 'sales',
-      version: '0.2.0.dev0/google',
-      customExtensions: [
-        {vendorName: 'GOOGLE', data: 'not json'},
-        {vendorName: 'GOOGLE', data: validData},
-      ],
-      entities: [ordersEntity],
-      relationships: [],
-      metrics: [],
-    };
-
-    const serialized = serializeModel(model);
-    const parsed = yaml.parse(serialized.yaml);
-
-    expect(parsed.semantic_model[0].deployments).toEqual([
-      {name: 'default', target: bqTarget},
-    ]);
-    expect(serialized.warnings).toHaveLength(1);
-  });
-
-  test(
-      'serializes a non-string GOOGLE target as its JSON text under 0.2.0.dev0/google',
-      () => {
-        const model: SemanticModel = {
-          name: 'sales',
-          version: '0.2.0.dev0/google',
-          customExtensions: [{
-            vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [7]}),
-          }],
-          entities: [ordersEntity],
-          relationships: [],
-          metrics: [],
-        };
-
-        const serialized = serializeModel(model);
-        const parsed = yaml.parse(serialized.yaml);
-
-        expect(parsed.semantic_model[0].deployments).toEqual([
-          {name: 'default', target: '7'},
-        ]);
-        expect(serialized.warnings).toEqual([]);
-      });
 });
 
 
@@ -376,8 +275,7 @@ describe('lossy edges are flagged', () => {
       });
 
   test(
-      'warns and drops a GOOGLE extension without targets under 0.2.0.dev0/google',
-      () => {
+      'warns and drops every GOOGLE extension under 0.2.0.dev0/google', () => {
         const model: SemanticModel = {
           name: 'm',
           version: '0.2.0.dev0/google',
@@ -1663,10 +1561,9 @@ describe('serializeModelFiles and profile sidecar files', () => {
         expect(loadModels(files[0].content).models[0]).toEqual(model);
       });
 
-  // Converting a loaded 0.2.0.dev0/google model (which carries a folded
-  // `deploymentTargets` shim on `model.customExtensions`) to 0.2.0.dev0 drops
-  // the shim so `readGoogleBlocks` does not see both `deployments` and
-  // `deploymentTargets`.
+  // Converting a loaded 0.2.0.dev0/google model with `deployments`, `profiles`,
+  // `extends`, relationship `description`, and metric `entity` to 0.2.0.dev0
+  // folds those extensions into their GOOGLE `custom_extensions` blocks.
   test(
       'converts a loaded 0.2.0.dev0/google model with deployments and profiles cleanly to 0.2.0.dev0',
       () => {
@@ -1722,9 +1619,9 @@ describe('serializeModelFiles and profile sidecar files', () => {
         expect(reloaded.customExtensions).toBeUndefined();
       });
 
-  // In-memory raw GOOGLE blocks on non-field objects (other than the model's
-  // kept `deploymentTargets` block) are dropped with a warning under
-  // 0.2.0.dev0 so they never collide with the synthesized GOOGLE block.
+  // In-memory raw GOOGLE blocks on non-field objects are dropped with a
+  // warning under 0.2.0.dev0 so they never collide with the synthesized GOOGLE
+  // block.
   test(
       'drops raw in-memory GOOGLE blocks on model and dataset with a warning under 0.2.0.dev0',
       () => {
