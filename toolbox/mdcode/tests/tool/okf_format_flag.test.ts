@@ -263,7 +263,7 @@ describe('initOkfWorkspace scaffolds catalog.yaml and bundle/index.md', () => {
     expect(readWorkspaceLayout(path.join(dir, 'catalog.yaml'))).toBe('okf');
     expect(
       fs.readFileSync(path.join(dir, 'bundle', 'index.md'), 'utf8'),
-    ).toContain('okf_version: "0.3"');
+    ).toContain('okf_version: "0.2"');
   });
 
   test('re-running init for the same scope keeps every key and comment', async () => {

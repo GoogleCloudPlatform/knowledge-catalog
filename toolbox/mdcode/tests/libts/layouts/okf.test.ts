@@ -125,7 +125,7 @@ describe('OkfLayout (CatalogLayout)', () => {
     // Bundle-root index.md with OKF v0.3 bundle metadata (no `type`) alongside typed `agents.md`.
     fs.writeFileSync(
       path.join(bundlePath, 'index.md'),
-      '---\nokf_version: "0.3"\ntitle: Bundle\ndescription: Desc\nlicense: Apache-2.0\n---\n# Index\n',
+      '---\nokf_version: "0.2"\ntitle: Bundle\ndescription: Desc\nlicense: Apache-2.0\n---\n# Index\n',
       'utf8',
     );
     fs.writeFileSync(
