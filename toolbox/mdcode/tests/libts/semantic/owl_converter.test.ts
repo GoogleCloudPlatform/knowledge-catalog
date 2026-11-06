@@ -414,6 +414,13 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
           `same name.`,
       expect.stringContaining('declared more than once'),
     ]],
+    ['foaf:Agent . ex:Agent a owl:Class . foaf:Agent a owl:Class', [
+      `class 'Person' extends another class named 'Agent' ` +
+          `(http://xmlns.com/foaf/0.1/Agent); import leaves out that ` +
+          `superclass, because a model cannot have two entities with the ` +
+          `same name.`,
+      expect.stringContaining('declared more than once'),
+    ]],
   ])('Person rdfs:subClassOf %s imports to a model push accepts', async (parent, expected) => {
     const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
       ex:Person a owl:Class ; rdfs:subClassOf ${parent} .

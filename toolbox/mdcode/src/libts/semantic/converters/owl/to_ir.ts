@@ -268,11 +268,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           name => !classNames.has(name) && !classNameOfIri.has(name));
       if (known.length) entity.extends = known;
       for (const iri of declared) {
+        const name = classNameOfIri.get(iri);
+        const also = name === c.localName ? 'also ' : '';
         warnings.push(
-            `class '${c.localName}' extends another class also named '${
-                classNameOfIri.get(iri)}' (${iri}); import leaves out that ` +
-            `superclass, because a model cannot have two entities with the ` +
-            `same name.`);
+            `class '${c.localName}' extends another class ${also}named '${
+                name}' (${iri}); import leaves out that superclass, because ` +
+            `a model cannot have two entities with the same name.`);
       }
       if (unknown.length) {
         warnings.push(
