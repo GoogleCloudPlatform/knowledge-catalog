@@ -595,8 +595,8 @@ function namedProfiles(model: SemanticModel): ProfileSpec[] {
 
 // Maps the IR's logical DataType to the schema aspect's required `metadataType`
 // enum (BOOLEAN/NUMBER/STRING/BYTES/DATETIME/TIMESTAMP/GEOSPATIAL/STRUCT/RANGE/
-// OTHER). Numeric types collapse to NUMBER; unknown/undefined falls back to
-// STRING (the loader leaves most fields un-typed).
+// OTHER). Numeric types collapse to NUMBER. Callers pass `Opaque` for an
+// untyped field or metric, which maps to OTHER.
 function columnMetadataType(type: DataType|undefined): string {
   switch (type) {
     case 'Integer':

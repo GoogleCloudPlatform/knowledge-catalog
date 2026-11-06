@@ -165,19 +165,18 @@ kcmd push --validate-only --print   # preview the entries and links, write nothi
 kcmd push                           # write them
 ```
 
-Push creates one entry per entity and metric, one for the model itself, and a
-`schema-join` link for each relationship:
+Push creates an entry for the model itself and for each entity, metric and
+relationship. A `semantic-link` joins each pair of related entities, and two
+`reference` links join each relationship's entry to its two entities:
 
 ```
-Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
+Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 3 entry links.
 ```
 
-Some relationships get no link, and push warns about each one before it writes
-to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
-Knowledge Catalog keeps one `schema-join` link between two entries, so when
-several relationships join the same two entities, only the first one that push
-can publish gets a link. Push rejects a relationship from an entity to itself,
-and relationships in both directions between two entities.
+A many-to-many relationship gets no entry yet, and push warns about each one
+before it writes to Knowledge Catalog. `kcmd push --validate-only` gives the
+same warnings. Push rejects a relationship from an entity to itself, and
+relationships in both directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
@@ -189,7 +188,8 @@ before it has any physical home, or govern the logical model together with its
 bindings. Every store you bind it to later serves this one definition.
 
 > Writing these entries needs the `semantic-model` / `semantic-entity` /
-> `semantic-metric` entry types and write access to the entry group. See
+> `semantic-metric` / `semantic-relationship` entry types and write access to
+> the entry group. See
 > [Permissions](reference.md#permissions).
 
 ## 3. Bind and deploy to a store
@@ -275,7 +275,8 @@ metric a measure. In **Spanner**, the same `CREATE OR REPLACE PROPERTY GRAPH` wi
 bare table names and no measures — Spanner has no `MEASURE`, so a Spanner
 deployment uses a profile that excludes every metric, and push rejects one that
 leaves a metric available. In **Knowledge Catalog**, one entry per model, entity,
-and metric, plus `schema-join` links for relationships. The exact mapping — and
+metric and relationship, plus the `semantic-link` and `reference` links that
+join them. The exact mapping — and
 the class-hierarchy handling — is in
 [Reference → What gets created](reference.md#what-gets-created-in-bigquery) (and
 [in Spanner](reference.md#what-gets-created-in-spanner)); what of your metadata
@@ -320,7 +321,7 @@ Every push prints one line per destination summarizing what it did. For a push
 that deploys to both the store and Knowledge Catalog:
 
 ```
-Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
+Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; wrote 3 entry links; unlinked 1 orphaned link.
 Deployed 1 BigQuery Graph(s).
 ```
 

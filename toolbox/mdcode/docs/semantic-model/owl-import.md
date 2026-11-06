@@ -342,9 +342,10 @@ Two boundaries to be clear about:
   A **BigQuery** push then resolves that inheritance: it emits a `LABEL Person`
   clause on the `Customer` node table and flattens `Person`'s fields down (fields
   flow down; edges do not) — see [Class hierarchies (`extends` →
-  labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push is
-  unchanged: it still publishes each entry with exactly the fields it declares
-  (KC-side inheritance is a separate, later opt-in). Every push accepts a
+  labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push
+  publishes each entity with exactly the fields it declares, records its
+  `extends` on its entry, and links the entry to each parent's with a
+  `reference` link. Every push accepts a
   relationship only between concrete leaf entities. An object property whose
   `rdfs:domain` or `rdfs:range` is a class with subclasses imports as written,
   and push rejects it until you move it onto the leaf classes.
@@ -466,8 +467,9 @@ and the remaining work is downstream, not in the import:
 - **BigQuery** push resolves it into node-table labels, inherited fields
   flattened down (see [Class hierarchies (`extends` →
   labels)](reference.md#class-hierarchies-extends--labels)).
-- **Knowledge Catalog** is the follow-on — KC push still publishes each entry
-  with only its own fields.
+- **Knowledge Catalog** records the hierarchy as written: each entity's entry
+  holds only its own fields and its `extends`, with a `reference` link to each
+  parent's entry.
 
 **Not imported — dropped.** OWL can state things the semantic model has no native
 slot for. The importer reads them but does **not** carry them (an earlier version
