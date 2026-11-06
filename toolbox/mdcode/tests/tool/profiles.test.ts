@@ -1141,7 +1141,8 @@ semantic_model:
     });
 
     // --print-store prints no store for a scope push refuses for an
-    // incomplete profile or for profiles that disagree, and gives push's errors.
+    // incomplete profile or for a join that covers no key, and gives push's
+    // errors.
     test('and --print-store refuses the scope with push\'s errors', async () => {
       const cases: Array<Record<string, string>> = [
         {'commerce.profile.staging.yaml': STAGING},
