@@ -2,10 +2,12 @@
 //
 // READ THIS FIRST IF YOU OWN DATAPLEX TYPES. Everything a semantic model
 // publishes maps to a BUILT-IN system type under
-// `projects/dataplex-types/locations/global`: a model, an entity and a metric
-// each get an entry (`semantic-model` / `semantic-entity` / `semantic-metric`),
-// a relationship becomes a `schema-join` entry link, and the built-in `schema`
-// and `guidelines` aspects carry the rest. The types listed in CUSTOM_TYPES
+// `projects/dataplex-types/locations/global`: a model, an entity, a metric and
+// a relationship each get an entry (`semantic-model` / `semantic-entity` /
+// `semantic-metric` / `semantic-relationship`) with the aspect of the same
+// name, `semantic-link` and `reference` entry links join them, and the
+// built-in `schema`, `guidelines`, `semantic-extensions`, `overview` and
+// `sql-expressions` aspects carry the rest. The types listed in CUSTOM_TYPES
 // below are the exceptions. Dataplex has no built-in equivalent for them, so
 // `kcmd init --semantic-model` creates them in the destination project instead.
 // Each record here is a request: please make this one built-in.

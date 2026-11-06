@@ -114,8 +114,8 @@ function notFinished(model: string, reason: string): Error {
 }
 
 
-// The model, entity and metric aspect types a first-generation push writes, in
-// the order the warning names them.
+// The model, entity and metric aspect types an older kcmd's first-generation
+// push wrote, in the order the warning names them.
 const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
 
 // The warning for a model an older kcmd pushed, which pull leaves out. It

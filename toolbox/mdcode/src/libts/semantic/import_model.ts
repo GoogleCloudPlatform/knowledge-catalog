@@ -1737,8 +1737,8 @@ function writeDocument(
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
  * push's local checks (`localChecks`) on the model file and each profile it
- * declares, with the source dialects in `load`. With KC_V2_ASPECTS on, it also
- * checks that Knowledge Catalog can store each aspect. It also gives push's
+ * declares, with the source dialects in `load`. It also checks that Knowledge
+ * Catalog can store each aspect, and gives push's
  * warnings from the Knowledge Catalog entry builder, the pruning and each
  * graph, and leaves out push's notes.
  */
@@ -1844,15 +1844,15 @@ async function validateOutputDocument(
     }
     if ('errors' in checked || 'errors' in withFiles) return;
     // Push next builds the Knowledge Catalog entries and prints the builder's
-    // warnings. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog
-    // can store each aspect. The entry group does not change an aspect's size.
+    // warnings, and checks that Knowledge Catalog can store each aspect. The
+    // entry group does not change an aspect's size.
     const v2Aspects = kcV2Aspects();
     const catalog = checkCatalogAspects([withFiles], {
       project: 'p', location: 'l', entryGroup: 'g',
       systemTypeProject: process.env.KC_TYPE_PROJECT, v2Aspects,
     });
     for (const w of catalog.warnings) warn(w);
-    if (v2Aspects && catalog.error) {
+    if (catalog.error) {
       doc.warnOrError(catalog.error);
       return;
     }

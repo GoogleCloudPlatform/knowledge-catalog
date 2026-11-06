@@ -327,25 +327,6 @@ describe(
     });
 
 describe('entryAspectKeys', () => {
-  test(
-      'with v2Aspects off, entryAspectKeys returns every emitted key and ' +
-          'entry-level guidelines',
-      () => {
-        const entity = makeEntry('sales.entities.orders', ENTITY_TYPE, {
-          'dataplex-types.global.semantic-entity': {data: {}},
-          'dataplex-types.global.schema': {data: {}},
-          'google.com:acme.global.semantic-action': {data: {}},
-        });
-
-        const keys = entryAspectKeys(entity);
-
-        expect(keys).toEqual(new Set([
-          'dataplex-types.global.semantic-entity',
-          'dataplex-types.global.schema',
-          'google.com:acme.global.semantic-action',
-          'dataplex-types.global.guidelines',
-        ]));
-      });
 
   test(
       'with v2Aspects on, entryAspectKeys lists the V2 keys of each entry ' +

@@ -42,6 +42,8 @@ export interface NamerOptions {
   entryGroup: string;
   systemTypeProject?: string;
   systemTypeLocation?: string;
+  // Not read: the IDs are always the second-generation ones. It goes with
+  // KC_V2_ASPECTS (b/575695037).
   v2Aspects?: boolean;
 }
 
@@ -54,14 +56,12 @@ export class Namer {
   private readonly typeProject: string;
   private readonly typeLocation: string;
   private readonly container: string;
-  private readonly v2Aspects: boolean;
 
   constructor(opts: NamerOptions) {
     this.typeProject = opts.systemTypeProject ?? DEFAULT_TYPE_PROJECT;
     this.typeLocation = opts.systemTypeLocation ?? DEFAULT_TYPE_LOCATION;
     this.container = `projects/${opts.project}/locations/${
         opts.location}/entryGroups/${opts.entryGroup}`;
-    this.v2Aspects = opts.v2Aspects ?? false;
   }
 
   /** Full resource name of a system type. `kind` selects the collection. */
@@ -92,48 +92,27 @@ export class Namer {
    * Bare entry ID for a semantic model, used as the `semantic-model` anchor
    * entry's ID and as the prefix for action and constraint entry IDs.
    *
-   * V1 sanitizes `model.name` with `slug()` because `model.name` may contain
-   * characters (e.g. spaces) that Knowledge Catalog disallows in entry IDs.
-   * V2 returns `model.name` verbatim because V2 model names are restricted to
-   * letters, digits, underscores and hyphens, all of which `slug()` keeps. This
-   * means `slug(model.name)` and `model.name` are equal for valid V2 models.
+   * It is `model.name` verbatim: model names are restricted to letters,
+   * digits, underscores and hyphens, all of which entry IDs allow.
    */
   modelId(model: SemanticModel): string {
-    return this.v2Aspects ? model.name : slug(model.name);
+    return model.name;
   }
 
   /** Bare entry ID for an entity within a semantic model. */
   entityId(model: SemanticModel, entity: Entity): string {
-    return this.v2Aspects ?
-        `${model.name}/entities/${entity.name}` :
-        `${slug(model.name)}.entities.${slug(entity.name)}`;
+    return `${model.name}/entities/${entity.name}`;
   }
 
   /** Bare entry ID for a metric within a semantic model. */
   metricId(model: SemanticModel, metric: Metric): string {
-    return this.v2Aspects ?
-        `${model.name}/metrics/${metric.name}` :
-        `${slug(model.name)}.metrics.${slug(metric.name)}`;
+    return `${model.name}/metrics/${metric.name}`;
   }
 
-  /** Bare V2 entry ID for a relationship within a semantic model. */
+  /** Bare entry ID for a relationship within a semantic model. */
   relationshipId(model: SemanticModel, rel: Relationship): string {
     return `${model.name}/relationships/${rel.name}`;
   }
-
-  /**
-   * Entry link IDs are more restricted than entry IDs: lowercase letters,
-   * numbers and hyphens only, starting with a letter (see `linkSlug`). Does not
-   * branch on `v2Aspects`.
-   */
-  linkId(model: SemanticModel, rel: Relationship): string {
-    return relationshipLinkId(model.name, rel.name);
-  }
-}
-
-/** Entry-link ID for a relationship on a model. */
-export function relationshipLinkId(modelName: string, relName: string): string {
-  return linkSlug(`${modelName}-${relName}`);
 }
 
 /**
@@ -158,9 +137,10 @@ export function semanticLinkId(
  * digits, underscores and hyphens, all of which `slug()` keeps,
  * `slug(modelName)` and `modelName` are equal for valid V2 models.
  *
- * No push writes under `.files.` any more: an older kcmd stored a copy of
- * each model and profile file there. The prefix stays so the next push
- * deletes those copies.
+ * No push writes under `.entities.`, `.metrics.` or `.files.` any more: an
+ * older kcmd wrote its entity and metric entries there, and a copy of each
+ * model and profile file. The prefixes stay so the next push deletes those
+ * entries.
  */
 export function ownedEntryIdPrefixes(modelName: string): string[] {
   const s = slug(modelName);
@@ -197,19 +177,4 @@ export function entryIdOf(resourceName: string): string {
  */
 export function slug(s: string): string {
   return s.replace(/[^A-Za-z0-9_.-]/g, '_');
-}
-
-/**
- * Entry link IDs allow only lowercase letters, numbers and hyphens, must start
- * with a letter, must end with a letter or number, and are capped at 63 chars.
- */
-export function linkSlug(s: string): string {
-  const out = s.toLowerCase()
-                  .replace(/[^a-z0-9-]+/g, '-')
-                  .replace(/-+/g, '-')
-                  .replace(/^[^a-z]+/, '')
-                  .replace(/^-+|-+$/g, '')
-                  .slice(0, 63)
-                  .replace(/-+$/, '');
-  return out || 'link';
 }

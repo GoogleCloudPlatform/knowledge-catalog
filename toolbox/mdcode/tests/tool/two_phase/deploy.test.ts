@@ -274,21 +274,22 @@ const ORDERS = {
   primary_key: ['id'],
   fields: [{name: 'id', expression: 'o_id'}],
 };
-// Relationships of `names` from Orders to Customer, and profile prod, which
-// gives each its join columns.
-const placedBy = (...names: string[]) => ({
-  relationships: names.map(name => ({name, from: 'Orders', to: 'Customer'})),
+// Relationship placed_by from Orders to Customer, and profile prod, which
+// gives it its join columns.
+const PLACED_BY = {
+  relationships: [{name: 'placed_by', from: 'Orders', to: 'Customer'}],
   profiles: {
     prod: {
       entities: {
         Customer: {...CUSTOMER, source: bqTable('customer', 'prod')},
         Orders: {...ORDERS, source: bqTable('orders', 'prod')},
       },
-      relationships: names.map(
-          name => ({name, from_columns: ['customer_key'], to_columns: ['key']})),
+      relationships: [
+        {name: 'placed_by', from_columns: ['customer_key'], to_columns: ['key']},
+      ],
     },
   },
-});
+};
 const SP_DEPLOYED = ['preflight', 'apply', 'deploy sp'];
 const ALLOYDB_NOTE = "Note: deployment 'ad' targets an AlloyDB database, " +
     'which has no property graph, so push deploys no graph there. The model ' +
@@ -412,15 +413,11 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ].map(step => ({code: 0, ...step})),
   },
   {
-    name: 'a profile that gives the join columns deploys, and so do relationships whose first-generation link IDs collide',
+    name: 'a profile that gives the join columns deploys',
     deployments: [{name: 'g', profile: 'prod'}],
     entities: [CUSTOMER, ORDERS],
-    ...placedBy('placed_by'),
+    ...PLACED_BY,
     events: ['preflight', 'apply', 'deploy g'],
-    then: [{
-      ...placedBy('placed_by', 'placed__by'),
-      events: ['preflight', 'apply', 'deploy g'],
-    }],
   },
   {
     name: 'an AlloyDB deployment says a field it leaves out, and one that reads it, is unavailable there',
