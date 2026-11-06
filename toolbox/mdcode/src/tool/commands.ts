@@ -652,7 +652,6 @@ export async function push(options: PushOptions): Promise<number> {
           groupId,
           {
             type: 'context-set',
-            labels: {type: 'context-set'},
             ...(rootMeta.displayName ? {displayName: rootMeta.displayName} : {}),
             ...(rootMeta.description ? {description: rootMeta.description} : {}),
           } as any,
