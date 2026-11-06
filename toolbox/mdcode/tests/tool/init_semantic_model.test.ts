@@ -215,18 +215,52 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(update.mock.calls[0][4]).toContain('metadata_template');
   });
 
-  test('a rejected template patch leaves the existing type and finishes init',
-       async () => {
+  // Dataplex's answer to a backwards-incompatible template change.
+  const REFUSED = 'com.google.apps.framework.request.BadRequestException: ' +
+      'Backwards incompatible template changes are not supported';
+  const offline =
+      new Error('Unable to connect. Is the computer able to access the url?');
+  const retryWarning = (id: string, reason: string) =>
+      `Warning: could not update the existing aspect type '${id}' in project ` +
+      `'proj' (${reason}). Run this command again in a minute to retry the ` +
+      'update.';
+  test.each<[string, () => Promise<ApiResult<any>>, (id: string) => any]>([
+    // What an OLDER kcmd sees against a project a newer one provisioned: its
+    // template lacks the newer fields, so the patch is a field removal.
+    ['a refused template change', async () => err(400, REFUSED),
+     id => expect.stringContaining(
+         'To move it forward, delete the entry type and then the aspect ' +
+         'type, and re-run this command: gcloud dataplex entry-types delete ' +
+         `${id} --project=proj --location=global && gcloud dataplex ` +
+         `aspect-types delete ${id} --project=proj --location=global. ` +
+         'Deleting the entry type also deletes every entry of that type in ' +
+         'the project, so push the models that had them again afterwards.')],
+    ['a 400 for another reason', async () => err(400, 'denied'),
+     id => retryWarning(id, 'denied')],
+    ['a 429', async () => err(429, 'Quota exceeded'),
+     id => retryWarning(id, 'Quota exceeded')],
+    ['a 5xx', async () => err(503, 'unavailable'),
+     id => retryWarning(id, 'unavailable')],
+    [
+      'a failed operation',
+      async () => ok({name: OP, done: true, error: {message: 'internal'}}),
+      id => retryWarning(id, 'the update operation: internal')
+    ],
+    ['a network error', async () => { throw offline; },
+     id => retryWarning(id, offline.message)],
+    // Only this row's operation is still running, so only this row polls.
+    ['a network error while polling', async () => ok({name: OP, done: false}),
+     id => retryWarning(id, offline.message)],
+  ])('%s from the template patch leaves the type and finishes init',
+     async (_name, update, warning) => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));
     spyOn(CatalogClient.prototype, 'createAspectType')
         .mockImplementation(async () => err(409, 'already exists'));
-    // What an OLDER kcmd sees against a project a newer one provisioned: its
-    // template lacks the newer fields, so the patch is a field removal and
-    // Dataplex refuses it.
     spyOn(CatalogClient.prototype, 'updateAspectType')
-        .mockImplementation(
-            async () => err(400, 'backwards-incompatible template change'));
+        .mockImplementation(update);
+    spyOn(CatalogClient.prototype, 'getOperation')
+        .mockImplementation(async () => { throw offline; });
     const entryType = spyOn(CatalogClient.prototype, 'createEntryType')
                           .mockImplementation(async () => err(409, 'exists'));
     const warned: string[] = [];
@@ -235,13 +269,13 @@ describe('init --semantic-model: entry-group provisioning', () => {
     });
 
     // The type already there is the one published entries depend on, so init
-    // reports the refusal and carries on rather than abandoning a workspace
+    // reports the failure and carries on rather than abandoning a workspace
     // whose entry group it has already created.
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
     expect(entryType).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
-    expect(warned.some(m => m.includes('unchanged'))).toBe(true);
+    expect(warned).toEqual(CUSTOM_TYPES.map(t => warning(t.id)));
   });
 
   test('init survives lacking permission to create the action types',
