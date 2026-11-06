@@ -64,7 +64,10 @@ Push runs in two phases:
    deploys each selected deployment in order with the profile it names. An
    AlloyDB deployment deploys no graph. When a graph fails to deploy, push
    stops, and its error says that Knowledge Catalog already holds the new
-   model. Fixing the cause and pushing again finishes the deploy.
+   model. Fixing the cause and pushing again finishes the deploy. Last, when
+   catalog.yaml's `displayName` or `description` differs from the context
+   set's, it updates the context set (under `--validate-only` it reports the
+   change instead).
 
 ### pull
 
@@ -75,8 +78,9 @@ kcmd pull
 Rebuilds the model file and profile files from the Knowledge Catalog entries.
 It changes a local file only where the catalog differs from it, so the rest
 keeps its comments, key order and formatting, and writes a file whole when it
-cannot. When the model entry's `kcmd-push-state` label says the last push
-stopped partway, it writes nothing.
+cannot. It also sets `displayName` and `description` in catalog.yaml from the
+context set, leaving the rest of that file as written. When the model entry's
+`kcmd-push-state` label says the last push stopped partway, it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
@@ -1114,6 +1118,10 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
   entity / metric entries, deletes orphaned ones, and reads the model entry again
   before it labels the push finished
+* `dataplex.entryGroups.get` — when catalog.yaml holds `displayName` or
+  `description`, to compare them with the context set's; and
+  `dataplex.entryGroups.update` with `dataplex.operations.get` when a value
+  differs, to update the context set
 * `dataplex.entryLinks.create`, `dataplex.entryLinks.get`,
   `dataplex.entryLinks.update`, `dataplex.entryLinks.delete` and
   `dataplex.entries.link` — push creates and reads the `semantic-link` and
@@ -1166,4 +1174,6 @@ failure to create a type stops init, rather than leaving a later push to hit an
 opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
-entries and fetch each `semantic-*` entry with its aspects.
+entries and fetch each `semantic-*` entry with its aspects — and
+`dataplex.entryGroups.get`, to read the context set's display name and
+description.

@@ -20,12 +20,13 @@ import * as yaml from 'yaml';
 
 import * as api from './gcp/api';
 import * as dataplex from './gcp/dataplex';
+import {linkNodes, parseForUpdate, updateText} from './semantic/yaml_update';
 import {CatalogSource, ENTRY_GROUP_SCOPES, entryGroupCoordinates, EntryGroupCoordinates} from './source';
 
 // The limits Knowledge Catalog puts on an entry group's description and
 // display name.
 export const MAX_DESCRIPTION_LENGTH = 1024;
-export const MAX_DISPLAY_NAME_LENGTH = 500;
+export const MAX_DISPLAY_NAME_LENGTH = 256;
 
 // The catalog.yaml keys, which are also the entry group's field names.
 export const METADATA_KEYS = ['displayName', 'description'] as const;
@@ -52,10 +53,13 @@ export type EntryGroupRef =
 
 // The entry group `source` is backed by, or undefined for a scope that has
 // none (a BigQuery dataset).
+// A source that names its own project, location and entry group gives them
+// as they are: a semantic-model scope may have more parts than those three.
 export function contextSetOf(source: CatalogSource): EntryGroupRef|undefined {
-  return ENTRY_GROUP_SCOPES.includes(source.type) ?
-      entryGroupCoordinates(source) :
-      undefined;
+  if (!ENTRY_GROUP_SCOPES.includes(source.type)) return undefined;
+  const {project, location, entryGroup} = source;
+  if (project && location && entryGroup) return {project, location, entryGroup};
+  return entryGroupCoordinates(source);
 }
 
 
@@ -149,20 +153,30 @@ export function metadataUpdate(
 // none did.
 export function writeContextSetMetadata(
     path: string, metadata: ContextSetMetadata): MetadataKey[] {
-  const doc = yaml.parseDocument(fs.readFileSync(path, 'utf8'));
-  const current = metadataOfManifest(doc.toJS());
-  const changed = METADATA_KEYS.filter(k => current[k] !== metadata[k]);
+  const original = fs.readFileSync(path, 'utf8');
+  const {document, text} = parseForUpdate(original);
+  const root = document.toJS() as Record<string, unknown>;
+  const changed = METADATA_KEYS.filter(
+      k => !sameValue(metadataOfManifest(root)[k], metadata[k]));
   if (!changed.length) return [];
+  const links = linkNodes(root, document.contents);
   for (const key of changed) {
     const value = metadata[key];
     if (value === undefined) {
-      doc.delete(key);
+      delete root[key];
     } else {
-      doc.set(key, value);
+      root[key] = value;
     }
   }
-  fs.writeFileSync(path, doc.toString(), 'utf8');
+  fs.writeFileSync(path, updateText(text, document, root, links), 'utf8');
   return changed;
+}
+
+
+// Whether two values of a key mean the same: an empty value and an unset one
+// do, since Knowledge Catalog keeps no difference between them.
+function sameValue(a: string|undefined, b: string|undefined): boolean {
+  return (a ?? '') === (b ?? '');
 }
 
 
@@ -191,7 +205,9 @@ export async function pullContextSetMetadata(
   const remote = metadataOfEntryGroup(res.result);
   if (options.dryRun) {
     const local = readContextSetMetadata(path);
-    return {changed: METADATA_KEYS.filter(k => local[k] !== remote[k])};
+    return {
+      changed: METADATA_KEYS.filter(k => !sameValue(local[k], remote[k])),
+    };
   }
   return {changed: writeContextSetMetadata(path, remote)};
 }
@@ -204,8 +220,6 @@ export async function pushContextSetMetadata(
     catalog: dataplex.CatalogClient, ref: EntryGroupRef,
     local: ContextSetMetadata,
     options: {validateOnly?: boolean} = {}): Promise<MetadataSyncResult> {
-  const errors = metadataErrors(local);
-  if (errors.length) return {changed: [], error: errors.join('\n')};
   if (!METADATA_KEYS.some(k => local[k] !== undefined)) return {changed: []};
   const res =
       await catalog.getEntryGroup(ref.project, ref.location, ref.entryGroup);
@@ -227,14 +241,9 @@ export async function pushContextSetMetadata(
       error: `updating context set '${nameOf(ref)}': ${failure(patched)}`,
     };
   }
-  const opError =
-      await catalog.awaitOperation(patched.result, 'updateEntryGroup');
-  if (opError) {
-    return {
-      changed: [],
-      error: `updating context set '${nameOf(ref)}': ${opError}`,
-    };
-  }
+  const opError = await catalog.awaitOperation(
+      patched.result, `updating context set '${nameOf(ref)}'`);
+  if (opError) return {changed: [], error: opError};
   return {changed: update.updateMask};
 }
 

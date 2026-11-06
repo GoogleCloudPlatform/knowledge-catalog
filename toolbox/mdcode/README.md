@@ -157,11 +157,12 @@ kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format okf
 # - Pull sets both from the entry group, keeping every other key and comment; a
 #   value the entry group does not set removes its key.
 # - Push writes only the keys whose values differ from the entry group, after
-#   the entries, so the last write wins. An absent key is not managed, and
-#   `description: ""` clears the description.
+#   the entries and any graph deploys, so the last write wins. An absent key,
+#   or one with no value, is not managed; `description: ""` clears the
+#   description, and an empty value stays in the file after a pull.
 # - Write a multi-line description with `>-`: `|` keeps a trailing newline,
 #   which push would send to Knowledge Catalog.
-# - The description holds at most 1,024 characters and the display name 500;
+# - The description holds at most 1,024 characters and the display name 256;
 #   push fails before any write when a value is longer.
 
 # Pull the latest catalog snapshot from the Knowledge Catalog service
