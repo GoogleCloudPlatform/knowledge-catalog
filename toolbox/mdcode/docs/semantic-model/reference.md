@@ -121,21 +121,16 @@ graph. Import leaves out push's notes. A profile file that does not parse is
 always an error. Under `--input first-party`, a message from these checks names
 the input file that holds what it reports. The checks that read a service stay
 with push, such as whether each source names a table Knowledge Catalog knows
-about. Push reads each Cloud SQL and third-party table's engine from its
-Knowledge Catalog entry, and import does not, so the checks that need the engine
-stay with push: whether a profile's tables in one Cloud SQL instance or one
-third-party system are in one database, whether a field has SQL in its table's
-dialect, and what an `ANSI_SQL` text reads when every table of the model file or
-profile is such a table. Import does not read a Spanner database's dialect
-either, so it treats a Spanner table the same way, and push alone refuses a
-Spanner deployment on a PostgreSQL-dialect database.
-Import judges a table in the database a Spanner deployment targets as
-`SPANNER`, since push refuses that deployment on a PostgreSQL-dialect database.
-On a table whose dialect no lookup read, import still reports what push
-refuses whatever the dialect: a field with no text in any dialect the table can
-have and no `ANSI_SQL` text, a column or field that a text reads in every one
-of those dialects, and a metric with no entity that reaches no entity or
-several in every one of those dialects. Nothing is written
+about. For its checks, import reads only each table's dialect, as push does: a
+Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
+table's from its database. Import then judges each table in that dialect. When
+it cannot read a table's dialect, it warns with push's reason and skips the
+checks that need the dialect: whether a field has SQL in its table's dialect,
+what an `ANSI_SQL` text reads when every table of the model file or profile is
+such a table, and whether a profile's tables are in one database when only that
+table's entry can say. Tables of two systems are never in one database, so
+import still reports a profile that binds a BigQuery table beside such a table.
+Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import
@@ -985,7 +980,8 @@ model is present), on the database the target names:
 whether or not it deploys to Spanner:
 
 * `spanner.databases.get` on each database those tables are in, to read the
-  database's SQL dialect. `kcmd profiles` needs it too.
+  database's SQL dialect. `kcmd profiles` needs it too, and `kcmd import` uses
+  it when it can.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (every push
 publishes to Knowledge Catalog):

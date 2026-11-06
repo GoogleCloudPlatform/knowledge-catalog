@@ -103,22 +103,21 @@ agree on every structural row and differ only where a Spanner target has no
     either kind of text on a BigQuery table. Spanner, MySQL and Databricks
     also read a double-quoted name as text, so kcmd warns about that kind on
     their tables, apart from a Spanner table in a PostgreSQL-dialect database,
-    which push and `kcmd profiles` judge as `POSTGRES`.
+    which push, `kcmd profiles` and import judge as `POSTGRES` once they read
+    its database's dialect.
     On a table in another database, it warns about a field or metric with no
     text that table runs. Push rejects such a field in the model file with an
     error in place of the warning. `kcmd import` gives push's message in place
-    of the warning on an AlloyDB table. When a profile binds that
-    table, push rejects the field or metric instead. `kcmd import` does not look
-    up a Cloud SQL or third-party table's dialect or a Spanner database's.
+    of the warning on an AlloyDB table, and on a Cloud SQL, Spanner or
+    third-party table whose dialect it reads as push does. When a profile binds
+    that table, push rejects the field or metric instead. When import cannot
+    read a table's dialect, it warns and skips the checks that need it.
     `kcmd skills-generate` and `kcmd profiles --print-store` do not look up a
     third-party table's dialect, and they read a Spanner table as `SPANNER`.
-    Import reads a Cloud SQL table whose name has no schema as MySQL. It reads
-    a table in the database a Spanner deployment targets as `SPANNER`, since
-    push refuses that deployment on a PostgreSQL-dialect database. On any
+    Import reads a Cloud SQL table it cannot look up as MySQL when the name has
+    no schema. On any
     other table whose dialect a command has not looked up, kcmd warns only about
-    a field or metric with no text in any dialect the table's name allows.
-    Push rejects such a field, so `kcmd import --input first-party` gives an
-    error for it in the model file and in a profile. A
+    a field or metric with no text in any dialect the table's name allows. A
     BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with

@@ -23,7 +23,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -360,8 +360,7 @@ function measurePlacementErrors(
 
 // Checks that the model file's Spanner tables are all in one database, so they
 // share one dialect, and that each bound field has a text for the dialect of
-// its entity's source, or, on a table whose dialect no lookup read, for one of
-// the dialects the table can have. Returns one message per problem.
+// its entity's source. Returns one message per problem.
 export function validateInlineDialects(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -379,15 +378,15 @@ export function validateInlineDialects(
         `Spanner database (${named}); bind the model file's entities to ` +
         `tables in one Spanner database.`);
   }
-  for (const {entity: e, field: f, table: {name, dialects}} of
-           fieldsOnTables(model, true)) {
-    if (!noTextFor(f, dialects)) continue;
+  for (const {entity: e, field: f, table: {name: dialect}} of
+           fieldsOnTables(model)) {
+    if (!noTextFor(f, [dialect])) continue;
     errors.push(
         `field '${e.name}.${f.name}' in model '${model.name}' (${
-            document}) has no expression for ${dialects.join(', ')} or ` +
-        `ANSI_SQL, and the model file binds entity '${e.name}' to ${
-            /^[AEIOU]/.test(name) ? 'an' : 'a'} ${name} source${
-            importHint(f, name, model)}.`);
+            document}) has no expression for ${dialect} or ANSI_SQL, and ` +
+        `the model file binds entity '${e.name}' to ${
+            /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${
+            importHint(f, dialect, model)}.`);
   }
   return errors;
 }
@@ -400,15 +399,11 @@ export function validateInheritedColumns(
   if (inheritanceErrorOf(model)) return [];
   const entities = model.entities ?? [];
   const dialect = sourcesDialect(model);
-  // With no dialect read, a text reads a column when it does in every
-  // dialect the model's tables can have.
-  const readIn = dialect === null ? possibleDialects(entities) : [dialect];
   const errors: string[] = [];
   for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
     for (const f of inheritedNamesOf(model, e.name)) {
-      const reads = readIn.map(d => columnBinding(model, e.name, f, d));
       const read = !e.fields.some(x => x.name === f) &&
-          reads.every(r => r) && reads[0];
+          columnBinding(model, e.name, f, dialect);
       if (!read) continue;
       errors.push(
           `entity '${e.name}' in model '${model.name}' (${document}): field '${
@@ -1648,12 +1643,10 @@ function metricNoSqlError(
 //
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
-// `flaggedMetrics` collects the name of each metric it reports, and
-// `readAs.dialect` is the dialect an ANSI_SQL text is read in, generic SQL
-// when undefined.
+// `flaggedMetrics` collects the name of each metric it reports.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>, readAs?: {dialect?: string}): string[] {
+    flaggedMetrics?: Set<string>): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1675,7 +1668,7 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = readAs ? readAs.dialect : sourcesDialect(model);
+    const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
           // A caller that looked up no table's dialect reads no ANSI_SQL
@@ -1864,16 +1857,6 @@ export function validateExpressionReferences(
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);
     }
-  }
-  // With no dialect read, a rule that reads SQL reports what it reports in
-  // every dialect the model's tables can have.
-  for (const m of readAs ? [] : models) {
-    if (sourcesDialect(m.model) !== null) continue;
-    const runs = possibleDialects(m.model.entities ?? []).map(
-        dialect => validateExpressionReferences(
-            [m], fieldsPruned, [], undefined, {dialect}));
-    errors.push(...(runs[0] ?? []).filter(
-        e => !errors.includes(e) && runs.every(r => r.includes(e))));
   }
   return errors;
 }

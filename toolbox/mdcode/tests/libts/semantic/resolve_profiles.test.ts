@@ -2831,23 +2831,18 @@ describe('profile completeness: dialects and struct paths', () => {
 
   // A Cloud SQL table written as its resource name takes the dialect its
   // catalog entry's type names, which a command looks up before it loads.
-  // Without a lookup the source implies no dialect, so a text in any dialect
-  // its name allows counts.
+  // Without a lookup the source implies no dialect, so every text counts.
   test('a Cloud SQL resource name takes the dialect its catalog entry gave, and none without one', () => {
     const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/ms/' +
         'databases/shop/schemas/sales/tables/orders';
     const sqlServer = {sourceDialects: new Map([[CS, 'SQLSERVER']])};
-    const unread = [
-      "profile 'p': field 'orders.amount' has no expression for POSTGRES, SQLSERVER or ANSI_SQL, " +
-          "and this profile's sources are Cloud SQL tables",
-    ];
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual(unread);
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
     expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: sqlServer.sourceDialects})
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
     // The dialects are per table: another table's does not count.
     const other = {sourceDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: other.sourceDialects})).toEqual(unread);
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: other.sourceDialects})).toEqual([]);
   });
 
   test('the loader and a profile record the looked-up dialect on the entity', () => {
@@ -2887,12 +2882,8 @@ describe('profile completeness: dialects and struct paths', () => {
     const ansi = shop(
         {expression: 'orders.id', dialects: [{dialect: 'ANSI_SQL', expression: 'orders.id'}]});
     expect(validateProfileCompleteness(ansi, atSource(SP('Orders')), [], READ)).toEqual([]);
-    // Without the lookup, as in kcmd import, a text in either Spanner dialect
-    // counts.
-    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')))).toEqual([
-      "profile 'p': field 'orders.amount' has no expression for SPANNER, POSTGRES or ANSI_SQL, " +
-          "and this profile's sources are Spanner tables",
-    ]);
+    // Without a lookup, a Spanner table is not judged.
+    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')))).toEqual([]);
   });
 
   test('a field the profile rebinds needs a text for the profile\'s dialect too', () => {

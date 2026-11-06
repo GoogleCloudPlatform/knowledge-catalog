@@ -3477,15 +3477,11 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
       expect({source, expression, extra, errors: actual})
           .toEqual({source, expression, extra, errors});
     }
-    // A Spanner table takes its database's dialect. One no lookup read, as in
-    // kcmd import, needs a text in either Spanner dialect or in ANSI_SQL.
+    // A Spanner table takes its database's dialect, and one no lookup read is
+    // not judged.
     expect(check(withField(SPANNER_TABLE, dialects('SPANNER'), '', 'POSTGRES')))
         .toEqual([MISSING('e', 'POSTGRES')]);
-    expect(check(withField(SPANNER_TABLE, dialects('POSTGRES'), '', null))).toEqual([]);
-    expect(check(withField(SPANNER_TABLE, bigQueryText, '', null))).toEqual([
-      "field 'e.f' in model 'm' (doc) has no expression for SPANNER, POSTGRES or ANSI_SQL, " +
-          "and the model file binds entity 'e' to a Spanner source.",
-    ]);
+    expect(check(withField(SPANNER_TABLE, bigQueryText, '', null))).toEqual([]);
     // An unsupported dialect on an in-memory model is not translated.
     const unsupported = withField(BQ_TABLE('t'), dialects('SNOWFLAKE'));
     unsupported.entities[0].fields[1] = {

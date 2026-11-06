@@ -87,10 +87,11 @@ describe('sourceDialects', () => {
     expect(errors).toEqual([]);
   });
 
-  test('a missing or unreadable entry says to turn on Dataplex integration', async () => {
+  test('a missing or unreadable entry says to turn on Dataplex integration, as a read that failed', async () => {
     const {catalog} = fakeCatalog({});
-    const {dialects, errors} = await sourceDialects([SQLSERVER], catalog);
+    const {dialects, errors, unread} = await sourceDialects([SQLSERVER], catalog);
     expect(dialects.size).toBe(0);
+    expect(unread).toEqual(errors);
     expect(errors).toEqual([
       `source '${SQLSERVER}': kcmd reads a Cloud SQL table's dialect from its ` +
       `Knowledge Catalog entry, and could not read it. Turn on Dataplex ` +
@@ -102,9 +103,11 @@ describe('sourceDialects', () => {
     ]);
   });
 
-  test('an entry of another type is reported with its type', async () => {
+  test('an entry of another type is reported with its type, as an entry that was read', async () => {
     const {catalog} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-database')});
-    expect((await sourceDialects([MYSQL], catalog)).errors).toEqual([
+    const {errors, unread} = await sourceDialects([MYSQL], catalog);
+    expect(unread).toEqual([]);
+    expect(errors).toEqual([
       `source '${MYSQL}': its Knowledge Catalog entry has type ` +
       `'cloudsql-mysql-database', which is not a Cloud SQL table or view type ` +
       `kcmd knows (cloudsql-mysql-table, cloudsql-mysql-view, ` +
@@ -113,7 +116,7 @@ describe('sourceDialects', () => {
     ]);
   });
 
-  test('another failure is reported with its status, a thrown error does not escape, and a Spanner database\'s error names its first table', async () => {
+  test('another failure is a read that failed, reported with its status, a thrown error does not escape, and a Spanner database\'s error names its first table', async () => {
     const failing: EntryLookup = {
       async lookupEntry(_p, _l, name) {
         if (name.includes('/pg/')) return {status: 503, message: 'unavailable'};
@@ -121,10 +124,11 @@ describe('sourceDialects', () => {
       },
     };
     const spanner = {getDatabase: async () => { throw new Error('socket hang up'); }};
-    const {errors} = await sourceDialects(
+    const {errors, unread} = await sourceDialects(
         [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`,
          `source: ${SPANNER}/x/tables/u`],
         failing, {spanner});
+    expect(unread).toEqual(errors);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
@@ -198,7 +202,7 @@ describe('sourceDialects of a third-party table', () => {
     for (const [result, dialect, database] of rows) {
       expect({result, ...await dialectOf(result)}).toEqual({
         result, dialects: new Map([[THIRD_PARTY, dialect]]),
-        databases: new Map(database ? [[THIRD_PARTY, database]] : []), errors: [],
+        databases: new Map(database ? [[THIRD_PARTY, database]] : []), errors: [], unread: [],
       });
     }
   });
@@ -220,7 +224,7 @@ describe('sourceDialects of a third-party table', () => {
         `of the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
         `postgresql: or sqlserver:), or entrySource.system when there is no ` +
         `fullyQualifiedName.`,
-      ]});
+      ], unread: []});
     }
   });
 
@@ -244,7 +248,7 @@ describe('sourceDialects of a third-party table', () => {
         `fullyQualifiedName '${fullyQualifiedName}', which names no table or ` +
         `view. A table's fullyQualifiedName has the form ${form}. Write the ` +
         `entry name of the table's own entry.`,
-      ]});
+      ], unread: []});
     }
   });
 

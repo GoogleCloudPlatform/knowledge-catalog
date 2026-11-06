@@ -5,13 +5,14 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, ParsedDeploymentTarget, parseTarget, resolveModelDeployments, targetProblem} from './deployment_target';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {declaredProfiles, loadProfileFile, namedProfileErrors, plainCopy, possibleDialects, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
-import {tableFqnParts} from './source_dialect';
+import {sentence} from './parameters';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
@@ -37,6 +38,12 @@ export interface ImportSemanticModelOptions {
    * Required when `sourcePrefix` names an entry group.
    */
   listEntries?: EntryLister;
+  /**
+   * Reads the dialect of each Cloud SQL, Spanner and third-party table the
+   * files `texts` name, as `sourceDialects` does for push. Without it, the
+   * dialect of each such table is unknown.
+   */
+  readDialects?: (texts: string[]) => Promise<SourceDialects>;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -59,7 +66,7 @@ export interface ImportSemanticModelOptions {
   fileName?: string;
 }
 
-/** The one catalog call import makes. */
+/** Lists the entries of an entry group. */
 export type EntryLister =
     (project: string, location: string, entryGroup: string) =>
         AsyncIterable<{name: string; fullyQualifiedName?: string}>;
@@ -822,16 +829,13 @@ function normalizeExpressionDialects(
 }
 
 /**
- * Returns why push's `validateExpressionReferences` rejects the unanchored
- * metric `mt` when its ANSI_SQL text is read in each of `dialects`
- * (`'reaches no declared entity'` or `'reaches multiple entities (...)'`), or
- * `undefined` when it is anchored or one of `dialects` accepts it. An
- * undefined dialect reads that text as generic SQL. When the reason differs
- * between dialects, it names the dialects of each.
+ * Returns why an unanchored metric `mt` is rejected by push's
+ * `validateExpressionReferences` (`'reaches no declared entity'` or
+ * `'reaches multiple entities (...)'`), or `undefined` when anchored or valid.
  */
 function unanchoredMetricProblem(
     mt: Record<string, any>, entityNames: string[],
-    dialects: ReadonlyArray<string|undefined>): string|undefined {
+    impliedDialect?: string|null): string|undefined {
   // 1. Skip metrics that already declare an `entity` anchor natively or inside
   // a `GOOGLE` `custom_extensions` block.
   if (mt.entity !== undefined ||
@@ -852,32 +856,20 @@ function unanchoredMetricProblem(
       sources.some(s => noSqlReason(s.text, s.dialect) !== undefined)) {
     return undefined;
   }
-  // 3. Flag the unanchored metric if, in each of `dialects`, its parsed
-  // expressions reference zero columns (for example `COUNT(*)`) or span
-  // multiple declared entities.
-  const byProblem = new Map<string, string[]>();
-  for (const dialect of dialects) {
-    const parsed =
-        sources.map(s => columnsForSource(s.text, s.dialect, dialect));
-    const allColumns = parsed.flatMap(c => c ?? []);
-    const reached = entitiesReached(allColumns, entityNames);
-    const problem =
-        parsed.every(c => c !== undefined) && allColumns.length === 0 ?
-        'reaches no declared entity' :
-        reached.length > 1 ?
-        `reaches multiple entities (${reached.join(', ')})` :
-        undefined;
-    if (!problem) return undefined;
-    byProblem.set(
-        problem, [...byProblem.get(problem) ?? [], dialect ?? 'ANSI_SQL']);
+  const parsed =
+      sources.map(s => columnsForSource(s.text, s.dialect, impliedDialect));
+  const allColumns = parsed.flatMap(c => c ?? []);
+
+  // 3. Flag the unanchored metric if its parsed expressions reference zero
+  // columns (e.g. `COUNT(*)`) or span multiple declared entities.
+  const reached = entitiesReached(allColumns, entityNames);
+  if (parsed.every(c => c !== undefined) && allColumns.length === 0) {
+    return 'reaches no declared entity';
   }
-  const problems = [...byProblem];
-  if (problems.length < 2) return problems[0]?.[0];
-  const either = (ds: string[]) => ds.length < 2 ?
-      ds[0] :
-      `${ds.slice(0, -1).join(', ')} or ${ds[ds.length - 1]}`;
-  return problems.map(([problem, ds]) => `${problem} as ${either(ds)}`)
-      .join(' and ');
+  if (reached.length > 1) {
+    return `reaches multiple entities (${reached.join(', ')})`;
+  }
+  return undefined;
 }
 
 /**
@@ -1009,12 +1001,12 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
- * `false` when the metric is unanchored and reaches 0 or >1 entities in each
- * of `dialects` so the caller prunes it from `doc.metrics`.
+ * `false` when the metric is unanchored and reaches 0 or >1 entities so the
+ * caller prunes it from `doc.metrics`.
  */
 function repairMetric(
     mt: Record<string, any>, entityNames: string[],
-    dialects: ReadonlyArray<string|undefined>, doc: ImportDocument): boolean {
+    impliedDialect: string|null|undefined, doc: ImportDocument): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
@@ -1022,7 +1014,7 @@ function repairMetric(
         `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
     return true;
   }
-  const problem = unanchoredMetricProblem(mt, entityNames, dialects);
+  const problem = unanchoredMetricProblem(mt, entityNames, impliedDialect);
   if (problem) {
     // In strict mode nothing is written, so the author edits the input.
     const flavor = doc.strict ? doc.inputVersion : doc.targetVersion;
@@ -1042,32 +1034,52 @@ function repairMetric(
 }
 
 /**
- * Maps the database of each Spanner deployment among `deployments` to SPANNER,
- * keyed as `LoadOptions.sourceDialects` keys a Spanner table's database.
- * Spanner creates a property graph only in a GoogleSQL database, so push
- * refuses a Spanner deployment on any other.
+ * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
+ * third-party table the repaired model and its profile files name, as push
+ * reads them. A read that fails is one warning per table, or per database for
+ * Spanner, and the dialect of the tables it reads stays unknown. A lookup that
+ * cannot start is one warning for the run, and every such table's dialect
+ * stays unknown. An entry that was read and gives no dialect is reported as
+ * push's other refusals are.
  */
-function spannerDeploymentDialects(
-    deployments: Iterable<ParsedDeploymentTarget|undefined>):
-    Map<string, string> {
-  const dialects = new Map<string, string>();
-  for (const d of deployments) {
-    if (d?.engine !== 'spanner') continue;
-    const {project, instance, database} = d.coordinates;
-    dialects.set(
-        `spanner.googleapis.com/projects/${project}/instances/${
-            instance}/databases/${database}`,
-        'SPANNER');
+async function readSourceDialects(
+    doc: ImportDocument,
+    opts: ImportSemanticModelOptions): Promise<DialectLoad> {
+  // The repaired sources are in `doc.root`, and JSON is YAML.
+  const texts = [
+    JSON.stringify(doc.root),
+    ...(opts.profileFiles ?? []).map(f => f.content),
+  ];
+  if (!opts.readDialects || !sourcesToLookUp(texts).length) return {};
+  let got: SourceDialects;
+  try {
+    got = await opts.readDialects(texts);
+  } catch (err: any) {
+    // The lookup could not start, for example with no credentials. gcloud
+    // prints the details, so the warning keeps the first line.
+    const why = String(err?.message ?? err).split('\n')[0];
+    doc.warnings.push(`${
+        sentence(`kcmd could not look up table dialects: ${why}`)} Import ` +
+        "skipped the checks that need a table's dialect.");
+    return {};
   }
-  return dialects;
+  const skipped = 'Import skipped the checks that need its dialect.';
+  for (const e of got.errors) {
+    if (got.unread.includes(e)) doc.warnings.push(`${sentence(e)} ${skipped}`);
+    else doc.warnOrError(e);
+  }
+  return {sourceDialects: got.dialects, sourceDatabases: got.databases};
 }
 
 /**
  * Phase 3 (Repair): Repairs third-party constructs in-place on `doc` (pruning
  * extra models, repairing datasets and their fields, pruning unanchored
- * metrics, and truncating descriptions > 2,000 chars).
+ * metrics, and truncating descriptions > 2,000 chars). Returns the source
+ * dialects it reads after repairing the datasets.
  */
-function repairDocument(doc: ImportDocument): void {
+async function repairDocument(
+    doc: ImportDocument,
+    opts: ImportSemanticModelOptions): Promise<DialectLoad> {
   // 1. Prune extra models after `semantic_model[0]` because `kcmd` allows only
   // a single model per document, and cap the model's `description` at 2,000
   // characters (`MAX_ENTRY_DESCRIPTION`).
@@ -1089,34 +1101,27 @@ function repairDocument(doc: ImportDocument): void {
     repairDataset(ds, doc);
   }
 
-  // 3. Infer the model's source dialect from its repaired datasets via
-  // `sourcesDialect`, reading the database of each Spanner deployment the
-  // model declares as SPANNER, and repair or prune each metric
-  // (`repairMetric`). When no lookup gave the dialect, a metric is pruned only
-  // when push rejects it in every dialect the tables can have.
+  // 3. Read the source dialects, infer the model's source dialect from its
+  // repaired datasets via `sourcesDialect`, and repair or prune each metric
+  // (`repairMetric`). An ANSI_SQL text is not read when no lookup gave its
+  // tables' dialect, as push's checks read none.
+  const load = await readSourceDialects(doc, opts);
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
-  const pinned = spannerDeploymentDialects(
-      [doc.model, ...parseGoogleBlocks(doc.model.custom_extensions)]
-          .flatMap(m => asRecords(m.deployments))
-          .map(
-              d => typeof d.target === 'string' ? parseTarget(d.target.trim()) :
-                                                  undefined));
-  const entities = doc.datasets.map(ds => {
-    const source = typeof ds.source === 'string' ? ds.source : undefined;
-    const key = source && dialectLookupKey(source.trim());
-    return {
-      abstract: Boolean(ds.abstract),
-      authoredSource: source,
-      dataSource: '',
-      sourceDialect: key ? pinned.get(key) : undefined,
-    };
+  const impliedDialect = sourcesDialect({
+    entities: doc.datasets.map(ds => {
+      const source = typeof ds.source === 'string' ? ds.source : undefined;
+      const key = source && dialectLookupKey(source.trim());
+      return {
+        abstract: Boolean(ds.abstract),
+        authoredSource: source,
+        dataSource: '',
+        sourceDialect: key ? load.sourceDialects?.get(key) : undefined,
+      };
+    }),
   });
-  const impliedDialect = sourcesDialect({entities});
-  const dialects =
-      impliedDialect === null ? possibleDialects(entities) : [impliedDialect];
-  doc.metrics =
-      doc.metrics.filter(mt => repairMetric(mt, entityNames, dialects, doc));
+  doc.metrics = doc.metrics.filter(
+      mt => repairMetric(mt, entityNames, impliedDialect, doc));
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
@@ -1130,6 +1135,7 @@ function repairDocument(doc: ImportDocument): void {
       truncateDescription(b, rLabel, doc);
     }
   }
+  return load;
 }
 
 /**
@@ -1735,13 +1741,14 @@ function writeDocument(
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
  * push's local checks (`localChecks`) on the model file and each profile it
- * declares. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog can
- * store each aspect. It also gives push's warnings from the Knowledge Catalog
- * entry builder, the pruning and each graph, and leaves out push's notes.
+ * declares, with the source dialects in `load`. With KC_V2_ASPECTS on, it also
+ * checks that Knowledge Catalog can store each aspect. It also gives push's
+ * warnings from the Knowledge Catalog entry builder, the pruning and each
+ * graph, and leaves out push's notes.
  */
 async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
-    opts: ImportSemanticModelOptions): Promise<void> {
+    opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
@@ -1750,18 +1757,13 @@ async function validateOutputDocument(
     // non-strict mode, deduplicating warnings already recorded. Step 2 gives
     // push's error for a field its table cannot run, so the load does not
     // warn about it too.
-    const loadOptions = {
-      bindingOptional: true,
-      warnUnacceptedSource: !doc.strict,
-      fieldTextChecked: true,
-    };
-    // Each Spanner deployment's database is read as SPANNER.
-    const sourceDialects = spannerDeploymentDialects(
-        loadModels(content, loadOptions).models.flatMap(m => {
-          const resolved = resolveModelDeployments(m);
-          return 'error' in resolved ? [] : resolved.deployments;
-        }));
-    const loaded = loadModels(content, {...loadOptions, sourceDialects});
+    const loaded = loadModels(
+        content, {
+          bindingOptional: true,
+          warnUnacceptedSource: !doc.strict,
+          fieldTextChecked: true,
+          sourceDialects: load.sourceDialects,
+        });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1815,7 +1817,7 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, {sourceDialects})) {
+               () => profiles, declaredBy, doc.warnings, load)) {
         doc.warnOrError(error);
       }
       return;
@@ -1836,7 +1838,7 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load: {sourceDialects},
+          load,
         },
         warn);
     // Push prints each error once.
@@ -1892,7 +1894,8 @@ export async function importSemanticModelYaml(
       doc, opts.profileFiles ?? [], opts.fileName ?? `${doc.model.name}.yaml`);
 
   // 2. Read the `--source-prefix` entry group, if needed, and run third-party
-  // repairs (which record errors in `strict` mode).
+  // repairs (which record errors in `strict` mode) and read the source
+  // dialects.
   const listError = await listEntryTables(doc);
   if (listError) {
     return {
@@ -1902,7 +1905,7 @@ export async function importSemanticModelYaml(
       errors: [...doc.errors, listError],
     };
   }
-  repairDocument(doc);
+  const load = await repairDocument(doc, opts);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
@@ -1929,7 +1932,7 @@ export async function importSemanticModelYaml(
                 problem.message}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
-    await validateOutputDocument(files, doc, opts);
+    await validateOutputDocument(files, doc, opts, load);
   }
   return {
     ok: doc.errors.length === 0,

@@ -53,11 +53,16 @@ export interface SourceDialects {
   databases: Map<string, string>;
   // One message per source whose dialect could not be read.
   errors: string[];
+  // The messages of `errors` for a read that failed: a 403 or 404, another
+  // failed status, or no answer. The others are for an entry that was read
+  // and gives no dialect.
+  unread: string[];
 }
 
 // A table's dialect and, for a third-party table, its database, or why kcmd
-// cannot tell the dialect.
-type Dialect = {dialect: string; database?: string}|{error: string};
+// cannot tell the dialect, with `unread` when the read failed.
+type Dialect = {dialect: string; database?: string}|
+    {error: string; unread?: true};
 
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
 // third-party table the files `texts` write (see sourcesToLookUp), and of every
@@ -92,14 +97,17 @@ export async function sourceDialects(
   const dialects = new Map<string, string>();
   const databases = new Map<string, string>();
   const errors: string[] = [];
+  const unread: string[] = [];
   await Promise.all([...lookups].map(async ([key, lookUp]) => {
     const got = await lookUp();
     if ('error' in got) errors.push(got.error);
     else dialects.set(key, got.dialect);
+    if ('unread' in got) unread.push(got.error);
     if ('database' in got && got.database) databases.set(key, got.database);
   }));
   errors.sort();
-  return {dialects, databases, errors};
+  unread.sort();
+  return {dialects, databases, errors, unread};
 }
 
 // The dialect of a Cloud SQL table, by its entry's type.
@@ -108,11 +116,12 @@ async function cloudSqlDialect(
   const at = `source '${table.resourceName}'`;
   const res = await lookupSystemEntry(
       catalog, 'cloudsql', table.project, table.location, table.resourceName);
-  if ('error' in res) return {error: `${at}: ${res.error}`};
+  if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
   // Dataplex answers 403 both when the entry does not exist and when the
   // caller may not read it, so the message names both causes.
   if ('unreadable' in res) {
     return {
+      unread: true,
       error: `${at}: kcmd reads a Cloud SQL table's dialect from its ` +
           `Knowledge Catalog entry, and could not read it. Turn on Dataplex ` +
           `integration for instance '${table.instance}' (gcloud sql ` +
@@ -139,7 +148,8 @@ async function spannerDialect(
     spanner: Pick<SpannerClient, 'getDatabase'>, database: string,
     source: string): Promise<Dialect> {
   const [, , project, , instance, , name] = database.split('/');
-  const failed = (why: string) => ({
+  const failed = (why: string): Dialect => ({
+    unread: true,
     error: `source '${source}': kcmd reads its Spanner database's SQL ` +
         `dialect, and could not read database ${project}/${instance}/${
                name}: ${why}`,
@@ -166,9 +176,10 @@ async function thirdPartyDialect(
   const res = await read(
       'looking up its Knowledge Catalog entry',
       () => catalog.lookupEntry(project, location, name));
-  if ('error' in res) return {error: `${at}: ${res.error}`};
+  if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
   if ('unreadable' in res) {
     return {
+      unread: true,
       error: `${at} names no table Knowledge Catalog knows about. The entry ` +
           `may not exist, or you may not be allowed to read it. kcmd reads a ` +
           `third-party table's dialect from its entry, so add the table to ` +
