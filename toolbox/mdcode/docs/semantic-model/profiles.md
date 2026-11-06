@@ -109,8 +109,8 @@ load the model. The entry exists only when the instance has Dataplex
 integration turned on (`gcloud sql instances patch <i>
 --enable-dataplex-integration`), and the catalog can take a while to list a new
 table. When the entry cannot be read, the command stops and says so.
-`kcmd import` reads it too, and when it cannot, it warns and skips the checks
-that need the dialect.
+`kcmd profiles --print-store` stops too. `kcmd import` reads it too, and when
+it cannot, it warns and skips the checks that need the dialect.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner
