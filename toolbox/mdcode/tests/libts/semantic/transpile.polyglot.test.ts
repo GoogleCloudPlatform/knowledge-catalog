@@ -10,7 +10,7 @@
 import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+import {loadSqlEngine, sqlExpressionTree} from '../../../src/libts/semantic/sql_parser';
 import {polyglotTranspiler, transpileModel} from '../../../src/libts/semantic/transpile';
 
 // A model with one entity, `orders`, holding `fields`.
@@ -71,37 +71,6 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
       });
 
   test(
-      'translates SPANNER (as BigQuery), ALLOYDB (as PostgreSQL), and ' +
-          'SQLSERVER (as T-SQL)',
-      async () => {
-        const responses = await polyglotTranspiler(
-            [
-              {
-                id: 'spanner',
-                dialect: 'SPANNER',
-                expression: 'IF(orders.s = 1, 1, 0)',
-              },
-              {
-                id: 'alloydb',
-                dialect: 'ALLOYDB',
-                expression: '"orders"."amount"::text',
-              },
-              {
-                id: 'sqlserver',
-                dialect: 'SQLSERVER',
-                expression: 'ISNULL([orders].[amount], 0)',
-              },
-            ],
-            'BIGQUERY');
-        const byId = new Map(responses.map(r => [r.id, r]));
-        expect(byId.get('spanner')!.sql).toBe('IF(orders.s = 1, 1, 0)');
-        expect(byId.get('alloydb')!.sql)
-            .toBe('CAST(`orders`.`amount` AS STRING)');
-        expect(byId.get('sqlserver')!.sql)
-            .toBe('COALESCE(`orders`.`amount`, 0)');
-      });
-
-  test(
       'warns that SQL Server text is translated on a best-effort basis',
       async () => {
         // The engine gets common T-SQL forms wrong without an error (a CONVERT
@@ -109,11 +78,11 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
         // SQLSERVER text warns the user to check the BIGQUERY entry.
         const {model, warnings} = await transpileModel(ordersModel([{
           name: 'd',
-          dialects: [{dialect: 'SQLSERVER', expression: 'ISNULL(orders.d, 0)'}],
+          dialects: [{dialect: 'SQLSERVER', expression: 'COALESCE(orders.d, 0)'}],
           stringForm: false,
         }]));
         expect(model.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'SQLSERVER', expression: 'ISNULL(orders.d, 0)'},
+          {dialect: 'SQLSERVER', expression: 'COALESCE(orders.d, 0)'},
           {dialect: 'BIGQUERY', expression: 'COALESCE(orders.d, 0)'},
         ]);
         expect(warnings).toEqual([
@@ -188,18 +157,6 @@ describe('polyglotTranspiler (transformations)', () => {
     expect(byId.get('iff')!.sql).toBe('IF(orders.s = \'F\', 1, 0)');
   });
 
-  test('rewrites Databricks casts to GoogleSQL', async () => {
-    const responses = await polyglotTranspiler(
-        [
-          {id: 'd', dialect: 'DATABRICKS', expression: 'orders.p::double'},
-          {id: 't', dialect: 'DATABRICKS', expression: 'orders.c::text'},
-        ],
-        'BIGQUERY');
-    const byId = new Map(responses.map(r => [r.id, r]));
-    expect(byId.get('d')!.sql).toBe('SAFE_CAST(orders.p AS FLOAT64)');
-    expect(byId.get('t')!.sql).toBe('SAFE_CAST(orders.c AS STRING)');
-  });
-
   test('preserves the entity qualifier through a rewrite', async () => {
     // The qualifier-preservation guard depends on this: the engine must not
     // re-case or requalify `orders.` when it rewrites the surrounding function.
@@ -230,40 +187,175 @@ describe('polyglotTranspiler (transformations)', () => {
         expect(bq.sql).toBe('SAFE_CAST(x AS FLOAT64)');
       });
 
-  // The engine writes each of these except the SPANNER row in a form
-  // BigQuery rejects, and reports success. Every `sql` below passes a
-  // BigQuery dry run against a table with a DATE column `d`. Every `error`
-  // is a form kcmd refuses.
+  // Each construct import translates, with the BigQuery SQL it writes, and
+  // constructs it leaves untranslated. Every construct a `sql` row uses gives
+  // the source dialect's value in BigQuery for ordinary data, and every `sql`
+  // passes a BigQuery dry run against a table that has each column the row
+  // names.
   test.each([
-    ['POSTGRES', "DATE_TRUNC('month', orders.d)", {sql: 'DATE_TRUNC(orders.d, MONTH)'}],
-    ['POSTGRES', "DATE_TRUNC('week', d)", {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
-    ['POSTGRES', "DATE_TRUNC('hour', CAST(d AS TIMESTAMP))", {sql: 'DATE_TRUNC(CAST(d AS DATETIME), HOUR)'}],
-    ['SNOWFLAKE', 'DATE_TRUNC(month, d)', {sql: 'DATE_TRUNC(d, MONTH)'}],
-    ['DATABRICKS', "date_trunc('MONTH', d)", {sql: 'date_trunc(d, MONTH)'}],
-    ['POSTGRES', "date_part('year', d)", {sql: 'EXTRACT(YEAR FROM d)'}],
-    ['POSTGRES', "date_part('doy', d)", {sql: 'EXTRACT(DAYOFYEAR FROM d)'}],
-    ['SNOWFLAKE', 'DATE_PART(year, d)', {sql: 'EXTRACT(YEAR FROM d)'}],
-    ['SQLSERVER', 'DATEPART(month, d)', {sql: 'EXTRACT(MONTH FROM d)'}],
-    ['SQLSERVER', 'YEAR(d) + DAY(d)', {sql: 'EXTRACT(YEAR FROM d) + EXTRACT(DAY FROM d)'}],
-    ['POSTGRES', "DATE_TRUNC('month', \"order date\")", {sql: 'DATE_TRUNC(`order date`, MONTH)'}],
-    ['POSTGRES', "DATE_TRUNC('day', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), DAY)'}],
-    ['POSTGRES', "DATE_TRUNC('milliseconds', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), MILLISECOND)'}],
-    ['SNOWFLAKE', "DATE_TRUNC('mm', d)", {sql: 'DATE_TRUNC(d, MONTH)'}],
-    ['SQLSERVER', 'DATETRUNC(iso_week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
-    ['POSTGRES', "DATE_PART('year', d - INTERVAL '1 day')", {sql: 'EXTRACT(YEAR FROM d - INTERVAL 1 DAY)'}],
-    ['POSTGRES', 'EXTRACT(WEEK FROM d)', {sql: 'EXTRACT(ISOWEEK FROM d)'}],
-    ['POSTGRES', "d + '1 day'::interval", {sql: 'd + INTERVAL 1 DAY'}],
-    ['POSTGRES', "d - INTERVAL '2 weeks'", {sql: 'd - INTERVAL 2 WEEK'}],
-    ['SPANNER', 'DATE_TRUNC(d, MONTH)', {sql: 'DATE_TRUNC(d, MONTH)'}],
-    ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd cannot translate TO_CHAR to BigQuery'}],
-    ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd cannot translate DATE_TRUNC with part 'decade' to BigQuery"}],
-    ['POSTGRES', "date_part('dow', d)", {error: "kcmd cannot translate DATE_PART with part 'dow' to BigQuery"}],
-    ['POSTGRES', "d + INTERVAL '1 day 2 hours'", {error: "kcmd cannot translate INTERVAL '1 day 2 hours' to BigQuery"}],
-    ['POSTGRES', "NOW() - INTERVAL '1 month'", {error: "kcmd cannot translate INTERVAL '1 month' to BigQuery"}],
-    ['SQLSERVER', 'DATETRUNC(week, d)', {error: "kcmd cannot translate DATE_TRUNC with part 'WEEK' to BigQuery"}],
-    ['POSTGRES', "DATE_PART('day', shipped - ordered)", {error: 'kcmd cannot translate DATE_PART of a difference to BigQuery'}],
-    ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd cannot translate EXTRACT of a difference to BigQuery'}],
-  ] as const)('writes %s %s as BigQuery runs it, or refuses it', async (dialect, expression, want) => {
+    // Values, operators, CASE and NULL handling.
+    ['POSTGRES', 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1', {sql: 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1'}],
+    ['POSTGRES', "CASE WHEN a > 2 THEN 'big' WHEN a BETWEEN 1 AND 2 THEN NULL ELSE COALESCE(s, 'none') END", {sql: "CASE WHEN a > 2 THEN 'big' WHEN a BETWEEN 1 AND 2 THEN NULL ELSE COALESCE(s, 'none') END"}],
+    ['POSTGRES', 'CASE a WHEN 7 THEN -1.5 END + 1', {sql: "CASE a WHEN 7 THEN -NUMERIC '1.5' END + 1"}],
+    ['POSTGRES', 'FLOOR(a * 0.29 * 100) + 0.1234567891', {sql: "FLOOR(a * NUMERIC '0.29' * 100) + BIGNUMERIC '0.1234567891'"}],
+    ['SNOWFLAKE', 'IFF(a > 2, NVL(z, 0), IFNULL(b, 1))', {sql: 'IF(a > 2, COALESCE(z, 0), COALESCE(b, 1))'}],
+    ['MYSQL', 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)', {sql: 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)'}],
+    ['MYSQL', 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END', {sql: 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END'}],
+    ['SQLSERVER', 'COALESCE([order total], 0) * 2 - 1', {sql: 'COALESCE(`order total`, 0) * 2 - 1'}],
+    ['POSTGRES', "s LIKE 'a%' OR NOT (a <> b) AND TRUE", {sql: "s LIKE 'a%' OR NOT (a <> b) AND TRUE"}],
+    ['ALLOYDB', '"orders"."amount" + 1', {sql: '`orders`.`amount` + 1'}],
+    ['SPANNER', 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)', {sql: 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)'}],
+    ['BIGQUERY', 'EXTRACT(HOUR FROM t)', {sql: 'EXTRACT(HOUR FROM t)'}],
+    ['MYSQL', 'SUM(a)--1 -- note', {sql: 'SUM(a) - -1 /* note */'}],
+    ['MYSQL', "IF(a--1 > 0, '--x', '#')", {sql: "IF(a - -1 > 0, '--x', '#')"}],
+    ['DATABRICKS', "s LIKE 'a%' = TRUE", {sql: "(s LIKE 'a%') = TRUE"}],
+    // Strings and numbers.
+    ['SNOWFLAKE', 'LENGTH(UPPER(TRIM(s)) || LOWER(s))', {sql: "LENGTH(UPPER(TRIM(s, ' ')) || LOWER(s))"}],
+    ['SNOWFLAKE', "CONCAT(s, 'x') || s", {sql: "CONCAT(s, 'x') || s"}],
+    ['POSTGRES', "s || ' ' || 1.5", {error: 'kcmd does not translate || of a value that is not text'}],
+    ['DATABRICKS', 'concat(s, YEAR(d))', {error: 'kcmd does not translate CONCAT of a value that is not text'}],
+    ['SNOWFLAKE', 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)', {sql: 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)'}],
+    ['SNOWFLAKE', 'SUM(a) / AVG(x)', {sql: 'CAST(SUM(a) AS NUMERIC) / AVG(CAST(x AS NUMERIC))'}],
+    ['POSTGRES', 'AVG(x)', {sql: 'AVG(CAST(x AS NUMERIC))'}],
+    ['POSTGRES', 'TRIM(FROM s)', {sql: "TRIM(s, ' ')"}],
+    // Text compared by a collation, which differs only for text that differs in
+    // letter case, accents or trailing spaces, and in PostgreSQL also in the
+    // spaces and punctuation it sorts by.
+    ['MYSQL', 'MAX(s) > MIN(s) OR COUNT(DISTINCT s) IN (1, 2)', {sql: 'MAX(s) > MIN(s) OR COUNT(DISTINCT s) IN (1, 2)'}],
+    ['SQLSERVER', "CASE s WHEN 'a' THEN NULLIF(UPPER(s), LOWER(s)) END LIKE 'A%'", {sql: "CASE s WHEN 'a' THEN NULLIF(UPPER(s), LOWER(s)) END LIKE 'A%'"}],
+    ['POSTGRES', "a < b OR s BETWEEN 'a' AND 'b'", {sql: "a < b OR s BETWEEN 'a' AND 'b'"}],
+    // Casts and literals.
+    ['POSTGRES', "t::timestamp >= ds::timestamp AND t < ds::timestamptz OR d = DATE '2024-01-01'", {sql: "CAST(t AS DATETIME) >= CAST(ds AS DATETIME) AND t < CAST(ds AS TIMESTAMP) OR d = '2024-01-01'"}],
+    ['MYSQL', "t BETWEEN DATE '2024-01-01' AND DATE '2024-02-01' OR d IN (DATE '2024-1-2') OR DATE '2024-01-01' < DATE '2024-02-01'", {sql: "t BETWEEN '2024-01-01' AND '2024-02-01' OR d IN ('2024-1-2') OR CAST('2024-01-01' AS DATE) < CAST('2024-02-01' AS DATE)"}],
+    ['SNOWFLAKE', 't::TIMESTAMP_NTZ < CURRENT_TIMESTAMP() OR t::TIMESTAMP_NTZ < ds::TIMESTAMP OR d = CURRENT_DATE', {sql: "CAST(t AS DATETIME) < CURRENT_DATETIME('America/Los_Angeles') OR CAST(t AS DATETIME) < CAST(ds AS DATETIME) OR d = CURRENT_DATE('America/Los_Angeles')"}],
+    ['SQLSERVER', 'CAST(a AS FLOAT) * 2', {sql: 'CAST(a AS FLOAT64) * 2'}],
+    // Dates.
+    ['SQLSERVER', 'CAST(ds AS DATE) = CAST(GETDATE() AS DATE)', {sql: 'CAST(ds AS DATE) = CAST(CURRENT_TIMESTAMP() AS DATE)'}],
+    ['POSTGRES', "DATE_TRUNC('month', \"order date\") = CURRENT_DATE AND t = NOW()", {sql: 'DATE_TRUNC(`order date`, MONTH) = CURRENT_DATE AND t = CURRENT_TIMESTAMP()'}],
+    ['SNOWFLAKE', 'DATE_TRUNC(week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
+    ['DATABRICKS', "date_trunc('QUARTER', d)", {sql: 'date_trunc(d, QUARTER)'}],
+    ['POSTGRES', "date_part('year', d) * EXTRACT(MINUTE FROM t)", {sql: 'EXTRACT(YEAR FROM d) * EXTRACT(MINUTE FROM t)'}],
+    ['SQLSERVER', 'DATEPART(month, d) - 1', {sql: 'EXTRACT(MONTH FROM d) - 1'}],
+    ['SQLSERVER', 't >= GETDATE() OR d + 1 > d', {sql: 't >= CURRENT_TIMESTAMP() OR d + 1 > d'}],
+    ['MYSQL', 'QUARTER(CURDATE()) + 1', {sql: 'EXTRACT(QUARTER FROM CURRENT_DATE) + 1'}],
+    ['DATABRICKS', 'hour(t) * minute(t)', {sql: 'EXTRACT(HOUR FROM t) * EXTRACT(MINUTE FROM t)'}],
+    ['POSTGRES', "d + INTERVAL '1 day' - INTERVAL '2' HOUR", {sql: "d + INTERVAL 1 DAY - INTERVAL '2' HOUR"}],
+    ['MYSQL', 'DATE_SUB(NOW(), INTERVAL 2 DAY)', {sql: "DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL '2' DAY)"}],
+    ['DATABRICKS', 'date_add(d, 1)', {sql: 'DATE_ADD(CAST(CAST(d AS DATETIME) AS DATE), INTERVAL 1 DAY)'}],
+    ['SQLSERVER', 'DATEADD(month, 1, CAST(d AS DATE))', {sql: 'DATE_ADD(CAST(d AS DATE), INTERVAL 1 MONTH)'}],
+    ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 MONTH)', {sql: "DATE_ADD(CURRENT_DATE, INTERVAL '1' MONTH)"}],
+    ['SQLSERVER', 'DATEDIFF(day, t, d)', {sql: 'DATE_DIFF(CAST(d AS DATETIME), CAST(t AS DATETIME), DAY)'}],
+    ['ANSI_SQL', 'EXTRACT(YEAR FROM "d")', {sql: 'EXTRACT(YEAR FROM `d`)'}],
+    // SPANNER texts, with Spanner's default time zone written out.
+    ['SPANNER', "EXTRACT(HOUR FROM t) + EXTRACT(DAY FROM DATE '2024-01-01')", {sql: "EXTRACT(HOUR FROM t AT TIME ZONE 'America/Los_Angeles') + EXTRACT(DAY FROM CAST('2024-01-01' AS DATE))"}],
+    ['SPANNER', "TIMESTAMP_TRUNC(t, DAY) = TIMESTAMP '2024-01-01 00:00:00'", {sql: "TIMESTAMP_TRUNC(t, DAY, 'America/Los_Angeles') = TIMESTAMP('2024-01-01 00:00:00', 'America/Los_Angeles')"}],
+    ['SPANNER', "DATE(t) < CURRENT_DATE OR d = DATE '2024-01-01'", {sql: "DATE(t, 'America/Los_Angeles') < CURRENT_DATE('America/Los_Angeles') OR d = CAST('2024-01-01' AS DATE)"}],
+    ['SPANNER', "CAST('2024-01-01 03:00:00' AS TIMESTAMP) = PARSE_TIMESTAMP('%F %T', ds)", {sql: "CAST(TIMESTAMP('2024-01-01 03:00:00', 'America/Los_Angeles') AS TIMESTAMP) = PARSE_TIMESTAMP('%F %T', ds, 'America/Los_Angeles')"}],
+    ['SPANNER', "STRING(CURRENT_TIMESTAMP()) || FORMAT_TIMESTAMP('%F', t, 'UTC')", {sql: "STRING(CURRENT_TIMESTAMP(), 'America/Los_Angeles') || FORMAT_TIMESTAMP('%F', t, 'UTC')"}],
+    ['SPANNER', "TIMESTAMP_DIFF(TIMESTAMP_ADD(t, INTERVAL 1 HOUR), t, MINUTE) + DATE_DIFF(DATE(t), d, DAY)", {sql: "TIMESTAMP_DIFF(TIMESTAMP_ADD(t, INTERVAL '1' HOUR), t, MINUTE) + DATE_DIFF(DATE(t, 'America/Los_Angeles'), d, DAY)"}],
+    ['SPANNER', "EXTRACT(HOUR FROM t - (INTERVAL 1 HOUR)) + EXTRACT(HOUR FROM IF(s = 'AT', t, t)) -- note", {sql: "EXTRACT(HOUR FROM t - (INTERVAL '1' HOUR) AT TIME ZONE 'America/Los_Angeles') + EXTRACT(HOUR FROM IF(s = 'AT', t, t) AT TIME ZONE 'America/Los_Angeles') /* note */"}],
+    ['SPANNER', "TIMESTAMP('2024-01-01T00:00:00Z') < TIMESTAMP '2024-01-01 00:00:00 GMT'", {sql: "TIMESTAMP('2024-01-01T00:00:00Z') < CAST('2024-01-01 00:00:00 GMT' AS TIMESTAMP)"}],
+    ['SPANNER', "TIMESTAMP('2024-01-01 10:05:5Z') < TIMESTAMP '2024-01-01 00:00:00 UTC-08:00'", {sql: "TIMESTAMP('2024-01-01 10:05:5Z') < CAST('2024-01-01 00:00:00 UTC-08:00' AS TIMESTAMP)"}],
+    ['SPANNER', "EXTRACT(HOUR FROM t - INTERVAL 1 HOUR AT TIME ZONE 'UTC')", {sql: "EXTRACT(HOUR FROM t - INTERVAL '1' HOUR AT TIME ZONE 'UTC')"}],
+    ['SPANNER', 'TIMESTAMP(s)', {error: 'kcmd does not translate TIMESTAMP of a value that may be a string with its own time zone'}],
+    ['SPANNER', "TIMESTAMP_DIFF(t, '2024-01-01', DAY)", {error: 'kcmd does not translate a date string that Spanner may read as a TIMESTAMP'}],
+    ['SPANNER', 'SAFE.DATE(t)', {error: 'kcmd does not translate SAFE.DATE'}],
+    ['SPANNER', 'a; b', {error: 'kcmd does not translate a text it cannot read as one expression'}],
+    ['SPANNER', 'EXTRACT(DAYOFYEAR FROM d)', {error: 'kcmd does not translate EXTRACT of DAYOFYEAR from a value that may be a TIMESTAMP'}],
+    ['SPANNER', 'CAST(t AS DATE)', {error: 'kcmd does not translate CAST to DATE of a value that may be a TIMESTAMP'}],
+    ['SPANNER', 'CAST(ds AS TIMESTAMP)', {error: 'kcmd does not translate CAST to TIMESTAMP of a value that may be a string or a DATE'}],
+    ['SPANNER', "PARSE_DATE('%F', CAST(CAST(t AS DATE) AS STRING))", {error: 'kcmd does not translate CAST to DATE of a value that may be a TIMESTAMP'}],
+    ['SPANNER', "DATE('2024-01-01 03:00:00')", {error: 'kcmd does not translate DATE of a string'}],
+    ['SPANNER', "t BETWEEN '2024-01-01' AND '2024-02-01 10:00:00'", {error: 'kcmd does not translate BETWEEN of a date string and a value that may be a TIMESTAMP'}],
+    // Comments.
+    ['SNOWFLAKE', '-- next day\nNVL(d, DATEADD(day, 1, d))', {sql: 'COALESCE(d, DATE_ADD(d, INTERVAL 1 DAY)) /* next day */'}],
+    ['POSTGRES', '/* a /* b */ c */ d', {sql: 'd /* a / * b * / c */'}],
+    ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
+    ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
+    ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
+    // Constructs off the list.
+    ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd does not translate TO_CHAR'}],
+    ['SNOWFLAKE', 'MEDIAN(x)', {error: 'kcmd does not translate MEDIAN'}],
+    ['SNOWFLAKE', 'SUM(x) OVER (PARTITION BY y)', {error: 'kcmd does not translate OVER'}],
+    ['POSTGRES', 'a % b', {error: 'kcmd does not translate %'}],
+    ['POSTGRES', 'SUM(a) / COUNT(*)', {error: 'kcmd does not translate /'}],
+    ['SQLSERVER', 'AVG(a)', {error: 'kcmd does not translate AVG'}],
+    ['ANSI_SQL', 'AVG("x")', {error: 'kcmd does not translate AVG'}],
+    ['SQLSERVER', 'IIF(a > 0, 1, 0)', {error: 'kcmd does not translate IIF'}],
+    ['SQLSERVER', 'ISNULL(z, 0)', {error: 'kcmd does not translate ISNULL'}],
+    ['POSTGRES', "CONCAT(s, 'x')", {error: 'kcmd does not translate CONCAT'}],
+    ['MYSQL', 'LENGTH(s)', {error: 'kcmd does not translate LENGTH'}],
+    ['DATABRICKS', 'round(x, 2)', {error: 'kcmd does not translate ROUND'}],
+    ['DATABRICKS', 'date_sub(t, 1)', {error: 'kcmd does not translate DATE_SUB'}],
+    ['DATABRICKS', 'date_add(t, n)', {error: 'kcmd does not translate DATE_ADD of a value that may be a TIMESTAMP'}],
+    ['ANSI_SQL', '"a" / "b"', {error: 'kcmd does not translate /'}],
+    ['ANSI_SQL', 'ROUND("x")', {error: 'kcmd does not translate ROUND'}],
+    ['SNOWFLAKE', 'FLOOR(a, 1)', {error: 'kcmd does not translate FLOOR with a scale'}],
+    ['POSTGRES', 'x * 1e3', {error: 'kcmd does not translate the number 1e3'}],
+    ['POSTGRES', '9223372036854775808 + 1', {error: 'kcmd does not translate the number 9223372036854775808'}],
+    ['POSTGRES', "E'a'", {error: 'kcmd does not translate an escape string literal'}],
+    ['POSTGRES', 'CAST(a AS VARCHAR)', {error: 'kcmd does not translate CAST to VARCHAR'}],
+    ['POSTGRES', 'a::double precision', {error: 'kcmd does not translate CAST to DOUBLE PRECISION'}],
+    ['POSTGRES', 'a::timestamp(3)', {error: 'kcmd does not translate CAST to TIMESTAMP(3)'}],
+    ['SNOWFLAKE', 'CAST(a AS TIMESTAMP_TZ)', {error: 'kcmd does not translate CAST to TIMESTAMP_TZ'}],
+    ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP'}],
+    ['POSTGRES', "CAST('2024-03-15 10:00:00' AS DATE)", {error: "kcmd does not translate CAST to DATE of '2024-03-15 10:00:00'"}],
+    ['POSTGRES', "DATE '2024-03-15 10:00:00'", {error: "kcmd does not translate DATE '2024-03-15 10:00:00'"}],
+    ['SQLSERVER', 'TRY_CAST(ds AS DATE)', {error: 'kcmd does not translate TRY_CAST to DATE of a column'}],
+    ['MYSQL', 'COUNT(DISTINCT a, b)', {error: 'kcmd does not translate COUNT of more than one value'}],
+    ['POSTGRES', 'SUM(x) FILTER (WHERE y > 0)', {error: 'kcmd does not translate SUM with FILTER'}],
+    ['SNOWFLAKE', 'COUNT(x) IGNORE NULLS', {error: 'kcmd does not translate COUNT with IGNORE NULLS or RESPECT NULLS'}],
+    ['POSTGRES', "TIMESTAMP '2024-01-01 10:00:00'", {error: 'kcmd does not translate a timestamp literal'}],
+    ['SNOWFLAKE', "s LIKE 'a\\\\_b'", {error: 'kcmd does not translate LIKE with a backslash in its pattern'}],
+    ['SQLSERVER', "s LIKE '[a-c]%' -- first letters", {error: 'kcmd does not translate LIKE with a bracket in its pattern'}],
+    ['DATABRICKS', "s = 'it''s'", {error: "kcmd does not translate a string with ''"}],
+    ['MYSQL', "s LIKE '%\\_%'", {error: 'kcmd does not translate a string with \\_'}],
+    ['MYSQL', 'a /*!50000 + 1 */', {error: 'kcmd does not translate a MySQL executable comment'}],
+    ['MYSQL', 'a /*+ BKA(t) */', {error: 'kcmd does not translate a MySQL optimizer hint'}],
+    ['POSTGRES', 'TRIM(BOTH FROM s)', {error: 'kcmd does not translate TRIM with BOTH, LEADING or TRAILING'}],
+    ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
+    ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DAYOFWEEK'"}],
+    ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd does not translate EXTRACT of a difference'}],
+    ['MYSQL', 'YEAR(COALESCE(d + 1, d))', {error: 'kcmd does not translate YEAR of an expression'}],
+    ['MYSQL', "YEAR('2024-01-31')", {error: 'kcmd does not translate YEAR of a string'}],
+    ['SQLSERVER', 'YEAR(DATEADD(day, 1, d))', {error: 'kcmd does not translate YEAR of DATEADD'}],
+    ['SNOWFLAKE', 'YEAR(t::TIMESTAMP_LTZ)', {error: 'kcmd does not translate CAST to TIMESTAMP_LTZ'}],
+    ['SNOWFLAKE', "DATEADD('hour', -2, t)", {error: "kcmd does not translate DATEADD with part 'hour'"}],
+    ['SNOWFLAKE', 'DATEADD(day, 1.5, d)', {error: 'kcmd does not translate DATEADD of a fraction'}],
+    ['POSTGRES', "NOW() - INTERVAL '1 month'", {error: "kcmd does not translate INTERVAL '1 month'"}],
+    ['POSTGRES', "d + INTERVAL '1.5' DAY", {error: 'kcmd does not translate INTERVAL 1.5 DAY'}],
+    ['MYSQL', 'd + INTERVAL -1.5 DAY', {error: 'kcmd does not translate INTERVAL -1.5 DAY'}],
+    ['POSTGRES', "2 * INTERVAL '1 day'", {error: 'kcmd does not translate INTERVAL'}],
+    ['POSTGRES', 'a AS b', {error: 'kcmd does not translate a text it cannot read as one expression'}],
+    // Values whose types import cannot see.
+    ['POSTGRES', 'a - b', {error: 'kcmd does not translate - without a number, SUM, COUNT or AVG on one side'}],
+    ['SQLSERVER', "first_name + ' '", {error: 'kcmd does not translate + of a string'}],
+    ['MYSQL', 'CURDATE() - 7', {error: 'kcmd does not translate - of a date'}],
+    ['MYSQL', 'SUM(a > 2)', {error: 'kcmd does not translate SUM of a comparison'}],
+    ['MYSQL', 'MAX(a > 2)', {error: 'kcmd does not translate MAX of a comparison'}],
+    ['MYSQL', 'COALESCE(a > b, 0)', {error: 'kcmd does not translate COALESCE of a comparison'}],
+    ['MYSQL', "a || ' ' || b", {error: 'kcmd does not translate OR of a string'}],
+    ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    // Date, format and conversion functions off the list.
+    ['SQLSERVER', 'DATEADD(month, -1, GETDATE())', {error: 'kcmd does not translate DATEADD of a month to a value that may be a TIMESTAMP'}],
+    ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],
+    ['SQLSERVER', 'CONVERT(varchar(10), d, 103)', {error: 'kcmd does not translate CONVERT'}],
+    ['DATABRICKS', "to_date(s, 'yyyy-MM-dd HH:mm:ss')", {error: 'kcmd does not translate TO_DATE'}],
+    ['SNOWFLAKE', 'TO_TIMESTAMP(n, 3)', {error: 'kcmd does not translate TO_TIMESTAMP'}],
+    ['SQLSERVER', "FORMAT(d, 'yyyy-MM')", {error: 'kcmd does not translate FORMAT'}],
+    ['MYSQL', 'LAST_DAY(CURDATE())', {error: 'kcmd does not translate LAST_DAY'}],
+    ['DATABRICKS', 'datediff(a, b)', {error: 'kcmd does not translate DATEDIFF'}],
+    ['DATABRICKS', 'datediff(MONTH, a, b)', {error: 'kcmd does not translate DATEDIFF'}],
+    ['SNOWFLAKE', 'DATEADD(week, -1, CURRENT_TIMESTAMP())', {error: "kcmd does not translate DATEADD with part 'week'"}],
+    ['SNOWFLAKE', 'ADD_MONTHS(CURRENT_DATE(), -1)', {error: 'kcmd does not translate ADD_MONTHS'}],
+    ['SNOWFLAKE', 'DATEADD(m, 30, CURRENT_DATE)', {error: "kcmd does not translate DATEADD with part 'm'"}],
+    ['SQLSERVER', 'DATEDIFF(dd, a, b)', {error: "kcmd does not translate DATEDIFF with part 'dd'"}],
+    ['SQLSERVER', 'DATEADD(day, DATEDIFF(day, 0, GETDATE()), 0)', {error: 'kcmd does not translate DATEADD of a number'}],
+    ['SQLSERVER', 'TRY_CONVERT(date, s)', {error: 'kcmd does not translate TRY_CONVERT'}],
+    ['MYSQL', 'TO_DAYS(d)', {error: 'kcmd does not translate TO_DAYS'}],
+    ['DATABRICKS', 'make_date(2024, 2, 30)', {error: 'kcmd does not translate MAKE_DATE'}],
+    ['SNOWFLAKE', 'TO_NUMBER(s)', {error: 'kcmd does not translate TO_NUMBER'}],
+  ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
   });
@@ -291,13 +383,20 @@ describe('polyglotTranspiler (transformations)', () => {
     const unchanged = [
       ['postgresql', "DATE_TRUNC('month', d)", "DATE_TRUNC('month', d)"],
       ['postgresql', "date_part('year', d)", "DATE_PART('year', d)"],
-      ['postgresql', "TO_CHAR(d, 'YYYY-MM')", "TO_CHAR(d, 'YYYY-MM')"],
       ['postgresql', "d + INTERVAL '1 day'", "d + INTERVAL '1 day'"],
-      ['tsql', 'YEAR(d)', 'YEAR(d)'],
+      ['tsql', 'YEAR(DATEADD(day, 1, d))', 'YEAR(DATEADD(day, 1, d))'],
+      ['mysql', 'QUARTER(d)', 'QUARTER(d)'],
+      ['snowflake', 'd::TIMESTAMP_NTZ', 'CAST(d AS TIMESTAMPNTZ)'],
+      ['bigquery', 'EXTRACT(DAYOFWEEK FROM t)', 'EXTRACT(DOW FROM t)'],
+      ['databricks', 'a = b = c', 'a = b = c'],
+      ['postgresql', 'TRIM(s) || 0.29', 'TRIM(s) || 0.29'],
     ];
     expect(unchanged.map(([dialect, sql]) => [
       dialect, sql, engine.transpile(sql, dialect, 'bigquery').sql?.[0],
     ])).toEqual(unchanged);
+    // The engine reads BigQuery's TIMESTAMP back without its time zone.
+    expect(engine.generate([sqlExpressionTree('CAST(x AS TIMESTAMP)', 'BIGQUERY')], 'bigquery')
+               .sql?.[0]).toBe('CAST(x AS DATETIME)');
   });
 
   test('leaves a field it refuses without a BIGQUERY entry, with a warning', async () => {
@@ -317,7 +416,7 @@ describe('polyglotTranspiler (transformations)', () => {
     expect(warnings).toEqual([
       "field 'orders.month': transpiled 'POSTGRES' -> 'BIGQUERY'",
       "field 'orders.label': could not transpile 'POSTGRES' -> 'BIGQUERY' " +
-          '(kcmd cannot translate TO_CHAR to BigQuery); left untranslated',
+          '(kcmd does not translate TO_CHAR); left untranslated',
     ]);
   });
 
