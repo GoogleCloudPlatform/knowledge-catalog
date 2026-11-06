@@ -1140,6 +1140,24 @@ semantic_model:
       expect(section(INLINE)).toEqual([]);
     });
 
+    // --print-store prints no store for a scope push refuses for an
+    // incomplete profile or for profiles that disagree, and gives push's errors.
+    test('and --print-store refuses the scope with push\'s errors', async () => {
+      const cases: Array<Record<string, string>> = [
+        {'commerce.profile.staging.yaml': STAGING},
+        {'commerce.profile.a.yaml': profileFile('a'),
+         'commerce.profile.b.yaml': joinOnEmail(profileFile('b'))},
+      ];
+      for (const files of cases) {
+        fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+        writeScope({'commerce.yaml': commerce({targets: 1}), ...files});
+        const {code, errors} = await pushResult();
+        expect(code).toBe(1);
+        expect(await profiles({printStore: true})).toBe(1);
+        expect(logs).toEqual(errors.map(e => `Error: ${e}`));
+      }
+    });
+
     // The completeness check also requires each field a profile binds to hold
     // SQL on each entity that inherits it, as applying the profile does. A
     // plain push reports such a field once, in the words a push of the
@@ -2412,6 +2430,8 @@ semantic_model:
 entities:
   - name: Customer
     source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customers
+    primary_key: [CustomerId]
+    fields: [{ name: key, expression: CustomerId }]
 `);
     const code = await profiles({printStore: true, profile: 'prod'});
     expect(code).not.toBe(0);

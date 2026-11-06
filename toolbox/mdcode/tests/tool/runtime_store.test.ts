@@ -63,6 +63,12 @@ ${deployments}    entities:
                  '');
 }
 
+// Profile file `name`, which binds Order and its key and fields to `source`.
+const profileFile = (name: string, source: string) =>
+    `name: ${name}\nentities:\n  - name: Order\n    source: ${source}\n` +
+    '    primary_key: [OrderId]\n    fields: [{ name: key, expression: ' +
+    'OrderId }, { name: total, expression: Total }]\n';
+
 beforeEach(() => {
   cwd = process.cwd();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-runtime-store-'));
@@ -133,8 +139,7 @@ describe('the profiles report and --print-store', () => {
             `${SPANNER_DB}/tables/Orders`, false));
     writeModel(
         'commerce.profile.prod.yaml',
-        `name: prod\nentities:\n  - name: Order\n    source: ${
-            SPANNER_DB}/tables/Orders\n`);
+        profileFile('prod', `${SPANNER_DB}/tables/Orders`));
     expect(await profiles({printStore: true, profile: 'prod'})).toBe(0);
     expect(out).toEqual(['acme-ops/prod/commerce']);
     // --print-store reads no Spanner database's dialect; the report does.
@@ -279,8 +284,7 @@ describe('a third-party source', () => {
     writeModel('commerce.yaml', model(
         `      - {name: prod, target: ${SPANNER_DB}/graphs/g}\n`,
         `${SPANNER_DB}/tables/Orders`, false));
-    writeModel('commerce.profile.sf.yaml',
-               `name: sf\nentities:\n  - name: Order\n    source: ${ENTRY}\n`);
+    writeModel('commerce.profile.sf.yaml', profileFile('sf', ENTRY));
     const error = `[commerce] model 'commerce' binds entity 'Order' to ` +
         `third-party table '${ENTRY}', and kcmd has no engine for a ` +
         `third-party table.`;

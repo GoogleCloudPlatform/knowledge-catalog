@@ -20,11 +20,11 @@
 // expression, action or constraint still gets a store and a skill. So does a
 // model whose deployment breaks the rules of its engine, or whose model file
 // binds a field with no text in the dialect of its entity's source. Like push,
-// the runtime loads every profile file. It does not run push's checks that
-// every named profile applies to the model, is complete and has valid keys
-// and join columns. So a
-// model whose profile file or GOOGLE block profile those checks refuse still
-// gets a store and a skill under the default profile. The runtime skips the
+// the runtime loads every profile file. skills-generate does not run push's
+// checks that every named profile applies to the model, is complete and has
+// valid keys and join columns. So a model whose profile file or GOOGLE block
+// profile those checks refuse still gets a skill under the default profile.
+// --print-store runs those checks and refuses it. The runtime skips the
 // checks of push's Knowledge Catalog leg, such as one model per entry group,
 // and push's check that each model and profile file is valid UTF-8. Two
 // models that deploy to one graph each get a skill.
@@ -669,9 +669,9 @@ entities:
 
   // Push checks every profile file, whichever profile it deploys, so under the
   // default profile it refuses a profile file that names an entity the model
-  // lacks. The report refuses it too. The runtime applies only the profile it
-  // is given, so --print-store and skills-generate accept the file.
-  test('a profile file that does not apply: push refuses it under default, the runtime accepts it',
+  // lacks. The report and --print-store refuse it too. skills-generate applies
+  // only the profile it is given, so it accepts the file.
+  test('a profile file that does not apply: push and --print-store refuse it under default, skills-generate accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -694,10 +694,11 @@ entities:
 `,
          });
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
          expect(r.push.out).toContain(
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
+         expect(r.printStore.out).toBe(r.push.out);
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
        });
 
@@ -870,11 +871,7 @@ semantic_model:
         fields:
           - { name: key, expression: OrderId }
 `,
-      'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
+      'commerce.profile.prod.yaml': PROD_PROFILE,
     });
     const r = await runAll('prod');
     expect(r.printStore.out).toBe('acme-ops/prod/commerce');

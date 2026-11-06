@@ -21,7 +21,7 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
@@ -29,7 +29,7 @@ import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelErr
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1146,13 +1146,38 @@ async function printStore(
   // One line, because the caller is `STORE=$(kcmd profiles --print-store)` and
   // a second line makes that variable address the wrong database. A scope
   // holding several models has no single answer, so it says so instead,
-  // before any AlloyDB lookup.
-  const opened = await createSemanticRuntimes(
-      {profile: named, ctx, oneModel: true, snapshot});
+  // before any AlloyDB lookup. A scope that push refuses for its named
+  // profiles gets push's errors, also before any AlloyDB lookup.
+  let refused: string[] = [];
+  const opened = await createSemanticRuntimes({
+    profile: named,
+    ctx,
+    oneModel: true,
+    snapshot,
+    proceed: load => {
+      const layout = snapshot.layout as SemanticModelLayout;
+      const docs = layout.modelDocuments();
+      const {models} =
+          loadSemanticModels(docs, {bindingOptional: true, ...load});
+      // Push refuses several models, or a deployment target in no accepted
+      // form, before it checks the named profiles. The runtime refuses both.
+      if (models.length > 1 ||
+          models.some(m => 'error' in resolveModelDeployments(m.model))) {
+        return true;
+      }
+      const profileDocs = profileDocsReader(layout);
+      refused = namedProfileErrors(
+                    docs, new Map(models.map(m => [m.document, m.model])),
+                    profileDocs, declaredProfilesReader(profileDocs), [], load)
+                    .map(e => e.error);
+      return !refused.length;
+    },
+  });
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
     return 1;
   }
+  if (refused.length) return printErrors(...refused);
   for (const {store, storeError} of opened) {
     if (!store) {
       console.error(`Error: ${storeError}`);
