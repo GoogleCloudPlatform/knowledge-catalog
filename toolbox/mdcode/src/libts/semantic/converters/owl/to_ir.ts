@@ -360,10 +360,42 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
   }
 
+  // The direct subclasses of each class, as written to `extends`.
+  const subclasses = new Map<string, string[]>();
+  for (const e of entities) {
+    for (const parent of e.extends ?? []) {
+      subclasses.set(parent, [...(subclasses.get(parent) ?? []), e.name]);
+    }
+  }
+  // The sentence naming the classes under `name` that have no subclasses, in
+  // class order.
+  const leavesSentence = (name: string): string => {
+    const under = new Set<string>();
+    const walk = (c: string) => {
+      for (const s of subclasses.get(c) ?? []) {
+        if (under.has(s)) continue;
+        under.add(s);
+        walk(s);
+      }
+    };
+    walk(name);
+    const leaves = entities.map(e => e.name)
+                       .filter(n => under.has(n) && !subclasses.has(n))
+                       .map(n => `'${n}'`);
+    if (!leaves.length) return `Every class under '${name}' has subclasses.`;
+    return leaves.length > 1 ?
+        `The classes under '${name}' with no subclasses are ${
+            leaves.join(', ')}.` :
+        `The class under '${name}' with no subclasses is ${leaves[0]}.`;
+  };
+
   // Object properties -> relationships (edges). Both endpoints must be known
   // classes. The edge is logical: it carries only its direction (source entity
   // -> destination entity), no join columns. The foreign-key / key columns are
   // added to the model (logical grain, not a binding) before a graph deploy.
+  // A property that push would reject as a relationship is left out with a
+  // warning: one that connects a class with subclasses, one from a class to
+  // itself, and one that runs opposite to a relationship already written.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     const domain = p.domains[0];
@@ -400,6 +432,28 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `object property '${
               p.localName}' duplicates an existing relationship ` +
           `name; skipped (relationship names must be unique).`);
+      continue;
+    }
+    const parents = dedupe([domain, range]).filter(c => subclasses.has(c));
+    const back = relationships.find(
+        r => r.source.entity === range && r.destination.entity === domain);
+    let problem: string|undefined;
+    if (parents.length) {
+      problem = `it connects ${parents.map(c => `'${c}'`).join(' and ')}, ${
+                    parents.length > 1 ? 'which have' : 'which has'} ` +
+          `subclasses, and a relationship may connect only classes with no ` +
+          `subclasses. ${parents.map(leavesSentence).join(' ')}`;
+    } else if (domain === range) {
+      problem = `it runs from '${domain}' to itself, and a relationship ` +
+          `must join two different classes.`;
+    } else if (back) {
+      problem = `it runs from '${domain}' to '${range}', and object ` +
+          `property '${back.name}' runs the other way. The relationships ` +
+          `between two classes must run in one direction.`;
+    }
+    if (problem) {
+      warnings.push(
+          `object property '${p.localName}' is not imported: ${problem}`);
       continue;
     }
     const relationship: Relationship = {

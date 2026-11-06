@@ -17,13 +17,3 @@ semantic_model:
       - name: Robot
         description: A machine, never a person.
       - name: LifeStage
-    relationships:
-      - name: ancestorOf
-        from: Person
-        to: Person
-      - name: relatedTo
-        from: Person
-        to: Person
-      - name: uncleOf
-        from: Person
-        to: Person
