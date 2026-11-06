@@ -328,4 +328,121 @@ describe('conceptToEntry', () => {
     const restored = conceptToEntry(asConcept, GROUP);
     expect(restored).toEqual(original);
   });
+
+  test('round-trips OKF v0.3 superseded_by, Attested Computation keys, x-* extensions, and unknown keys across push -> pull', () => {
+    const pushed = conceptToEntry(
+      concept(
+        {
+          type: 'Attested Computation',
+          title: 'Revenue for fiscal year',
+          description: 'Recognized revenue for a fiscal year.',
+          tags: ['finance', 'revenue'],
+          status: 'deprecated',
+          superseded_by: '/computations/net-revenue.md',
+          stale_after: '2026-12-31T00:00:00Z',
+          runtime: 'bigquery',
+          parameters: [{name: 'year', type: 'integer', required: true}],
+          computation: '/references/computations/revenue.sql',
+          executor: {
+            resource: '/references/skills/run-on-bq.md',
+            receipt: ['job_id', 'executed_sql', 'result'],
+            'x-acme-timeout': 30,
+          },
+          attester: {resource: '/references/attesters/sql-equality.py'},
+          'x-acme-owner': 'team:finance-fpa',
+          custom_domain: 'corporate-finance',
+        },
+        '# Computation\n',
+        'computations/revenue',
+      ),
+      GROUP,
+    );
+
+    const pulled = entryToConcept(pushed, 'computations/revenue');
+    expect(pulled.frontmatter['superseded_by']).toBe(
+      '/computations/net-revenue.md',
+    );
+    expect(pulled.frontmatter['runtime']).toBe('bigquery');
+    expect(pulled.frontmatter['parameters']).toEqual([
+      {name: 'year', type: 'integer', required: true},
+    ]);
+    expect(pulled.frontmatter['computation']).toBe(
+      '/references/computations/revenue.sql',
+    );
+    expect(pulled.frontmatter['executor']).toEqual({
+      resource: '/references/skills/run-on-bq.md',
+      receipt: ['job_id', 'executed_sql', 'result'],
+      'x-acme-timeout': 30,
+    });
+    expect(pulled.frontmatter['attester']).toEqual({
+      resource: '/references/attesters/sql-equality.py',
+    });
+    expect(pulled.frontmatter['x-acme-owner']).toBe('team:finance-fpa');
+    expect(pulled.frontmatter['custom_domain']).toBe('corporate-finance');
+  });
+
+  test('normalizes Managed Enrichment document.type taxonomy labels on both pure OKF and pulled x-kcmd concepts', () => {
+    const cases: Array<[string, string]> = [
+      ['Context Set', 'context-set'],
+      ['Knowledge Base Root', 'context-set'],
+      ['Knowledge Base Index', 'knowledge-base-index'],
+      ['Index', 'knowledge-base-index'],
+      ['Table', 'table-context'],
+      ['BigQuery Table', 'table-context'],
+      ['Table Context', 'table-context'],
+      ['Knowledge Base', 'knowledge-base'],
+      ['Concept', 'concept'],
+      ['Learning', 'learning'],
+      ['Context Overlay', 'context-overlay'],
+    ];
+    for (const [label, expectedSlug] of cases) {
+      const pure = conceptToEntry(
+        concept({type: label, title: 'T'}, '# T\n', 'docs/t'),
+        GROUP,
+      );
+      expect(pure.aspects?.[DOC_FACET]?.data?.['type']).toBe(expectedSlug);
+
+      const pulled = conceptToEntry(
+        withResidue(
+          {entryType: DOCUMENT, aspects: {[DOC_FACET]: {job: {name: 'enrich-1'}}}},
+          {type: label},
+        ),
+        GROUP,
+      );
+      expect(pulled.aspects?.[DOC_FACET]?.data).toEqual({
+        type: expectedSlug,
+        job: {name: 'enrich-1'},
+      });
+    }
+  });
+
+  test('rejects invalid query-template parameter type enums with ConceptError', () => {
+    const qtType =
+      'projects/dataplex-types/locations/global/entryTypes/query-template';
+    const qtAspect = 'dataplex-types.global.query-template';
+    expect(() =>
+      conceptToEntry(
+        concept(
+          {
+            type: 'Query Template',
+            extra: {
+              type: qtType,
+              aspects: {
+                [qtAspect]: {
+                  query: 'SELECT @x',
+                  nlQuery: 'q',
+                  intent: 'i',
+                  sourceType: 'BIGQUERY',
+                  parameters: [{name: 'x', type: 'ARRAY<STRING>'}],
+                },
+              },
+            },
+          },
+          '# Q\n',
+          'queries/q',
+        ),
+        GROUP,
+      ),
+    ).toThrow(ConceptError);
+  });
 });

@@ -57,21 +57,17 @@ export async function initOkfWorkspace(
   const prior = fs.existsSync('catalog.yaml')
     ? fs.readFileSync('catalog.yaml', 'utf8')
     : undefined;
-  if (typeof (manifest as any).save === 'function') {
-    manifest.save('catalog.yaml');
-  } else {
-    const scopeType = manifest.source.type || 'entryGroup';
-    fs.writeFileSync(
-      'catalog.yaml',
-      yaml.stringify({scope: `${scopeType}.${scopeName}`}),
-      'utf8',
-    );
-  }
+  const scopeType = manifest.source.type || 'entryGroup';
+  fs.writeFileSync(
+    'catalog.yaml',
+    yaml.stringify({scope: `${scopeType}.${scopeName}`, layout: 'okf'}),
+    'utf8',
+  );
   const scope = scopeOf(fs.readFileSync('catalog.yaml', 'utf8'));
   if (prior !== undefined && scope !== undefined && scopeOf(prior) === scope) {
     fs.writeFileSync('catalog.yaml', prior);
+    writeWorkspaceLayout('catalog.yaml', 'okf');
   }
-  writeWorkspaceLayout('catalog.yaml', 'okf');
   console.log(fs.readFileSync('catalog.yaml', 'utf8').trimEnd());
 
   const remoteExists = (manifest as any).okfRemoteExists === true;
@@ -96,10 +92,13 @@ export async function initOkfWorkspace(
   fs.mkdirSync(BUNDLE_DIR, {recursive: true});
   const indexPath = path.join(BUNDLE_DIR, 'index.md');
   const agentsPath = path.join(BUNDLE_DIR, 'agents.md');
-  if (!fs.existsSync(indexPath) && !fs.existsSync(agentsPath)) {
+  const hasConceptFiles = fs
+    .readdirSync(BUNDLE_DIR)
+    .some((f) => f.endsWith('.md'));
+  if (!fs.existsSync(indexPath) && !fs.existsSync(agentsPath) && !hasConceptFiles) {
     fs.writeFileSync(
       indexPath,
-      `---\nokf_version: "0.2"\n---\n# ${groupId}\n`,
+      `---\nokf_version: "0.3"\n---\n# ${groupId}\n`,
       'utf8',
     );
   }

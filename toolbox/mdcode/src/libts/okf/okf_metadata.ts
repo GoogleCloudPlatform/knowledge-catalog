@@ -3,7 +3,12 @@
 
 import * as yaml from 'yaml';
 
-import {OKF_METADATA_KEYS} from './concept';
+import {
+  ENTRY_SOURCE_KEYS,
+  EXTRA_KEY,
+  OKF_METADATA_KEYS,
+  RESIDUE_KEY,
+} from './concept';
 
 export {OKF_METADATA_KEYS};
 
@@ -11,6 +16,16 @@ const HEADING = '## OKF Metadata';
 const OPEN = '```yaml';
 const CLOSE = '```';
 const MARKER = `\n\n${HEADING}\n\n${OPEN}\n`;
+
+// Frontmatter keys stored natively on the catalog entry or in kcmd residue/links,
+// so they are not duplicated into the trailing `## OKF Metadata` block.
+const NON_CARRIED_KEYS = new Set<string>([
+  'type',
+  ...ENTRY_SOURCE_KEYS,
+  RESIDUE_KEY,
+  EXTRA_KEY,
+  'links',
+]);
 
 /** Appends the section. The body is returned unchanged when there is none. */
 export function appendOkfMetadata(
@@ -20,6 +35,14 @@ export function appendOkfMetadata(
   const carried: Record<string, unknown> = {};
   for (const key of OKF_METADATA_KEYS) {
     if (frontmatter[key] !== undefined) carried[key] = frontmatter[key];
+  }
+  // Preserve `x-*` producer extensions (SPEC §4.1) and any other unknown OKF
+  // frontmatter keys across push -> pull.
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (value === undefined || key in carried || NON_CARRIED_KEYS.has(key)) {
+      continue;
+    }
+    carried[key] = value;
   }
   if (!Object.keys(carried).length) return body;
 

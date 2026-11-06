@@ -1,0 +1,50 @@
+name: pull_bq_dry_run
+description: pull --dry-run on a BigQuery dataset scope (b/576400055) writes no entry file
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: US
+    tables:
+      - id: p:d.t1
+        tableReference:
+          projectId: p
+          datasetId: d
+          tableId: t1
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d/tables/t1
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+        # Aspects BigQuery writes besides the required ones: left out, with
+        # no warning.
+        aspects:
+          dataplex-types.global.usage:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/usage
+            data:
+              queryCount: 7
+          dataplex-types.global.bigquery-policy:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/bigquery-policy
+            data: {}
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+
+actions:
+  - action: pull
+    options:
+      dryRun: true
+
+assert:
+  fileSystem:
+    catalog/p.d.yaml: null
+    catalog/p.d/t1.yaml: null
+  warnings: []

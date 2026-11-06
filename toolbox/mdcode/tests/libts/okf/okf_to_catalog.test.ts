@@ -124,7 +124,7 @@ describe('CatalogSync OKF push --validate-only', () => {
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(
       path.join(root, 'broken.md'),
-      '---\ntitle: missing type\n---\nbody\n',
+      '---\ntype: [unclosed\n---\nbody\n',
       'utf8',
     );
 
@@ -132,6 +132,59 @@ describe('CatalogSync OKF push --validate-only', () => {
 
     expect(res.success).toBe(false);
     expect(res.details).toContain('broken');
+  });
+
+  test('skips untyped .md non-concept files (README.md, AGENTS.md, CONTRIBUTING.md, SKILL.md) and subdirectory log.md while pushing typed agents.md', async () => {
+    const base = makeTempDir('okfpush-v03-skip-');
+    fs.writeFileSync(
+      path.join(base, 'catalog.yaml'),
+      'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
+      'utf8',
+    );
+    const root = path.join(base, 'bundle');
+    fs.mkdirSync(path.join(root, 'computations'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'index.md'),
+      '---\nokf_version: "0.3"\ntitle: Finance\nlicense: CC-BY-4.0\n---\n# Finance\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'agents.md'),
+      '---\ntype: Knowledge Base Root\ntitle: Finance Router\n---\n# Finance Router\n',
+      'utf8',
+    );
+    fs.writeFileSync(path.join(root, 'README.md'), '# Readme\n', 'utf8');
+    fs.writeFileSync(path.join(root, 'CONTRIBUTING.md'), '# Contributing\n', 'utf8');
+    fs.writeFileSync(
+      path.join(root, 'SKILL.md'),
+      '---\nname: finance-skill\ndescription: Untyped skill file\n---\n# Skill\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'computations/AGENTS.md'),
+      '# Subdir agent instructions\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'computations/log.md'),
+      '## 2026-11-03\n* **Creation**: Added revenue.\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'computations/revenue.md'),
+      '---\ntype: Attested Computation\ntitle: Revenue\nruntime: bigquery\n---\n# Computation\n```sql\nSELECT 1\n```\n',
+      'utf8',
+    );
+
+    const lines: string[] = [];
+    spyOn(console, 'log').mockImplementation((m: any) => void lines.push(String(m)));
+
+    const res = await runPush(base, [], {validateOnly: true});
+
+    expect(res.success).toBe(true);
+    expect(lines).toContain(`would write ${GROUP}/entries/agents`);
+    expect(lines).toContain(`would write ${GROUP}/entries/computations/revenue`);
+    expect(lines.at(-1)).toContain('2 change(s): 2 create, 0 update, 0 delete');
   });
 });
 
@@ -505,5 +558,78 @@ describe('CatalogSync OKF push', () => {
       logs.some((l) => l.startsWith(`would link ${GROUP}/entryLinks/link-`)),
     ).toBe(true);
     expect(createLink).not.toHaveBeenCalled();
+  });
+
+  test('preserves a pulled remote entry named log or <dir>/log carrying x-kcmd while skipping untyped log.md history files', async () => {
+    const base = makeTempDir('okfpush-log-');
+    fs.writeFileSync(
+      path.join(base, 'catalog.yaml'),
+      'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
+      'utf8',
+    );
+    const root = path.join(base, 'bundle');
+    file(root, 'documents/log', DOCUMENT, 'documents');
+    file(root, 'documents', DOCUMENT);
+    fs.writeFileSync(
+      path.join(root, 'log.md'),
+      '## 2026-11-05\n* **Update**: History entry.\n',
+      'utf8',
+    );
+
+    let sent: MetadataChange[] = [];
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata')
+      .mockImplementation(async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      });
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    const res = await runPush(base, ['documents', 'documents/log']);
+
+    expect(res.success).toBe(true);
+    expect(sent.filter((c) => c.deleteEntryRequest)).toHaveLength(0);
+    expect(
+      sent.map((c) => c.updateEntryRequest?.entry.name),
+    ).toEqual([
+      `${GROUP}/entries/documents`,
+      `${GROUP}/entries/documents/log`,
+    ]);
+  });
+
+  test('reconcileLinks ignores 403 on lookupEntryLinks for newly created entries and retries 429 on createEntryLink', async () => {
+    const priorDelay = process.env.GCP_RETRY_DELAY_MS;
+    process.env.GCP_RETRY_DELAY_MS = '0';
+    try {
+      const base = bundle();
+      fs.writeFileSync(
+        path.join(base, 'bundle', '_links.yaml'),
+        'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+        'utf8',
+      );
+      spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+        async () => okOperation() as any,
+      );
+      spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+        async () => ({status: 403, message: 'or it may not exist'}) as any,
+      );
+      let createCalls = 0;
+      spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+        async (_p, _l, _g, _id, link) => {
+          createCalls++;
+          if (createCalls === 1) {
+            return {status: 429, message: 'rate limit'} as any;
+          }
+          return {status: 200, result: link} as any;
+        },
+      );
+      spyOn(console, 'log').mockImplementation(() => {});
+
+      const res = await runPush(base, []);
+      expect(res.success).toBe(true);
+      expect(createCalls).toBe(2);
+    } finally {
+      if (priorDelay === undefined) delete process.env.GCP_RETRY_DELAY_MS;
+      else process.env.GCP_RETRY_DELAY_MS = priorDelay;
+    }
   });
 });
