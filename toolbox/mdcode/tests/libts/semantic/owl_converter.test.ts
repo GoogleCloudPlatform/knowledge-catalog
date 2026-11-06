@@ -437,7 +437,7 @@ describe('import leaves out each object property push would reject', () => {
       ex:Staff a owl:Class ; rdfs:subClassOf ex:Person .
       ex:Order a owl:Class .
       ex:referredBy a owl:ObjectProperty ; rdfs:domain ex:Customer ; rdfs:range ex:Person .
-      ex:replaces a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Order .
+      ex:replaces a owl:ObjectProperty ; rdfs:domain ex:Order , ex:Staff ; rdfs:range ex:Order .
       ex:takenBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Staff .
       ex:takes a owl:ObjectProperty ; rdfs:domain ex:Staff ; rdfs:range ex:Order .`;
     const {warnings, stats, yaml} = convertOwlToOsi(ttl, 'x');
