@@ -59,7 +59,9 @@ Push runs in two phases:
 2. **Publish and deploy phase:** Publishes the model file (as written) and any
    sibling `<model>.profile.<name>.yaml` files to Knowledge Catalog, then
    deploys each selected deployment in order with the profile it names. An
-   AlloyDB deployment deploys no graph.
+   AlloyDB deployment deploys no graph. Last, when catalog.yaml's `displayName`
+   or `description` differs from the context set's, it updates the context set
+   (under `--validate-only` it reports the change instead).
 
 ### pull
 
@@ -68,7 +70,9 @@ kcmd pull
 ```
 
 Rebuilds the model file and profile files from the Knowledge Catalog entries,
-so comments, key order and formatting are not kept. When the model entry's
+so comments, key order and formatting are not kept. It also sets `displayName`
+and `description` in catalog.yaml from the context set, leaving the rest of
+that file as written. When the model entry's
 `kcmd-push-state` label says the last push stopped partway, it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
@@ -994,6 +998,10 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
   entity / metric entries, deletes orphaned ones, and reads the model entry again
   before it labels the push finished
+* `dataplex.entryGroups.get` — when catalog.yaml holds `displayName` or
+  `description`, to compare them with the context set's; and
+  `dataplex.entryGroups.update` with `dataplex.operations.get` when a value
+  differs, to update the context set
 * `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
   `schema-join` links, when the model has relationships
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
@@ -1026,6 +1034,7 @@ and each aspect type attached, so a push needs, on the destination entry group:
 needs more than push does, in the destination project:
 
 * `dataplex.entryGroups.create` — the destination entry group
+* `dataplex.operations.get` — to wait for its creates and updates to finish
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
   `dataplex.entryTypes.create` — the custom `semantic-action` and
   `semantic-constraint` pairs. Init patches an aspect
@@ -1045,4 +1054,6 @@ failure to create a type stops init, rather than leaving a later push to hit an
 opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
-entries and fetch each `semantic-*` entry with its aspects.
+entries and fetch each `semantic-*` entry with its aspects — and
+`dataplex.entryGroups.get`, to read the context set's display name and
+description.

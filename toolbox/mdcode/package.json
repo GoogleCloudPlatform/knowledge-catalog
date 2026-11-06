@@ -29,7 +29,7 @@
     "build:tool": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--compile','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--outfile','dist/kcmd','src/tool/main.ts'],{stdio:'inherit'})\"",
     "build": "npm run build:libts && npm run build:cli && npm run build:tool",
     "compile": "npx tsc --noEmit",
-    "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/ ./tests/libts/okf/",
+    "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/ ./tests/libts/okf/ ./tests/libts/context_set.test.ts",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
     "test:tool": "npx bun test ./tests/tool/",
     "test:gcp": "npx bun test ./tests/libts/gcp/",

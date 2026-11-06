@@ -157,6 +157,20 @@ kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
 # `kcmd push` creates it as a context set.
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format okf
 
+# For a scope backed by an entry group (entryGroup, kb, semantic-model), in any
+# layout, the context set's display name and description live in catalog.yaml
+# as `displayName:` and `description:`:
+# - Pull sets both from the entry group, keeping every other key and comment; a
+#   value the entry group does not set removes its key.
+# - Push writes only the keys whose values differ from the entry group, after
+#   the entries and any graph deploys, so the last write wins. An absent key,
+#   or one with no value, is not managed; `description: ""` clears the
+#   description, and an empty value stays in the file after a pull.
+# - Write a multi-line description with `>-`: `|` keeps a trailing newline,
+#   which push would send to Knowledge Catalog.
+# - The description holds at most 1,024 characters and the display name 256;
+#   push fails before any write when a value is longer.
+
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
 # pushed to the catalog.
