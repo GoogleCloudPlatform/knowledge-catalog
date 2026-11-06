@@ -29,8 +29,9 @@ const manifestSchema = z.object({
   // The workspace layout, when it is not the scope's own (see above).
   layout: z.string().optional(),
   // The context set's display name and description (see context_set.ts).
-  displayName: z.string().optional(),
-  description: z.string().optional(),
+  // A key with no value (`description:`) is not managed, as an absent one.
+  displayName: z.string().nullish(),
+  description: z.string().nullish(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -41,7 +42,7 @@ const manifestSchema = z.object({
   }).optional(),
 }).superRefine((manifest, ctx) => {
   const error = metadataScopeError(
-      manifest.scope, METADATA_KEYS.filter(k => manifest[k] !== undefined));
+      manifest.scope, METADATA_KEYS.filter(k => manifest[k] != null));
   if (error) ctx.addIssue({code: 'custom', message: error});
 });
 

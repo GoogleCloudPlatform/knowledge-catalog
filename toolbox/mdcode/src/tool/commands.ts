@@ -480,16 +480,19 @@ function catalogAspects(
 }
 
 // An OKF bundle's root concept, from the first of the root candidates that
-// parses: its front matter, and its markdown body, which push writes as the
-// context set's overview (the first candidate that has one, with the bundle's
-// OKF metadata section left out). The context set's display name and
-// description come from catalog.yaml (see context_set.ts), not from here.
+// parses: its markdown body, which push writes as the context set's overview
+// (the first candidate that has one, with the bundle's OKF metadata section
+// left out), and, when that root is an untyped `index.md`, its front matter.
+// The context set's display name and description come from catalog.yaml (see
+// context_set.ts), not from here. A typed root such as `agents.md` (`type:
+// Knowledge Base Root`) is an entry whose `title` and `description` are its
+// own, so its front matter is not returned.
 function okfRoot(
   basePath: string,
   project: string,
   location: string,
   groupId: string,
-): {overview?: string; frontmatter: Record<string, unknown>} {
+): {overview?: string; untypedIndex?: Record<string, unknown>} {
   const bundleRoot = path.join(basePath, 'bundle');
   const candidates = [
     path.join(bundleRoot, `${groupId}_entry.md`),
@@ -499,6 +502,7 @@ function okfRoot(
     path.join(bundleRoot, 'index.md'),
   ];
   let frontmatter: Record<string, unknown>|undefined;
+  let rootFile: string|undefined;
   let overview: string|undefined;
   for (const cand of candidates) {
     if (!fs.existsSync(cand)) continue;
@@ -507,7 +511,10 @@ function okfRoot(
         fs.readFileSync(cand, 'utf8'),
         path.basename(cand, '.md'),
       );
-      frontmatter ??= concept.frontmatter;
+      if (!frontmatter) {
+        frontmatter = concept.frontmatter;
+        rootFile = cand;
+      }
       const body = concept.body
         .replace(/\n*##\s+OKF\s+Metadata\b[\s\S]*$/i, '')
         .trim();
@@ -517,12 +524,14 @@ function okfRoot(
     }
     if (frontmatter && overview) break;
   }
-  return {overview, frontmatter: frontmatter ?? {}};
+  const untyped = rootFile !== undefined &&
+      path.basename(rootFile) === 'index.md' && frontmatter?.['type'] === undefined;
+  return {overview, untypedIndex: untyped ? frontmatter : undefined};
 }
 
-// A warning for each display name or description the bundle root's front
-// matter gives that catalog.yaml does not: before catalog.yaml held them, OKF
-// push took them from there.
+// A warning for each display name or description an untyped `bundle/index.md`
+// gives that catalog.yaml does not: before catalog.yaml held them, OKF push
+// took them from there.
 function okfRootMetadataWarnings(
   frontmatter: Record<string, unknown>,
   contextSet: ContextSetMetadata,
@@ -534,7 +543,7 @@ function okfRootMetadataWarnings(
     if (contextSet[key] === undefined &&
         typeof frontmatter[field] === 'string') {
       warnings.push(
-          `the bundle root's '${field}' no longer sets the context set's ` +
+          `bundle/index.md's '${field}' no longer sets the context set's ` +
           `${label}; add '${key}:' to catalog.yaml, or run kcmd pull.`);
     }
   }
@@ -655,7 +664,7 @@ export async function push(options: PushOptions): Promise<number> {
     );
     const root = okfRoot(snapshot.basePath || '.', project, location, groupId);
     const overviewContent = root.overview;
-    for (const w of okfRootMetadataWarnings(root.frontmatter, contextSet)) {
+    for (const w of okfRootMetadataWarnings(root.untypedIndex ?? {}, contextSet)) {
       console.warn(`Warning: ${w}`);
     }
     const catalog = new dataplex.CatalogClient(ctx);
@@ -741,9 +750,14 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
-    return pushInTwoPhases(
-        options, {ctx, layout, source, docs: layoutDocs, profileDocs},
-        snapshot.manifest.contextSet);
+    return pushInTwoPhases(options, {
+      ctx,
+      layout,
+      source,
+      docs: layoutDocs,
+      profileDocs,
+      contextSet: snapshot.manifest.contextSet,
+    });
   }
 
   // These flags only take effect on a semantic-model push; on a regular
@@ -831,15 +845,16 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
+  // catalog.yaml's display name and description for the context set.
+  contextSet: ContextSetMetadata;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
 // Knowledge Catalog and deploys each selected deployment in order with its
 // own model. Returns a process exit code.
 async function pushInTwoPhases(
-    options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>,
-    contextSet: ContextSetMetadata): Promise<number> {
-  const {ctx, source} = scope;
+    options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
+  const {ctx, source, contextSet} = scope;
   const fail = printErrors;
   const {named, negated} = deploymentFlags(options.deployment);
   if (named && negated) {
@@ -849,8 +864,6 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
-  const contextSetErrors = metadataErrors(contextSet);
-  if (contextSetErrors.length) return fail(...contextSetErrors);
   const contextSetRef = contextSetOf(source)!;
   const {plans, kcModels, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
@@ -904,9 +917,6 @@ async function pushInTwoPhases(
       await kc.applyKnowledgeCatalog(preflight.prepared!, ctx, kcOptions);
   const publishedCode = reportCatalogResult(published, options);
   if (publishedCode !== 0) return publishedCode;
-  const contextSetCode =
-      await pushContextSet(ctx, contextSetRef, contextSet, options);
-  if (contextSetCode !== 0) return contextSetCode;
   for (const {deployment, model} of plans) {
     header(deployment);
     if (deployment.engine === 'alloydb') {
@@ -922,7 +932,9 @@ async function pushInTwoPhases(
         await pushSpanner([model], ctx, options, printed);
     if (code !== 0) return code;
   }
-  return 0;
+  // Last, so a refused update (a role that can write entries but not update
+  // the entry group, or a write quota) leaves every graph deployed.
+  return await pushContextSet(ctx, contextSetRef, contextSet, options);
 }
 
 // The local checks of a two-phase push, which call no service: it stops at
@@ -1011,6 +1023,10 @@ async function checkBeforeWrites(
       {docs, loaded, models, profileDocs, declaredBy, load}, warn,
       noDeployment ? [] : selected);
   if ('errors' in checked) return checked;
+  // A display name or description Knowledge Catalog refuses would fail the
+  // push after the entries are written, so it stops the push here.
+  const contextSetErrors = metadataErrors(scope.contextSet);
+  if (contextSetErrors.length) return fail(...contextSetErrors);
   // What pruning leaves out of each deployment's model.
   const leftOut = checked.plans.flatMap(pruningLines);
   return {plans: checked.plans, kcModels: models, leftOut, overviews};
@@ -1262,7 +1278,16 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // The errors of a plain push's local checks, each reported under the model
   // and profile it belongs to.
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+      {}, {
+        ctx,
+        layout,
+        source,
+        docs,
+        profileDocs,
+        load,
+        contextSet: snapshot.manifest.contextSet,
+      },
+      true);
   const pushErrors = 'errors' in checked ? checked.errors : [];
   // With KC_V2_ASPECTS on, push prints the emitter's warnings and checks
   // every aspect's size once the local checks pass, before any write.
