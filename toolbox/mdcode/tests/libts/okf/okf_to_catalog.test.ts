@@ -633,3 +633,204 @@ describe('CatalogSync OKF push', () => {
     }
   });
 });
+
+describe('CatalogSync OKF push change detection and link preflight', () => {
+  async function capturePushedEntries(base: string): Promise<Entry[]> {
+    let sent: MetadataChange[] = [];
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      },
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
+    expect((await runPush(base)).success).toBe(true);
+    mock.restore();
+    spyOn(globalThis, 'fetch').mockImplementation((async () => {
+      throw new Error('a test made a network call');
+    }) as any);
+    return sent.map((c) => {
+      const req = c.createEntryRequest!;
+      return {...req.entry, name: `${GROUP}/entries/${req.entryId}`};
+    });
+  }
+
+  test('skips existing entries whose entrySource and aspects already match and reports them as unchanged', async () => {
+    const base = bundle();
+    const remote = await capturePushedEntries(base);
+    expect(remote.map((e) => e.name)).toEqual([
+      `${GROUP}/entries/assets`,
+      `${GROUP}/entries/assets/t`,
+    ]);
+    // Server-only fields on the remote copy must not count as a change.
+    const byName = new Map(
+      remote.map((e) => [
+        e.name,
+        {
+          ...e,
+          entrySource: {...e.entrySource, updateTime: '2026-11-06T00:00:00Z'},
+        },
+      ]),
+    );
+    // Edit one concept's description locally.
+    const leaf = path.join(base, 'bundle', 'assets', 't.md');
+    fs.writeFileSync(
+      leaf,
+      fs.readFileSync(leaf, 'utf8').replace('title: assets/t\n', 'title: assets/t\ndescription: edited\n'),
+      'utf8',
+    );
+
+    spyOn(CatalogClient.prototype, 'lookupEntry').mockImplementation(
+      async (_p, _l, name: string) => ({status: 200, result: byName.get(name)}) as any,
+    );
+    let sent: MetadataChange[] = [];
+    const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      },
+    );
+    const lines: string[] = [];
+    spyOn(console, 'log').mockImplementation((m: any) => void lines.push(String(m)));
+
+    const dry = await runPush(base, ['assets', 'assets/t'], {validateOnly: true});
+    expect(dry.success).toBe(true);
+    expect(batch).not.toHaveBeenCalled();
+    expect(lines).toContain(`would write ${GROUP}/entries/assets/t`);
+    expect(lines).not.toContain(`would write ${GROUP}/entries/assets`);
+    expect(lines.at(-1)).toContain('1 change(s): 0 create, 1 update, 0 delete, 1 unchanged');
+
+    const res = await runPush(base, ['assets', 'assets/t']);
+    expect(res.success).toBe(true);
+    expect(sent.map((c) => c.updateEntryRequest?.entry.name)).toEqual([
+      `${GROUP}/entries/assets/t`,
+    ]);
+    expect(sent[0].updateEntryRequest?.entry.entrySource?.description).toBe('edited');
+  });
+
+  test('a remote description the concept no longer has is a change', async () => {
+    const base = bundle();
+    const remote = await capturePushedEntries(base);
+    const byName = new Map(
+      remote.map((e) => [e.name, {...e, entrySource: {...e.entrySource, description: 'old'}}]),
+    );
+    spyOn(CatalogClient.prototype, 'lookupEntry').mockImplementation(
+      async (_p, _l, name: string) => ({status: 200, result: byName.get(name)}) as any,
+    );
+    const lines: string[] = [];
+    spyOn(console, 'log').mockImplementation((m: any) => void lines.push(String(m)));
+
+    await runPush(base, ['assets', 'assets/t'], {validateOnly: true});
+    expect(lines.at(-1)).toContain('2 change(s): 0 create, 2 update, 0 delete');
+  });
+
+  test('skips, with a warning, a _links.yaml link to a concept whose file was deleted, and still deletes the entry', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      [
+        'links:',
+        '  - type: related',
+        '    entries:',
+        '      - assets',
+        '      - assets/t',
+        '  - type: related',
+        '    entries:',
+        '      - assets',
+        '      - documents/removed',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    let sent: MetadataChange[] = [];
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      },
+    );
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+      async () => ({status: 200, result: []}) as any,
+    );
+    const created: EntryLink[] = [];
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async (_p, _l, _g, _id, link: EntryLink) => {
+        created.push(link);
+        return {status: 200, result: link} as any;
+      },
+    );
+    const warnings: string[] = [];
+    spyOn(console, 'warn').mockImplementation((m: any) => void warnings.push(String(m)));
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    const res = await runPush(base, ['documents/removed']);
+
+    expect(res.success).toBe(true);
+    expect(sent.map((c) => c.deleteEntryRequest?.name).filter(Boolean)).toEqual([
+      `${GROUP}/entries/documents/removed`,
+    ]);
+    expect(created).toHaveLength(1);
+    expect(created[0].entryReferences.map((r) => r.name)).toEqual([
+      `${GROUP}/entries/assets`,
+      `${GROUP}/entries/assets/t`,
+    ]);
+    expect(warnings.join('\n')).toContain('documents/removed is not a concept in bundle/');
+  });
+
+  test('refuses a link to an entry in another region before writing anything, including on --dry-run', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      [
+        'links:',
+        '  - type: reference',
+        '    source: assets/t',
+        '    target: projects/ext/locations/us-central1/entryGroups/@bigquery/entries/bq.p.d.t',
+        '  - type: reference',
+        '    source: assets',
+        '    target: projects/ext/locations/global/entryGroups/g/entries/ok',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata');
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    for (const validateOnly of [true, false]) {
+      const res = await runPush(base, [], {validateOnly});
+      expect(res.success).toBe(false);
+      expect(res.details).toContain("is in region 'us-central1'");
+      expect(res.details).toContain("'us' or 'global'");
+      expect(res.details).not.toContain('locations/global/entryGroups/g');
+    }
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  test('counts entry link failures separately from entry changes', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+      async () => ({status: 200, result: []}) as any,
+    );
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async () => ({status: 400, message: 'bad link'}) as any,
+    );
+    const lines: string[] = [];
+    const errors: string[] = [];
+    spyOn(console, 'log').mockImplementation((m: any) => void lines.push(String(m)));
+    spyOn(console, 'error').mockImplementation((m: any) => void errors.push(String(m)));
+
+    const res = await runPush(base);
+
+    expect(res.success).toBe(false);
+    expect(lines.at(-1)).toContain('Pushed 2/2 change(s)');
+    expect(errors.join('\n')).toContain('1 entry link change(s) failed.');
+  });
+});

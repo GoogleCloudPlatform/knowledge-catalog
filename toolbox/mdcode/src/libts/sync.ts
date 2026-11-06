@@ -163,6 +163,58 @@ function toChange(
   };
 }
 
+function canonicalJson(value: unknown): string {
+  const sort = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(sort);
+    if (v && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const key of Object.keys(v as object).sort()) {
+        const inner = (v as Record<string, unknown>)[key];
+        if (inner !== undefined) out[key] = sort(inner);
+      }
+      return out;
+    }
+    return v;
+  };
+  return JSON.stringify(sort(value ?? null));
+}
+
+// entrySource fields an OKF concept owns; a remote value with no local
+// counterpart still differs, since the update rewrites `entry_source` whole.
+const OKF_SOURCE_FIELDS = ['displayName', 'description', 'resource'];
+const SERVER_SOURCE_FIELDS = new Set(['createTime', 'updateTime']);
+
+/**
+ * True when an OKF update of `local` over `remote` would change nothing the
+ * update writes: the concept's entrySource fields and the data of each aspect
+ * it carries. Remote-only aspects are ignored (the update never deletes them),
+ * as is `parentEntry` (not in the update mask).
+ */
+export function okfEntryUnchanged(local: gcp.Entry, remote: gcp.Entry): boolean {
+  const localSource = (local.entrySource ?? {}) as Record<string, unknown>;
+  const remoteSource = (remote.entrySource ?? {}) as Record<string, unknown>;
+  const keys = new Set([...Object.keys(localSource), ...OKF_SOURCE_FIELDS]);
+  for (const key of keys) {
+    if (SERVER_SOURCE_FIELDS.has(key)) continue;
+    if (canonicalJson(localSource[key]) !== canonicalJson(remoteSource[key])) {
+      return false;
+    }
+  }
+  for (const [key, aspect] of Object.entries(local.aspects ?? {})) {
+    const prior = remote.aspects?.[key];
+    if (!prior) return false;
+    if (canonicalJson(aspect?.data ?? {}) !== canonicalJson(prior.data ?? {})) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The location segment of a `projects/<p>/locations/<loc>/...` name. */
+function locationOf(name: string): string | undefined {
+  return name.match(/^projects\/[^/]+\/locations\/([^/]+)\//)?.[1];
+}
+
 export function isUnimplementedBatch(res: { status: number; body?: string }): boolean {
   if (res.status === 501) return true;
   if (res.status !== 404 || !res.body) return false;
@@ -829,7 +881,7 @@ export class CatalogSync {
       if (entry.entryType.endsWith('/entrygroup')) continue;
       entries.push(entry);
     }
-    const { hasLinksConfig, links } = layout.readLinks();
+    const { hasLinksConfig, links: declaredLinks } = layout.readLinks();
 
     const existing = new Map<string, gcp.Entry>();
     const remoteEntries: gcp.Entry[] = [];
@@ -858,14 +910,78 @@ export class CatalogSync {
         return slashDiff !== 0 ? slashDiff : entryId(a).localeCompare(entryId(b));
       });
 
-    if (!entries.length && !toDelete.length && !links.length) {
+    if (!entries.length && !toDelete.length && !declaredLinks.length) {
       return {
         success: false,
         details: `no OKF concepts found in ${BUNDLE_DIR}/`,
       };
     }
 
-    const upsertChanges = entries.map(entry => toChange(entry, entryGroup, existing));
+    // An EntryLink can only reference an entry in its own region or `global`;
+    // refuse up front rather than fail after the entries were written.
+    const crossRegion: string[] = [];
+    for (const link of declaredLinks) {
+      for (const ref of link.entryReferences ?? []) {
+        const refLocation = locationOf(ref.name);
+        if (refLocation && refLocation !== location && refLocation !== 'global') {
+          crossRegion.push(
+            `${entryLinkId(link)}: '${ref.name}' is in region '${refLocation}', ` +
+              `but entry links in ${groupId} must reference entries in ` +
+              `'${location}' or 'global'`,
+          );
+        }
+      }
+    }
+    if (crossRegion.length) {
+      return {
+        success: false,
+        details:
+          `${BUNDLE_DIR}/${LINKS_FILE} links entries outside the entry group's region:\n  ` +
+          crossRegion.join('\n  '),
+      };
+    }
+
+    // A link to an in-group entry that is neither a local concept nor a
+    // surviving remote entry (e.g. its concept file was just deleted) cannot be
+    // created; drop it with a warning instead of failing the push.
+    const deletedNames = new Set(toDelete.map(e => e.name));
+    const knownInGroup = new Set([
+      ...localNames,
+      ...[...existing.keys()].filter(name => !deletedNames.has(name)),
+    ]);
+    const inGroupPrefix = `${entryGroup}/entries/`;
+    const links = declaredLinks.filter(link => {
+      const missing = (link.entryReferences ?? [])
+        .map(ref => ref.name)
+        .filter(name => name.startsWith(inGroupPrefix) && !knownInGroup.has(name));
+      if (!missing.length) return true;
+      console.warn(
+        `Warning: skipping ${BUNDLE_DIR}/${LINKS_FILE} link ${entryLinkId(link)}: ` +
+          `${missing.map(entryIdFromName).join(', ')} is not a concept in ${BUNDLE_DIR}/.`,
+      );
+      return false;
+    });
+
+    // Skip updates that would rewrite an entry with what it already holds, so
+    // the plan reports only real changes and unchanged entries keep their
+    // updateTime. A remote read that fails falls back to updating.
+    const toUpdate = entries.filter(entry => existing.has(entry.name));
+    const unchanged = new Set<string>();
+    await mapConcurrent(toUpdate, READ_CONCURRENCY, async (entry) => {
+      try {
+        const res = await this._catalog.lookupEntry(project, location, entry.name, {
+          view: 'ALL',
+        });
+        if (res.status === 200 && res.result && okfEntryUnchanged(entry, res.result)) {
+          unchanged.add(entry.name);
+        }
+      } catch {
+        // Treat as changed.
+      }
+    });
+    const toWrite = entries.filter(entry => !unchanged.has(entry.name));
+
+    const upsertChanges = toWrite.map(entry => toChange(entry, entryGroup, existing));
     const deleteChanges: gcp.MetadataChange[] = toDelete.map(e => ({
       deleteEntryRequest: { name: e.name },
     }));
@@ -873,14 +989,15 @@ export class CatalogSync {
     const creates = upsertChanges.filter(c => c.createEntryRequest).length;
     const updates = upsertChanges.length - creates;
     const deletes = deleteChanges.length;
+    const unchangedNote = unchanged.size ? `, ${unchanged.size} unchanged` : '';
 
     if (options.validateOnly) {
-      for (const entry of entries) console.log(`would write ${entry.name}`);
+      for (const entry of toWrite) console.log(`would write ${entry.name}`);
       for (const entry of toDelete) console.log(`would delete ${entry.name}`);
       for (const link of links) console.log(`would link ${link.name}`);
       console.log(
         `${changes.length} change(s): ${creates} create, ${updates} update, ` +
-          `${deletes} delete. Nothing sent (dry run).`,
+          `${deletes} delete${unchangedNote}. Nothing sent (dry run).`,
       );
       return { success: true };
     }
@@ -894,12 +1011,12 @@ export class CatalogSync {
       );
     }
 
+    let linkFailed = 0;
     if (hasLinksConfig) {
-      const deletedNames = new Set(toDelete.map(e => e.name));
       const survivingExisting = new Map(
         [...existing.entries()].filter(([k]) => !deletedNames.has(k)),
       );
-      failed += await reconcileLinks(
+      linkFailed = await reconcileLinks(
         this._catalog,
         { project, location, groupId },
         links,
@@ -910,9 +1027,12 @@ export class CatalogSync {
 
     console.log(
       `Pushed ${changes.length - Math.min(failed, changes.length)}/${changes.length} change(s) to ` +
-        `${groupId} (${creates} create, ${updates} update, ${deletes} delete).`,
+        `${groupId} (${creates} create, ${updates} update, ${deletes} delete${unchangedNote}).`,
     );
-    return failed ? { success: false } : { success: true };
+    if (linkFailed) {
+      console.error(`${linkFailed} entry link change(s) failed.`);
+    }
+    return failed || linkFailed ? { success: false } : { success: true };
   }
 
   async validate(): Promise<ValidationResult> {

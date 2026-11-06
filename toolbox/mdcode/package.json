@@ -1,6 +1,6 @@
 {
   "name": "@google-cloud/kcmd",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Google Knowledge Catalog Metadata as Code Library, CLI and MCP Server",
   "repository": {
     "type": "git",
