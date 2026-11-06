@@ -145,7 +145,7 @@ describe('CatalogSync OKF push --validate-only', () => {
     fs.mkdirSync(path.join(root, 'computations'), {recursive: true});
     fs.writeFileSync(
       path.join(root, 'index.md'),
-      '---\nokf_version: "0.3"\ntitle: Finance\nlicense: CC-BY-4.0\n---\n# Finance\n',
+      '---\nokf_version: "0.2"\ntitle: Finance\nlicense: CC-BY-4.0\n---\n# Finance\n',
       'utf8',
     );
     fs.writeFileSync(

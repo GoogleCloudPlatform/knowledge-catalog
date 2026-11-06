@@ -98,7 +98,7 @@ export async function initOkfWorkspace(
   if (!fs.existsSync(indexPath) && !fs.existsSync(agentsPath) && !hasConceptFiles) {
     fs.writeFileSync(
       indexPath,
-      `---\nokf_version: "0.3"\n---\n# ${groupId}\n`,
+      `---\nokf_version: "0.2"\n---\n# ${groupId}\n`,
       'utf8',
     );
   }
