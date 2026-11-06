@@ -1059,7 +1059,7 @@ describe('the owl import handler writes only a model that loads', () => {
 
 
 describe('the owl import handler writes into the workspace without --out', () => {
-  test('a semantic-model workspace gets the model in its entry group folder', async () => {
+  test('a semantic-model workspace gets the model in its entry group folder, which holds one model', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-workspace-'));
     const cwd = process.cwd();
     fs.writeFileSync(
@@ -1074,6 +1074,20 @@ describe('the owl import handler writes into the workspace without --out', () =>
       const written = path.join('catalog', 'EntryGroups', 'sales', 'sales.yaml');
       expect(loadModels(fs.readFileSync(written, 'utf8'), {bindingOptional: true})
                  .models[0].name).toBe('sales');
+      // Importing the same ontology again replaces its own file. Another
+      // model is refused, and written only where --out names.
+      expect(await owl('import', 'sales.owl.ttl', {})).toBe(0);
+      fs.copyFileSync('sales.owl.ttl', 'shop.owl.ttl');
+      const errors: string[] = [];
+      spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+        errors.push(a.join(' '));
+      });
+      expect(await owl('import', 'shop.owl.ttl', {})).toBe(1);
+      expect(errors).toEqual([expect.stringContaining(
+          `Error: the entry group already holds another model's file (${written})`)]);
+      expect(fs.readdirSync(path.dirname(written))).toEqual(['sales.yaml']);
+      expect(await owl('import', 'shop.owl.ttl', {out: 'shop.yaml'})).toBe(0);
+      expect(fs.existsSync('shop.yaml')).toBe(true);
     } finally {
       process.chdir(cwd);
       mock.restore();

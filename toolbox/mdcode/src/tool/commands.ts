@@ -1912,6 +1912,8 @@ export async function owl(
   } else {
     const layout = await workspaceLayout();
     if (typeof layout === 'string') return printErrors(layout);
+    const {error} = otherModelFiles(layout, modelName, file);
+    if (error) return printErrors(error);
     layout.writeModelDocument(modelName, result.yaml);
     writtenPath = layout.modelPath(modelName);
   }
@@ -2031,21 +2033,10 @@ export async function importModel(
     const model = result.files[0].fileName.replace(YAML_FILE, '');
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
-    // Re-importing the same model replaces its file. The input itself may be
-    // in the entry group under another name.
-    const docs = layout.modelDocuments()
-                     .map(d => layout.modelPath(d.name))
-                     .filter(p => p !== layout.modelPath(model));
-    const others = docs.filter(p => path.resolve(p) !== path.resolve(file));
-    const refusals: string[] = [];
-    if (others.length) {
-      refusals.push(
-          `the entry group already holds another model's file (${
-              others.join(', ')}), and an entry group holds one model; ` +
-          `remove it if this model replaces it, pass --out <path> to write ` +
-          `elsewhere, or import into another entry group's scope.`);
-    }
-    if (others.length < docs.length) {
+    // The input itself may be in the entry group under another name.
+    const {files: docs, error} = otherModelFiles(layout, model, file);
+    const refusals = error ? [error] : [];
+    if (docs.some(p => path.resolve(p) === path.resolve(file))) {
       refusals.push(
           `the input file ${file} sits in the entry group, so the import ` +
           `would leave this model in two files there, ${file} and ${
@@ -2118,6 +2109,28 @@ async function workspaceLayout(): Promise<SemanticModelLayout|string> {
         `first, or pass --out <path> to write the file directly.`;
   }
   return snapshot.layout as SemanticModelLayout;
+}
+
+// The files of the models in `layout`'s entry group other than `model`, and
+// the error that refuses to write `model` beside them, since an entry group
+// holds one model. Importing a model again replaces its own file. The error
+// does not name the input file `input`, which kcmd import refuses on its own
+// when it sits in the entry group.
+function otherModelFiles(
+    layout: SemanticModelLayout, model: string,
+    input: string): {files: string[]; error?: string} {
+  const files = layout.modelDocuments()
+                    .map(d => layout.modelPath(d.name))
+                    .filter(p => p !== layout.modelPath(model));
+  const others = files.filter(p => path.resolve(p) !== path.resolve(input));
+  if (!others.length) return {files};
+  return {
+    files,
+    error: `the entry group already holds another model's file (${
+               others.join(', ')}), and an entry group holds one model; ` +
+        `remove it if this model replaces it, pass --out <path> to write ` +
+        `elsewhere, or import into another entry group's scope.`,
+  };
 }
 
 

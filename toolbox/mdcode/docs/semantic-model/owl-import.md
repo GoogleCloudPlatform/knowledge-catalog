@@ -135,7 +135,9 @@ wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
 document is written into the semantic-model layout dir so the next `kcmd push`
-picks it up; pass `--out <path>` to write it elsewhere. The output uses the
+picks it up; pass `--out <path>` to write it elsewhere. An entry group holds
+one model, so without `--out` the import is refused when the entry group folder
+already holds another model's file. The output uses the
 block layout shown below; pass `--compact` for the compact flow layout
 (`primary_key: [id]`, inline `{ name, datatype }` field and relationship maps)
 instead. Either way it is a purely **logical** model — `kcmd push` publishes it
