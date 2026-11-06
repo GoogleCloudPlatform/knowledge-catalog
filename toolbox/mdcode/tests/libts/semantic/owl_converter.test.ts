@@ -45,6 +45,18 @@ function loadOwl(ttl: string) {
   return load(convertOwlToOsi(ttl, 'x').yaml).models[0];
 }
 
+// Expects the model document `text` to load and pass push's local checks.
+async function expectPushAccepts(text: string) {
+  const docs = [{name: 'model', text}];
+  const loaded = loadSemanticModels(docs, {bindingOptional: true});
+  expect(loaded.error).toBeUndefined();
+  const scope = {
+    docs, loaded, models: loaded.models, profileDocs: () => [],
+    declaredBy: () => [], load: {},
+  };
+  expect(await localChecks(scope, () => {})).toEqual({plans: []});
+}
+
 const PREFIXES = `
   @prefix owl:  <http://www.w3.org/2002/07/owl#> .
   @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -389,6 +401,23 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
             load(yaml).models[0].entities.find(e => e.name === 'Person')!;
         expect(person.extends).toBeUndefined();
       });
+
+  // Superclasses compare by full IRI, so neither input makes Person extend
+  // itself and Person keeps its relationship.
+  test.each([
+    ['foaf:Person', [expect.stringContaining('(http://xmlns.com/foaf/0.1/Person)')]],
+    ['ex:Person', []],
+  ])('Person rdfs:subClassOf %s imports to a model push accepts', async (parent, expected) => {
+    const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class ; rdfs:subClassOf ${parent} .
+      ex:Org a owl:Class .
+      ex:worksFor a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Org .`, 'x');
+    expect(warnings).toEqual(expected);
+    expect(load(yaml).models[0].relationships.map(r => r.name)).toEqual([
+      'worksFor'
+    ]);
+    await expectPushAccepts(yaml);
+  });
 });
 
 
@@ -434,15 +463,7 @@ describe('import leaves out each object property push would reject', () => {
 
   const files = fs.readdirSync(FIXTURES).filter(f => f.endsWith('.owl.ttl'));
   test.each(files)('%s imports to a model push accepts', async file => {
-    const text = convertOwlToOsi(readFixture(file), 'model').yaml;
-    const docs = [{name: 'model', text}];
-    const loaded = loadSemanticModels(docs, {bindingOptional: true});
-    expect(loaded.error).toBeUndefined();
-    const scope = {
-      docs, loaded, models: loaded.models, profileDocs: () => [],
-      declaredBy: () => [], load: {},
-    };
-    expect(await localChecks(scope, () => {})).toEqual({plans: []});
+    await expectPushAccepts(convertOwlToOsi(readFixture(file), 'model').yaml);
   });
 });
 

@@ -71,9 +71,11 @@ export interface OwlClass extends OwlCommonAnnotations {
   // Local names of the properties named by owl:hasKey -> the entity's
   // primary_key (grain). Empty when the class declares no key.
   keys: string[];
-  // Local names of `rdfs:subClassOf` superclasses, in document order -> the
-  // entity's `extends` (entity-level inheritance). Named superclasses only;
-  // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
+  // `rdfs:subClassOf` superclasses, in document order -> the entity's
+  // `extends` (entity-level inheritance). A superclass this ontology declares
+  // is kept by local name, and one it does not declare as its full IRI. Named
+  // superclasses only; blank-node axioms (owl:Restriction, ...) and the class
+  // itself are not recorded. Empty when none.
   subClassOf: string[];
   // Referent IRIs of `owl:equivalentClass` classes, in document order. No
   // native OSI home (a class is one entity; equivalence is a fact ABOUT it, not

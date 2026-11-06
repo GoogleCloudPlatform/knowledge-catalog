@@ -337,9 +337,11 @@ the `Person` and `Customer` entities come out as (`Customer` carrying
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
 order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
-similar) is not a named class, so it is ignored, as are the implicit universal
-superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
-carry no inheritance information).
+similar) is not a named class, so it is ignored, as are the class itself and the
+implicit universal superclasses `owl:Thing` / `rdfs:Resource` (every class
+subclasses them, so they carry no inheritance information). A superclass the
+ontology does not declare as a class, such as `foaf:Person` above a local
+`Person`, is dropped with a warning that names its full IRI.
 
 Two boundaries to be clear about:
 

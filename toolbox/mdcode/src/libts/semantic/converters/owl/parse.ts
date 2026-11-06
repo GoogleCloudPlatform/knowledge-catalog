@@ -186,7 +186,7 @@ interface Annotations {
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
   oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
   chainListHeads: string[];        // owl:propertyChainAxiom list heads
-  subClassOf: string[];            // local names (feed native `extends`)
+  subClassOf: string[];            // full IRIs (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
   inverseOf: string[];             // full IRIs (named object properties only)
@@ -468,7 +468,7 @@ export function parseOwl(turtle: string): OwlModel {
         // information.
         if (q.object.termType === 'NamedNode' &&
             !TOP_CLASS_IRIS.has(q.object.value))
-          a.subClassOf.push(localName(q.object.value));
+          a.subClassOf.push(q.object.value);
         break;
       case RDFS_SUBPROPERTY_OF:
         // Property hierarchy -> no native OSI home; carried verbatim by the
@@ -568,7 +568,10 @@ export function parseOwl(turtle: string): OwlModel {
           synonyms: a.synonyms,
           examples: a.examples,
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
-          subClassOf: a.subClassOf,
+          // The class itself is dropped, as owl:Thing is. A superclass this
+          // ontology does not declare keeps its full IRI.
+          subClassOf: a.subClassOf.filter(s => s !== iri)
+                          .map(s => kind.get(s) === 'class' ? localName(s) : s),
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
           // Full member IRIs of the enumeration set (a carried cross-reference;
