@@ -12,10 +12,12 @@ import {readContextSetMetadata} from '../../src/libts/context_set';
 import {ApiContext} from '../../src/libts/gcp/context';
 import * as crm from '../../src/libts/gcp/crm';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import * as bqLeg from '../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
 import * as commands from '../../src/tool/commands';
 
+import {passGraphChecks} from '../libts/mocks';
 import {CTX, kcResult, PREPARED, writeScope} from './two_phase/harness';
 
 const SEMANTIC_SCOPE = 'scope: semantic-model.test-project.us.commerce_eg\n';
@@ -82,9 +84,10 @@ afterEach(() => {
   mock.restore();
 });
 
-// A semantic-model workspace whose catalog.yaml also holds `keys`.
-function semanticWorkspace(keys = ''): void {
-  writeScope(dir, {});
+// A semantic-model workspace whose catalog.yaml also holds `keys`, with the
+// deployments `deployments` names (BigQuery graphs).
+function semanticWorkspace(keys = '', deployments: string[] = []): void {
+  writeScope(dir, {deployments});
   fs.writeFileSync('catalog.yaml', SEMANTIC_SCOPE + keys);
 }
 
@@ -121,6 +124,27 @@ describe('semantic-model push', () => {
     expect(events).toEqual([]);
     expect(errors).toEqual([expect.stringContaining('1025 characters long')]);
   });
+
+  test('updates the context set after every graph deploys', async () => {
+    semanticWorkspace('description: Edited locally.\n', ['g']);
+    passGraphChecks();
+    const real = bqLeg.deployBigQuery;
+    spyOn(bqLeg, 'deployBigQuery').mockImplementation(async (m, c, o) => {
+      if (o?.validateOnly) return real(m, c, o);
+      events.push('deploy');
+      return {success: true, ddl: [], warnings: [], deployed: 1} as any;
+    });
+    expect(await commands.push({skipSourceCheck: true})).toBe(0);
+    expect(events).toEqual(
+        ['preflight', 'apply', 'deploy', 'getEntryGroup', 'updateEntryGroup']);
+  });
+
+  test('kcmd profiles reports an over-long description as push would',
+       async () => {
+         semanticWorkspace(`description: ${'d'.repeat(1025)}\n`);
+         expect(await commands.profiles()).toBe(1);
+         expect(errors.join('\n')).toContain('1025 characters long');
+       });
 
   test('a refused update fails the push', async () => {
     semanticWorkspace('description: Edited locally.\n');
@@ -185,9 +209,13 @@ describe('entry-group workspace', () => {
 
   test('pull sets the keys after the entries', async () => {
     fs.writeFileSync('catalog.yaml', ENTRY_GROUP_SCOPE);
-    spyOn(kcmd.CatalogSync.prototype, 'pull')
-        .mockImplementation(async () => ({success: true} as any));
+    spyOn(kcmd.CatalogSync.prototype, 'pull').mockImplementation(async () => {
+      events.push('sync.pull');
+      return {success: true} as any;
+    });
     expect(await commands.pull()).toBe(0);
+    // The first read is the manifest load's own look-up of the group.
+    expect(events.slice(-2)).toEqual(['sync.pull', 'getEntryGroup']);
     expect(readContextSetMetadata('catalog.yaml'))
         .toEqual({displayName: 'Commerce', description: 'In KC.'});
   });
@@ -257,6 +285,7 @@ describe('OKF workspace', () => {
          expect(await commands.push({})).toBe(0);
          expect<unknown>(create.mock.calls[0][3]).toEqual({
            type: 'context-set',
+           labels: {type: 'context-set'},
            displayName: 'Shop',
            description: 'From catalog.yaml.',
          });
@@ -282,22 +311,20 @@ describe('OKF workspace', () => {
     expect(await commands.push({})).toBe(1);
     expect(errors).toEqual([
       'Error: creating context set \'test-project.us.commerce_eg\': ' +
-          'createEntryGroup: Permission denied. Creating a context set ' +
-          'needs roles/dataplex.catalogAdmin or ' +
-          'roles/dataplex.entryGroupOwner on the project.',
+          'Permission denied',
     ]);
     expect(events).not.toContain('sync.push');
   });
 
-  test('warns when the bundle root names what catalog.yaml does not', async () => {
+  test('warns when an untyped index.md names what catalog.yaml does not', async () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     fs.writeFileSync('catalog.yaml', OKF_SCOPE);
     expect(await commands.push({})).toBe(0);
     expect(warn.mock.calls.map(c => String(c[0]))).toEqual([
-      'Warning: the bundle root\'s \'title\' no longer sets the context ' +
+      'Warning: bundle/index.md\'s \'title\' no longer sets the context ' +
           'set\'s display name; add \'displayName:\' to catalog.yaml, or run ' +
           'kcmd pull.',
-      'Warning: the bundle root\'s \'description\' no longer sets the ' +
+      'Warning: bundle/index.md\'s \'description\' no longer sets the ' +
           'context set\'s description; add \'description:\' to catalog.yaml, ' +
           'or run kcmd pull.',
     ]);
@@ -305,6 +332,17 @@ describe('OKF workspace', () => {
     warn.mockClear();
     fs.writeFileSync(
         'catalog.yaml', OKF_SCOPE + 'displayName: Shop\ndescription: d\n');
+    expect(await commands.push({})).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('a typed agents.md root gives no warning', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    fs.writeFileSync(
+        path.join('bundle', 'agents.md'),
+        '---\ntype: Knowledge Base Root\ntitle: Agents\n' +
+            'description: The root entry.\n---\n# Agents\n\nThe overview.\n');
+    fs.writeFileSync('catalog.yaml', OKF_SCOPE);
     expect(await commands.push({})).toBe(0);
     expect(warn).not.toHaveBeenCalled();
   });
@@ -337,9 +375,12 @@ describe('OKF workspace', () => {
 
   test('pull sets the keys after the bundle', async () => {
     fs.writeFileSync('catalog.yaml', OKF_SCOPE);
-    spyOn(kcmd.CatalogSync.prototype, 'pull')
-        .mockImplementation(async () => ({success: true} as any));
+    spyOn(kcmd.CatalogSync.prototype, 'pull').mockImplementation(async () => {
+      events.push('sync.pull');
+      return {success: true} as any;
+    });
     expect(await commands.pull()).toBe(0);
+    expect(events.slice(-2)).toEqual(['sync.pull', 'getEntryGroup']);
     expect(readContextSetMetadata('catalog.yaml'))
         .toEqual({displayName: 'Commerce', description: 'In KC.'});
     expect(fs.readFileSync('catalog.yaml', 'utf8')).toContain('layout: okf');
