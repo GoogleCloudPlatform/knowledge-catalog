@@ -339,9 +339,10 @@ Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
 order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
 similar) is not a named class, so it is ignored, as are the class itself and the
 implicit universal superclasses `owl:Thing` / `rdfs:Resource` (every class
-subclasses them, so they carry no inheritance information). A superclass the
-ontology does not declare as a class, such as `foaf:Person` above a local
-`Person`, is dropped with a warning that names its full IRI.
+subclasses them, so they carry no inheritance information). A superclass import
+does not write as an entity is dropped with a warning that names its full IRI.
+That covers `foaf:Person` above a local `Person`, whether or not the ontology
+declares `foaf:Person` as a class.
 
 Two boundaries to be clear about:
 

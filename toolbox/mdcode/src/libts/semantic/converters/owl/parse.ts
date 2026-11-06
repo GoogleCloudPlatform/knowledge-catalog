@@ -556,22 +556,33 @@ export function parseOwl(turtle: string): OwlModel {
   // base if one happened to appear first and silently invert the mapper's
   // in-namespace/cross-namespace shortening (see to_ir.refValue).
   let baseIri = dominantNamespace(order);
+  // The class IRI import writes under each local name: the first, as to_ir
+  // skips a later class with the same local name.
+  const classOfName = new Map<string, string>();
+  for (const iri of order) {
+    const name = localName(iri);
+    if (kind.get(iri) === 'class' && !classOfName.has(name)) {
+      classOfName.set(name, iri);
+    }
+  }
 
   for (const iri of order) {
     const a = annotations.get(iri) ?? emptyAnnotations();
     switch (kind.get(iri)) {
       case 'class':
         classes.push({
+          iri,
           localName: localName(iri),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
           examples: a.examples,
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
-          // The class itself is dropped, as owl:Thing is. A superclass this
-          // ontology does not declare keeps its full IRI.
+          // The class itself is dropped, as owl:Thing is. A superclass import
+          // does not write as an entity keeps its full IRI.
           subClassOf: a.subClassOf.filter(s => s !== iri)
-                          .map(s => kind.get(s) === 'class' ? localName(s) : s),
+                          .map(s => classOfName.get(localName(s)) === s ?
+                                   localName(s) : s),
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
           // Full member IRIs of the enumeration set (a carried cross-reference;

@@ -402,11 +402,18 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         expect(person.extends).toBeUndefined();
       });
 
-  // Superclasses compare by full IRI, so neither input makes Person extend
-  // itself and Person keeps its relationship.
+  // Superclasses compare by full IRI, so no input here makes Person extend
+  // itself, and Person keeps its relationship.
   test.each([
     ['foaf:Person', [expect.stringContaining('(http://xmlns.com/foaf/0.1/Person)')]],
     ['ex:Person', []],
+    ['foaf:Person . foaf:Person a owl:Class', [
+      `class 'Person' extends another class also named 'Person' ` +
+          `(http://xmlns.com/foaf/0.1/Person); import leaves out that ` +
+          `superclass, because a model cannot have two entities with the ` +
+          `same name.`,
+      expect.stringContaining('declared more than once'),
+    ]],
   ])('Person rdfs:subClassOf %s imports to a model push accepts', async (parent, expected) => {
     const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
       ex:Person a owl:Class ; rdfs:subClassOf ${parent} .

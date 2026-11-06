@@ -222,6 +222,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
   const classNames = new Set(owl.classes.map(c => c.localName));
+  const classNameOfIri = new Map(owl.classes.map(c => [c.iri, c.localName]));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
@@ -255,12 +256,24 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // parent (a typo, or a superclass imported from another ontology) cannot be
     // resolved, and the loader hard-fails on an unknown supertype, so it is
     // DROPPED here with a warning rather than emitted into a model that could
-    // not be pushed.
+    // not be pushed. A declared parent that shares its local name with an
+    // earlier class is dropped the same way, with its own warning, since import
+    // writes no entity for it.
     if (c.subClassOf.length) {
       const parents = dedupe(c.subClassOf);
       const known = parents.filter(name => classNames.has(name));
-      const unknown = parents.filter(name => !classNames.has(name));
+      const declared = parents.filter(
+          name => !classNames.has(name) && classNameOfIri.has(name));
+      const unknown = parents.filter(
+          name => !classNames.has(name) && !classNameOfIri.has(name));
       if (known.length) entity.extends = known;
+      for (const iri of declared) {
+        warnings.push(
+            `class '${c.localName}' extends another class also named '${
+                classNameOfIri.get(iri)}' (${iri}); import leaves out that ` +
+            `superclass, because a model cannot have two entities with the ` +
+            `same name.`);
+      }
       if (unknown.length) {
         warnings.push(
             `class '${c.localName}' declares rdfs:subClassOf a non-class ` +

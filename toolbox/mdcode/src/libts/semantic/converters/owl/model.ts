@@ -54,6 +54,8 @@ export interface OwlCommonAnnotations {
 
 /** An `owl:Class` -- becomes an OSI dataset (entity). */
 export interface OwlClass extends OwlCommonAnnotations {
+  // The class's full IRI.
+  iri: string;
   // The term's local name (the part after the namespace `#`/`/`), used as the
   // OSI entity name, e.g. `Customer`.
   localName: string;
@@ -72,8 +74,8 @@ export interface OwlClass extends OwlCommonAnnotations {
   // primary_key (grain). Empty when the class declares no key.
   keys: string[];
   // `rdfs:subClassOf` superclasses, in document order -> the entity's
-  // `extends` (entity-level inheritance). A superclass this ontology declares
-  // is kept by local name, and one it does not declare as its full IRI. Named
+  // `extends` (entity-level inheritance). A superclass import writes as an
+  // entity is kept by local name, and any other as its full IRI. Named
   // superclasses only; blank-node axioms (owl:Restriction, ...) and the class
   // itself are not recorded. Empty when none.
   subClassOf: string[];
