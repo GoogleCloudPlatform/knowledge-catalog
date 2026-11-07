@@ -319,7 +319,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           .toEqual(['sp', 'x']);
       expect(published.deployments!.map(d => d.name))
           .toEqual(['c', 'a', 'b']);
-      expect(opts.v2Aspects).toBe(false);
+      expect(opts.v2Aspects).toBe(true);
     },
     then: [
       // cac gives `true` for a bare --profile and for no --profile alike.
@@ -412,13 +412,12 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ].map(step => ({code: 0, ...step})),
   },
   {
-    name: 'a profile that gives the join columns deploys, and with KC_V2_ASPECTS=1 so do relationships whose link IDs collide',
+    name: 'a profile that gives the join columns deploys, and so do relationships whose first-generation link IDs collide',
     deployments: [{name: 'g', profile: 'prod'}],
     entities: [CUSTOMER, ORDERS],
     ...placedBy('placed_by'),
     events: ['preflight', 'apply', 'deploy g'],
     then: [{
-      v2Aspects: true,
       ...placedBy('placed_by', 'placed__by'),
       events: ['preflight', 'apply', 'deploy g'],
     }],

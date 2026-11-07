@@ -22,10 +22,9 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
+  v2Aspects: true
 };
-// What a second-generation push writes, which pull reads.
-const V2 = {...OPTS, v2Aspects: true};
 
 const MCP_EXECUTOR = {
   mcp: {server: '//agentregistry.googleapis.com/x', tool: 'place_order'},
@@ -240,7 +239,7 @@ describe('guards survive every round trip', () => {
   });
 
   test('Knowledge Catalog publish -> pull', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const pulled = modelsFromCatalogResources(entries).models[0];
     expect(pulled.actions![0].guards).toEqual(['OrderWithinCustomerCredit']);
   });
@@ -260,7 +259,7 @@ describe('guards survive every round trip', () => {
   test('a repeated guard in the aspect is dropped, with a warning', () => {
     // The loader rejects a repeated guard outright, so keeping both would hand
     // back a document the author cannot reload.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const entry = entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
     const data = Object.values(entry.aspects!)[0].data! as any;
     data.guards = ['OrderWithinCustomerCredit', 'OrderWithinCustomerCredit'];
@@ -277,7 +276,7 @@ describe('guards survive every round trip', () => {
   test('a guard whose constraint the pull did not recover is reported', () => {
     // The name is kept on purpose, so the report has to come from the pull:
     // otherwise the author meets the failure on the next push instead.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const withoutConstraints =
         entries.filter(e => !e.entryType?.includes('semantic-constraint'));
     const {models, warnings} = modelsFromCatalogResources(withoutConstraints);

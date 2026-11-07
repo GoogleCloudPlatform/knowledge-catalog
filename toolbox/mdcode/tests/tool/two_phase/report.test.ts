@@ -137,7 +137,7 @@ scenarios('kcmd profiles reports what push rejects', [
       relationships: [{name: 'placed_by', from: 'purchase', to: 'customer',
                        from_columns: ['p_c'], to_columns: ['c_x']}],
     }, 'placed_by', {model: [pushed()], 'no profiles': []}],
-    ['a malformed overview sidecar', {v2Aspects: true, files: {
+    ['a malformed overview sidecar', {files: {
        'commerce.overview.md': '---\ncontentType: markdown\n---\nOrders.\n',
      }}, "not 'markdown'", {'': [pushed()], 'no profiles': []}],
     ['a model file that does not load beside a misnamed profile file', {files: {

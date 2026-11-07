@@ -29,10 +29,11 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
+  v2Aspects: true
 };
-// What a second-generation push writes, which pull reads.
-const V2 = {...OPTS, v2Aspects: true};
+// The first-generation layout, for tests of the first-generation writer.
+const FIRST_GEN = {...OPTS, v2Aspects: false};
 
 const MCP_EXECUTOR = {
   mcp: {server: '//agentregistry.googleapis.com/x', tool: 'place_order'},
@@ -457,14 +458,15 @@ describe('validatePushRequirements checks every affected concept', () => {
 
 
 describe('publishing says when a blast radius outruns the push', () => {
-  // An action is published whole while entities are not: an abstract one has no
-  // table to publish, and a binding profile drops any concept it cannot bind.
+  // An action is published whole while entities are not: the first-generation
+  // types skip an abstract one, and a binding profile drops any concept it
+  // cannot bind.
   // `affects` is left untouched by both, so the catalog can end up recording a
   // change to a concept it holds no entry for. That is the right entry to
   // publish -- the action does change it -- but it is a divergence, and pulling
   // the model back and pushing it unpruned fails hard on the same name. So it
   // is reported where it is created.
-  function published(affects: any[]) {
+  function published(affects: any[], opts = OPTS) {
     const model: SemanticModel = {
       name: 'm',
       entities: [
@@ -475,7 +477,7 @@ describe('publishing says when a blast radius outruns the push', () => {
           fields: [{name: 'id'}],
         },
         // No physical table, so no dataSource or keys -- exactly what
-        // the entity loop skips.
+        // the first-generation entity loop skips.
         {
           name: 'Party',
           abstract: true,
@@ -497,7 +499,7 @@ describe('publishing says when a blast radius outruns the push', () => {
         affects,
       }],
     };
-    return generateCatalogResources(model, OPTS).warnings;
+    return generateCatalogResources(model, opts).warnings;
   }
 
   test('a concept this push publishes draws no warning', () => {
@@ -508,7 +510,7 @@ describe('publishing says when a blast radius outruns the push', () => {
   });
 
   test('an abstract concept is published, with a warning', () => {
-    const w = published([{concept: 'Party', operation: 'modify'}]);
+    const w = published([{concept: 'Party', operation: 'modify'}], FIRST_GEN);
     const about = w.filter(x => x.includes(`affects 'Party'`));
     expect(about).toHaveLength(1);
     expect(about[0]).toContain('has no entry for');
@@ -559,7 +561,7 @@ describe('affects survives every round trip', () => {
   });
 
   test('Knowledge Catalog publish -> pull', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const pulled = modelsFromCatalogResources(entries).models[0];
     expect(pulled.actions![0].affects).toEqual(EXPECTED as any);
   });
@@ -572,7 +574,7 @@ describe('affects survives every round trip', () => {
          // the edge still comes back untouched and in silence, because
          // nothing about it was ever resolved against the model. That is what
          // dropping the derived kind bought.
-         const {entries} = generateCatalogResources(model, V2);
+         const {entries} = generateCatalogResources(model, OPTS);
          const {models, warnings} = modelsFromCatalogResources(entries.filter(
              e => !e.entryType.endsWith('/semantic-relationship')));
          expect(models[0].relationships).toEqual([]);
@@ -596,7 +598,7 @@ describe('affects survives every round trip', () => {
   // The aspect an author edits by hand in the catalog console can carry
   // anything, so the read side is written not to trust it.
   function pullWithAspect(mutate: (data: any) => void) {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const entry =
         entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
     mutate(Object.values(entry.aspects!)[0].data! as any);

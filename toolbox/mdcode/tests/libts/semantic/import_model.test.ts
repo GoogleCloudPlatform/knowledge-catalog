@@ -516,9 +516,6 @@ describe('profile checks', () => {
   const files = (ps: Profile[]) =>
       ps.map(p => ({fileName: `sales.profile.${p.name ?? 'pg'}.yaml`, content: yaml.stringify(p)}));
   const google = googleDoc({extra: '      - name: party\n        abstract: true\n'});
-  // Push's warning about party with KC_V2_ASPECTS off.
-  const PARTY_SKIPPED = "[retail] entity 'party' is abstract (no physical table); skipped for " +
-      'Knowledge Catalog (KC does not yet model class hierarchies)';
   const strict = {strict: true, fileName: 'sales.yaml'};
   // Where a message says profile pg is: the document that holds the model and
   // the label of pg's errors.
@@ -575,8 +572,7 @@ describe('profile checks', () => {
         const res = await importSemanticModelYaml(input, opts);
         const warned = !opts.strict || problem === 'a double-quoted name';
         expect(res.errors).toEqual(!warned && message ? [message] : []);
-        expect(res.warnings.filter(w => w !== PARTY_SKIPPED))
-            .toEqual(warned && message ? [message] : []);
+        expect(res.warnings).toEqual(warned && message ? [message] : []);
         if (!opts.strict) {
           expect(res.files.slice(1).map(f => f.content))
               .toEqual(opts.profileFiles.map((f: any) => f.content));
