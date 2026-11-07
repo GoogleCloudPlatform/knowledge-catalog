@@ -4,20 +4,18 @@
 // pullKnowledgeCatalog is the orchestration around the pure reader: enumerate
 // the entry group, hydrate each semantic entry's aspect data, and reconstruct
 // the IR. The catalog client is stubbed so no network call is made. The entries
-// the fake serves are produced by the real emitter, so this exercises the true
-// list -> hydrate -> read path end to end (an entity is re-fetched with BOTH
-// its semantic-entity and schema aspects, and a second pass fetches each
-// entity's schema-join links). The reader's own mapping is covered in
-// kc_converter.test.ts; the focus here is the fetch SEQUENCE: aspect hydration,
-// the relationship-link fetch (per-entry, deduped across endpoints), the
-// single-model-per-group invariant, aborting on any fetch failure, ignoring
-// foreign entries, and leaving out the file copies an older kcmd stored. The
-// second-generation tests round-trip a whole model through push and pull.
+// the fake serves are produced by the real emitter with the second-generation
+// types, or captured from production for a model an older kcmd pushed with the
+// first-generation types, so this exercises the true list -> hydrate -> read
+// path end to end: the single-model-per-group invariant, aborting on any fetch
+// failure, ignoring foreign entries, the warning about a model an older kcmd
+// pushed, and leaving out the file copies it stored. The second-generation
+// tests round-trip a whole model through push and pull.
 
 import {afterEach, beforeAll, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
-import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
+import {CatalogClient, Entry} from '../../../src/libts/gcp/dataplex';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {entryIdOf} from '../../../src/libts/semantic/kc_ids';
@@ -29,7 +27,7 @@ import {applyProfile, loadProfileFile} from '../../../src/libts/semantic/resolve
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
-import {FIRST_GEN_OPTS, firstGenEntries, firstGenLinks} from './fixtures/first_gen_entries';
+import {FIRST_GEN_OPTS, firstGenEntries} from './fixtures/first_gen_entries';
 
 const OPTS = {
   project: 'dest',
@@ -37,15 +35,11 @@ const OPTS = {
   entryGroup: 'eg'
 };
 
-// A pull with v2Aspects on from the entry group the first-generation entries
-// were captured in.
-const FIRST_GEN_V2 = {...FIRST_GEN_OPTS, v2Aspects: true};
+// What a second-generation push into OPTS's entry group writes.
+const V2 = {...OPTS, v2Aspects: true};
 
 const SALES: SemanticModel = {
   name: 'sales',
-  // ai_context.instructions rides back through the guidelines aspect; keys,
-  // unique keys, and the field label ride back through the schema aspect -- all
-  // persisted by a default push, so the full model reconstructs exactly.
   aiContext: {instructions: 'Use for order analysis.'},
   entities: [{
     name: 'orders',
@@ -71,18 +65,14 @@ const SALES: SemanticModel = {
     entity: 'orders',
     aiContext: {instructions: 'Sum of order totals.'},
     // Metrics carry a datatype through KC (semantic-metric.dataType is
-    // required); Decimal -> NUMERIC on emit, NUMERIC -> Decimal on read.
+    // required).
     type: 'Decimal'
   }],
 };
 
-// The entries the emitter would have written for a model. Emitted with
-// expressions on (a `--emit-expressions` push) so a model that carries field /
-// metric expressions reconstructs exactly; the default push omits them (the
-// converter tests in kc_converter.test.ts pin that gating).
+// The entries a second-generation push writes for a model.
 function entriesFor(model: SemanticModel): Entry[] {
-  return generateCatalogResources(model, {...OPTS, emitExpressions: true})
-      .entries;
+  return generateCatalogResources(model, V2).entries;
 }
 
 function ok<T>(result?: T): ApiResult<T> {
@@ -100,14 +90,9 @@ let maxUrl = 0;
 // of the types and paths it asks for, at most 100 of them, and fails when its
 // URL passes 16,384 bytes. Past 100 it returns the last 100, so a cut read
 // leaves out an entity's own aspects. `lookupFail` forces a failure for one
-// entry name.
-// `links` are served by lookupEntryLinks per referenced entry (so an undirected
-// link comes back once from each endpoint, exercising the puller's dedup);
-// `linkFail` forces a link-lookup failure for one entry name.
-function stubClient(
-    listed: Entry[], served: Entry[], lookupFail?: string,
-    links: EntryLink[] = [],
-    linkFail?: string): {list: any; lookup: any; lookupLinks: any} {
+// entry name. lookupEntryLinks is stubbed only to show that pull never calls it.
+function stubClient(listed: Entry[], served: Entry[], lookupFail?: string):
+    {list: any; lookup: any; lookupLinks: any} {
   maxUrl = 0;
   const byName = new Map(served.map(e => [e.name, e]));
   const list = spyOn(CatalogClient.prototype, 'listEntries')
@@ -139,150 +124,15 @@ function stubClient(
                     .slice(-100);
             return ok({...e, aspects: Object.fromEntries(aspects)});
           });
-  // Dataplex finds a link by an entry named with the project id, and names
-  // the entries it references with the project number (as captured in
-  // fixtures/first_gen_entries.ts), so a link is matched by entry id.
-  const lookupLinks =
-      spyOn(CatalogClient.prototype, 'lookupEntryLinks')
-          .mockImplementation(async (_p: any, _l: any, opts: any) => {
-            if (opts.entry === linkFail) return err(500, 'boom');
-            const forEntry = links.filter(
-                l => (l.entryReferences ?? [])
-                         .some(r => entryIdOf(r.name) === entryIdOf(opts.entry)));
-            return ok(forEntry);
-          });
+  const lookupLinks = spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+                          .mockImplementation(async () => ok([]));
   return {list, lookup, lookupLinks};
 }
 
+beforeAll(loadSqlEngine);
+
 afterEach(() => {
   mock.restore();
-});
-
-
-describe('pullKnowledgeCatalog: happy path', () => {
-  test('reconstructs the model from listed + hydrated entries', async () => {
-    const entries = entriesFor(SALES);
-    const {lookup} = stubClient(entries, entries);
-
-    const cat = new CatalogClient({} as any);
-    const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
-
-    expect(models).toHaveLength(1);
-    expect(models[0]).toEqual(SALES);
-    expect(warnings).toEqual([]);
-    // Every listed semantic entry (model + entity + metric) was hydrated.
-    expect(lookup).toHaveBeenCalledTimes(3);
-  });
-
-  test(
-      'an entity is hydrated with its semantic-entity, schema, and ' +
-          'guidelines aspects',
-      async () => {
-        const entries = entriesFor(SALES);
-        const {lookup} = stubClient(entries, entries);
-
-        const cat = new CatalogClient({} as any);
-        await pullKnowledgeCatalog(cat, OPTS);
-
-        // Find the lookup call for the entity entry and inspect its requested
-        // aspect types (the 4th arg).
-        const entityEntry =
-            entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
-        const call =
-            lookup.mock.calls.find((c: any[]) => c[2] === entityEntry.name)!;
-        const aspectTypes: string[] = call[3]?.aspects ?? [];
-        expect(
-            aspectTypes.some(t => t.endsWith('/aspectTypes/semantic-entity')))
-            .toBe(true);
-        expect(aspectTypes.some(t => t.endsWith('/aspectTypes/schema')))
-            .toBe(true);
-        // The guidelines aspect carries ai_context.instructions, so pull must
-        // request it too (for every semantic entry, not just entities).
-        expect(aspectTypes.some(t => t.endsWith('/aspectTypes/guidelines')))
-            .toBe(true);
-      });
-});
-
-
-describe('pullKnowledgeCatalog: relationship links', () => {
-  // A 1:N model: orders.o_custkey (the FK side) references customer.c_custkey.
-  const SALES_REL: SemanticModel = {
-    name: 'sales',
-    entities: [
-      {
-        name: 'orders',
-        dataSource: 'demo.sales.orders',
-        keys: [],
-        fields: [{name: 'o_custkey', expression: 'orders.o_custkey'}],
-      },
-      {
-        name: 'customer',
-        dataSource: 'demo.sales.customer',
-        keys: [],
-        fields: [{name: 'c_custkey', expression: 'customer.c_custkey'}],
-      },
-    ],
-    relationships: [{
-      name: 'places',
-      source: {entity: 'orders', columns: ['o_custkey']},
-      destination: {entity: 'customer', columns: ['c_custkey']},
-    }],
-    metrics: [],
-  };
-
-  test(
-      'a schema-join link reconstructs into a relationship exactly once',
-      async () => {
-        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
-        const {lookupLinks} =
-            stubClient(entries, entries, undefined, entryLinks);
-
-        const cat = new CatalogClient({} as any);
-        const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
-
-        expect(models[0].relationships).toEqual([{
-          name: 'places',
-          source: {entity: 'orders', columns: ['o_custkey']},
-          destination: {entity: 'customer', columns: ['c_custkey']},
-        }]);
-        expect(warnings).toEqual([]);
-        // Links are fetched per entity (2 entities), and the single undirected
-        // link -- returned from both endpoints -- is deduped to one edge.
-        expect(lookupLinks).toHaveBeenCalledTimes(2);
-      });
-
-  test(
-      'an unnamed link returned from both endpoints is deduped to one edge',
-      async () => {
-        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
-        // A nameless link can't dedup by name; the puller must fall back to the
-        // endpoint pair, or the per-endpoint fan-out would yield it twice.
-        const nameless = entryLinks.map(l => ({...l, name: undefined}));
-        const {lookupLinks} = stubClient(entries, entries, undefined, nameless);
-
-        const cat = new CatalogClient({} as any);
-        const {models} = await pullKnowledgeCatalog(cat, OPTS);
-
-        // Deduped to a single edge (a nameless link has no id, so the name
-        // itself can't be recovered -- but it must not be counted twice).
-        expect(models[0].relationships).toHaveLength(1);
-        expect(models[0].relationships[0].source.entity).toBe('orders');
-        expect(lookupLinks).toHaveBeenCalledTimes(2);
-      });
-
-  test('a failed link lookup aborts the pull', async () => {
-    const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
-    const ordersEntry =
-        entries.find(e => (e.entrySource?.displayName) === 'orders')!;
-    // A non-200 link lookup means a relationship might be silently missing, so
-    // the pull aborts rather than reconstruct a model with a dropped edge.
-    stubClient(entries, entries, undefined, entryLinks, ordersEntry.name);
-
-    const cat = new CatalogClient({} as any);
-    await expect(pullKnowledgeCatalog(cat, OPTS))
-        .rejects.toThrow(new RegExp(
-            `failed to fetch entry links.*${ordersEntry.name}`, 'i'));
-  });
 });
 
 
@@ -381,61 +231,34 @@ describe('pullKnowledgeCatalog: a model an older kcmd pushed', () => {
       `again with the current kcmd`;
   const cat = new CatalogClient({} as any);
 
-  test('with v2Aspects on, it is left out with a warning, and no copy is ' +
-           'fetched',
-       async () => {
-         const listed = firstGenEntries();
-         const {lookup, lookupLinks} =
-             stubClient(listed, listed, undefined, firstGenLinks());
+  test('it is left out with a warning, and no copy is fetched', async () => {
+    const listed = firstGenEntries();
+    const {lookup, lookupLinks} = stubClient(listed, listed);
 
-         const result = await pullKnowledgeCatalog(cat, FIRST_GEN_V2);
+    const result = await pullKnowledgeCatalog(cat, FIRST_GEN_OPTS);
 
-         expect(result.models).toEqual([]);
-         expect(result.secondGeneration).toBeUndefined();
-         expect(result.firstGeneration?.map(m => m.name)).toEqual(['shop']);
-         expect(result.warnings).toEqual([WARNING]);
-         const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
-         expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
-             .toBe(false);
-         // With v2Aspects on, pull reads no link.
-         expect(lookupLinks).not.toHaveBeenCalled();
-       });
+    expect(result.models).toEqual([]);
+    expect(result.firstGeneration?.map(m => m.name)).toEqual(['shop']);
+    expect(result.warnings).toEqual([WARNING]);
+    const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
+    expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
+        .toBe(false);
+    // Pull reads no link.
+    expect(lookupLinks).not.toHaveBeenCalled();
+  });
 
-  // A pull with v2Aspects off reads the first-generation aspects, and leaves
-  // out the file copy as a pull with v2Aspects on does.
-  test('with v2Aspects off, it is rebuilt from its aspects, and no copy is ' +
-           'fetched',
-       async () => {
-         const listed = firstGenEntries();
-         const {lookup} = stubClient(listed, listed, undefined, firstGenLinks());
-
-         const result = await pullKnowledgeCatalog(cat, FIRST_GEN_OPTS);
-
-         const [shop] = result.models;
-         expect(shop.name).toBe('shop');
-         expect(shop.entities.map(e => e.name)).toEqual(['orders', 'customers']);
-         expect(shop.relationships.map(r => r.name)).toEqual(['placed_by']);
-         expect(shop.metrics.map(m => m.name)).toEqual(['revenue']);
-         expect(result.warnings).toEqual([]);
-         expect(result.firstGeneration).toBeUndefined();
-         const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
-         expect(listed.filter(isCopy).length).toBe(1);
-         expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
-             .toBe(false);
-       });
-
-  // A push with KC_V2_ASPECTS off labels the model entry as writing when it
-  // writes that entry, so one that stopped right after leaves this label.
-  test('with v2Aspects on, a model entry labeled as being written aborts ' +
-           'the pull, naming the model',
+  // An older kcmd labels the model entry as writing when it writes that
+  // entry, so a push of it that stopped right after leaves this label.
+  test('a model entry labeled as being written aborts the pull, naming the ' +
+           'model',
        async () => {
          const listed = firstGenEntries();
          const anchor = listed.find(
              e => e.entryType.endsWith('/entryTypes/semantic-model'))!;
          anchor.entrySource!.labels!['kcmd-push-state'] = 'writing';
-         stubClient(listed, listed, undefined, firstGenLinks());
+         stubClient(listed, listed);
 
-         await expect(pullKnowledgeCatalog(cat, FIRST_GEN_V2))
+         await expect(pullKnowledgeCatalog(cat, FIRST_GEN_OPTS))
              .rejects.toThrow(
                  'the last push of model \'shop\' did not finish: its model ' +
                  'entry\'s kcmd-push-state label still says writing');
@@ -444,7 +267,6 @@ describe('pullKnowledgeCatalog: a model an older kcmd pushed', () => {
 
 
 describe('pullKnowledgeCatalog: second-generation models', () => {
-  const V2 = {...OPTS, v2Aspects: true};
   const TABLE = (t: string) =>
       `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const GRAPH = (g: string) =>
@@ -650,7 +472,6 @@ semantic_model:
   }
   const KEY = (type: string) => `dataplex-types.global.${type}`;
   const cat = new CatalogClient({} as any);
-  beforeAll(loadSqlEngine);
 
   // Pulls what a push of `text` and `profiles` stores, from entries listed in
   // reverse so pull's order cannot come from the catalog's, writes the pulled
@@ -661,7 +482,7 @@ semantic_model:
       overviews?: Map<string, any>) {
     const first = pushed(loaded(text, profiles), overviews);
     stubClient([...first.entries].reverse(), first.entries);
-    const pulled = await pullKnowledgeCatalog(cat, V2);
+    const pulled = await pullKnowledgeCatalog(cat, OPTS);
     // `<model>.profile.<name>.yaml` holds the profile <name>.
     const [file, ...profileFiles] = serializeModelFiles(pulled.models[0]).files;
     const again = loaded(
@@ -693,7 +514,6 @@ semantic_model:
         expect(pulled).toEqual({
           models: [expected],
           warnings: [],
-          secondGeneration: true,
           overviews,
         });
         expect(Object.keys(
@@ -709,7 +529,7 @@ semantic_model:
         const {fields} = noMetrics[1].aspects![KEY('schema')].data!;
         delete fields.find((f: any) => f.name === 'signup_date').semantic;
         stubClient(noMetrics, noMetrics);
-        const {models: [withoutMetrics]} = await pullKnowledgeCatalog(cat, V2);
+        const {models: [withoutMetrics]} = await pullKnowledgeCatalog(cat, OPTS);
         expect(withoutMetrics.profiles!.map(p => p.metricsExclude)).toEqual([
           undefined, undefined, undefined
         ]);
@@ -719,10 +539,12 @@ semantic_model:
           isTime: false
         });
 
-        // A model entry with no specVersion is first-generation.
+        // A model entry with no specVersion is first-generation, and is not
+        // rebuilt.
         delete noMetrics[0].aspects![KEY('semantic-model')].data!.specVersion;
-        expect((await pullKnowledgeCatalog(cat, V2)).secondGeneration)
-            .toBeUndefined();
+        const firstGen = await pullKnowledgeCatalog(cat, OPTS);
+        expect(firstGen.models).toEqual([]);
+        expect(firstGen.firstGeneration?.map(m => m.name)).toEqual(['shop']);
       });
 
   test('a vanilla model pulled and pushed again gives what its push gave',
@@ -743,46 +565,30 @@ semantic_model:
          ]);
        });
 
-  test(
-      'each entry is read with the aspects of its type, and with the flag ' +
-          'off links with the link type of the type project',
-      async () => {
-        const opts = {...OPTS, systemTypeProject: 'types'};
-        const {entries} =
-            generateCatalogResources(loaded(), {...opts, v2Aspects: true});
-        const {lookup, lookupLinks} = stubClient(entries, entries);
-        const type = (kind: string, t: string) =>
-            `projects/types/locations/global/${kind}Types/${t}`;
-        // The aspect types read for the model, an entity, a metric and a
-        // relationship, each named by its id when it is in the type project.
-        const reads = async (v2Aspects: boolean) => {
-          lookup.mockClear();
-          await pullKnowledgeCatalog(cat, {...opts, v2Aspects});
-          const read = new Map<string, string[]>(
-              lookup.mock.calls.map((c: any[]) => [entryIdOf(c[2]), c[3]?.aspects ?? []]));
-          return [
-            'shop', 'shop/entities/orders', 'shop/metrics/revenue',
-            'shop/relationships/customer_orders'
-          ].map(id => read.get(id)?.map(t => t.replace(type('aspect', ''), '')));
-        };
-        const OBJECT = ['guidelines', 'semantic-extensions', 'overview'];
-        expect(await reads(true)).toEqual([
-          ['semantic-model', ...OBJECT],
-          ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT],
-          ['semantic-metric', 'sql-expressions', ...OBJECT],
-          ['semantic-relationship', ...OBJECT],
-        ]);
-        expect(lookupLinks).not.toHaveBeenCalled();
-        expect(await reads(false)).toEqual([
-          ['semantic-model', 'guidelines'],
-          ['semantic-entity', 'schema', 'guidelines'],
-          ['semantic-metric', 'guidelines'],
-          undefined,
-        ]);
-        expect(lookupLinks.mock.lastCall?.[2].entryLinkTypes).toEqual([
-          type('entryLink', 'schema-join')
-        ]);
-      });
+  test('each entry is read with the aspects of its type, and no link is read',
+       async () => {
+         const opts = {...OPTS, systemTypeProject: 'types'};
+         const {entries} =
+             generateCatalogResources(loaded(), {...opts, v2Aspects: true});
+         const {lookup, lookupLinks} = stubClient(entries, entries);
+         await pullKnowledgeCatalog(cat, OPTS);
+         // The aspect types read for the model, an entity, a metric and a
+         // relationship, each named by its id in the type project.
+         const prefix = 'projects/types/locations/global/aspectTypes/';
+         const read = new Map<string, string[]>(lookup.mock.calls.map(
+             (c: any[]) => [entryIdOf(c[2]), c[3]?.aspects ?? []]));
+         const OBJECT = ['guidelines', 'semantic-extensions', 'overview'];
+         expect([
+           'shop', 'shop/entities/orders', 'shop/metrics/revenue',
+           'shop/relationships/customer_orders'
+         ].map(id => read.get(id)?.map(t => t.replace(prefix, '')))).toEqual([
+           ['semantic-model', ...OBJECT],
+           ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT],
+           ['semantic-metric', 'sql-expressions', ...OBJECT],
+           ['semantic-relationship', ...OBJECT],
+         ]);
+         expect(lookupLinks).not.toHaveBeenCalled();
+       });
 
   test(
       'an entity with more than 100 aspects, and more than 100 of one type, ' +
@@ -827,7 +633,7 @@ semantic_model:
           if (one) inFlight--;
           return res;
         });
-        expect((await pullKnowledgeCatalog(cat, V2)).models).toEqual([model]);
+        expect((await pullKnowledgeCatalog(cat, OPTS)).models).toEqual([model]);
         expect(peak).toBe(1);
         expect(maxUrl).toBe(16_384);
       });

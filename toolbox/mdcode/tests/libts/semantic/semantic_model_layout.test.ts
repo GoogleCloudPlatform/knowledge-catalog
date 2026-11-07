@@ -1,7 +1,7 @@
 // Tests for the SemanticModel layout's pull write-path
-// (src/libts/layouts/semantic-model.ts): modelPath / hasModel /
-// writeModelDocument. These are the sink `pull` writes reconstructed models to;
-// the push-side discovery (modelDocuments) is exercised via the deploy tests.
+// (src/libts/layouts/semantic-model.ts): modelPath / writeModelDocument. These
+// are the sink `pull` writes reconstructed models to; the push-side discovery
+// (modelDocuments) is exercised via the deploy tests.
 
 import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -57,14 +57,13 @@ describe('SemanticModelLayout write path', () => {
   test(
       'writeModelDocument creates the file, dirs, and indexes it', async () => {
         const l = await layout('eg');
-        expect(l.hasModel('sales')).toBe(false);
+        expect(fs.existsSync(l.modelPath('sales'))).toBe(false);
 
         l.writeModelDocument('sales', 'version: x\n');
 
         const p = l.modelPath('sales');
         expect(fs.existsSync(p)).toBe(true);
         expect(fs.readFileSync(p, 'utf8')).toBe('version: x\n');
-        expect(l.hasModel('sales')).toBe(true);
         // Indexed, so a subsequent read surfaces it as a model document.
         expect(l.modelDocuments()).toEqual([
           {name: 'sales', text: 'version: x\n'}
@@ -89,7 +88,6 @@ describe('SemanticModelLayout write path', () => {
     l.removeModelDocument('sales');
 
     expect(fs.existsSync(p)).toBe(false);
-    expect(l.hasModel('sales')).toBe(false);
     // De-indexed, so it no longer surfaces as a model document.
     expect(l.modelDocuments()).toEqual([]);
   });

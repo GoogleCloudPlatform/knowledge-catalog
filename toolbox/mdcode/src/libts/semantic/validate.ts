@@ -1953,11 +1953,11 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// Whether Knowledge Catalog push and pull use the second-generation built-in
-// aspect fields and entry-id layout. They do unless `KC_V2_ASPECTS=0`; every
-// other value, including unset and `''`, is on. `KC_V2_ASPECTS=0` is a
-// temporary escape hatch to the first-generation path, removed with that path
-// (b/575695037).
+// Whether Knowledge Catalog push writes the second-generation built-in aspect
+// fields and entry-id layout. It does unless `KC_V2_ASPECTS=0`; every other
+// value, including unset and `''`, is on. `KC_V2_ASPECTS=0` is a temporary
+// escape hatch to the first-generation push, removed with that path
+// (b/575695037). Pull always reads the second-generation types.
 export function kcV2Aspects(): boolean {
   return process.env.KC_V2_ASPECTS !== '0';
 }

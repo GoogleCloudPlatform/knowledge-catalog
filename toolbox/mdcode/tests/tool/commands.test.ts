@@ -1,5 +1,5 @@
-// Tests for `kcV2Aspects()` and forwarding of `v2Aspects` through `kcmd push`
-// and `kcmd pull`, and for the files a push reads and a pull writes
+// Tests for `kcV2Aspects()` and forwarding of `v2Aspects` through `kcmd push`,
+// and for the files a push reads and a pull writes
 // (src/tool/commands.ts, src/libts/semantic/deploy_knowledge_catalog.ts).
 
 import {afterEach, beforeEach, describe, expect, mock, Mock, spyOn, test} from 'bun:test';
@@ -25,7 +25,7 @@ import {kcV2Aspects} from '../../src/libts/semantic/validate';
 import {profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
-import {FIRST_GEN_MODEL_FILE, FIRST_GEN_OPTS, firstGenEntries, firstGenLinks} from '../libts/semantic/fixtures/first_gen_entries';
+import {FIRST_GEN_MODEL_FILE, FIRST_GEN_OPTS, firstGenEntries} from '../libts/semantic/fixtures/first_gen_entries';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -194,37 +194,6 @@ describe('v2Aspects forwarding', () => {
     expect(emitSpy).toHaveBeenCalledTimes(1);
     expect(emitSpy.mock.calls[0][1].v2Aspects).toBe(true);
   });
-
-  test(
-      'pull forwards v2Aspects: false when KC_V2_ASPECTS is "0"',
-      async () => {
-        writeWorkspace();
-        const pullSpy = spyOn(pullKc, 'pullKnowledgeCatalog')
-                            .mockResolvedValue({models: [], warnings: []});
-
-        const code = await pull();
-
-        expect(code).toBe(0);
-        expect(pullSpy).toHaveBeenCalledTimes(1);
-        expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(false);
-      });
-
-  test('pull forwards v2Aspects: true when KC_V2_ASPECTS is unset, and ' +
-           'KC_TYPE_PROJECT',
-       async () => {
-         writeWorkspace();
-         delete process.env.KC_V2_ASPECTS;
-         process.env.KC_TYPE_PROJECT = 'types';
-         const pullSpy = spyOn(pullKc, 'pullKnowledgeCatalog')
-                             .mockResolvedValue({models: [], warnings: []});
-
-         const code = await pull();
-
-         expect(code).toBe(0);
-         expect(pullSpy).toHaveBeenCalledTimes(1);
-         expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(true);
-         expect(pullSpy.mock.calls[0][1].systemTypeProject).toBe('types');
-       });
 });
 
 
@@ -1141,30 +1110,25 @@ describe('a push of overview sidecars', () => {
 });
 
 
-// A model pulled from the catalog.
-const COMMERCE: SemanticModel =
-    {name: 'commerce', entities: [], relationships: [], metrics: []};
-// What a pull with KC_V2_ASPECTS off returns: the model rebuilt from the
-// first-generation aspects, which hold no profile.
-const pulled = () => spyOn(pullKc, 'pullKnowledgeCatalog')
-                         .mockResolvedValue({models: [COMMERCE], warnings: []});
-// A second-generation model with an entity and profile prod.
+// A model pulled from the catalog, with an entity and profile prod.
 const SECOND_GEN: SemanticModel = {
-  ...COMMERCE,
+  name: 'commerce',
+  relationships: [],
+  metrics: [],
   profiles: [{
     name: 'prod', entities: [], relationships: [], metricsExclude: '*'}],
   entities: [{
     name: 'Customer', dataSource: '', keys: [], fields: [{name: 'id'}],
   }],
 };
-// What a second-generation pull of `model` returns.
-const pulledSecondGen =
+// What a pull of `model` returns.
+const pulled =
     (model = SECOND_GEN, overviews?: Map<string, OverviewSidecar>) =>
         spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue({
-          models: [model], warnings: [], secondGeneration: true,
+          models: [model], warnings: [],
           ...(overviews ? {overviews} : {}),
         });
-// The files pull writes for the second-generation `model`, by name.
+// The files pull writes for `model`, by name.
 const serializedFiles = (model = SECOND_GEN): Record<string, string> =>
     Object.fromEntries(osi.serializeModelFiles(model, {logical: true})
                            .files.map(f => [f.fileName, f.content]));
@@ -1245,41 +1209,7 @@ describe('the legacy profile forms', () => {
 });
 
 
-describe('a pull with KC_V2_ASPECTS off', () => {
-  // Push refuses the older directory, but pull keeps the file, so the
-  // warning names it too.
-  test('keeps and names every local profile file, the older profile ' +
-           'directory too, even under --force-remove',
-       async () => {
-         withStaleProfile();
-         fs.mkdirSync(local('commerce.profiles'));
-         fs.writeFileSync(local('commerce.profiles/old.yaml'), 'legacy\n');
-         const serialize = spyOn(osi, 'serializeModel');
-         pulled();
-
-         expect(await pull({forceRemove: true})).toBe(0);
-         // The model is rebuilt from the aspects.
-         expect(serialize).toHaveBeenCalledTimes(1);
-         expect(messages(console.warn)).toContain(
-             `Warning: [commerce] the first-generation aspects hold no ` +
-             `profile, so pull keeps the local profile files: ` +
-             `${shown('commerce.profile.dev.yaml')}, ` +
-             `${shown('commerce.profile.prod.yaml')}, ` +
-             `${shown('commerce.profiles/old.yaml')}.`);
-         for (const name of ['commerce.profile.dev.yaml',
-                             'commerce.profile.prod.yaml',
-                             'commerce.profiles/old.yaml']) {
-           expect(fs.existsSync(local(name))).toBe(true);
-         }
-       });
-});
-
-
-describe('a pull with KC_V2_ASPECTS on', () => {
-  beforeEach(() => {
-    process.env.KC_V2_ASPECTS = '1';
-  });
-
+describe('a pull', () => {
   test('writes the model, profile and sidecar files, skips a name push does ' +
            'not read, and names or deletes stale ones',
        async () => {
@@ -1304,7 +1234,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
            ['commerce/relationships/placed', {content: 'Orders.\n'}],
            ...skipped.map(id => [id, {content: 'x\n'}] as const),
          ]);
-         const pulled = pulledSecondGen(SECOND_GEN, overviews);
+         const stub = pulled(SECOND_GEN, overviews);
          // The catalog holds no profile's actions, so the local ones stay.
          const actions = [{name: 'refund', executor: null}];
          fs.writeFileSync(local('commerce.profile.prod.yaml'),
@@ -1354,8 +1284,8 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          expect(fs.existsSync(local(staleSidecar))).toBe(false);
 
          // A vanilla model declares no action, so its profiles get none.
-         pulled.mockResolvedValue({models: [{...SECOND_GEN, version: '0.2.0.dev0'}],
-                                   warnings: [], secondGeneration: true});
+         stub.mockResolvedValue({models: [{...SECOND_GEN, version: '0.2.0.dev0'}],
+                                 warnings: []});
          expect(await pull()).toBe(0);
          expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
              .not.toContain('refund');
@@ -1363,7 +1293,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
-    pulledSecondGen();
+    pulled();
 
     expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
     expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
@@ -1377,7 +1307,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
     withStaleProfile();
     const write = spyOn(SemanticModelLayout.prototype, 'writeProfileDocument');
     const remove = spyOn(SemanticModelLayout.prototype, 'removeProfileDocument');
-    pulledSecondGen();
+    pulled();
 
     expect(await pull({forceRemove: true})).toBe(0);
     expect(write.mock.calls).toEqual([
@@ -1394,7 +1324,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
        async () => {
          writeRoundTripWorkspace();
          const vanilla: SemanticModel = {...SECOND_GEN, version: '0.2.0.dev0'};
-         pulledSecondGen(vanilla);
+         pulled(vanilla);
 
          expect(await pull()).toBe(0);
          expect(messages(console.warn))
@@ -1420,7 +1350,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          fs.mkdirSync(local('commerce.profiles'));
          fs.writeFileSync(local('commerce.profiles/prod.yaml'), 'legacy\n');
          const logSpy = console.log as Mock<any>;
-         pulledSecondGen();
+         pulled();
 
          expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
          expect(messages(logSpy))
@@ -1443,7 +1373,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          fs.renameSync(local('commerce.yaml'), local('old.yaml'));
          fs.renameSync(
              local('commerce.profile.prod.yaml'), local('old.profile.prod.yaml'));
-         pulledSecondGen();
+         pulled();
 
          expect(await pull({forceRemove: true})).toBe(0);
          expect(fs.readdirSync(entryGroupDir()).sort())
@@ -1465,7 +1395,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          fs.writeFileSync(local('commerce.profile.dev.yaml'),
                           files['commerce.profile.dev.yaml']);
          const logSpy = console.log as Mock<any>;
-         pulledSecondGen(model);
+         pulled(model);
          const written = spyOn(fs, 'writeFileSync');
 
          expect(await pull()).toBe(0);
@@ -1493,7 +1423,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
              'scope: semantic-model.test-project.us.commerce_eg\n');
          fs.mkdirSync(entryGroupDir(), {recursive: true});
          const model = {...SECOND_GEN, name: 'sub/retail'};
-         pulledSecondGen(model);
+         pulled(model);
 
          expect(await pull()).toBe(0);
          expect(fs.readdirSync(entryGroupDir())).toEqual(['sub_retail.yaml']);
@@ -1511,7 +1441,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
              'scope: semantic-model.test-project.us.commerce_eg\n');
          fs.mkdirSync(entryGroupDir(), {recursive: true});
          const abs = path.join(dir, 'abs', 'retail');
-         pulledSecondGen({...SECOND_GEN, name: abs});
+         pulled({...SECOND_GEN, name: abs});
 
          expect(await pull()).toBe(0);
          for (const name of [`${abs}.yaml`, `${abs}.profile.prod.yaml`]) {
@@ -1535,7 +1465,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
              path.join(dir, 'catalog', 'EntryGroups', 'other', 'retail.profiles');
          fs.mkdirSync(outside, {recursive: true});
          fs.writeFileSync(path.join(outside, 'prod.yaml'), 'name: prod\n');
-         pulledSecondGen({...SECOND_GEN, name: '../other/retail'});
+         pulled({...SECOND_GEN, name: '../other/retail'});
 
          expect(await pull({forceRemove: true})).toBe(0);
          expect(fs.existsSync(path.join(outside, 'prod.yaml'))).toBe(true);
@@ -1550,10 +1480,8 @@ describe('a pull with KC_V2_ASPECTS on', () => {
              `scope: semantic-model.${project}.${location}.${entryGroup}\n`);
          const {entries} = fakeCatalog();
          for (const e of firstGenEntries()) entries.set(e.name, e);
-         // Dataplex returns the captured link from each of its entities.
-         const links = spyOn(CatalogClient.prototype, 'lookupEntryLinks')
-                           .mockResolvedValue(
-                               {status: 200, result: firstGenLinks()});
+         // Pull reads no entry link.
+         const links = spyOn(CatalogClient.prototype, 'lookupEntryLinks');
          const logSpy = console.log as Mock<any>;
          const warnSpy = console.warn as Mock<any>;
 
@@ -1569,8 +1497,8 @@ describe('a pull with KC_V2_ASPECTS on', () => {
              .toBe(false);
        });
 
-  test('with KC_V2_ASPECTS on, a pull that leaves out a model an older kcmd ' +
-           'pushed deletes no local file, even under --force-remove',
+  test('a pull that leaves out a model an older kcmd pushed deletes no ' +
+           'local file, even under --force-remove',
        async () => {
          writeRoundTripWorkspace();
          const shop = new Map([
@@ -1584,7 +1512,7 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          }
          const commerce = fs.readFileSync(local('commerce.yaml'), 'utf8');
          const warnSpy = console.warn as Mock<any>;
-         // What pullKnowledgeCatalog returns with v2Aspects on for a group
+         // What pullKnowledgeCatalog returns for a group
          // holding only the captured first-generation model: no model, and
          // the one it left out with its warning.
          const warning = 'model \'shop\' in entry group \'commerce_eg\' was ' +

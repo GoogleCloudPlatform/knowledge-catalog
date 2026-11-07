@@ -193,9 +193,9 @@ function profileDocuments(model: SemanticModel, warnings: string[]):
  *
  * `logical` marks the model as a purely logical one (no physical binding).
  * Under GOOGLE_VERSION it suppresses the missing-source and missing-expression
- * warnings, which flag a lossy pull of a bound model. OSSIE_VERSION requires
- * both, so they are still given. An OWL import sets it, and so does a
- * second-generation pull, which loses no binding.
+ * warnings, which a model with no physical binding would otherwise draw.
+ * OSSIE_VERSION requires both, so they are still given. An OWL import sets
+ * it, and so does pull, which loses no binding.
  *
  * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
  * flow style so the output matches the compact convention the semantic-model
@@ -495,8 +495,8 @@ function datasetDoc(
 
 // Filters out the IR's `'Opaque'` placeholder so untyped fields and metrics
 // omit the `datatype` key in YAML. `'Opaque'` marks an unknown or unmapped type
-// (e.g. from `kcmd pull` or OWL import); action parameter helpers also use this
-// to tell whether a projected field will emit a concrete datatype on reload.
+// (e.g. from OWL import); action parameter helpers also use this to tell
+// whether a projected field will emit a concrete datatype on reload.
 function datatypeDoc<T extends string>(type: T|undefined): Exclude<T, 'Opaque'>|
     undefined {
   return type === undefined || type === 'Opaque' ? undefined :
@@ -778,8 +778,8 @@ function relationshipDoc(
 // Renders a field or metric `expression` for the target version. The IR comes
 // from two sources:
 //   1. YAML loaded by `loader.ts`, which populates `dialects` and `stringForm`.
-//   2. Models built by `kcmd pull` or OWL import, which leave `dialects` unset
-//      and only populate `expression` (plus optional `importedExpression`).
+//   2. Models built by an OWL import, which leave `dialects` unset and only
+//      populate `expression` (plus optional `importedExpression`).
 function expressionDoc(
     item: {
       expression?: string;
@@ -816,8 +816,8 @@ function expressionDoc(
       };
     }
   }
-  // Path 2 (`kcmd pull` / OWL import / fallback): `dialects` is absent, so
-  // synthesize it from `expression` and `importedExpression`.
+  // Path 2 (OWL import / fallback): `dialects` is absent, so synthesize it
+  // from `expression` and `importedExpression`.
   if (isGoogleVersion && item.stringForm && item.expression !== undefined &&
       item.importedExpression === undefined) {
     return item.expression;

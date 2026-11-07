@@ -441,12 +441,6 @@ export class SemanticModelLayout implements CatalogLayout {
     }
   }
 
-  // True when a model document with this handle already exists on disk. `pull`
-  // uses it to report which files it would overwrite vs. create.
-  hasModel(name: string): boolean {
-    return fs.existsSync(this.modelPath(name));
-  }
-
   // The absolute path a model document with this handle maps to:
   // `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path separators in the
   // model name are replaced so a name still yields a single flat file. Requires

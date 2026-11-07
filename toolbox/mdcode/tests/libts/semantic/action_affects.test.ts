@@ -31,6 +31,8 @@ const OPTS = {
   location: 'us',
   entryGroup: 'eg'
 };
+// What a second-generation push writes, which pull reads.
+const V2 = {...OPTS, v2Aspects: true};
 
 const MCP_EXECUTOR = {
   mcp: {server: '//agentregistry.googleapis.com/x', tool: 'place_order'},
@@ -557,21 +559,22 @@ describe('affects survives every round trip', () => {
   });
 
   test('Knowledge Catalog publish -> pull', () => {
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, V2);
     const pulled = modelsFromCatalogResources(entries).models[0];
     expect(pulled.actions![0].affects).toEqual(EXPECTED as any);
   });
 
   test('a pull that recovers no relationships still round-trips the edge', () =>
        {
-         // Relationships reach the catalog as `schema-join` entry LINKS, and a
-         // pull that did not fetch them recovers none -- which is also the
-         // permanent state of a many-to-many edge, since those are never
-         // published. The entry on the edge still comes back untouched and in
-         // silence, because nothing about it was ever resolved against the
-         // model. That is what dropping the derived kind bought.
-         const {entries} = generateCatalogResources(model, OPTS);
-         const {models, warnings} = modelsFromCatalogResources(entries);
+         // A pull that misses the relationship entries recovers no
+         // relationship -- which is also the permanent state of a
+         // many-to-many edge, since those are never published. The entry on
+         // the edge still comes back untouched and in silence, because
+         // nothing about it was ever resolved against the model. That is what
+         // dropping the derived kind bought.
+         const {entries} = generateCatalogResources(model, V2);
+         const {models, warnings} = modelsFromCatalogResources(entries.filter(
+             e => !e.entryType.endsWith('/semantic-relationship')));
          expect(models[0].relationships).toEqual([]);
          expect(models[0].actions![0].affects).toEqual(EXPECTED as any);
          expect(warnings.some(w => w.includes('orders_to_customer')))
@@ -593,7 +596,7 @@ describe('affects survives every round trip', () => {
   // The aspect an author edits by hand in the catalog console can carry
   // anything, so the read side is written not to trust it.
   function pullWithAspect(mutate: (data: any) => void) {
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, V2);
     const entry =
         entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
     mutate(Object.values(entry.aspects!)[0].data! as any);

@@ -4,12 +4,11 @@
 // `deploy_knowledge_catalog.ts`). Unlike a write, a pull needs no server-side
 // type provisioning -- only that the `semantic-*` entries exist. It enumerates
 // the entry group, keeps the semantic entries, hydrates each one's aspect data
-// (a BASIC list omits aspect data, so each entry is re-fetched with its aspect
-// types -- an entity needs BOTH its `semantic-entity` aspect and the built-in
-// `schema` aspect), and hands the hydrated entries to the pure reader
-// (`kc_converter.modelsFromCatalogResources`). With the second-generation
-// types, a model an older kcmd pushed with the first-generation ones is left
-// out, and a warning names it.
+// (a BASIC list omits aspect data, so each entry is re-fetched with the
+// aspect types of its second-generation entry type), and hands the hydrated
+// entries to the pure reader (`kc_converter.modelsFromCatalogResources`). A
+// model an older kcmd pushed with the first-generation types is left out, and
+// a warning names it.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -18,13 +17,13 @@
 // the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
 // logic moves.
 
-import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {catalogContainer, CatalogClient, Entry} from '../gcp/dataplex';
 
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {FirstGenerationModel, linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
+import {FirstGenerationModel, modelsFromCatalogResources, ReadResult} from './kc_converter';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
-import {entryIdOf, Namer} from './kc_ids';
+import {entryIdOf} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
@@ -34,14 +33,6 @@ export interface KcPullOptions {
   location: string;
   // Id of the source entry group to pull from.
   entryGroup: string;
-  // Read the second-generation built-in aspect fields and entry-id layout
-  // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
-  // false). A model an older kcmd pushed with the first-generation types is
-  // then left out with a warning.
-  v2Aspects?: boolean;
-  // The project of the schema-join entry link type, which only a pull with
-  // v2Aspects off reads. Defaults to `dataplex-types`.
-  systemTypeProject?: string;
 }
 
 // Upper bound on in-flight aspect-hydration fetches during a pull.
@@ -50,8 +41,8 @@ const HYDRATE_CONCURRENCY = 8;
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, a fetch error
-// on any entry or its links, or a model entry still labeled as being written
-// -- throw, so the pull aborts rather than write a partial model.
+// on any entry, or a model entry still labeled as being written -- throw, so
+// the pull aborts rather than write a partial model.
 export async function pullKnowledgeCatalog(
     cat: CatalogClient, opts: KcPullOptions): Promise<ReadResult> {
   await loadSqlEngine();
@@ -64,7 +55,7 @@ export async function pullKnowledgeCatalog(
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
-    const aspectTypes = semanticAspectTypes(entry.entryType, opts.v2Aspects);
+    const aspectTypes = semanticAspectTypes(entry.entryType);
     if (aspectTypes) targets.push({entry, aspectTypes});
     // else: not part of a semantic model; ignore it.
   }
@@ -88,45 +79,10 @@ export async function pullKnowledgeCatalog(
   // be silently missing, so abort rather than reconstruct an incomplete model.
   const hydrated = await mapConcurrent(
       targets, HYDRATE_CONCURRENCY,
-      async ({entry, aspectTypes}) => opts.v2Aspects ?
-          fetchEveryAspect(cat, opts, entry, aspectTypes) :
-          fetchEntry(cat, opts, entry, aspectTypes));
+      ({entry, aspectTypes}) =>
+          fetchEveryAspect(cat, opts, entry, aspectTypes));
 
-  // Second fetch pass: with the first-generation types, the schema-join links
-  // of the relationships, which listing entries does not return. Links are
-  // listed per entity entry and deduplicated, since each comes back from both
-  // endpoints, and a failed lookup aborts the pull. With v2Aspects on, pull
-  // reads no link.
-  const entityEntries = opts.v2Aspects ? [] : hydrated.filter(
-      e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
-  const linkLists =
-      await mapConcurrent(entityEntries, HYDRATE_CONCURRENCY, async entry => {
-        const res = await cat.lookupEntryLinks(opts.project, opts.location, {
-          entry: entry.name,
-          entryLinkTypes:
-              [new Namer(opts).typeName('entryLink', 'schema-join')],
-        });
-        if (res.status !== 200 || !res.result) {
-          throw new Error(
-              `failed to fetch entry links for '${entry.name}' ` +
-              `(status ${res.status}); pull aborted`);
-        }
-        return res.result;
-      });
-
-  const seenLinks = new Set<string>();
-  const entryLinks: EntryLink[] = [];
-  for (const links of linkLists) {
-    for (const link of links) {
-      const key = linkDedupKey(link);
-      if (seenLinks.has(key)) continue;
-      seenLinks.add(key);
-      entryLinks.push(link);
-    }
-  }
-
-  const read = modelsFromCatalogResources(
-      hydrated, entryLinks, {v2Aspects: opts.v2Aspects});
+  const read = modelsFromCatalogResources(hydrated);
   // Every push labels the model entry as writing when it writes the model entry
   // and as finished with its last. The hydrated entries keep the order of
   // `targets`.
@@ -137,8 +93,8 @@ export async function pullKnowledgeCatalog(
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
   if (writingReason) {
-    // With v2Aspects on, a model an older kcmd pushed is not in `read.models`,
-    // so the model is named from its entry, as the reader names it.
+    // A model an older kcmd pushed is not in `read.models`, so the model is
+    // named from its entry, as the reader names it.
     throw notFinished(
         anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
         writingReason);
@@ -162,9 +118,8 @@ function notFinished(model: string, reason: string): Error {
 // the order the warning names them.
 const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
 
-// The warning for a model an older kcmd pushed, which a pull with v2Aspects
-// on leaves out. It names the first-generation aspect types found on the
-// model's entries.
+// The warning for a model an older kcmd pushed, which pull leaves out. It
+// names the first-generation aspect types found on the model's entries.
 function firstGenerationWarning(
     opts: KcPullOptions, model: FirstGenerationModel): string {
   const found = new Set(model.entries.flatMap(
@@ -277,28 +232,17 @@ const V2_ASPECT_TYPES = new Map([
 ]);
 
 // The aspect types to read for a semantic entry, in its entry type's project
-// and location: V2_ASPECT_TYPES with `v2Aspects` on, the first-generation set
-// otherwise. Undefined for an entry outside a semantic model.
-function semanticAspectTypes(entryType: string, v2Aspects?: boolean): string[]|
-    undefined {
+// and location. Undefined for an entry outside a semantic model.
+function semanticAspectTypes(entryType: string): string[]|undefined {
   const marker = '/entryTypes/';
   const idx = entryType?.indexOf(marker) ?? -1;
   if (idx < 0) return undefined;
   const typeBase = entryType.slice(0, idx);
   const t = entryType.slice(idx + marker.length);
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
-  const v2Types = v2Aspects ? V2_ASPECT_TYPES.get(t) : undefined;
+  const v2Types = V2_ASPECT_TYPES.get(t);
   if (v2Types) return v2Types.map(aspectType);
   switch (t) {
-    case 'semantic-model':
-      return [aspectType('semantic-model'), aspectType('guidelines')];
-    case 'semantic-entity':
-      return [
-        aspectType('semantic-entity'), aspectType('schema'),
-        aspectType('guidelines')
-      ];
-    case 'semantic-metric':
-      return [aspectType('semantic-metric'), aspectType('guidelines')];
     case ACTION_TYPE_ID:
       // An action's entry type is custom (see kc_custom_types.ts), so it
       // lives in the destination project rather than under `dataplex-types`;

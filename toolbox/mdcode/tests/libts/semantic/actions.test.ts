@@ -23,6 +23,8 @@ const OPTS = {
   location: 'us',
   entryGroup: 'eg'
 };
+// What a second-generation push writes, which pull reads.
+const V2 = {...OPTS, v2Aspects: true};
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -723,8 +725,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   });
 
   test('a pull recovers the actions', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    const {entries} = generateCatalogResources(model, V2);
+    const {models} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(model.actions);
   });
 
@@ -735,7 +737,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const unbound: SemanticModel = structuredClone(model);
     delete unbound.actions![0].executor;
 
-    const {entries, entryLinks} = generateCatalogResources(unbound, OPTS);
+    const {entries} = generateCatalogResources(unbound, V2);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     const data = entry.aspects!['dest.global.semantic-action'].data!;
     expect(data.executorKind).toBeUndefined();
@@ -751,7 +753,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
       {name: 'quantity', type: 'Integer'},
     ]);
 
-    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(unbound.actions);
     expect(warnings.some(w => w.includes('executor'))).toBe(false);
   });
@@ -759,11 +761,11 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('an entry whose executor names a kind it cannot back is skipped', () => {
     // The other half of the rule above: no kind is a published state, a kind
     // with no coordinates is damage, and damage still degrades itself.
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, V2);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     entry.aspects!['dest.global.semantic-action'].data!.mcpTool = '';
 
-    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].actions ?? []).toEqual([]);
     expect(
         warnings.some(w => w.includes('no usable') && w.includes('executor')))
@@ -778,7 +780,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         // and its wording intact and still names the field it came from -- the
         // pull is missing the field's own entry, not the parameter's
         // definition.
-        const {entries} = generateCatalogResources(model, OPTS);
+        const {entries} = generateCatalogResources(model, V2);
         const withoutEntities =
             entries.filter(e => !e.entryType.endsWith('/semantic-entity'));
         const {models, warnings} = modelsFromCatalogResources(withoutEntities);
@@ -905,8 +907,8 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
   });
 
   test('a pull recovers every action unchanged', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    const {entries} = generateCatalogResources(model, V2);
+    const {models} = modelsFromCatalogResources(entries);
     // Entries come back ordered by the catalog rather than by the document, so
     // compare as a set keyed by name.
     const byName = (m: SemanticModel) =>
@@ -917,9 +919,9 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
   test('a second push of the pulled model produces the same entries', () => {
     // Push -> pull -> push has to be a fixed point: if it were not, a pull
     // followed by a push would rewrite entries that nobody edited.
-    const first = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(first.entries, first.entryLinks);
-    const second = generateCatalogResources(models[0], OPTS);
+    const first = generateCatalogResources(model, V2);
+    const {models} = modelsFromCatalogResources(first.entries);
+    const second = generateCatalogResources(models[0], V2);
 
     const actionsOf = (entries: typeof first.entries) =>
         entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))
@@ -1033,8 +1035,8 @@ describe('parameter description, required, and default', () => {
           required: false,
         });
 
-        const cat = generateCatalogResources(models[0], OPTS);
-        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        const cat = generateCatalogResources(models[0], V2);
+        const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters).toEqual(params);
       });
 
@@ -1168,8 +1170,8 @@ describe('parameter description, required, and default', () => {
             {name: 'largeInt', type: 'Integer', default: '9007199254740993'},
           ],
         }]);
-        const cat = generateCatalogResources(models[0], OPTS);
-        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        const cat = generateCatalogResources(models[0], V2);
+        const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters)
             .toEqual(models[0].actions![0].parameters);
       });

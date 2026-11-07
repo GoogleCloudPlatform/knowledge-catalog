@@ -470,9 +470,7 @@ describe('serialize flags loader-invalid reconstructions', () => {
 // The round-trip tests above prove IR-level stability but never pin the exact
 // YAML text. These goldens capture the full serialized document for a small
 // corpus so a reviewer can open a `.yaml` next to its `.osi.golden.yaml` and see
-// exactly what the serializer emits. The same corpus backs kc_converter's
-// `.pull.golden.yaml`, so diffing the two shows what a Knowledge Catalog round
-// trip loses relative to the authored source.
+// exactly what the serializer emits.
 //
 //   Regenerate after an intentional serializer change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/osi_converter.test.ts
@@ -616,15 +614,27 @@ describe('a projection is only emitted when it will supply a type', () => {
   });
 
   test('keeps a standalone parameter typed Opaque', () => {
+    // The entity as the loader gives it, with the source as written and the
+    // expression's dialect form, which a second-generation push stores.
     const model = projectionModel(
-        {}, [{name: 'payload', type: 'Opaque', required: true}]);
-    const {entries, entryLinks} = generateCatalogResources(model, {
+        {
+          authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/o',
+          fields: [{
+            name: 'key',
+            type: 'String',
+            expression: 'key',
+            dialects: [{dialect: 'ANSI_SQL', expression: 'key'}],
+            stringForm: true,
+          }],
+        },
+        [{name: 'payload', type: 'Opaque', required: true}]);
+    const {entries} = generateCatalogResources(model, {
       project: 'p',
       location: 'us',
       entryGroup: 'eg',
-      emitExpressions: true,
+      v2Aspects: true,
     });
-    const rebuilt = modelsFromCatalogResources(entries, entryLinks).models[0];
+    const rebuilt = modelsFromCatalogResources(entries).models[0];
 
     const {yaml: text, warnings} = serializeModel(rebuilt);
     const reloaded = loadModels(text).models[0];

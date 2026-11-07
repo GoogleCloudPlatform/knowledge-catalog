@@ -78,9 +78,8 @@ written as its GCP resource name, with no leading `//`, such as
 `cloudsql.googleapis.com/…`, and is read with ambient IAM. A resource URI (the
 name with a leading `//`) or a Knowledge Catalog name such as
 `bigquery:<p>.<d>.<t>` is rejected, and the error names the resource name to
-write when there is one. `kcmd pull` returns a model an older push stored that way as stored,
-and warns for each such value. A table outside Google Cloud is written as
-the entry name of its Knowledge Catalog entry,
+write when there is one. A table outside Google Cloud is written as the entry
+name of its Knowledge Catalog entry,
 `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, and takes the
 dialect its entry records (see [Validation](reference.md#validation)). An
 entry whose `fullyQualifiedName` names something other than a table or view,

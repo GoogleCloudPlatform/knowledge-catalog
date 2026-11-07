@@ -26,7 +26,7 @@ import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
-import {SerializedFile, serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
@@ -1566,11 +1566,11 @@ function reportCatalogResult(
 // (project.location.entryGroup). An entry group holds one model: a local
 // document with the same name is overwritten in place; a differently-named
 // local document is a conflict (pull would leave two models), so pull fails
-// unless --force-remove authorizes deleting the stale local model first. A
-// model rebuilt from the second-generation types is written as its model
-// file, profile files and overview sidecars. With KC_V2_ASPECTS on, a model an
-// older kcmd pushed is left out with a warning, and nothing is written.
-// Returns a process exit code (0 on success).
+// unless --force-remove authorizes deleting the stale local model first. The
+// model, rebuilt from the second-generation types, is written as its model
+// file, profile files and overview sidecars. A model an older kcmd pushed
+// with the first-generation types is left out with a warning, and nothing
+// is written. Returns a process exit code (0 on success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
     options: PullOptions): Promise<number> {
@@ -1589,8 +1589,6 @@ async function pullSemanticModel(
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
-    v2Aspects: kcV2Aspects(),
-    systemTypeProject: process.env.KC_TYPE_PROJECT,
   });
 
   for (const w of result.warnings) {
@@ -1646,77 +1644,25 @@ async function pullSemanticModel(
     }
   }
 
-  if (result.secondGeneration) {
-    const pulled = result.models[0];
-    // The catalog stores no profile's actions, so a profile file keeps the
-    // actions it binds locally. A vanilla model declares no action.
-    const model = pulled.version === OSSIE_VERSION ? pulled : {
-      ...pulled,
-      profiles: pulled.profiles?.map(p => {
-        const actions = localProfileActions(layout, pulled.name, p.name);
-        return actions ? {...p, actions} : p;
-      }),
-    };
-    const {files, warnings} = serializeModelFiles(model, {logical: true});
-    for (const w of warnings) console.warn(`Warning: [${model.name}] ${w}`);
-    for (const [id, sidecar] of result.overviews ?? []) {
-      files.push({
-        fileName: `${id}.overview.md`,
-        content: formatOverviewSidecar(sidecar),
-      });
-    }
-    return writePulledFiles(layout, model.name, files, options);
+  const pulled = result.models[0];
+  // The catalog stores no profile's actions, so a profile file keeps the
+  // actions it binds locally. A vanilla model declares no action.
+  const model = pulled.version === OSSIE_VERSION ? pulled : {
+    ...pulled,
+    profiles: pulled.profiles?.map(p => {
+      const actions = localProfileActions(layout, pulled.name, p.name);
+      return actions ? {...p, actions} : p;
+    }),
+  };
+  const {files, warnings} = serializeModelFiles(model, {logical: true});
+  for (const w of warnings) console.warn(`Warning: [${model.name}] ${w}`);
+  for (const [id, sidecar] of result.overviews ?? []) {
+    files.push({
+      fileName: `${id}.overview.md`,
+      content: formatOverviewSidecar(sidecar),
+    });
   }
-
-  let created = 0;
-  let updated = 0;
-  // Guard against two reconstructed models whose names map to the same file
-  // (path-separator sanitizing, or two anchors sharing a display name): the
-  // later write would silently clobber the earlier. Track written paths so the
-  // collision is reported and the dry-run/real counts agree on the repeat.
-  const writtenBy = new Map<string, string>();
-  for (const model of result.models) {
-    const serialized = serializeModel(model);
-    for (const w of serialized.warnings) {
-      console.warn(`Warning: [${model.name}] ${w}`);
-    }
-    const target = layout.modelPath(model.name);
-    const prior = writtenBy.get(target);
-    if (prior !== undefined && prior !== model.name) {
-      console.warn(
-          `Warning: models '${prior}' and '${model.name}' both map to ` +
-          `${target}; the later overwrites the earlier -- rename one model.`);
-    }
-    const existed = writtenBy.has(target) || layout.hasModel(model.name);
-    writtenBy.set(target, model.name);
-    if (options.dryRun) {
-      console.log(`  would ${existed ? 'update' : 'create'} ${target}`);
-    } else {
-      layout.writeModelDocument(model.name, serialized.yaml);
-      console.log(`  ${existed ? 'updated' : 'created'} ${target}`);
-    }
-    if (existed)
-      updated++;
-    else
-      created++;
-  }
-
-  // A pull with KC_V2_ASPECTS off returns no profile, so it keeps every local
-  // profile file, even under --force-remove, and names each one.
-  for (const model of result.models) {
-    const kept = layout.localProfileFiles(model.name).map(p => p.path);
-    if (!kept.length) continue;
-    console.warn(
-        `Warning: [${model.name}] the first-generation aspects hold no ` +
-        `profile, so pull keeps the local profile files: ${kept.join(', ')}.`);
-  }
-
-  console.log(
-      options.dryRun ?
-          `Dry run: would write ${created} new and ${
-              updated} updated model document(s).` :
-          `Wrote ${created} new and ${updated} updated model document(s).`);
-  return 0;
+  return writePulledFiles(layout, model.name, files, options);
 }
 
 
