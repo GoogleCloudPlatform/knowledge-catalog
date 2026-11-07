@@ -17,11 +17,11 @@ import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bi
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
-import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -146,7 +146,7 @@ function nameAndDescriptionErrors(
 // profile it names in `model.profiles` or the model file's own bindings, and
 // returns one message per problem, naming every deployment it applies to.
 export function validateDeployments(
-    model: SemanticModel, document: string, load: DialectLoad = {}): string[] {
+    model: SemanticModel, document: string, load: DialectLoad): string[] {
   // The deployments each problem applies to, keyed by the text that follows
   // their names in the message.
   const problems = new Map<string, string[]>();
@@ -327,25 +327,26 @@ function measurePlacementErrors(
   return errors;
 }
 
-// Checks that the model file's Spanner tables are all in one database, so they
-// share one dialect, and that each bound field has a text for the dialect of
+// Checks that the model file's tables are all in one database, as a profile's
+// are, and when they are, that each bound field has a text for the dialect of
 // its entity's source. Returns one message per problem.
 export function validateInlineDialects(
-    model: SemanticModel, document: string): string[] {
+    model: SemanticModel, document: string, load: DialectLoad): string[] {
   const errors: string[] = [];
-  const databases = new Map<string, string>();
-  for (const e of model.entities ?? []) {
-    const db = databaseOf(e.authoredSource ?? '');
-    if (db?.startsWith('spanner/') && !databases.has(db)) {
-      databases.set(db, e.name);
-    }
-  }
-  if (databases.size > 1) {
-    const named = [...databases.values()].map(n => `'${n}'`).join(', ');
+  const databases = firstEntityPerDatabase(
+      (model.entities ?? []).filter(e => !e.abstract).map(e => ({
+        entity: e.name,
+        source: writtenSource(e),
+        lookedUp: e.sourceDialect,
+      })),
+      load.sourceDatabases);
+  if (databases.length > 1) {
+    const named = databases.map(n => `'${n}'`).join(', ');
     errors.push(
         `model '${model.name}' (${document}) binds entities in more than one ` +
-        `Spanner database (${named}); bind the model file's entities to ` +
-        `tables in one Spanner database.`);
+        `database (${named}); bind the model file's entities to tables in ` +
+        `one database.`);
+    return errors;
   }
   for (const {entity: e, field: f, table: {name: dialect}} of
            fieldsOnTables(model)) {
@@ -2027,7 +2028,7 @@ export async function localChecks(
     profileErrors.push(
         ...ofProfile(
             document, DEFAULT_PROFILE,
-            ...validateInlineDialects(model, document),
+            ...validateInlineDialects(model, document, load),
             ...validateInheritedColumns(model, document)),
         // One call per profile, so each error carries its deployments' profile.
         ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(

@@ -7,7 +7,7 @@ import {Action, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../.
 import {listed, LoadedModel, LoadOptions, loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
-import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
@@ -2809,7 +2809,7 @@ ${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
           join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
 ${metric && `    metrics:\n      - ${metric}\n`}`);
   };
-  const check = (m: SemanticModel) => validateDeployments(m, 'commerce');
+  const check = (m: SemanticModel) => validateDeployments(m, 'commerce', {});
   // The start of the error saying deployment `engine` uses the model file's
   // own bindings. A list of engines gives the plural form that names each.
   const OWN = (engine: Engine|Engine[]) => typeof engine === 'string' ?
@@ -3380,9 +3380,11 @@ describe('validateInlineDialects', () => {
   const SPANNER_TABLE = `${SPANNER_DB}/tables/t`;
   // A model whose entity `e` reads `source` and has field `f` with
   // `expression`, written as YAML. `extra` is the YAML of more entities. The
-  // load has the dialect a lookup gave the Spanner database, or none.
+  // load has the dialect a lookup gave the Spanner database, or none, and the
+  // dialects `looked` gives other sources.
   const withField = (source: string, expression: string, extra = '',
-                     spanner: string|null = 'SPANNER') =>
+                     spanner: string|null = 'SPANNER',
+                     looked: Array<[string, string]> = []) =>
       loadOne('m', `    entities:
       - name: e
         source: ${source}
@@ -3390,10 +3392,11 @@ describe('validateInlineDialects', () => {
         fields:
           - { name: id, expression: id }
           - { name: f, expression: ${expression} }
-${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
+${extra}`, {sourceDialects: new Map([
+        ...spanner ? [[SPANNER_DB, spanner] as [string, string]] : [], ...looked])});
   const dialects = (...entries: string[]) =>
       `{ dialects: [${entries.map(e => `{ dialect: ${e}, expression: x }`)}] }`;
-  const check = (m: SemanticModel) => validateInlineDialects(m, 'doc');
+  const check = (m: SemanticModel) => validateInlineDialects(m, 'doc', {});
   // The error for field `f` of `entity`, whose source has `dialect`, ending
   // in `hint`. `a` is the article before the dialect.
   const MISSING = (entity: string, dialect: string, hint = '', a = 'a') =>
@@ -3402,11 +3405,24 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
           entity}' to ${a} ${dialect} source${hint}.`;
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
       "--input first-party --flavor google --transpile'";
+  // The error for a model file whose entities `a` and `b` are in two
+  // databases.
+  const TWO_DATABASES = (a: string, b: string) => expect.stringContaining(
+      `binds entities in more than one database ('${a}', '${b}')`);
+  // The YAML of entity `c` on `source`.
+  const second = (source: string) => `      - { name: c, source: ${source},
+          primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
+  const entry = (group: string) =>
+      `projects/p/locations/l/entryGroups/${group}/entries/t`;
+  // A Snowflake table and a Databricks table, each looked up.
+  const thirdParty: Array<[string, string]> =
+      [[entry('sf'), 'SNOWFLAKE'], [entry('dbx'), 'DATABRICKS']];
 
   // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
   // the string form. An inherited field is judged by the source of the entity
-  // that inherits it.
-  test('holds each bound field to the dialect of its own entity\'s source, and suggests kcmd import --transpile only for a text it translates', () => {
+  // that inherits it. The model file's tables are all in one database, as a
+  // profile's are, and a model file in two databases gets only that error.
+  test('holds each bound field to the dialect of its own entity\'s source, suggests kcmd import --transpile only for a text it translates, and holds the tables to one database', () => {
     const bigQueryText = dialects('BIGQUERY');
     // Entity `other` on Spanner has field `f` with only a BigQuery text, and
     // entity `leaf` on Spanner inherits `f` from `e`.
@@ -3417,15 +3433,14 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
           primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
     const alloyDb = `${TARGET.alloydb}/schemas/s/tables/t`;
     const cases: Array<[source: string, expression: string, extra: string,
-                        errors: string[]]> = [
+                        errors: string[], looked?: Array<[string, string]>]> = [
       [SPANNER_TABLE, bigQueryText, '', [MISSING('e', 'SPANNER')]],
       [SPANNER_TABLE, dialects('SPANNER'), '', []],
       [SPANNER_TABLE, dialects('BIGQUERY', 'ANSI_SQL'), '', []],
       [SPANNER_TABLE, 'x', '', []],
-      [BQ_TABLE('t'), bigQueryText, other, [MISSING('other', 'SPANNER')]],
-      [BQ_TABLE('t'), bigQueryText, leaf, [MISSING('leaf', 'SPANNER')]],
-      [BQ_TABLE('t'), dialects('SNOWFLAKE'), other,
-       [MISSING('e', 'BIGQUERY', HINT), MISSING('other', 'SPANNER')]],
+      [SPANNER_TABLE, bigQueryText, leaf,
+       [MISSING('e', 'SPANNER'), MISSING('leaf', 'SPANNER')]],
+      [BQ_TABLE('t'), dialects('SNOWFLAKE'), other, [TWO_DATABASES('e', 'other')]],
       // The message reads "an" before a dialect that starts with a vowel.
       [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
       // kcmd import --transpile translates a Snowflake, Spanner or AlloyDB
@@ -3434,9 +3449,16 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
       [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')]],
       [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY', HINT)]],
       [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY', HINT)]],
+      // BigQuery and BigLake are one database. A Snowflake table and a
+      // Databricks table are in two.
+      [BQ_TABLE('t'), 'x',
+       second('biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'),
+       []],
+      [entry('sf'), 'x', second(entry('dbx')), [TWO_DATABASES('e', 'c')], thirdParty],
     ];
-    for (const [source, expression, extra, errors] of cases) {
-      const actual = check(withField(source, expression, extra));
+    for (const [source, expression, extra, errors, looked] of cases) {
+      const actual =
+          check(withField(source, expression, extra, undefined, looked));
       expect({source, expression, extra, errors: actual})
           .toEqual({source, expression, extra, errors});
     }
@@ -3462,4 +3484,38 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
     delete noSource.entities[0].authoredSource;
     expect(check(noSource)).toEqual([]);
   });
+});
+
+// Customer inherits field `label`, which reads the double-quoted column
+// "p_name", from Party on another table of one PostgreSQL-dialect database.
+// An entity with no source leaves the model file's dialect to the others.
+test('validateInheritedColumns reads an inherited field in the dialect of the tables the model file binds', () => {
+  const cloudSql = (t: string) =>
+      `cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/d/schemas/public/tables/${t}`;
+  const spanner = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const entry = (t: string) => `projects/p/locations/l/entryGroups/g/entries/${t}`;
+  const sourceless = '      - {name: Order, primary_key: [id], fields: [{name: id, expression: id}]}\n';
+  // [label, table of each entity, key of each table's looked-up POSTGRES dialect, Order]
+  const cases: Array<[string, (t: string) => string, (t: string) => string|undefined, string]> = [
+    ['Cloud SQL', cloudSql, cloudSql, sourceless],
+    ['AlloyDB', t => `${TARGET.alloydb}/schemas/public/tables/${t}`, () => undefined, sourceless],
+    ['Spanner', t => `${spanner}/tables/${t}`, () => spanner, sourceless],
+    ['third-party', entry, entry, sourceless],
+    ['Cloud SQL, abstract Order', cloudSql, cloudSql,
+     '      - {name: Order, abstract: true, fields: [{name: id}]}\n'],
+  ];
+  for (const [label, table, key, order] of cases) {
+    const looked = ['party', 'customer'].flatMap(
+        t => key(t) ? [[key(t)!, 'POSTGRES'] as [string, string]] : []);
+    const m = loadOne('shop', `    datasets:
+      - {name: Party, source: ${table('party')}, primary_key: [id],
+         fields: [{name: id, expression: id}, {name: label, expression: '"p_name"'}]}
+      - {name: Customer, extends: [Party], source: ${table('customer')},
+         primary_key: [id], fields: [{name: id, expression: id}]}
+${order}`, {sourceDialects: new Map(looked)});
+    expect({label, errors: validateInheritedColumns(m, 'shop')}).toEqual({label, errors: [
+      "entity 'Customer' in model 'shop' (shop): field 'label' is inherited from 'Party', whose " +
+          "expression reads column 'p_name' of that entity's table; restate it with an " +
+          "expression for this entity's table."]});
+  }
 });

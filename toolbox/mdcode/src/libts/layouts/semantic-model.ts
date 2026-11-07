@@ -15,8 +15,9 @@ import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
-import {modelDocumentVersion} from '../semantic/loader';
+import {listed, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
+import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 import {joinFrontmatter, splitFrontmatter} from './documents';
@@ -632,12 +633,13 @@ function parseProfileName(text: string, file: string, name: string):
     throw new ProfileFileError(profileParseError(file, err?.message ?? err));
   }
   if (doc?.semantic_model !== undefined) {
+    const keys = listed([...PROFILE_FILE_KEYS].filter(k => k !== 'name'));
     throw new ProfileFileError(
         `Profile file '${file}' uses the legacy 'semantic_model:' wrapper, ` +
-        `which is no longer supported; write its entities, relationships ` +
-        `and actions at the top level under 'name: ${name}', and move any ` +
-        `'deployment_target' to an entry under 'deployments:' in the model ` +
-        `file with 'profile: ${name}'.`);
+        `which is no longer supported. Write its ${keys} at the top level, ` +
+        `beside 'name: ${name}', and drop any 'version' line. Move any ` +
+        `'deployment_target' to the model file as the 'target' of an entry ` +
+        `under 'deployments:' with 'name: ${name}' and 'profile: ${name}'.`);
   }
   return typeof doc?.name === 'string' ? doc.name : undefined;
 }

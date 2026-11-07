@@ -7,19 +7,12 @@
 import {expect} from 'bun:test';
 
 import {entryDenied, NAM3_INSTANCE, NOT_FOUND, spannerDenied} from '../../libts/gcp/location_responses';
+import {cloudSqlEntry} from '../../libts/mocks';
 
 import {boundAt, bqTable, CUSTOMER, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
 
 const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
     'us-central1/instances/shop/databases/sales/tables/customer';
-// The entry Dataplex keeps for a Cloud SQL for MySQL table.
-const MYSQL_ENTRY = {
-  status: 200,
-  result: {
-    entryType:
-        'projects/dataplex-types/locations/global/entryTypes/cloudsql-mysql-table',
-  },
-};
 // Entity Order, bound to table order in dataset d.
 const ORDER = {...CUSTOMER, name: 'Order', source: bqTable('order')};
 // Answers the read of a table in dataset eu as BigQuery answers for the EU
@@ -79,6 +72,21 @@ scenarios('push checks every source before it writes', [
     ],
   },
   {
+    name: 'a missing table in the model file\'s own bindings stops a catalog-only push and a --validate-only push before the preflight, as profile \'default\'',
+    flags: {deployment: false},
+    services: {lookupEntry: missing(bqTable('customer'))},
+    code: 1,
+    errors: [notFound('Customer', 'default', bqTable('customer'))],
+    called: {preflight: 0},
+    nothingWritten: true,
+    then: [{
+      flags: {validateOnly: true},
+      code: 1,
+      errors: [notFound('Customer', 'default', bqTable('customer'))],
+      called: {preflight: 0},
+    }],
+  },
+  {
     name: 'a BigQuery table is found in its location, not the push\'s, and push stops when its table does not exist',
     entities: [{...CUSTOMER, source: bqTable('customer', 'eu')}],
     flags: {deployment: false},
@@ -133,7 +141,7 @@ scenarios('push checks every source before it writes', [
     profiles: {x: boundAt(CLOUDSQL)},
     services: {
       lookupEntry: (_p: string, _l: string, name: string) =>
-          name.includes('/@cloudsql/') ? MYSQL_ENTRY : undefined,
+          name.includes('/@cloudsql/') ? cloudSqlEntry('cloudsql-mysql-table') : undefined,
     },
     code: 0,
     check: r => expect(lookups(r)).toEqual([

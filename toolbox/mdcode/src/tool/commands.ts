@@ -413,9 +413,9 @@ function readDialects(ctx: context.ApiContext, texts: string[]) {
 
 // Checks that every source in the inline bindings and named profiles of
 // `models` names a table with a Knowledge Catalog entry (see
-// sourceEntryErrors), and gives one message per entity that does not, and per
-// profile whose BigQuery and BigLake tables share no location. With
-// --skip-source-check, says so and checks nothing.
+// sourceEntryErrors), and gives one message for each binding whose table has
+// none, and one for each profile whose BigQuery and BigLake tables share no
+// location. With --skip-source-check, says so and checks nothing.
 async function sourceCheckErrors(
     models: LoadedModel[], ctx: context.ApiContext,
     options: PushOptions): Promise<string[]> {

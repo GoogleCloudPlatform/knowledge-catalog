@@ -125,7 +125,8 @@ dialect.
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL
 or SQL Server instance, one Snowflake account, or one Databricks metastore. The
-model file's own Spanner tables sit in one Spanner database too.
+model file's own bindings sit in one database too, and every push checks them,
+whether or not a deployment uses them.
 These units are the same in Cloud SQL and outside it, but a Cloud SQL table and
 a table outside Cloud SQL are never in one database. `kcmd` reads a third-party
 table's database from its entry's `fullyQualifiedName`. When the entry has

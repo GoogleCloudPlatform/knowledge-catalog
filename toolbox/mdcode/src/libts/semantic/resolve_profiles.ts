@@ -45,7 +45,7 @@ export const DEFAULT_PROFILE = 'default';
 // Keys a profile may carry at each level. Everything else is a logical
 // declaration the model owns; setting it in a profile is rejected so swapping a
 // profile can move data but never change what the model means.
-const PROFILE_FILE_KEYS = new Set([
+export const PROFILE_FILE_KEYS = new Set([
   'name', 'entities', 'relationships', 'metrics_exclude', 'actions',
 ]);
 const PROFILE_ENTITY_KEYS = new Set([
@@ -1427,16 +1427,16 @@ export function importHint(
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
-// entity reads from, or undefined when they name several, or a source names
-// none. It is null when every source is a table whose dialect no lookup read
-// (see dialectOfSources).
+// entity with a source reads from, or undefined when they name several, a
+// source names none, or no entity has one. It is null when every source is a
+// table whose dialect no lookup read (see dialectOfSources).
 export function sourcesDialect(model: {
   entities?: ReadonlyArray<
       Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
 }): string|null|undefined {
   return dialectOfSources(
       (model.entities ?? [])
-          .filter(e => !e.abstract)
+          .filter(e => !e.abstract && (e.authoredSource || e.dataSource))
           .map(e => ({
                  source: writtenSource(e),
                  lookedUp: e.sourceDialect,
@@ -1470,6 +1470,63 @@ function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
   }));
   if (dialects.size !== 1) return undefined;
   return [...dialects][0];
+}
+
+// The first entity of `bindings` in each database their sources name, for the
+// one-database rule. A source that names no database is left out.
+export function firstEntityPerDatabase(
+    bindings: ReadonlyArray<{entity: string; source: string; lookedUp?: string}>,
+    sourceDatabases?: ReadonlyMap<string, string>): string[] {
+  const databases = new Map<string, string>();
+  // Each table whose entry no lookup read, with the keys of the databases it
+  // may be in: its PostgreSQL database or its SQL Server instance for a Cloud
+  // SQL table in a schema, and any third-party database for a third-party
+  // table. `key` is the one it takes when it counts as a database of its own.
+  const unreadTables:
+      Array<{entity: string; key: string; fits: (key: string) => boolean}> = [];
+  const isThirdParty = (k: string) => k.startsWith('thirdparty/') ||
+      [...DIALECT_OF_FQN_PREFIX.keys()].some(p => k.startsWith(`${p}/`));
+  for (const {entity, source, lookedUp} of bindings) {
+    const s = source.trim();
+    const db = databaseOf(s);
+    if (!db) continue;
+    // One query reaches every database of a SQL Server instance, so a SQL
+    // Server table is keyed by its instance. A third-party table is in the
+    // database its entry's fullyQualifiedName names. A Cloud SQL table in a
+    // schema may be either engine's, so for it and for a third-party table
+    // the entry decides which database of its system it is in. A table whose
+    // entry no lookup read is compared after the loop.
+    const table = cloudSqlTableOf(s);
+    const instance = table?.resourceName.split('/databases/')[0];
+    if (lookedUp === undefined && table?.inSchema) {
+      const fits = (k: string) => k === db || k === instance;
+      unreadTables.push({entity, key: instance!, fits});
+      continue;
+    }
+    if (lookedUp === undefined && db === 'thirdparty') {
+      unreadTables.push({entity, key: 'thirdparty/', fits: isThirdParty});
+      continue;
+    }
+    const key = table && lookedUp === 'SQLSERVER' ? instance! :
+        db !== 'thirdparty' ? db :
+        sourceDatabases?.get(s) ?? `thirdparty/${lookedUp}`;
+    if (!databases.has(key)) databases.set(key, entity);
+  }
+  // A third-party table whose entry names no database is in the database of
+  // the other tables of its system.
+  for (const [prefix, systemDialect] of DIALECT_OF_FQN_PREFIX) {
+    if ([...databases.keys()].some(k => k.startsWith(`${prefix}/`))) {
+      databases.delete(`thirdparty/${systemDialect}`);
+    }
+  }
+  // A table whose entry no lookup read counts as another database only when
+  // none of the databases it may be in holds another table. Tables of two
+  // systems are never in one database, so it always counts beside a table of
+  // another system.
+  for (const u of unreadTables) {
+    if (![...databases.keys()].some(u.fits)) databases.set(u.key, u.entity);
+  }
+  return [...databases.values()];
 }
 
 /** What the caller of validateProfileCompleteness checks itself. */
@@ -1551,16 +1608,8 @@ export function validateProfileCompleteness(
   // Every concrete entity bound, all in one database. The profile's dialect
   // is the one its own sources imply, so a source the model file states for an
   // entity the profile leaves out does not decide it.
-  const databases = new Map<string, string>();
-  // Each table whose entry no lookup read, with the keys of the databases it
-  // may be in: its PostgreSQL database or its SQL Server instance for a Cloud
-  // SQL table in a schema, and any third-party database for a third-party
-  // table. `key` is the one it takes when it counts as a database of its own.
-  const unreadTables:
-      Array<{entity: string; key: string; fits: (key: string) => boolean}> = [];
-  const isThirdParty = (k: string) => k.startsWith('thirdparty/') ||
-      [...DIALECT_OF_FQN_PREFIX.keys()].some(p => k.startsWith(`${p}/`));
-  const stated: Array<{source: string; lookedUp?: string}> = [];
+  const stated: Array<{entity: string; source: string; lookedUp?: string}> =
+      [];
   const profiledByName =
       new Map((profiled.entities ?? []).map(e => [e.name, e]));
   // The entities whose source the loader's reader rejects.
@@ -1584,46 +1633,11 @@ export function validateProfileCompleteness(
       continue;
     }
     const lookedUp = profiledEntity.sourceDialect;
-    stated.push({source: pe.source, lookedUp});
-    // One query reaches every database of a SQL Server instance, so a SQL
-    // Server table is keyed by its instance. A third-party table is in the
-    // database its entry's fullyQualifiedName names. A Cloud SQL table in a
-    // schema may be either engine's, so for it and for a third-party table
-    // the entry decides which database of its system it is in. A table whose
-    // entry no lookup read is compared after the loop.
-    const table = cloudSqlTableOf(pe.source);
-    const instance = table?.resourceName.split('/databases/')[0];
-    if (lookedUp === undefined && table?.inSchema) {
-      const fits = (k: string) => k === db || k === instance;
-      unreadTables.push({entity: e.name, key: instance!, fits});
-      continue;
-    }
-    if (lookedUp === undefined && db === 'thirdparty') {
-      unreadTables.push(
-          {entity: e.name, key: 'thirdparty/', fits: isThirdParty});
-      continue;
-    }
-    const key = table && lookedUp === 'SQLSERVER' ? instance! :
-        db !== 'thirdparty' ? db :
-        opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
-    if (!databases.has(key)) databases.set(key, e.name);
+    stated.push({entity: e.name, source: pe.source, lookedUp});
   }
-  // A third-party table whose entry names no database is in the database of
-  // the other tables of its system.
-  for (const [prefix, systemDialect] of DIALECT_OF_FQN_PREFIX) {
-    if ([...databases.keys()].some(k => k.startsWith(`${prefix}/`))) {
-      databases.delete(`thirdparty/${systemDialect}`);
-    }
-  }
-  // A table whose entry no lookup read counts as another database only when
-  // none of the databases it may be in holds another table. Tables of two
-  // systems are never in one database, so it always counts beside a table of
-  // another system.
-  for (const u of unreadTables) {
-    if (![...databases.keys()].some(u.fits)) databases.set(u.key, u.entity);
-  }
-  if (databases.size > 1) {
-    const named = [...databases.values()].map(n => `'${n}'`).join(', ');
+  const databases = firstEntityPerDatabase(stated, opts.sourceDatabases);
+  if (databases.length > 1) {
+    const named = databases.map(n => `'${n}'`).join(', ');
     errors.push(
         `${at} binds entities in more than one database (${named}); a ` +
         `profile reads from one system a single query can reach`);

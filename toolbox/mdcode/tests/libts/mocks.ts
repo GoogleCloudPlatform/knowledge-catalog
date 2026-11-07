@@ -10,12 +10,17 @@ import {REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
 // Bypass actual gcloud CLI calls by using the explicit constructor
 export const TEST_API_CONTEXT = new gcp.ApiContext('test-project', 'test-location', 'test-token');
 
+// The answer Dataplex gives for a Cloud SQL table's entry of type `type`.
+export const cloudSqlEntry = (type: string) => ({
+  status: 200,
+  result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`},
+});
+
 // Stubs the Knowledge Catalog lookup of a Cloud SQL table's entry: it answers
 // `status`, with entry type `type` when that is 200. `mock.restore()` undoes it.
 export function stubCloudSqlEntry(status: number, type?: string) {
   return spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(async () =>
-      (status === 200 ?
-           {status, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}} :
+      (status === 200 ? cloudSqlEntry(type!) :
            {status, message: 'Permission denied (or it may not exist).'}) as any);
 }
 
@@ -37,11 +42,8 @@ export function passGraphChecks(): void {
       .mockResolvedValue(ok({databaseDialect: 'GOOGLE_STANDARD_SQL'}));
 }
 
-// Makes push's source check find a Knowledge Catalog entry for every table, as
-// Dataplex does for a table that exists. Each BigQuery table is in `US`; each
-// Spanner instance (with a regional config, which is not read) and BigLake
-// catalog is in us-central1, shaped as the live responses in
-// gcp/location_responses.ts are.
+// Makes push's source check find a Knowledge Catalog entry for every table, with
+// the answers two_phase/harness.ts gives the source check's reads by default.
 export function passSourceCheck(): void {
   const ok = (result: object) => ({status: 200, result}) as any;
   spyOn(bigquery.BigQueryClient.prototype, 'getTable')

@@ -1564,11 +1564,12 @@ semantic_model:
         code: 1,
         errors: [
           "Profile file 'commerce.profile.staging.yaml' uses the legacy " +
-              "'semantic_model:' wrapper, which is no longer supported; " +
-              'write its entities, relationships and actions at the top ' +
-              "level under 'name: staging', and move any " +
-              "'deployment_target' to an entry under 'deployments:' in the " +
-              "model file with 'profile: staging'.",
+              "'semantic_model:' wrapper, which is no longer supported. " +
+              'Write its entities, relationships, metrics_exclude and ' +
+              "actions at the top level, beside 'name: staging', and drop " +
+              "any 'version' line. Move any 'deployment_target' to the " +
+              "model file as the 'target' of an entry under 'deployments:' " +
+              "with 'name: staging' and 'profile: staging'.",
         ],
       });
     });
@@ -2208,7 +2209,7 @@ semantic_model:
     test('rejects a field with no text for its entity\'s source dialect, and suggests kcmd import --transpile when it can translate it', async () => {
       writeScope({
         'commerce.yaml': commerce()
-            .replace(BQ('dev', 'purchase'), `${SPANNER_DB}/tables/purchase`)
+            .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`)
             .replace('expression: p_id }', 'expression: { dialects: ' +
                      '[{ dialect: BIGQUERY, expression: p_id }] } }'),
       });

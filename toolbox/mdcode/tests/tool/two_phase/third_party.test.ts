@@ -6,7 +6,7 @@ import {expect} from 'bun:test';
 
 import {entryDenied} from '../../libts/gcp/location_responses';
 
-import {ALLOYDB, bqTable, CUSTOMER, err, scenarios, spannerGraph} from './harness';
+import {ALLOYDB, bqTable, CUSTOMER, err, has, scenarios, spannerGraph} from './harness';
 
 const entry = (group: string, id: string) =>
     `projects/test-project/locations/us/entryGroups/${group}/entries/${id}`;
@@ -78,7 +78,7 @@ scenarios('a third-party table', [
             errors: [MISSING], nothingWritten: true}],
   },
   {
-    name: "a field bound to one needs SQL in its dialect or ANSI_SQL, and a profile's third-party tables must be in one account",
+    name: "a field bound to one needs SQL in its dialect or ANSI_SQL, and the third-party tables of a profile or of the model file must be in one account",
     entities: [DATABRICKS],
     flags: {deployment: false},
     services: LOOKUP,
@@ -103,6 +103,10 @@ scenarios('a third-party table', [
           "[commerce.profile.x.yaml] profile 'x' binds entities in more than " +
           "one database ('Customer', 'Order'); a profile reads from one " +
           'system a single query can reach')],
+    }, {
+      entities: [THIRD_PARTY, {...ORDER, source: OTHER_ACCOUNT}],
+      code: 1,
+      errors: [has("binds entities in more than one database ('Customer', 'Order')")],
     }],
   },
 ]);
