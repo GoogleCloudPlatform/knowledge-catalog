@@ -2258,7 +2258,8 @@ describe(
                 await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
             expect(result.success).toBe(true);
-            expect(result.linked).toBe(3);
+            expect(result.linked).toBe(2);
+            expect(result.unchangedLinks).toBe(1);
             expect(result.unlinked).toBe(1);
             const source =
                 createLink.mock.calls.find(c => c[3] === STAR_REFERENCES[0])!;
@@ -2273,11 +2274,11 @@ describe(
               `delLink:${FROM_SUPPLIER}`,
               `delLink:${STAR_REFERENCES[0]}`,
               `createLink:${STAR_SEMANTIC_LINK}`,
-              ...STAR_REFERENCES.map(id => `createLink:${id}`),
+              `createLink:${STAR_REFERENCES[0]}`,
               'delEntry:sales/entities/supplier',
             ]);
-            // The target reference link has no aspect, so push leaves it as
-            // it is.
+            // The lookup returned the target reference link with the same
+            // ends, and it has no aspect, so push sends no request for it.
             expect(updateLink).not.toHaveBeenCalled();
           });
 
@@ -2476,8 +2477,8 @@ describe(
               'no push-again hint',
           async () => {
             // `sales-old-a` joins the pair `sales-a` takes, and `sales-a` is
-            // written. The update of `sales-b` fails, and that link still
-            // exists.
+            // written. The stored `sales-b` lacks its aspect, so push updates
+            // it. That update fails, and the link still exists.
             const linkA = linkEntry(
                 'sales-a', ['sales.entities.orders', 'sales.entities.customer']);
             const linkB = {
@@ -2495,10 +2496,8 @@ describe(
                 linkEntry(
                     'sales-old-a',
                     ['sales.entities.orders', 'sales.entities.customer']),
-                linkB,
+                {...linkB, aspects: undefined},
               ]),
-              createLink: (id) =>
-                  id === 'sales-b' ? err(409, 'already exists') : ok({}),
               updateLink: err(500, 'backend error'),
             });
             const emitted: EmittedModel[] = [{
@@ -3108,18 +3107,68 @@ describe('deployKnowledgeCatalog: relationship entries and links', () => {
          expect(result.success).toBe(true);
          expect(result.deleted).toBe(1);
          expect(result.unlinked).toBe(3);
-         expect(result.linked).toBe(3);
-         // The orphaned links go first, then the links are written, and the
-         // orphaned entry goes last.
+         expect(result.linked).toBe(1);
+         expect(result.unchangedLinks).toBe(2);
+         // The orphaned links go first, and the orphaned entry goes last.
+         // The lookup returned STAR's links with the same ends, so push
+         // creates none of them. STAR_LINK is stored without its aspect, so
+         // it gets the one update.
          expect(callOrder).toEqual([
            ...[BACK_ID, ...dropped.map(l => l.name.split('/').pop())].map(
                id => `delLink:${id}`),
-           ...[STAR_SEMANTIC_LINK, ...STAR_REFERENCES].map(
-               id => `createLink:${id}`),
            'delEntry:sales/relationships/customer_orders',
          ]);
          expect(updateLink).toHaveBeenCalledTimes(1);
        });
+
+  // STAR_LINK as the lookup returns it after a push: its aspect is keyed with
+  // the types project `project`, holds `relationships`, and carries the
+  // fields Dataplex adds.
+  const storedLink = (project: string, relationships: string[]) => ({
+    ...STAR_LINK,
+    aspects: {
+      [`${project}.global.semantic-link`]: {
+        aspectType:
+            `projects/${project}/locations/global/aspectTypes/semantic-link`,
+        createTime: '2026-11-07T00:35:40Z',
+        updateTime: '2026-11-07T00:35:40Z',
+        aspectSource: {},
+        data: {relationships},
+      },
+    },
+  });
+  const [SOURCE_REF, TARGET_REF] =
+      references('orders_to_customer', 'orders', 'customer');
+  // Each case pushes STAR again over the links `links` and expects creates of
+  // the link IDs `created` and updates of `updated`. STAR's other links count
+  // as unchanged.
+  for (const [name, links, created, updated] of [
+    ['an unchanged re-push sends no entry link write',
+     [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF,
+      TARGET_REF],
+     [], []],
+    ['an aspect keyed with the types project ID counts as unchanged',
+     [storedLink('dataplex-types', ['orders_to_customer']), SOURCE_REF,
+      TARGET_REF],
+     [], []],
+    ['a link whose aspect changed gets an update and no create',
+     [storedLink('655216118709', ['old_name']), SOURCE_REF, TARGET_REF], [],
+     [STAR_SEMANTIC_LINK]],
+    ['a link the lookup did not return is created',
+     [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF],
+     [STAR_REFERENCES[1]], []],
+  ] as [string, object[], string[], string[]][]) {
+    test(name, async () => {
+      const {createLink, updateLink, result} =
+          await rePush({links: () => ok(links), createLink: () => ok({})});
+      const linked = created.length + updated.length;
+      expect(result).toMatchObject(
+          {success: true, linked, unchangedLinks: 3 - linked});
+      expect(createLink.mock.calls.map(c => c[3])).toEqual(created);
+      expect(updateLink.mock.calls.map(c => c[0].name!.split('/').pop()))
+          .toEqual(updated);
+    });
+  }
 
   // STAR with its relationship turned to run from customer to orders.
   const FLIPPED = [{

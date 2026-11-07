@@ -7,7 +7,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {ApiContext} from '../../src/libts/gcp/context';
-import {CatalogClient, Entry} from '../../src/libts/gcp/dataplex';
+import {CatalogClient, Entry, EntryLink} from '../../src/libts/gcp/dataplex';
 import {OverviewSidecar, SemanticModelLayout} from '../../src/libts/layouts/semantic-model';
 import * as bqLeg from '../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
@@ -93,8 +93,9 @@ afterEach(() => {
 
 describe('push prints Knowledge Catalog warnings', () => {
   const RESULT = {
-    success: true, created: 1, updated: 0, deleted: 0, linked: 0, unlinked: 0,
-    warnings: ['a relationship is skipped'], plan: [],
+    success: true, created: 1, updated: 0, deleted: 0, linked: 0,
+    unchangedLinks: 0, unlinked: 0, warnings: ['a relationship is skipped'],
+    plan: [],
   };
   // The model binds no table and declares no named profile, so push warns
   // before it reaches the catalog.
@@ -894,10 +895,28 @@ function fakeCatalog(opts: {cloudSqlEngine?: CloudSqlEngine} = {}) {
     return e ? {status: 200, result: {...structuredClone(e), aspects: {}}} :
                {status: 404, message: 'not found'};
   });
+  // A link lookup returns the stored links that reference the entry.
+  const links = new Map<string, EntryLink>();
   spyOn(P, 'lookupEntryLinks')
-      .mockImplementation(async () => ({status: 200, result: []}));
-  spyOn(P, 'createEntryLink')
-      .mockImplementation(async () => stopped() ? INJECTED : {status: 200});
+      .mockImplementation(async (_p: string, _l: string, {entry}) => ({
+        status: 200,
+        result: [...links.values()]
+                    .filter(l => l.entryReferences.some(r => r.name === entry))
+                    .map(l => structuredClone(l)),
+      }));
+  spyOn(P, 'createEntryLink').mockImplementation(async (...args: any[]) => {
+    const link: EntryLink = args[4];
+    if (stopped()) return INJECTED;
+    if (links.has(link.name!)) return {status: 409};
+    links.set(link.name!, structuredClone(link));
+    return {status: 200};
+  });
+  spyOn(P, 'updateEntryLink').mockImplementation(async (link) => {
+    const stored = links.get(link.name!);
+    if (!stored) return {status: 404, message: 'not found'};
+    stored.aspects = {...stored.aspects, ...structuredClone(link.aspects)};
+    return {status: 200, result: stored};
+  });
   return {entries, create, list, stop};
 }
 
@@ -1828,6 +1847,7 @@ describe('push applies, loads and checks a profile', () => {
         updated: 0,
         deleted: 0,
         linked: 0,
+        unchangedLinks: 0,
         unlinked: 0,
         plan: [],
       },
@@ -2171,7 +2191,7 @@ semantic_model:
         {prepared: {emitted: [], existing: [], warnings: [], plan: []}});
     const applySpy = spyOn(kc, 'applyKnowledgeCatalog').mockResolvedValue(
         {success: true, warnings: [], created: 0, updated: 0, deleted: 0,
-         linked: 0, unlinked: 0, plan: []});
+         linked: 0, unchangedLinks: 0, unlinked: 0, plan: []});
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
 
@@ -2734,8 +2754,9 @@ describe('what a push says about relationships', () => {
           from_columns: [payer], to_columns: [key] }
 `;
   const PAID_BY = /\n      - \{ name: paid_by[^}]*\}\n/;
-  // Each case gives the exit code and a line the push prints.
-  const cases: [string, string, number, string][] = [
+  // Each case gives the exit code and a line the push prints. A case with a
+  // fifth model pushes that model first.
+  const cases: [string, string, number, string, string?][] = [
     ['counts entry links: one for the relationships on one pair, and two ' +
          'reference links for each relationship',
      TWO_ON_ONE_PAIR, 0,
@@ -2760,12 +2781,28 @@ describe('what a push says about relationships', () => {
      "Error: relationship 'referred_by' in model 'commerce' (commerce) " +
          "runs from 'Customer' to itself; a relationship joins two " +
          'different entities.'],
+    ['an unchanged re-push counts its entry links as unchanged',
+     TWO_ON_ONE_PAIR, 0,
+     'Wrote 0 new and 5 updated Knowledge Catalog entries; wrote 0 entry ' +
+         'links (5 unchanged).',
+     TWO_ON_ONE_PAIR],
+    ['a re-push that adds a relationship on a linked pair counts the entry ' +
+         'links it wrote and the unchanged ones',
+     TWO_ON_ONE_PAIR, 0,
+     'Wrote 1 new and 4 updated Knowledge Catalog entries; wrote 3 entry ' +
+         'links (2 unchanged).',
+     TWO_ON_ONE_PAIR.replace(PAID_BY, '\n')],
   ];
-  for (const [title, model, code, line] of cases) {
+  for (const [title, model, code, line, before] of cases) {
     test(title, async () => {
       writeWorkspace();
-      fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
       fakeCatalog();
+      const modelFile = path.join(entryGroupDir(), 'commerce.yaml');
+      if (before) {
+        fs.writeFileSync(modelFile, before);
+        expect(await push({})).toBe(0);
+      }
+      fs.writeFileSync(modelFile, model);
 
       expect(await push({})).toBe(code);
       expect(messages(code ? console.error : console.log).split('\n'))
