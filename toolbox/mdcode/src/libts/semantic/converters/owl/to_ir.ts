@@ -42,7 +42,7 @@
 import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 import {listed, plural} from '../../loader';
 
-import {OwlModel, OwlOntology} from './model';
+import {AnonymousClass, OwlModel, OwlOntology} from './model';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -210,6 +210,26 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+// How a warning names each kind of anonymous class.
+const ANONYMOUS_CLASS: Record<AnonymousClass, string> = {
+  union: 'a union of classes',
+  intersection: 'an intersection of classes',
+  other: 'an anonymous class',
+};
+
+// The warning for a property with an anonymous class as a domain or range, or
+// undefined when it has none.
+function anonymousWarning(
+    property: string,
+    ends: Array<[string, AnonymousClass | undefined]>): string|undefined {
+  const parts =
+      ends.filter(([, kind]) => kind)
+          .map(([end, kind]) => `${ANONYMOUS_CLASS[kind!]} as its ${end}`);
+  if (!parts.length) return undefined;
+  return `${property} has ${parts.join(' and ')}, which import does not ` +
+      `read; import leaves out the property.`;
+}
+
 // --- Mapping. ---------------------------------------------------------------
 
 /**
@@ -231,6 +251,10 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // silently emitting a duplicate the loader would reject.
   const entitiesByName = new Map<string, Entity>();
   const entities: Entity[] = [];
+  // The owl:hasKey property IRIs of each entity, and the field name written for
+  // each property IRI on it, so a key resolves by full IRI.
+  const keyIris = new Map<Entity, string[]>();
+  const fieldOfIri = new Map<Entity, Map<string, string>>();
   for (const c of owl.classes) {
     if (entitiesByName.has(c.localName)) {
       warnings.push(
@@ -244,7 +268,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       // No source: a class is a logical entity. A binding profile supplies the
       // backing table before a graph deploy; KC push needs none.
       dataSource: '',
-      keys: dedupe(c.keys),  // owl:hasKey -> primary_key (grain)
+      keys: [],  // owl:hasKey -> primary_key (grain), set once fields exist
       description: c.comment,
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms, c.examples),
       fields: [],
@@ -285,12 +309,20 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
+    keyIris.set(entity, dedupe(c.keys));
+    fieldOfIri.set(entity, new Map());
   }
 
   // Datatype properties -> fields on each domain's entity. A property with more
   // than one domain appears on each; one with none has nowhere to live.
   let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
+    const anonymous = anonymousWarning(
+        `datatype property '${p.localName}'`, [['domain', p.anonymousDomain]]);
+    if (anonymous) {
+      warnings.push(anonymous);
+      continue;
+    }
     if (!p.domains.length) {
       warnings.push(
           `datatype property '${p.localName}' has no rdfs:domain; skipped ` +
@@ -337,10 +369,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
       entity.fields.push(field);
+      fieldOfIri.get(entity)!.set(p.iri, p.localName);
       produced = true;
       // An inverse-functional property uniquely identifies its subject -> a
       // unique_keys constraint, unless it is already the primary key.
-      if (p.inverseFunctional && !arraysEqual(entity.keys, [p.localName])) {
+      if (p.inverseFunctional && !arraysEqual(keyIris.get(entity)!, [p.iri])) {
         (entity.uniqueKeys ??= []).push([p.localName]);
       }
     }
@@ -351,27 +384,31 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // corrections are fail-soft (warn, never throw), matching the converter's
   // per-element policy:
   //   1. owl:hasKey may name a property that is not a datatype property on the
-  //      class (undeclared, or declared only on a different domain). That
-  //      column has no field, so it would name a phantom column that only
-  //      errors later at graph generation. Drop the ENTIRE primary_key, not
-  //      just the phantom member -- keeping the survivors would silently narrow
-  //      a composite key to a possibly non-unique one, changing the grain.
+  //      class (undeclared, or declared only on a different domain). A key
+  //      resolves to a field only when its full IRI is the property written as
+  //      that field, so foaf:id never selects the field written for ex:id. An
+  //      unresolved key has no field, so it would name a phantom column that
+  //      only errors later at graph generation. Drop the ENTIRE primary_key,
+  //      not just the phantom member -- keeping the survivors would silently
+  //      narrow a composite key to a possibly non-unique one, changing the
+  //      grain. The warning names an unresolved key by its full IRI.
   //   2. A class with no usable owl:hasKey but exactly one single-column
   //      inverse-functional property still has a natural identifier; promote
   //      that unique key to the primary_key so the entity has a grain.
   //      (Ambiguous cases -- several unique keys, or a composite one -- are
   //      left alone.)
   for (const entity of entities) {
-    const fieldNames = new Set(entity.fields.map(f => f.name));
-    const missing = entity.keys.filter(k => !fieldNames.has(k));
-    if (missing.length) {
+    const fields = fieldOfIri.get(entity)!;
+    const missing = keyIris.get(entity)!.filter(k => !fields.has(k));
+    if (!missing.length) {
+      entity.keys = keyIris.get(entity)!.map(k => fields.get(k)!);
+    } else {
       warnings.push(
           `class '${entity.name}' owl:hasKey names ${
               missing.map(m => `'${m}'`).join(', ')} which ${
               missing.length > 1 ? 'are' : 'is'} not a datatype property on ` +
           `the class; dropping the entire primary_key (keeping only the ` +
           `remaining columns would change the entity's grain).`);
-      entity.keys = [];
     }
     if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
         entity.uniqueKeys[0].length === 1) {
@@ -418,6 +455,13 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // added to the model (logical grain, not a binding) before a graph deploy.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
+    const anonymous = anonymousWarning(
+        `object property '${p.localName}'`,
+        [['domain', p.anonymousDomain], ['range', p.anonymousRange]]);
+    if (anonymous) {
+      warnings.push(anonymous);
+      continue;
+    }
     const domain = p.domains[0];
     const range = p.ranges[0];
     if (!domain || !range) {
