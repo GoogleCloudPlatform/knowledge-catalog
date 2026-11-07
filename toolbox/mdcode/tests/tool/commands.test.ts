@@ -1166,6 +1166,169 @@ describe('the legacy profile forms', () => {
 });
 
 
+// A pull keeps each local model and profile file that already holds what the
+// catalog holds, byte for byte: its comments, key order and style, and the
+// forms pull would write differently, such as a string `ai_context`, the
+// order of entities and metrics, custom ai_context members and
+// `metrics_exclude`. It writes a file whose content differs, or that does not
+// exist, in full.
+describe('a pull after a push', () => {
+  const MODEL = `# Hand-written model.
+version: "0.2.0.dev0/google"
+semantic_model:
+  - description: Orders and customers   # before name
+    name: commerce
+    ai_context: Answer in dollars.
+    entities:
+      - name: Order
+        primary_key: [id]
+        ai_context:
+          instructions: An order.
+          custom: {zeta: 1, alpha: 2}
+        fields:
+          - { name: id }
+          - { name: buyer }
+      - name: Customer
+        primary_key: [key]
+        fields:
+          - { name: key, label: Customer ID }   # flow style
+    relationships:
+      - { name: placed_by, from: Order, to: Customer, from_columns: [buyer], to_columns: [key] }
+    metrics:
+      - { name: orders, expression: COUNT(Order.id) }
+      - { name: customers, expression: COUNT(Customer.key) }
+      - { name: buyers, expression: COUNT(Order.buyer) }
+`;
+  const TABLES = 'bigquery.googleapis.com/projects/test-project/datasets/prod/tables';
+  const PROFILE = `# Production bindings.
+name: prod
+entities:
+  - name: Order
+    source: ${TABLES}/orders
+    primary_key: [id]
+    fields: [{ name: id, expression: o_id }, { name: buyer, expression: o_buyer }]
+  - name: Customer
+    source: ${TABLES}/customer
+    primary_key: [key]
+    fields: [{ name: key, expression: c_key }]
+relationships:
+  - { name: placed_by, from_columns: [buyer], to_columns: [key] }
+metrics_exclude: [orders, customers]
+`;
+  // A vanilla-flavor model, which binds each dataset to its table and writes
+  // each expression as a list of dialects.
+  const ansi = (sql: string) =>
+      `{dialects: [{dialect: ANSI_SQL, expression: "${sql}"}]}`;
+  const VANILLA = `# Hand-written vanilla model.
+version: "0.2.0.dev0"
+semantic_model:
+  - description: Orders and customers   # before name
+    name: commerce
+    ai_context: Answer in dollars.
+    datasets:
+      - name: Order
+        source: ${TABLES}/orders
+        primary_key: [id]
+        ai_context:
+          instructions: An order.
+          custom: {zeta: 1, alpha: 2}
+        fields:
+          - { name: id, expression: ${ansi('o_id')} }
+          - { name: buyer, expression: ${ansi('o_buyer')} }
+      - name: Customer
+        source: ${TABLES}/customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: ${ansi('c_key')} }   # flow style
+    relationships:
+      - { name: placed_by, from: Order, to: Customer, from_columns: [buyer], to_columns: [key] }
+    metrics:
+      - { name: orders, expression: ${ansi('COUNT(Order.id)')} }
+      - { name: customers, expression: ${ansi('COUNT(Customer.key)')} }
+`;
+  const ANCHOR =
+      'projects/test-project/locations/us/entryGroups/commerce_eg/entries/' +
+      'commerce';
+
+  // Writes `files` into the scope's entry group directory, and pushes them.
+  async function pushed(files: Record<string, string>) {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    for (const [name, text] of Object.entries(files)) {
+      fs.writeFileSync(local(name), text);
+    }
+    const catalog = fakeCatalog();
+    expect(await push({deployment: false})).toBe(0);
+    return catalog;
+  }
+
+  for (const [flavor, files] of [
+    ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
+    ['vanilla', {'commerce.yaml': VANILLA}],
+  ] as const) {
+    test(`that changes nothing keeps the ${flavor} files byte for byte`,
+         async () => {
+           await pushed(files);
+           const logSpy = console.log as Mock<any>;
+           logSpy.mockClear();
+
+           expect(await pull()).toBe(0);
+           expect(localFiles()).toEqual(
+               Object.fromEntries(Object.entries(files).map(
+                   ([name, text]) => [local(name), text])));
+           for (const name of Object.keys(files)) {
+             expect(messages(logSpy)).toContain(`unchanged ${shown(name)}`);
+           }
+         });
+  }
+
+  test('writes in full a file whose content changed in the catalog, keeps ' +
+           'the others, and writes a file that does not exist',
+       async () => {
+         const {entries} = await pushed(
+             {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+         entries.get(ANCHOR)!.entrySource!.description = 'Sales';
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+
+         expect(await pull()).toBe(0);
+         const model = fs.readFileSync(local('commerce.yaml'), 'utf8');
+         expect(model).toContain('description: Sales');
+         expect(model).not.toContain('# Hand-written model.');
+         const profile =
+             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+         expect(profile).toContain('name: prod');
+         expect(profile).not.toContain('# Production bindings.');
+
+         // The profile file pull wrote holds what the catalog holds.
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
+         entries.get(ANCHOR)!.entrySource!.description = 'Sales again';
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .toBe(PROFILE);
+       });
+
+  test('writes the files in full, with a warning, when the local model file ' +
+           'does not load',
+       async () => {
+         await pushed(
+             {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+         fs.writeFileSync(local('commerce.yaml'), `${MODEL}    colour: red\n`);
+         const warnSpy = console.warn as Mock<any>;
+
+         expect(await pull()).toBe(0);
+         expect(messages(warnSpy)).toContain(
+             `Warning: local model file ${shown('commerce.yaml')} does not ` +
+             'load (');
+         expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+             .not.toContain('colour');
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .not.toContain('# Production bindings.');
+       });
+});
+
+
 describe('a pull', () => {
   test('writes the model, profile and sidecar files, skips a name push does ' +
            'not read, and names or deletes stale ones',

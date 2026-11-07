@@ -363,7 +363,8 @@ Each entity, relationship and metric, and the model itself, are now governed
 entries, joined by `semantic-link` and `reference` links —
 discoverable, access-controlled, and the single definition the rest of your work
 reads from. `kcmd pull` rebuilds the model YAML from these entries, confirming
-the round-trip; comments, key order and formatting are not kept. Physical
+the round-trip; it leaves your file as it is while the catalog holds what it
+says. Physical
 bindings can be governed here too, alongside the logical model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
