@@ -368,9 +368,8 @@ that join the same two classes in opposite directions:
 $ kcmd push                  # publishes the logical model to Knowledge Catalog
 ```
 
-A relationship publishes as a catalog link only once it has join columns (added
-to the model, below); a column-less edge is skipped with a warning, so the
-entities and fields still publish while the edge waits.
+A relationship with no join columns still publishes, with its entry and its
+links, so the whole logical model reaches the catalog.
 
 A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
 and they belong in different places:
@@ -455,17 +454,16 @@ one logical model binds to several stores.
 
 ## Limitations
 
-Three different situations hide in "not covered": constructs already read but not
-yet resolved all the way downstream, constructs not read but reachable next, and
-constructs out of scope.
+Two different situations hide in "not covered": constructs not read but
+reachable next, and constructs out of scope. What the importer reads comes
+first.
 
-**Read now — only downstream resolution is pending.** The **class hierarchy**
-(`rdfs:subClassOf`) maps to entity `extends` (see [Class
-hierarchies](#class-hierarchies-rdfssubclassof)); the importer handles it today
-and the remaining work is downstream, not in the import:
+**Read now.** The **class hierarchy** (`rdfs:subClassOf`) maps to entity
+`extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)). Each
+push target handles it as follows:
 
-- **BigQuery** push resolves it into node-table labels, inherited fields
-  flattened down (see [Class hierarchies (`extends` →
+- **BigQuery** and **Spanner** push resolve it into node-table labels,
+  inherited fields flattened down (see [Class hierarchies (`extends` →
   labels)](reference.md#class-hierarchies-extends--labels)).
 - **Knowledge Catalog** records the hierarchy as written: each entity's entry
   holds only its own fields and its `extends`, with a `reference` link to each

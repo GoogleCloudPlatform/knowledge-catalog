@@ -13,8 +13,8 @@
 // `semantic-action` and `semantic-constraint`) live in the destination project.
 // Push does NOT provision any type, nor the entry group (those are created at
 // `init`); it only validates and writes entries and entry links. The caller
-// needs `dataplex.entryGroups.useSemanticModelAspect` on the destination entry
-// group.
+// needs the permissions docs/semantic-model/reference.md lists for push, on the
+// destination entry group.
 //
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):

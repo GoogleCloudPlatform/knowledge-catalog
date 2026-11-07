@@ -26,7 +26,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Authored element                                               | → Knowledge Catalog             | Recovered by `pull`                            | → BigQuery                                                           | → Spanner                                                            |
 |----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
 | Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
-| Field                                                          | `schema` aspect column          | ✓ (type²)                                      | column on the node table¹                                            | column on the node table¹                                            |
+| Field                                                          | `schema` aspect field           | ✓ (type²)                                      | column on the node table¹                                            | column on the node table¹                                            |
 | Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
 | Field expression (canonical SQL)                               | `sql-expressions` aspect³       | ✓³                                             | builds the DDL                                                       | builds the DDL                                                       |
 | Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | noted in `OPTIONS(description)`                                      | — dropped                                                            |
@@ -39,7 +39,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | `description` (entity / metric / field / relationship)         | entry description / `schema`    | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
-| `ai_context.synonyms`                                          | the object's own aspect         | ✓                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
+| `ai_context.synonyms`                                          | `semantic-*` aspect / `schema`  | ✓                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
 | `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
 | `ai_context.examples`                                          | `overview` aspect               | ✓                                              | into `OPTIONS(description)` (`Examples:` line)                       | — dropped                                                            |
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
@@ -67,10 +67,11 @@ agree on every structural row and differ only where a Spanner target has no
    entry id, `<model>/relationships/<relationship>`, so it comes back as
    written.
 7. **Guidelines aspect.** The `guidelines` aspect holds the
-   `ai_context.instructions` of the model, an entity, a field, a metric or a
-   relationship, and its custom `ai_context` members. A field's sits on its
-   entity's entry at `Schema.<field>`. Push leaves out a custom member whose
-   value Knowledge Catalog cannot store as written, such as `.inf`, and warns.
+   `ai_context.instructions` and the custom `ai_context` members of the model,
+   an entity, a field, a metric or a relationship. A field's `guidelines`
+   aspect sits on its entity's entry at `Schema.<field>`. Push leaves out a
+   custom member whose value Knowledge Catalog cannot store as written, such as
+   `.inf`, and warns.
 8. **Model-level metadata.** Neither graph has a home for statement-level
    metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
    carries no `OPTIONS` at all — so the model's `description` and
@@ -84,7 +85,7 @@ agree on every structural row and differ only where a Spanner target has no
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog. An entity with no `source` gets an entry whose
     `semantic-entity` aspect records no source, and a relationship with no join
-    columns gets its entry and links with no columns.
+    columns still gets its entry and its links.
 11. **Vendor-dialect fallback.** What you author is the `expression.dialects[]`
     list using one of the supported SQL dialects (see
     [Model spec §2.5](model_spec.md#25-expressions)).
@@ -196,10 +197,10 @@ parameter when the model loads, and nothing downstream can tell that apart from
 one the author typed, so a pulled document states it where the original left it
 to the field. Re-loading gives the same parameter, but the field and the
 parameter now each hold a copy, and changing the field no longer moves it.
-A projection whose field is not in the pulled document — pruning drops an
-entity no binding reaches — comes back as a declared parameter carrying the
-resolved `type` instead, since emitting a `concept`/`field` pair that resolves
-to nothing would write a document that will not load. A `sql` executor
+A projection whose field is not in the pulled document comes back as a
+declared parameter carrying the resolved `type` instead, since emitting a
+`concept`/`field` pair that resolves to nothing would write a document that will
+not load. A `sql` executor
 round-trips its `statements` with the rest: they are the
 write, not a note about it, so a catalog that dropped them would describe an
 action nobody could re-deploy. The entry type is custom, so `kcmd init` creates
@@ -307,8 +308,8 @@ as `entity:`, declared or derived. See
 [Reference](reference.md#the-second-generation-types). A model an older
 `kcmd` pushed with the first-generation types is left out with a warning.
 
-`pull` returns what push wrote: the model file as written and every named
-profile, not the view a deployment's profile prunes the model to.
+`pull` returns what push wrote: the model and every named profile. Push does
+not prune the model to a deployment's profile first.
 
 **Normalized** — the content survives, the form changes:
 

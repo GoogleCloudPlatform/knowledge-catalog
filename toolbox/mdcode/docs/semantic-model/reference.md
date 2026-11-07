@@ -572,8 +572,8 @@ unique keys (`primaryKey` / `uniqueConstraints`) in its `semantic-entity`
 aspect. A relationship entry carries its endpoints and join columns in its
 `semantic-relationship` aspect. Any element with `ai_context.instructions` (the
 model, an entity, a field, a metric or a relationship) also gets a built-in
-`guidelines` aspect holding that text, and one with `ai_context.examples` an
-`overview` aspect holding them.
+`guidelines` aspect holding that text. An element with `ai_context.examples`
+also gets an `overview` aspect holding them.
 
 An **action** entry carries its executor, its typed parameters, the names of the
 constraints that gate it (`guards`), and the concepts it changes (`affects`) in
@@ -597,11 +597,8 @@ nothing reads. They are kept so that an aspect type already provisioned in your
 project still matches what `kcmd init` would create, and an entry left holding
 an old `expression` reads back as a named skip rather than as a rule. The
 constraint's `description` is the entry's own summary, because that sentence is
-what a caller refused by the rule reads. Its type is provisioned alongside the action pair and
-for the same reason. All three parts of `ai_context` survive, unlike an element
-routed to the built-in `guidelines` aspect, which has a home for `instructions`
-alone: `kcmd` defines the constraint aspect itself, so it has no reason to keep
-that limit.
+what a caller refused by the rule reads. Its type is provisioned alongside the
+action pair and for the same reason. All three parts of `ai_context` survive.
 
 The aspect also carries the constraint's two routing words: `onViolation` (what
 the engine does to the write — `reject`, `escalate` or `warn`) and `severity`
@@ -625,11 +622,11 @@ the metadata stores and what is never stored, see
 
 ### The second-generation types
 
-Push and pull use the second generation of these types. An older `kcmd`
-pushed a first generation, with dotted entry ids (`<model>.entities.<entity>`)
-and a `schema-join` link per relationship. A push over that entry group deletes
-those entries and links. Pull rebuilds no model pushed with the first-generation
-types, and warns about it instead.
+Push and pull use the second generation of the semantic types. An older `kcmd`
+pushed a first generation, with dotted entity and metric ids
+(`<model>.entities.<entity>`) and a `schema-join` link per relationship. A push
+over that entry group deletes those entries and links. Pull rebuilds no model
+pushed with the first-generation types, and warns about it instead.
 
 Each relationship other than a many-to-many association has an entry of its
 own. Entry ids are `<model>`, `<model>/entities/<entity>`,
@@ -998,9 +995,11 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
   entity / metric entries, deletes orphaned ones, and reads the model entry again
   before it labels the push finished
-* `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
-  `semantic-link` and `reference` links, when the model has relationships or an
-  entity extends another
+* `dataplex.entryLinks.create`, `dataplex.entryLinks.get`,
+  `dataplex.entryLinks.update`, `dataplex.entryLinks.delete` and
+  `dataplex.entries.link` — push creates and reads the `semantic-link` and
+  `reference` links, updates the `semantic-link` ones, and deletes the ones
+  the model no longer has
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
   `schema` aspect (the fields it declares)
 * `dataplex.entryGroups.useReferenceEntryLink` — when the model has
@@ -1009,27 +1008,20 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `ai_context.examples` or has an overview sidecar
 * `dataplex.entryGroups.useGuidelinesAspect` — when an element carries
   `ai_context.instructions` or custom `ai_context` members
-* the `use<AspectType>Aspect` permission for the `semantic-model`,
-  `semantic-entity`, `semantic-metric` and `semantic-relationship` aspect types
-  the push attaches — i.e. `dataplex.entryGroups.useSemanticModelAspect`,
-  `useSemanticEntityAspect`, `useSemanticMetricAspect` and
-  `useSemanticRelationshipAspect` — and the same for `sql-expressions` and
-  `semantic-extensions` when an element has an expression or a third-party
-  `custom_extensions` block, and for the `semantic-link` aspect and entry link
-  type when the model has relationships
+* `dataplex.entryGroups.useSemanticTypes` — every built-in `semantic-*`
+  aspect, entry and entry link type
+* `dataplex.entryGroups.useSQLExpressionsAspect` — when a field or metric has
+  an expression
 * `dataplex.aspectTypes.use` on the `semantic-action` aspect type, when the
   model declares actions, and on `semantic-constraint` when it declares
   constraints — those types are custom rather than built-in, so they are
   authorized on the type resource instead of through an entry-group
   use-permission
 
-> The `schema`, `overview` and `reference` use-permissions follow Dataplex's
-> documented `dataplex.entryGroups.use<AspectType>Aspect` and
-> `use<EntryLinkType>EntryLink`
-> [pattern](https://cloud.google.com/dataplex/docs/iam-permissions). The
-> `guidelines`, `sql-expressions`, `semantic-extensions` and `semantic-*` names
-> follow the same pattern but are not yet in that public reference, so confirm
-> them against your project's IAM once granted.
+> The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
+> [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).
+> The `reference`, `sql-expressions` and semantic-type permissions are not
+> listed there yet, so confirm them against your project's IAM once granted.
 
 `kcmd init --semantic-model` creates what a later push only references, so it
 needs more than push does, in the destination project:
