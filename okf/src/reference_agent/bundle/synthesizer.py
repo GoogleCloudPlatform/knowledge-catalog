@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from reference_agent import providers
+
 log = logging.getLogger(__name__)
 
 _PROMPT_TEMPLATE = """\
@@ -37,11 +39,14 @@ def synthesize_description(
     )
     prompt = _PROMPT_TEMPLATE.format(rel_path=rel_path, contents=contents)
     try:
-        from google import genai
+        if providers.is_minimax_model(model):
+            text = providers.generate_text(model, prompt)
+        else:
+            from google import genai
 
-        client = genai.Client()
-        response = client.models.generate_content(model=model, contents=prompt)
-        text = (getattr(response, "text", None) or "").strip()
+            client = genai.Client()
+            response = client.models.generate_content(model=model, contents=prompt)
+            text = (getattr(response, "text", None) or "").strip()
         if not text:
             return _fallback(children)
         return text.splitlines()[0].strip()
