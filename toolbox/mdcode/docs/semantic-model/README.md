@@ -328,6 +328,11 @@ Deployed 1 BigQuery Graph(s).
 A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
 BigQuery line.
 
+Push sends no request for an entry link that the catalog already holds with the
+same two entries and the same aspect data. The summary counts those links in
+parentheses, so a push that changes no link prints
+`wrote 0 entry links (3 unchanged)`.
+
 ## Pull
 
 `kcmd pull` is the inverse of push's Knowledge Catalog leg: it rebuilds the

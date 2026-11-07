@@ -139,7 +139,7 @@ export function writeScope(dir: string, s: Scope): void {
 
 export const kcResult = (more: Partial<kc.KcDeployResult> = {}) => ({
   success: true, warnings: [], created: 0, updated: 0, deleted: 0, linked: 0,
-  unlinked: 0, plan: [], ...more,
+  unchangedLinks: 0, unlinked: 0, plan: [], ...more,
 });
 
 // The deployment names each model in `models` lists, as `a,b;c`.

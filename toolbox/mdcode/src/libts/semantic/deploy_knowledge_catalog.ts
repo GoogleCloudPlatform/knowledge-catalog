@@ -33,8 +33,9 @@
 //     and one from each entity to each parent it extends. A re-push first
 //     deletes any orphaned links (no longer emitted, such as the `schema-join`
 //     links an older kcmd wrote) and stale links (whose endpoint references
-//     changed), then creates new or recreated links and updates unchanged
-//     links' aspects in place. The caller additionally needs
+//     changed), then creates new or recreated links. A link the lookup found
+//     with the same endpoints gets an update only when its aspects changed,
+//     and no request otherwise. The caller additionally needs
 //     `dataplex.entryGroups.useReferenceEntryLink` on the destination entry
 //     group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
@@ -46,6 +47,8 @@
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
 // print.
+
+import {isDeepStrictEqual} from 'node:util';
 
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
@@ -116,6 +119,9 @@ export interface KcDeployResult {
   // Entry links written -- created, updated, or recreated (0 for
   // validateOnly).
   linked: number;
+  // Entry links the lookup found with the same endpoints and aspects, so push
+  // sent no request for them (0 for validateOnly).
+  unchangedLinks: number;
   // Orphaned relationship links deleted -- from relationships dropped or
   // renamed on a still-present model, and from force-removed models (0 for
   // validateOnly).
@@ -133,6 +139,7 @@ interface Counts {
   updated: number;
   deleted: number;
   linked: number;
+  unchangedLinks: number;
   unlinked: number;
 }
 
@@ -202,7 +209,14 @@ export async function applyKnowledgeCatalog(
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [...prepared.warnings];
   const counts:
-      Counts = {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+      Counts = {
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        linked: 0,
+        unchangedLinks: 0,
+        unlinked: 0,
+      };
   const plan = prepared.plan;
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -292,8 +306,14 @@ async function preflightEmittedModels(
     opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const warnings: string[] = [...emitWarnings];
-  const counts: Counts =
-      {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  const counts: Counts = {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    linked: 0,
+    unchangedLinks: 0,
+    unlinked: 0,
+  };
   let plan: string[] = [];
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -621,7 +641,8 @@ interface WriteModelsOutcome {
  *      relationship links (changed endpoints) owned by the model. Before the
  *      first delete, reads each emitted link ID the lookup did not return,
  *      and fails when a read fails.
- *   4. Creates or updates the model's relationship links.
+ *   4. Creates the model's new relationship links, and updates a looked-up
+ *      link only when its aspects changed.
  *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
  *   6. Labels the anchor finished.
@@ -701,7 +722,9 @@ async function writeEmittedModels(
          blocked: ReadonlySet<string> = new Set()) =>
             restoreHint(
                 deletedLinks, resources.entryLinks,
-                new Set([...staleLinks.current, ...foundUnchanged, ...written]),
+                new Set([
+                  ...staleLinks.current.keys(), ...foundUnchanged, ...written,
+                ]),
                 blocked);
     const orphanedLinkDeletions =
         await deleteEntryLinks(cat, opts, orphanedLinks);
@@ -730,6 +753,7 @@ async function writeEmittedModels(
     const links =
         await writeEntryLinks(cat, opts, resources, staleLinks.current);
     counts.linked += links.linked;
+    counts.unchangedLinks += links.unchanged;
     deletedLinks.push(...links.deleted);
     if (links.error) {
       return {
@@ -1043,8 +1067,8 @@ function findOrphanedEntryLinks(
 interface StaleLinksOutcome {
   // The model's own links under an emitted ID whose endpoints changed.
   links: EntryLink[];
-  // Emitted IDs whose looked-up link has the same endpoints.
-  current: Set<string>;
+  // The looked-up links, by emitted ID, that have the same endpoints.
+  current: Map<string, EntryLink>;
 }
 
 /**
@@ -1059,7 +1083,7 @@ function findStaleEntryLinks(
     resources: kcEmit.KcResources,
     existingLinks: Map<string, EntryLink>): StaleLinksOutcome {
   const links: EntryLink[] = [];
-  const current = new Set<string>();
+  const current = new Map<string, EntryLink>();
   if (!existingLinks.size) return {links, current};
   for (const link of resources.entryLinks) {
     const id = linkId(link);
@@ -1067,13 +1091,13 @@ function findStaleEntryLinks(
     // Check whether `existingLink` is stale:
     //   1. If no link with this ID exists yet, `writeEntryLinks` creates it.
     //   2. If its endpoint references are unchanged, `writeEntryLinks` updates
-    //      its aspects in place.
+    //      its aspects only when they differ.
     // Otherwise, its immutable endpoints changed, so it is stale.
     if (!existingLink) continue;
     if (isStaleLink(existingLink, link)) {
       links.push(existingLink);
     } else {
-      current.add(id);
+      current.set(id, existingLink);
     }
   }
   return {links, current};
@@ -1229,8 +1253,12 @@ async function writeEntries(
 }
 
 interface LinksOutcome {
+  // The number of links written.
   linked: number;
-  // IDs of the links written.
+  // The number of links the lookup found with the emitted endpoints and
+  // aspects. Push sent no request for them.
+  unchanged: number;
+  // IDs of the links written or found unchanged.
   written: Set<string>;
   // IDs of the links another link blocks: their create returned 409, no link
   // holds their ID, and a lookup found the other link between their entries.
@@ -1253,17 +1281,19 @@ interface LinksOutcome {
  * link in the way may be gone by then, and pushing again is enough. Uses
  * `Promise.allSettled` so a thrown network
  * error on one link waits for any in-flight link writes to finish and reports
- * the link ID in the returned error. `current` holds the emitted IDs whose
- * looked-up link has the same endpoints.
+ * the link ID in the returned error. `current` holds the looked-up links, by
+ * emitted ID, that have the same endpoints.
  */
 async function writeEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    current: ReadonlySet<string>): Promise<LinksOutcome> {
+    current: ReadonlyMap<string, EntryLink>): Promise<LinksOutcome> {
   const entryLinks = resources.entryLinks;
   const written = new Set<string>();
   const blocked = new Set<string>();
   const deleted: EntryLink[] = [];
-  if (!entryLinks.length) return {linked: 0, written, blocked, deleted};
+  if (!entryLinks.length) {
+    return {linked: 0, unchanged: 0, written, blocked, deleted};
+  }
   const settled = await Promise.allSettled(
       entryLinks.map(l => writeEntryLink(cat, opts, l, current)));
   const res = await Promise.all(settled.map((s, i): LinkWriteOutcome |
@@ -1283,12 +1313,20 @@ async function writeEntryLinks(
     if (r.blocked) blocked.add(linkId(entryLinks[i]));
     if (!r.error) written.add(linkId(entryLinks[i]));
   });
-  const linked = res.filter(r => !r.error).length;
+  const unchanged = res.filter(r => r.unchanged).length;
+  const linked = res.filter(r => !r.error && !r.unchanged).length;
   const firstErr = res.find(r => r.error);
   if (firstErr) {
-    return {linked, written, blocked, deleted, error: firstErr.error};
+    return {
+      linked,
+      unchanged,
+      written,
+      blocked,
+      deleted,
+      error: firstErr.error,
+    };
   }
-  return {linked, written, blocked, deleted};
+  return {linked, unchanged, written, blocked, deleted};
 }
 
 interface WriteOutcome {
@@ -1297,6 +1335,9 @@ interface WriteOutcome {
 }
 
 interface LinkWriteOutcome {
+  // True when the looked-up link already holds the emitted aspects, so push
+  // sent no request.
+  unchanged?: boolean;
   // The existing link deleted so that the emitted link could take its ID.
   deleted?: EntryLink;
   // True when another link holds the two entries of the emitted link.
@@ -1310,20 +1351,24 @@ interface LinkWriteOutcome {
 /**
  * Writes a single relationship entry link to Knowledge Catalog.
  *
- * Attempts to create `link`. When `createEntryLink` returns HTTP 409, updates
- * the link under its ID, replaces it, or reports why push cannot write it.
- * `current` holds the emitted IDs whose looked-up link has the same endpoints.
+ * `current` holds the looked-up links, by emitted ID, that have the same
+ * endpoints. For a link in `current`, push sends nothing when the stored
+ * aspects match `link`, and an update when they differ. Any other link is
+ * created. When `createEntryLink` returns HTTP 409, push updates the link
+ * under its ID, replaces it, or reports why it cannot write it.
  */
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
-    current: ReadonlySet<string>): Promise<LinkWriteOutcome> {
+    current: ReadonlyMap<string, EntryLink>): Promise<LinkWriteOutcome> {
   const id = linkId(link);
+  const found = current.get(id);
+  if (found) {
+    if (hasLinkAspects(found, link)) return {unchanged: true};
+    return linkOutcome(link, await updateEntryLink(cat, link));
+  }
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, id, link);
   if (!isExistsStatus(res)) return linkOutcome(link, res);
-  if (current.has(id)) {
-    return linkOutcome(link, await updateEntryLink(cat, link));
-  }
 
   // The lookup did not return a link under this ID, so read it.
   const read = await readEmittedLink(cat, link);
@@ -1396,6 +1441,32 @@ async function replaceEntryLink(
     const message = String(err?.message || err).trim();
     return {error: `entry link '${id}': ${message}`, deleted: existingLink};
   }
+}
+
+/**
+ * Returns true when the looked-up link `existing` already holds every aspect
+ * of the emitted link `link` with the same data, so an update of `link` would
+ * change nothing. An aspect matches by its key without the project part,
+ * because Dataplex spells the project of a type as a number. Fields Dataplex
+ * adds to an aspect, such as its times and aspectSource, are not compared.
+ */
+function hasLinkAspects(existing: EntryLink, link: EntryLink): boolean {
+  const stored = new Map(Object.entries(existing.aspects ?? {})
+                             .map(([key, a]) => [keyWithoutProject(key), a]));
+  return Object.entries(link.aspects ?? {}).every(([key, aspect]) => {
+    const found = stored.get(keyWithoutProject(key));
+    // The emitted data is compared as its JSON, which is what push sends.
+    return found !== undefined &&
+        isDeepStrictEqual(
+               JSON.parse(JSON.stringify(aspect.data ?? {})), found.data ?? {});
+  });
+}
+
+// An aspect key, `<project>.<location>.<type>` with an optional `@<path>`,
+// without its project part.
+function keyWithoutProject(key: string): string {
+  const [ref, ...path] = key.split('@');
+  return [ref.split('.').slice(-2).join('.'), ...path].join('@');
 }
 
 /**
