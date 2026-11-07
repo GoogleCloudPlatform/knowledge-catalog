@@ -109,8 +109,9 @@ export interface OwlClass extends OwlCommonAnnotations {
  */
 export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   localName: string;
-  // Local names of every rdfs:domain class this property hangs off; the field
-  // is added to each. A property may declare more than one domain (it then
+  // Every rdfs:domain class this property hangs off; the field is added to
+  // each. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A property may declare more than one domain (it then
   // appears on each entity). Empty when no domain is declared (skipped with a
   // warning -- an unattached field has nowhere to live).
   domains: string[];
@@ -151,8 +152,9 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
  */
 export interface OwlObjectProperty extends OwlCommonAnnotations {
   localName: string;
-  // Local names of the rdfs:domain (edge source) and rdfs:range (edge
-  // destination) classes. A relationship maps a single source to a single
+  // The rdfs:domain (edge source) and rdfs:range (edge destination) classes.
+  // A class import writes as an entity is kept by local name, and any other by
+  // its full IRI. A relationship maps a single source to a single
   // destination, so the mapper uses the first of each and warns when more are
   // declared (multiple domains/ranges mean an intersection in OWL, which has no
   // clean single-edge shape). Empty when none is declared (skipped with a

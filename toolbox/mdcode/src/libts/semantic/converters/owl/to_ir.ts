@@ -302,6 +302,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     let produced = false;
     for (const domain of p.domains) {
       const entity = entitiesByName.get(domain);
+      const name = classNameOfIri.get(domain);
+      if (!entity && name !== undefined) {
+        warnings.push(
+            `datatype property '${p.localName}' has domain '${name}' (${
+                domain}), a second class with that name; import leaves out ` +
+            `that class and the field on it, because a model cannot have ` +
+            `two entities with the same name.`);
+        continue;
+      }
       if (!entity) {
         warnings.push(
             `datatype property '${p.localName}' has domain '${domain}', ` +
@@ -415,6 +424,23 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
           `rdfs:range; skipped (a relationship needs both endpoints).`);
+      continue;
+    }
+    // An endpoint import leaves out because an earlier class has its name.
+    const leftOut = ([['domain', domain], ['range', range]] as const)
+                        .filter(([, c]) =>
+                                !classNames.has(c) && classNameOfIri.has(c))
+                        .map(([end, c]) => `${end} '${
+                                 classNameOfIri.get(c)}' (${c})`);
+    if (leftOut.length) {
+      warnings.push(
+          `object property '${p.localName}' has ${leftOut.join(' and ')}, ${
+              plural(
+                  leftOut.length, 'a second class',
+                  'each a second class')} with that name; import leaves ` +
+          `out ${plural(leftOut.length, 'that class', 'those classes')} and ` +
+          `the property, because a model cannot have two entities with the ` +
+          `same name.`);
       continue;
     }
     if (!classNames.has(domain) || !classNames.has(range)) {

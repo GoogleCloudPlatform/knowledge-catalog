@@ -234,9 +234,12 @@ appears nowhere above.
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
 | term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
-A datatype property whose domain is not a class, or an object property missing an
-endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import. Import also leaves out each object property push would reject,
+A datatype property whose domain is not a class, or an object property with a
+missing or non-class endpoint, cannot be placed; it is **skipped with a warning**
+rather than failing the whole import. Import matches a domain or range to a class
+by its full IRI, as it does a superclass. A domain or range of `foaf:Person` does
+not match a local `Person`, and its warning names the full IRI. Import also
+leaves out each object property push would reject,
 with a warning: one on a class with subclasses, one whose `rdfs:domain` and
 `rdfs:range` are one class, and one that runs opposite to an object property
 imported before it. An object property that declares *more than one*

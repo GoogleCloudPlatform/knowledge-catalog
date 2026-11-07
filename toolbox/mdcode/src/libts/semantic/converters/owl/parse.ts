@@ -180,8 +180,8 @@ interface Annotations {
   skosDefinition?: string;
   dctermsDescription?: string;
   dcDescription?: string;
-  domains: string[];
-  ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
+  domains: string[];  // raw domain IRIs
+  ranges: string[];   // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
   oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
@@ -434,7 +434,7 @@ export function parseOwl(turtle: string): OwlModel {
         a.dcDescription = q.object.value;
         break;
       case RDFS_DOMAIN:
-        a.domains.push(localName(q.object.value));
+        a.domains.push(q.object.value);
         break;
       case RDFS_RANGE:
         a.ranges.push(q.object.value);  // kept as IRI; mapper maps xsd:*
@@ -565,6 +565,11 @@ export function parseOwl(turtle: string): OwlModel {
       classOfName.set(name, iri);
     }
   }
+  // How a superclass, domain or range names its class: by local name when
+  // import writes that class as an entity, and by full IRI otherwise. So
+  // foaf:Person never resolves to the entity written for ex:Person.
+  const classRef = (ref: string): string =>
+      classOfName.get(localName(ref)) === ref ? localName(ref) : ref;
 
   for (const iri of order) {
     const a = annotations.get(iri) ?? emptyAnnotations();
@@ -578,11 +583,8 @@ export function parseOwl(turtle: string): OwlModel {
           synonyms: a.synonyms,
           examples: a.examples,
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
-          // The class itself is dropped, as owl:Thing is. A superclass import
-          // does not write as an entity keeps its full IRI.
-          subClassOf: a.subClassOf.filter(s => s !== iri)
-                          .map(s => classOfName.get(localName(s)) === s ?
-                                   localName(s) : s),
+          // The class itself is dropped, as owl:Thing is.
+          subClassOf: a.subClassOf.filter(s => s !== iri).map(classRef),
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
           // Full member IRIs of the enumeration set (a carried cross-reference;
@@ -596,7 +598,7 @@ export function parseOwl(turtle: string): OwlModel {
       case 'datatypeProperty':
         datatypeProperties.push({
           localName: localName(iri),
-          domains: a.domains,
+          domains: a.domains.map(classRef),
           rangeIri: a.ranges[0],
           label: a.label,
           comment: descriptionOf(a),
@@ -613,11 +615,10 @@ export function parseOwl(turtle: string): OwlModel {
       case 'objectProperty':
         objectProperties.push({
           localName: localName(iri),
-          // a.domains are already local names; a.ranges are raw IRIs. Carry all
-          // of each so the mapper can warn about (and drop) the extras rather
-          // than silently keeping only the first.
-          domains: a.domains,
-          ranges: a.ranges.map(localName),
+          // Carry every domain and range so the mapper can warn about (and
+          // drop) the extras rather than silently keeping only the first.
+          domains: a.domains.map(classRef),
+          ranges: a.ranges.map(classRef),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,

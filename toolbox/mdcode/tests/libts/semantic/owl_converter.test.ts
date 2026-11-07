@@ -952,6 +952,55 @@ describe('mapping table rules (labels, comments, skips)', () => {
         .toHaveLength(0);
   });
 
+  // Domains and ranges compare by full IRI, as superclasses do, so foaf:Person
+  // never resolves to ex:Person.
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain foaf:Person',
+     `datatype property 'name' has domain 'http://xmlns.com/foaf/0.1/Person', ` +
+         `which is not an owl:Class in this ontology; skipped.`],
+    ['ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range foaf:Person',
+     `object property 'placedBy' references a non-class endpoint (domain ` +
+         `'Order', range 'http://xmlns.com/foaf/0.1/Person'); skipped.`],
+    ['ex:knows a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range foaf:Person',
+     `object property 'knows' references a non-class endpoint (domain ` +
+         `'Person', range 'http://xmlns.com/foaf/0.1/Person'); skipped.`],
+  ])('%s beside ex:Person is skipped', (property, warning) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class . ex:Order a owl:Class . ${property} .`, 'x');
+    expect(warnings).toEqual([warning]);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
+  // A domain or range that is a second class with a name already in use is
+  // named as that class, with its full IRI.
+  const leftOut = 'because a model cannot have two entities with the same name.';
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain foaf:Person',
+     `datatype property 'name' has domain 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), a second class with that name; ` +
+         `import leaves out that class and the field on it, ${leftOut}`],
+    ['ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range foaf:Person',
+     `object property 'placedBy' has range 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), a second class with that name; ` +
+         `import leaves out that class and the property, ${leftOut}`],
+    ['ex:knows a owl:ObjectProperty ; rdfs:domain foaf:Order ; rdfs:range foaf:Person',
+     `object property 'knows' has domain 'Order' ` +
+         `(http://xmlns.com/foaf/0.1/Order) and range 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), each a second class with that ` +
+         `name; import leaves out those classes and the property, ${leftOut}`],
+  ])('%s beside a second Person and Order is skipped', (property, warning) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class . ex:Order a owl:Class .
+      foaf:Person a owl:Class . foaf:Order a owl:Class . ${property} .`, 'x');
+    expect(warnings).toEqual([
+      ...Array(2).fill(expect.stringContaining('declared more than once')),
+      warning,
+    ]);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
   // Terms are named by their local name, so two terms sharing one (e.g.
   // across namespaces) would collapse to one OSI name. The first wins; the
   // rest are warned and skipped, so the output stays valid and loadable.
