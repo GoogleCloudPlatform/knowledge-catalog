@@ -8,13 +8,14 @@
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
-// A metric therefore lands on whichever single table its aggregate columns
-// reference; a metric whose aggregate genuinely spans multiple tables cannot be
+// A metric therefore lands on whichever single table its aggregates' fields
+// belong to; a metric whose aggregates span multiple tables cannot be
 // expressed as one MEASURE and is skipped (reported in `warnings`).
 //
 // A measure can only aggregate an EXPOSED PROPERTY of its node (not a raw
-// column or an inline expression), so each metric is lowered into a derived
-// operand property plus a MEASURE over it (see placeMetric / exposeOperand).
+// column or an inline expression), so each aggregate's operand is lowered into
+// a derived property, and the metric into one MEASURE over those properties
+// (see placeMetric / exposeOperand).
 //
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
@@ -65,8 +66,8 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
   };
 }
 
-// Places each metric on the single entity its aggregate references, lowering
-// it to a MEASURE over an exposed property (see placeMetric).
+// Places each metric on the single entity its aggregates reference, lowering
+// it to a MEASURE over exposed properties (see placeMetric).
 function placeMetrics(
     metrics: Metric[], input: MetricPlacementInput,
     warnings: string[]): Map<string, string[]> {
@@ -266,7 +267,7 @@ function placeMetric(
   }
 
   // A graph measure applies supported aggregates, each over one operand, and
-  // reads every column inside one of them (see measureAggregates); anything
+  // reads every field inside one of them (see measureAggregates); anything
   // else cannot be a MEASURE. Flag it, with the reason push gives, rather than
   // emit DDL BigQuery rejects. The SQL parser finds the aggregates and their
   // operands with the entity's qualifier renamed to a name it does not

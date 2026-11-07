@@ -525,6 +525,10 @@ describe('measureAggregates', () => {
            'SAFE_DIVIDE(SUM(IF(o.s = \'F\', o.a, 0)), SUM(o.a))',
            'CASE WHEN COUNT(o.id) = 0 THEN NULL ELSE SUM(o.a) / COUNT(o.id) END',
            'ROUND(AVG(o.a), 2)', '-MAX(o.a)', 'IFNULL(SUM(o.a), 0)',
+           'SUM(ds.f(o.a)) / COUNT(o.id)', 'SUM(`p.ds.f`(o.a))',
+           'SAFE.SAFE_DIVIDE(SUM(o.a), COUNT(o.id))',
+           'safe.safe_divide(SUM(o.a), COUNT(o.id))',
+           'SUM(o.a) + (COUNT(o.b))', 'SUM(o.a) * +(COUNT(o.b))',
          ]) {
       expect(problem(text)).toEqual({text, problem: undefined});
     }
@@ -533,10 +537,10 @@ describe('measureAggregates', () => {
   });
 
   test('gives each aggregate where it is written, with its operand', () => {
-    const text = 'SAFE_DIVIDE(SUM(IF(o.s = \'é\', o.a, 0)), count(DISTINCT o.a))';
+    const text = 'SAFE_DIVIDE(SUM(IF(o.s = \'😀\', o.a, 0)), count(DISTINCT o.a))';
     expect(measureAggregates(text, 'BIGQUERY')).toEqual({
       aggregates: [
-        {start: 12, end: 38, fn: 'SUM', operand: 'IF(o.s = \'é\', o.a, 0)',
+        {start: 12, end: 38, fn: 'SUM', operand: 'IF(o.s = \'😀\', o.a, 0)',
          distinct: false},
         {start: 40, end: 59, fn: 'count', operand: 'o.a', distinct: true},
       ]
@@ -544,6 +548,16 @@ describe('measureAggregates', () => {
     expect(measureAggregates('COUNT(*) + 0', 'BIGQUERY')).toEqual({
       aggregates: [{start: 0, end: 8, fn: 'COUNT', operand: '*', distinct: false}]
     });
+    // A sign or parentheses before an aggregate are not part of it.
+    for (const text of
+             ['SUM(o.a) * +(COUNT(o.b))', 'SUM(o.a) * ((COUNT(o.b)))']) {
+      expect(measureAggregates(text, 'BIGQUERY')).toEqual({
+        aggregates: [
+          {start: 0, end: 8, fn: 'SUM', operand: 'o.a', distinct: false},
+          {start: 13, end: 23, fn: 'COUNT', operand: 'o.b', distinct: false},
+        ]
+      });
+    }
   });
 
   test('says why anything else cannot be a measure', () => {
@@ -551,10 +565,27 @@ describe('measureAggregates', () => {
       ['o.amount', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
       ['o.amount * 2', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
       ['o.amount - SUM(o.discount)',
-       'it reads column \'amount\' outside an aggregate'],
+       'it reads field \'amount\' outside an aggregate'],
       ['CASE WHEN o.flag THEN SUM(o.a) END',
-       'it reads column \'flag\' outside an aggregate'],
-      ['SUM(o.a) + SAFE.SUM(o.b)', 'it reads column \'b\' outside an aggregate'],
+       'it reads field \'flag\' outside an aggregate'],
+      ...['SUM(o.a) + SAFE.SUM(o.b)', 'SUM(o.a) + SAFE.SUM(1)'].map(
+          (text): [string, string] => [
+            text,
+            'it uses SAFE.SUM, which BigQuery does not allow in a measure ' +
+                '(SUM, AVG, COUNT, MIN, MAX)'
+          ]),
+      ...[
+        ['`proj.ds.safe_ratio`(SUM(o.a), COUNT(o.id))', 'proj.ds.safe_ratio'],
+        ['ds.f(SUM(o.a))', 'ds.f'],
+        ['p.ds.f(SUM(o.a), 2)', 'p.ds.f'],
+        ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
+        ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
+        ['SUM(o.a) / ds.f(1)', 'ds.f'],
+      ].map(([text, udf]): [string, string] => [
+        text,
+        `it calls user-defined function '${udf}' outside an aggregate, ` +
+            `which BigQuery cannot read in a measure`
+      ]),
       ['STDDEV(o.amount)',
        'it uses STDDEV, which BigQuery does not allow in a measure (SUM, AVG, ' +
            'COUNT, MIN, MAX)'],
