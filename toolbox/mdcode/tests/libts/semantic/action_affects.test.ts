@@ -30,7 +30,6 @@ const OPTS = {
   project: 'dest',
   location: 'us',
   entryGroup: 'eg',
-  v2Aspects: true
 };
 
 const MCP_EXECUTOR = {

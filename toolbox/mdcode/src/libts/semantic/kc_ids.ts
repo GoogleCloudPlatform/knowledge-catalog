@@ -35,16 +35,13 @@ const RESOURCE_ID_RE = new RegExp(
     `^projects/[^/]+/locations/[^/]+/` +
     `(?:${ENTRY_GROUP_PATH_RE.source}|${TYPE_PATH_RE.source})/(.+)$`);
 
-/** Destination and layout options for constructing Knowledge Catalog names. */
+/** Destination and system-type options for building Knowledge Catalog names. */
 export interface NamerOptions {
   project: string;
   location: string;
   entryGroup: string;
   systemTypeProject?: string;
   systemTypeLocation?: string;
-  // Not read: the IDs are always the second-generation ones. It goes with
-  // KC_V2_ASPECTS (b/575695037).
-  v2Aspects?: boolean;
 }
 
 /**

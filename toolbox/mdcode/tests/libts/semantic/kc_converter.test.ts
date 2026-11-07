@@ -17,7 +17,6 @@ const OPTS = {
   project: 'dest',
   location: 'us',
   entryGroup: 'eg',
-  v2Aspects: true,
 };
 
 describe('anchor / parent grouping', () => {

@@ -11,8 +11,6 @@ import {KcResources} from './knowledge_catalog';
 export interface SystemTypeOptions {
   systemTypeProject?: string;
   systemTypeLocation?: string;
-  // Not read. It goes with KC_V2_ASPECTS (b/575695037).
-  v2Aspects?: boolean;
 }
 
 /**

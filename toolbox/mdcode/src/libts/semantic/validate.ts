@@ -38,14 +38,11 @@ import {SqlColumn} from './sql_parser';
 // `warnings` collects non-fatal messages (such as an expression the SQL parser
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
-//
-// `v2Aspects` is not read. It goes with KC_V2_ASPECTS (b/575695037).
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
       fieldsPruned?: boolean;
       warnings?: string[];
-      v2Aspects?: boolean;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
@@ -1936,14 +1933,6 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// False when `KC_V2_ASPECTS=0`, and true for every other value, including
-// unset and `''`. Nothing reads the `v2Aspects` options it fills: push and
-// pull use the second-generation types whatever it says. It goes with the
-// variable (b/575695037).
-export function kcV2Aspects(): boolean {
-  return process.env.KC_V2_ASPECTS !== '0';
-}
-
 // What localChecks reads. `loaded` is the load of `docs` with the dialects in
 // `load`, and `models` holds each loaded model after withProfileFiles.
 export interface LocalCheckScope {
@@ -2069,10 +2058,7 @@ export async function localChecks(
   const kcErrors = models.flatMap(
       m => ofModel(m.document, ...validatePushRequirements(
           [{...m, model: {...m.model, deployments: []}}],
-          {
-            warnings: kcWarnings,
-            v2Aspects: kcV2Aspects(),
-          })));
+          {warnings: kcWarnings})));
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
     return stop([...profileErrors, ...kcErrors]);
@@ -2178,10 +2164,7 @@ async function deploymentPlan(
   };
   const errors = [
     ...unprunedErrors,
-    ...validatePushRequirements([narrowed], {
-      fieldsPruned: true,
-      v2Aspects: kcV2Aspects(),
-    }),
+    ...validatePushRequirements([narrowed], {fieldsPruned: true}),
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.

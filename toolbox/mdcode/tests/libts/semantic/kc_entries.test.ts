@@ -329,8 +329,8 @@ describe(
 describe('entryAspectKeys', () => {
 
   test(
-      'with v2Aspects on, entryAspectKeys lists the V2 keys of each entry ' +
-          'kind, with a field\'s keys as wildcards',
+      'entryAspectKeys lists the keys of each entry kind, with a field\'s ' +
+          'keys as wildcards',
       () => {
         const entity = makeEntry('sales/entities/orders', ENTITY_TYPE, {
           'dataplex-types.global.semantic-entity': {data: {}},
@@ -350,9 +350,9 @@ describe('entryAspectKeys', () => {
               'dataplex-types.global.semantic-relationship': {data: {}},
             });
 
-        const entityKeys = entryAspectKeys(entity, {v2Aspects: true});
-        const metricKeys = entryAspectKeys(metric, {v2Aspects: true});
-        const modelKeys = entryAspectKeys(model, {v2Aspects: true});
+        const entityKeys = entryAspectKeys(entity);
+        const metricKeys = entryAspectKeys(metric);
+        const modelKeys = entryAspectKeys(model);
 
         expect(entityKeys).toEqual(new Set([
           'dataplex-types.global.semantic-entity',
@@ -378,7 +378,7 @@ describe('entryAspectKeys', () => {
           'dataplex-types.global.semantic-extensions',
           'dataplex-types.global.overview',
         ]));
-        expect(entryAspectKeys(relationship, {v2Aspects: true}))
+        expect(entryAspectKeys(relationship))
             .toEqual(new Set([
               'dataplex-types.global.semantic-relationship',
               'dataplex-types.global.guidelines',
@@ -397,7 +397,6 @@ describe('entryAspectKeys', () => {
         const opts = {
           systemTypeProject: 'staging-types',
           systemTypeLocation: 'us',
-          v2Aspects: true,
         };
 
         const keys = entryAspectKeys(entityEntry, opts);

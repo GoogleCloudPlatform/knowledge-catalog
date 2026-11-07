@@ -16,7 +16,7 @@ import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
-import {kcV2Aspects, localChecks, pruningLines, withProfileFiles} from './validate';
+import {localChecks, pruningLines, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1846,10 +1846,9 @@ async function validateOutputDocument(
     // Push next builds the Knowledge Catalog entries and prints the builder's
     // warnings, and checks that Knowledge Catalog can store each aspect. The
     // entry group does not change an aspect's size.
-    const v2Aspects = kcV2Aspects();
     const catalog = checkCatalogAspects([withFiles], {
       project: 'p', location: 'l', entryGroup: 'g',
-      systemTypeProject: process.env.KC_TYPE_PROJECT, v2Aspects,
+      systemTypeProject: process.env.KC_TYPE_PROJECT,
     });
     for (const w of catalog.warnings) warn(w);
     if (catalog.error) {

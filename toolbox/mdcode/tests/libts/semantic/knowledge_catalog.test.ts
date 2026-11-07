@@ -21,7 +21,6 @@ const OPTS = {
   project: 'dest-proj',
   location: 'us',
   entryGroup: 'eg',
-  v2Aspects: true
 };
 const KEY = (type: string) => `dataplex-types.global.${type}`;
 const DATAPLEX = 'projects/dataplex-types/locations/global';
@@ -237,7 +236,7 @@ metrics_exclude: "*"
 });
 
 
-describe('with KC_V2_ASPECTS on, the model and its metrics', () => {
+describe('the model and its metrics', () => {
   const MODEL_FILE = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -461,7 +460,7 @@ ${ENTITY_YAML('orders')}
 });
 
 
-describe('with KC_V2_ASPECTS on, relationships', () => {
+describe('relationships', () => {
   const ENTRY = (id: string) => `${EG}/entries/${id}`;
   const MODEL_FILE = `version: "0.2.0.dev0/google"
 semantic_model:
@@ -630,7 +629,7 @@ ${ENTITY_YAML('addresses')}
 });
 
 
-describe('with KC_V2_ASPECTS on, entities, fields and expressions', () => {
+describe('entities, fields and expressions', () => {
   const MODEL_FILE = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales

@@ -72,7 +72,6 @@ const OPTS = {
   location: 'us',
   entryGroup: 'eg',
   entryCreateTries: 1,
-  v2Aspects: true
 };
 
 // The most data Dataplex stores in an aspect other than schema.
@@ -2120,9 +2119,8 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
 
 describe('deployKnowledgeCatalog: aspect removal on update', () => {
   test(
-      'with v2Aspects on, updating model, entity, metric, and action ' +
-          'entries passes the exact V2 aspectKeys list and ' +
-          'deleteMissingAspects: true',
+      'updating model, entity, metric, and action entries passes the ' +
+          'exact aspectKeys list and deleteMissingAspects: true',
       async () => {
         // Force every `createEntry` call to return 409 ALREADY_EXISTS so
         // `writeEntry` falls back to `updateEntry`.
@@ -2999,9 +2997,9 @@ describe('deployEmittedModels', () => {
 
 describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
   test(
-      'pushing with v2Aspects: true into an entry group holding V1 entries ' +
-          'and schema-join links creates V2 entries and links and deletes ' +
-          'old V1 entries and links',
+      'pushing into an entry group holding V1 entries and schema-join ' +
+          'links creates V2 entries and links and deletes old V1 entries ' +
+          'and links',
       async () => {
         // The entry group holds what a first-generation push of a model with
         // relationships from orders to customer and to supplier left: the
@@ -3065,8 +3063,8 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
 
 
 type Stubs = NonNullable<Parameters<typeof stubClient>[0]>;
-// Pushes `docs` with KC_V2_ASPECTS on over a catalog that lists `existing`
-// and answers each create with 409. `stubs` overrides any stub.
+// Pushes `docs` over a catalog that lists `existing` and answers each create
+// with 409. `stubs` overrides any stub.
 async function pushAgain(
     docs: {name: string; text: string}[], existing: Stubs['existing'],
     stubs: Stubs = {}) {
@@ -3077,7 +3075,7 @@ async function pushAgain(
 }
 
 
-describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
+describe('deployKnowledgeCatalog: relationship entries and links', () => {
   // Pushes `docs` again over STAR's entries, whose entry and link creates
   // return 409.
   const rePush = (stubs: Stubs, docs = STAR_DOCS) =>
@@ -3215,7 +3213,7 @@ describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
 });
 
 
-describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
+describe('deployKnowledgeCatalog: the size of an aspect', () => {
   type Opts = Parameters<typeof deployKnowledgeCatalog>[2];
   // Pushes OSSIE with `instructions` on the model and `description` on field
   // o_orderkey.

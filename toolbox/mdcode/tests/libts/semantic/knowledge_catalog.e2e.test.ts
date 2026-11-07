@@ -42,13 +42,11 @@ const CORPUS = [
 ];
 
 // A fixed destination + default (dataplex-types/global) system types, so the
-// golden pins the exact resource names the emitter produces, in the
-// second-generation layout that push writes.
+// golden pins the exact resource names the emitter produces.
 const GEN_OPTS = {
   project: 'sqlgen-testing',
   location: 'us',
   entryGroup: 'semantic',
-  v2Aspects: true
 };
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {
