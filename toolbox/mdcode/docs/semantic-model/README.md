@@ -361,9 +361,10 @@ local model and replace it with the catalog's. Pull never touches the data store
 
 Every push sets the `kcmd-push-state` label of the model entry to `writing` when
 it writes the model entry, before the model's other entries, and to `finished`
-with its last write, after it deletes what the model no longer has. Pull refuses a model entry still labeled
-`writing`: it writes and deletes nothing and asks you to push again. A model
-with no such label, such as one an older `kcmd` pushed, counts as finished.
+with its last write, after it deletes what the model no longer has. Pull
+refuses a model entry still labeled `writing`: it writes and deletes nothing and
+asks you to push again. A model with no such label, such as one an older `kcmd`
+pushed, counts as finished.
 
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.
