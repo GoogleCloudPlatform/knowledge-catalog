@@ -66,10 +66,9 @@ export interface CustomType {
 // Every element in the format carries the same three-part annotation:
 // instructions, synonyms, examples. A custom aspect carries all three. Carrying
 // a chosen part instead would mean a document that loads cleanly comes back
-// from a pull missing fields it declared. The built-in `guidelines` aspect does
-// have a home for `instructions` alone, and an element routed there loses the
-// other two, but kcmd owns this template and has no reason to inherit that
-// limit.
+// from a pull missing fields it declared. An element of a built-in type splits
+// the annotation across aspects instead (`guidelines`, `overview`, and its own
+// aspect for synonyms); kcmd owns this template, so it keeps the three together.
 //
 // The annotation goes on the custom aspect rather than on a `guidelines` aspect
 // beside it, because a pull hydrates aspect types from the project the ENTRY

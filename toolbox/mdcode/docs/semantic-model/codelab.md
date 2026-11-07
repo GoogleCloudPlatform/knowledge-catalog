@@ -326,15 +326,22 @@ A bare `kcmd push` governs the logical model in Knowledge Catalog.
 Warning: model 'sales' (sales) is non-executable: the model file leaves entities 'orders', 'customer' and 'lineitem' without a source, and the model declares no named profile. It cannot be queried until it is bound.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
-  5 entries:
+  7 entries:
     - sales (semantic-model)
-    - sales.entities.orders (semantic-entity)
-    - sales.entities.customer (semantic-entity)
-    - sales.entities.lineitem (semantic-entity)
-    - sales.metrics.revenue (semantic-metric)
-  2 schema-join links:
-    - sales-placed-by
-    - sales-part-of
+    - sales/entities/orders (semantic-entity)
+    - sales/entities/customer (semantic-entity)
+    - sales/entities/lineitem (semantic-entity)
+    - sales/metrics/revenue (semantic-metric)
+    - sales/relationships/placed_by (semantic-relationship)
+    - sales/relationships/part_of (semantic-relationship)
+  2 semantic-link links:
+    - semantic-link-84d72a11c92a147ed5b9da0ef53b0df4
+    - semantic-link-7b644e32ffeac8c6cc1d356ad5ea0259
+  4 reference links:
+    - semantic-relationship-7d24245079e3654a7a01f88f89d599a9
+    - semantic-relationship-8b1580c28bf379222a66c99e4f949db3
+    - semantic-relationship-20cf37614aebbd9cd0c20679aa32c521
+    - semantic-relationship-eef083eacf64d6c0d67b21602b42346d
 Validation complete; no changes applied.
 ```
 
@@ -349,11 +356,11 @@ kcmd push
 ```
 Warning: model 'sales' (sales) is non-executable: the model file leaves entities 'orders', 'customer' and 'lineitem' without a source, and the model declares no named profile. It cannot be queried until it is bound.
 Pushing semantic model (Knowledge Catalog)...
-Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
+Wrote 7 new and 0 updated Knowledge Catalog entries; wrote 6 entry links.
 ```
 
-Each entity, the metric,
-and the model itself are now governed entries, joined by a schema-join link —
+Each entity, relationship and metric, and the model itself, are now governed
+entries, joined by `semantic-link` and `reference` links —
 discoverable, access-controlled, and the single definition the rest of your work
 reads from. `kcmd pull` rebuilds the model YAML from these entries, confirming
 the round-trip; comments, key order and formatting are not kept. Physical
@@ -1221,19 +1228,17 @@ Drop the Spanner database from step 4 (its tables and the graph go with it):
 gcloud spanner databases delete $SPANNER_DB --instance=$SPANNER_INSTANCE --quiet
 ```
 
-Remove the Knowledge Catalog entries and entry group via REST. Dataplex
-automatically deletes a link together with any entry it references, so deleting
-the entries removes the `schema-join` links too:
+Remove the Knowledge Catalog entries and entry group via REST. Deleting the
+model entry deletes the model's other entries with it, and Dataplex deletes a
+link together with any entry it references, so the links go too:
 
 ```bash
 TOKEN=$(gcloud auth application-default print-access-token)
 DATAPLEX=${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}
 EG=projects/$PROJECT/locations/$LOCATION/entryGroups/$DATASET
 
-for E in sales sales.entities.orders sales.entities.customer sales.entities.supplier sales.entities.lineitem sales.metrics.revenue; do
-  curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-    "$DATAPLEX/v1/$EG/entries/$E" >/dev/null
-done
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "$DATAPLEX/v1/$EG/entries/sales" >/dev/null
 curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$DATAPLEX/v1/$EG"
 ```
 
