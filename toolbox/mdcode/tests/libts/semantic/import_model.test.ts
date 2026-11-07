@@ -212,15 +212,26 @@ describe('conversion, strict mode, and translation', () => {
       `Semantic model load error: field 'orders.order_id': datatype 'integer' is not valid in a '0.2.0.dev0' document; expected exactly one of String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque.`
     ],
     [
+      'an unknown key on a vanilla dataset converted to Google in strict mode',
+      ossieDoc({extra: '        colour: red\n'}), {flavor: 'google' as const, strict: true},
+      `entity 'orders': unknown key 'colour'`
+    ],
+    [
+      'two vanilla dataset names converted to Google in strict mode',
+      ossieDoc({extra: `      - name: Orders\n        source: ${BQ_TABLE}\n`}),
+      {flavor: 'google' as const, strict: true},
+      `model 'retail': duplicate entity name 'Orders'`
+    ],
+    [
       'one-part name against an AlloyDB database prefix in strict mode',
       googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
-      `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
+      `entity 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
     ],
     [
       'an unquoted part against an AlloyDB prefix with a capital letter in strict mode',
       googleDoc({source: 'Sales.orders'}),
       {strict: true, sourcePrefix: `${ALLOYDB_DB}/schemas/Sales`},
-      `dataset 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
+      `entity 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
     ],
     [
       'lowercase Opaque in strict mode',
@@ -880,7 +891,7 @@ describe('profile checks', () => {
   };
   // The repair step's warning about model source 'shop.orders'.
   const UNACCEPTED =
-      "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
+      "entity 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
       "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
       'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
       "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
@@ -1107,6 +1118,8 @@ describe('sources', () => {
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
     ['sales.orders', `${LAKE}/databases/sales`, `${LAKE}/databases/sales/tables/orders`],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
+    ['public."order items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order items`],
+    ['shop." orders"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/shop/tables/ orders`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
@@ -1137,13 +1150,27 @@ describe('sources', () => {
       ADVICE,
     ],
     [
-      'double-quoted table with a space',
-      'public."order items"',
-      {sourcePrefix: CLOUDSQL_PREFIX},
-      `kcmd cannot name a table whose name holds a space. ${PUSH} ${ADVICE}`,
+      'double-quoted schema with a space',
+      `'"my schema".orders'`,
+      {sourcePrefix: ALLOYDB_DB},
+      `a source can hold a space in the table's own name, but not at its end. ${PUSH} ${ADVICE}`,
+    ],
+    [
+      'table name that ends with a space', `'shop."orders "'`, {sourcePrefix: BQ_PREFIX},
+      `a source can hold a space in the table's own name, but not at its end. ${PUSH} ${ADVICE}`,
+    ],
+    // No prefix completes a name with too many parts. Its table's own name may
+    // hold a space.
+    [
+      'name with too many parts and a space in its table name', `'a.b.c."order items"'`,
+      {sourcePrefix: BQ_PREFIX}, `is not a valid GCP resource name; ${PUSH} ${ADVICE}`,
     ],
     ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
     ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],
+    [
+      'resource URI of a table whose name holds a space', `'//${BQ_PREFIX}/tables/order items'`, {},
+      `'//': '${BQ_PREFIX}/tables/order items'. ${PUSH}`
+    ],
     [
       'resource name with quotes', `'${BQ_PREFIX}/tables/"orders"'`, {},
       `so write '${BQ_TABLE}'. ${PUSH}`
@@ -1297,20 +1324,48 @@ describe('sources', () => {
     expect(await caseWarnings(bare, lowered)).toEqual([rewrote(bare, lowered + rest)]);
   });
 
+  const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
+  // [what, the input, the report, the line import writes]
+  test.each([
+    ['a source', googleDoc({source: `" ${BQ_TABLE}"`}),
+     `entity 'orders': removed the whitespace around source '${BQ_TABLE}'.`,
+     `source: "${BQ_TABLE}"\n`],
+    ['a deployment target',
+     googleDoc({extra: `    deployments: [{name: g, target: "${BQ_GRAPH} "}]\n`}),
+     `deployment 'g': removed the whitespace around target '${BQ_GRAPH}'.`,
+     `target: "${BQ_GRAPH}"}]\n`],
+  ])('removes the whitespace around %s, and refuses it in strict mode',
+     async (_, input, report, written) => {
+       const res = await importSemanticModelYaml(input, {flavor: 'google'});
+       expect(res.warnings).toEqual([report]);
+       expect(res.files[0].content).toContain(written);
+       expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true}))
+                  .errors).toEqual([report]);
+     });
+
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
       async () => {
-        const query = '"SELECT * FROM sales.orders"';
+        // A query written as a block scalar ends in a newline. Import reports
+        // the query alone.
+        const query = '"SELECT * FROM sales.orders\\n"';
         const googleRes = await importSemanticModelYaml(
             ossieDoc({source: query}), {flavor: 'google'});
         const ossieRes = await importSemanticModelYaml(
             ossieDoc({source: query}), {flavor: 'ossie'});
 
         expect(googleRes.ok).toBe(true);
+        expect(googleRes.warnings).toContain(
+            "entity 'orders': removed query-valued source 'SELECT * FROM " +
+            "sales.orders'; entity is now unbound.");
+        expect(googleRes.warnings.join('\n')).not.toContain('whitespace');
         const loaded =
             loadModels(googleRes.files[0].content, {bindingOptional: true});
         expect(loaded.models[0].entities[0].dataSource).toBe('');
-        expect(ossieRes.ok).toBe(false);
+        expect(ossieRes.errors).toEqual([
+          "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
+          "is not supported, and version '0.2.0.dev0' requires a table " +
+          "'source' on every dataset."]);
       });
 });
 
@@ -1972,8 +2027,8 @@ semantic_model:
           `Cannot convert 'retail' to version '0.2.0.dev0': action 'act1' is not supported in version '0.2.0.dev0'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': constraint 'con1' is not supported in version '0.2.0.dev0'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': field 'orders.amount' has no 'expression'.`,
-          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'base_entity' is 'abstract', which version '0.2.0.dev0' does not support.`,
-          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'unbound_entity' has no 'source'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': dataset 'base_entity' is 'abstract', which version '0.2.0.dev0' does not support.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': dataset 'unbound_entity' has no 'source'.`,
           `Cannot convert 'retail' to version '0.2.0.dev0': relationship 'rel_no_cols' has no join columns ('from_columns' and 'to_columns').`,
         ]);
       });

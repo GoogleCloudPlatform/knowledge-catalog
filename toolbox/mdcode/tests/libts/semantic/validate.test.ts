@@ -962,7 +962,7 @@ describe('a relationship key check compares names as written', () => {
     // Undeclared to entity -> skipped.
     const badToEntity = check([customer], join('ghost', ['id']));
     expect(badToEntity.length).toBe(1);
-    expect(badToEntity[0]).toContain("'to' dataset 'ghost' is not defined in the model");
+    expect(badToEntity[0]).toContain("'to' entity 'ghost' is not defined in the model");
 
     // Invalid target primary_key or unique_keys -> skipped.
     const badPk = check(
@@ -997,7 +997,7 @@ describe('a relationship key check compares names as written', () => {
       destination: {entity: 'customer', columns: ['not_a_key']},
     });
     expect(badFromEntity.length).toBe(2);
-    expect(badFromEntity.join('\n')).toContain("'from' dataset 'ghost' is not defined in the model");
+    expect(badFromEntity.join('\n')).toContain("'from' entity 'ghost' is not defined in the model");
     expect(badFromEntity.join('\n')).toContain("cover no primary or unique key of 'customer'");
 
     const badLength = check([customer], {
@@ -1269,7 +1269,7 @@ semantic_model:
           }],
         }))]);
     expect(errs).toEqual([
-      "relationship 'orders_ghosts' in model 'm' (doc): 'to' dataset 'ghost' is not defined in the model.",
+      "relationship 'orders_ghosts' in model 'm' (doc): 'to' entity 'ghost' is not defined in the model.",
     ]);
   });
 
@@ -1285,7 +1285,7 @@ semantic_model:
         }))]);
     expect(badFrom.length).toBe(1);
     expect(badFrom[0]).toContain("relationship 'placed_by'");
-    expect(badFrom[0]).toContain("'from' dataset 'ghost' is not defined in the model.");
+    expect(badFrom[0]).toContain("'from' entity 'ghost' is not defined in the model.");
 
     const badTo = validatePushRequirements(
         [loaded(model({
@@ -1298,7 +1298,7 @@ semantic_model:
         }))]);
     expect(badTo.length).toBe(1);
     expect(badTo[0]).toContain("relationship 'placed_by'");
-    expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
+    expect(badTo[0]).toContain("'to' entity 'ghost' is not defined in the model.");
 
     const bothWays = validatePushRequirements(
         [loaded(model({

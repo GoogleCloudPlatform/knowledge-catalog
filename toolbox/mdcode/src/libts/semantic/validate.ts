@@ -17,7 +17,7 @@ import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bi
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
-import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -1320,6 +1320,7 @@ function validateColumnsAndRelationships(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   const entityNames = new Set((model.entities ?? []).map(e => e.name));
+  const word = entityWord(model.version);
   // The first relationship from each entity to each other entity.
   const firstFrom = new Map<string, string>();
 
@@ -1346,12 +1347,12 @@ function validateColumnsAndRelationships(
     const owner = `relationship '${rel.name}'`;
     const at = `${owner} in model '${model.name}' (${document})`;
     if (!entityNames.has(rel.source.entity)) {
-      errors.push(
-          `${at}: ${undefinedEndpointProblem('from', rel.source.entity)}.`);
+      errors.push(`${at}: ${
+          undefinedEndpointProblem('from', rel.source.entity, word)}.`);
     }
     if (!entityNames.has(rel.destination.entity)) {
-      errors.push(
-          `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
+      errors.push(`${at}: ${
+          undefinedEndpointProblem('to', rel.destination.entity, word)}.`);
     }
     const [from, to] = [rel.source.entity, rel.destination.entity];
     const back = firstFrom.get(`${to}\0${from}`);
@@ -2119,12 +2120,13 @@ async function deploymentPlan(
   const spanner = spannerMetricsErrors(document, model, deployment);
   if (spanner.length) return fail(...spanner);
   let applied = model;
+  // The profile's warnings, which print only once every check below passes.
+  const warnings: string[] = [];
   if (deployment.profile !== DEFAULT_PROFILE) {
     // localChecks has checked that the model declares the profile and that
     // its file loads, so `model.profiles` holds it.
     let spec = model.profiles!.find(p => p.name === deployment.profile)!;
     const file = files.find(p => p.name === deployment.profile);
-    const warnings: string[] = [];
     try {
       // A profile in a GOOGLE block has no file and applies as loaded.
       if (file) spec = loadProfileFile(file.text, file.name);
@@ -2137,9 +2139,6 @@ async function deploymentPlan(
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
-    }
-    for (const w of warnings) {
-      warn(`profile '${deployment.profile}': [${document}] ${w}`);
     }
   }
   // Messages name the deployment.
@@ -2168,13 +2167,15 @@ async function deploymentPlan(
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.
-  if (deployment.engine === 'alloydb') {
-    return {deployment, at, model: narrowed, report};
-  }
-  const generated = await generateOffline(
-      deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
-      [narrowed]);
+  const generated = deployment.engine === 'alloydb' ?
+      undefined :
+      await generateOffline(
+          deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
+          [narrowed]);
   if (typeof generated === 'string') return fail(`${at}: ${generated}`);
+  for (const w of warnings) {
+    warn(`profile '${deployment.profile}': [${document}] ${w}`);
+  }
   return {deployment, at, model: narrowed, report, generated};
 }
 

@@ -45,6 +45,10 @@ export interface LoadOptions {
   // third-party table no lookup has read keeps the warning, since the caller
   // does not check it.
   fieldTextChecked?: boolean;
+  // The flavor whose word for an entry of `entities` the load's messages use,
+  // when it is not the document's own. kcmd import uses the word of the
+  // flavor it writes.
+  messageFlavor?: FormatVersion;
 }
 
 export interface LoadResult {
@@ -79,13 +83,14 @@ export function joinLengthMessage(
   return `relationship '${relationship}': ${joinLengthProblem(from, to)}`;
 }
 
+// `word` is what the message calls an entity, as entityWord gives it.
 export function undefinedEndpointProblem(
-    side: 'from'|'to', dataset: string): string {
-  return `'${side}' dataset '${dataset}' is not defined in the model`;
+    side: 'from'|'to', entity: string, word: string): string {
+  return `'${side}' ${word} '${entity}' is not defined in the model`;
 }
 
-function sourceRequiredMessage(dataset: string): string {
-  return `dataset '${dataset}': a non-abstract dataset requires a ` +
+function sourceRequiredMessage(entity: string): string {
+  return `entity '${entity}': a non-abstract entity requires a ` +
       `source; set 'source', or mark it 'abstract: true' if it has no table`;
 }
 
@@ -130,6 +135,13 @@ const ACCEPTED_VERSIONS: readonly FormatVersion[] = [
 
 export function isFormatVersion(v: string): v is FormatVersion {
   return (ACCEPTED_VERSIONS as readonly string[]).includes(v);
+}
+
+// What a message calls an entry of a model's `entities` in a model of
+// `version`. A '0.2.0.dev0' model lists them under `datasets` and calls each a
+// dataset.
+export function entityWord(version?: FormatVersion): 'entity'|'dataset' {
+  return version === OSSIE_VERSION ? 'dataset' : 'entity';
 }
 
 /**
@@ -747,7 +759,7 @@ function rejectExpressionBody(
 const deploymentSchema =
     z.object({
        name: z.string(),
-       target: z.string().trim().min(1),
+       target: z.string().min(1),
        profile: z.string().min(1).optional(),
      }).strict();
 
@@ -1800,11 +1812,12 @@ export function isRecord(v: unknown): v is Record<string, any> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-// Each model, dataset, field, relationship and metric in a parsed document
-// that carries an `ai_context`, with the label errors use for it. Runs before
-// schema validation, so it skips anything not shaped as expected.
+// Each model, entity, field, relationship and metric in a parsed document
+// that carries an `ai_context`, with the label errors use for it, in the words
+// of a model of `version`. Runs before schema validation, so it skips anything
+// not shaped as expected.
 export function*
-    modelAiContexts(doc: unknown):
+    modelAiContexts(doc: unknown, version?: FormatVersion):
         Generator<{ai: Record<string, unknown>; label: string}> {
   const list = (v: unknown) => (Array.isArray(v) ? v : []);
   const named = (kind: string, name: unknown) =>
@@ -1818,7 +1831,7 @@ export function*
     for (const ds of [...list(m.datasets), ...list(m.entities)]) {
       if (!isRecord(ds)) continue;
       if (isRecord(ds.ai_context)) {
-        yield {ai: ds.ai_context, label: named('dataset', ds.name)};
+        yield {ai: ds.ai_context, label: named(entityWord(version), ds.name)};
       }
       for (const f of list(ds.fields)) {
         if (!isRecord(f) || !isRecord(f.ai_context)) continue;
@@ -1845,12 +1858,14 @@ export function*
 // it is rejected here rather than lost without a word. Only member names are
 // checked: a member's value is opaque and keeps any key. In the Google flavor
 // a sibling of the standard members is an unrecognized key rather than a
-// custom member.
-function protoMemberError(doc: unknown, google: boolean): string|undefined {
+// custom member. The message names its object in the words of a model of
+// `words`.
+function protoMemberError(
+    doc: unknown, google: boolean, words: FormatVersion): string|undefined {
   const custom = (label: string) =>
       `${label}: custom ai_context member '__proto__' is not supported; ` +
       `rename it.`;
-  for (const {ai, label} of modelAiContexts(doc)) {
+  for (const {ai, label} of modelAiContexts(doc, words)) {
     if (google && isRecord(ai.custom) && Object.hasOwn(ai.custom, '__proto__')) {
       return custom(label);
     }
@@ -1891,7 +1906,8 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const version = readVersion(doc);
   const extended = version === GOOGLE_VERSION;
-  const proto = protoMemberError(doc, extended);
+  const proto =
+      protoMemberError(doc, extended, opts.messageFlavor ?? version);
   if (proto) {
     throw new SemanticModelError(`Semantic model load error: ${proto}`);
   }
@@ -1903,7 +1919,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
     throw new SemanticModelError(`Semantic model load error: ${
         schemaProblems(result.error.issues, {
           schema, doc: normalized, authored: doc, extended,
-          subject: 'the document',
+          subject: 'the document', words: opts.messageFlavor,
         })}`);
   }
 
@@ -2188,6 +2204,7 @@ function convertModel(
     m: ModelDoc, version: FormatVersion, opts: LoadOptions,
     warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
+  const word = entityWord(opts.messageFlavor ?? version);
   rejectInvalidName('model', m.name);
 
   const block = readGoogleBlocks(
@@ -2197,22 +2214,22 @@ function convertModel(
   // abstract dataset, even when it names no `source`.
   const datasetBlocks = m.datasets.map(
       ds => readGoogleBlocks(
-          ds.custom_extensions, version, 'dataset', `dataset '${ds.name}'`));
+          ds.custom_extensions, version, 'dataset', `${word} '${ds.name}'`));
   if (version === OSSIE_VERSION) {
     requireVanillaBindings(m);
   }
 
   const entities = m.datasets.map(
       (ds, i) => convertDataset(
-          ds, datasetBlocks[i], version, opts, warnings, dialect));
+          ds, datasetBlocks[i], version, opts, warnings, dialect, word));
   rejectDuplicateNames(
-      entities.map(e => e.name), 'dataset name', `model '${m.name}'`, true);
+      entities.map(e => e.name), `${word} name`, `model '${m.name}'`, true);
 
   const entityNames = entities.map(e => e.name);
   const entityNameSet = new Set(entityNames);
 
   const relationships = (m.relationships ?? []).map(
-      r => convertRelationship(r, version, entityNameSet));
+      r => convertRelationship(r, version, entityNameSet, word));
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
       true);
@@ -2225,7 +2242,7 @@ function convertModel(
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(
-          mt, version, entities, warnings, dialect, impliedDialect));
+          mt, version, entities, warnings, dialect, word, impliedDialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
@@ -2321,13 +2338,13 @@ function convertModel(
 }
 
 // Converts the dataset `ds`, whose GOOGLE blocks convertModel has read into
-// `block`.
+// `block`. Messages call it a `word`.
 function convertDataset(
     ds: DatasetDoc, block: ReturnType<typeof readGoogleBlocks>,
     version: FormatVersion, opts: LoadOptions, warnings: string[],
-    dialect: string): Entity {
+    dialect: string, word: string): Entity {
   rejectInvalidName('entity', ds.name);
-  const ctxLabel = `dataset '${ds.name}'`;
+  const ctxLabel = `${word} '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity's source is parsed.
@@ -2337,9 +2354,8 @@ function convertDataset(
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
   const fields = (ds.fields ?? []).map(
-      f => convertField(f, ds.name, version, dialect));
-  rejectDuplicateNames(
-      fields.map(f => f.name), 'field name', `dataset '${ds.name}'`, true);
+      f => convertField(f, ds.name, version, dialect, ctxLabel));
+  rejectDuplicateNames(fields.map(f => f.name), 'field name', ctxLabel, true);
 
   const entity: Entity = {name: ds.name, dataSource, keys, fields};
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
@@ -2496,10 +2512,12 @@ export function parseFieldBinding(
       doc, where, dialect, () => noSqlProblemOf(binding, entity));
 }
 
+// Converts the field `f` of the entity `entityName`, which messages call
+// `entityLabel`.
 function convertField(
-    f: FieldDoc, entityName: string, version: FormatVersion,
-    dialect: string): Field {
-  rejectInvalidName('field', f.name, `dataset '${entityName}'`);
+    f: FieldDoc, entityName: string, version: FormatVersion, dialect: string,
+    entityLabel: string): Field {
+  rejectInvalidName('field', f.name, entityLabel);
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
@@ -2546,18 +2564,18 @@ function convertField(
 // column arity) is a hard error, not a warning: the resulting edge would be
 // structurally invalid.
 function convertRelationship(
-    r: RelationshipDoc, version: FormatVersion,
-    entityNames: Set<string>): Relationship {
+    r: RelationshipDoc, version: FormatVersion, entityNames: Set<string>,
+    word: string): Relationship {
   rejectInvalidName('relationship', r.name);
   const ctx = `relationship '${r.name}'`;
   rejectVanillaRelationshipDescription(r, version);
   if (!entityNames.has(r.from)) {
     throw new SemanticModelError(
-        `${ctx}: ${undefinedEndpointProblem('from', r.from)}`);
+        `${ctx}: ${undefinedEndpointProblem('from', r.from, word)}`);
   }
   if (!entityNames.has(r.to)) {
     throw new SemanticModelError(
-        `${ctx}: ${undefinedEndpointProblem('to', r.to)}`);
+        `${ctx}: ${undefinedEndpointProblem('to', r.to, word)}`);
   }
   const fromColumns = r.from_columns ?? [];
   const toColumns = r.to_columns ?? [];
@@ -2584,7 +2602,8 @@ function convertRelationship(
 
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entities: Entity[],
-    warnings: string[], dialect: string, impliedDialect?: string|null): Metric {
+    warnings: string[], dialect: string, word: string,
+    impliedDialect?: string|null): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const entityNames = entities.map(e => e.name);
@@ -2616,7 +2635,8 @@ function convertMetric(
     if (!entityNames.includes(authored)) {
       throw new SemanticModelError(
           `Semantic model load error: ${ctx}: 'entity' names '${authored}', ` +
-          `which is not a dataset in this model.`);
+          `which is not ${word === 'entity' ? 'an' : 'a'} ${word} in this ` +
+          `model.`);
     }
     // What the author wrote wins over inference. `authoredEntity` records that
     // it was written, so a pull can write it back rather than re-infer it.
@@ -2959,10 +2979,14 @@ interface SchemaInput {
   authored: unknown;
   extended: boolean;
   subject: string;
+  // The flavor whose word for an entry of `datasets` lines use, when it is not
+  // the document's own (LoadOptions.messageFlavor).
+  words?: FormatVersion;
 }
 
 // The noun a message gives an entry of each list of named objects in a model
-// document. An entry of `datasets` is an entity in the Google flavor.
+// document. An entry of `datasets` takes its noun from entityWord instead,
+// since the word depends on the flavor.
 const ENTRY_NOUNS = new Map([
   ['semantic_model', 'model'], ['datasets', 'dataset'], ['fields', 'field'],
   ['relationships', 'relationship'], ['metrics', 'metric'],
@@ -3036,8 +3060,8 @@ function schemaLocation(path: readonly PropertyKey[], input: SchemaInput): {
   for (const seg of path) {
     node = node?.[seg];
     const list = rest.length === 1 ? String(rest[0]) : '';
-    const noun = list === 'datasets' && input.extended ?
-        'entity' :
+    const noun = list === 'datasets' ?
+        entityWord(input.words ?? (input.extended ? GOOGLE_VERSION : OSSIE_VERSION)) :
         ENTRY_NOUNS.get(list);
     if (typeof seg !== 'number' || !noun) {
       rest.push(seg);
@@ -3392,9 +3416,9 @@ export function oldSourceForm(source: string): string|undefined {
   if (unquoted !== undefined) {
     const quotes = 'a name with quotes in it; resource names and entry ' +
         'names take no quotes';
-    return !unquoted ? quotes :
-        /\s/.test(unquoted) ? `${quotes}, and ${NO_SPACE}` :
-                              `${quotes}, so write '${unquoted}'`;
+    return !unquoted                       ? quotes :
+        hasUnquotedWhitespace(unquoted) ? `${quotes}, and ${NO_SPACE}` :
+                                          `${quotes}, so write '${unquoted}'`;
   }
   const name = asResourceName(source);
   if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
@@ -3406,13 +3430,18 @@ export function oldSourceForm(source: string): string|undefined {
       !(isAcceptedSource(source) || isAcceptedSource(built ?? ''))) {
     return undefined;
   }
-  return plain && /\s/.test(plain) ?
+  return plain && hasUnquotedWhitespace(plain) ?
       `a Knowledge Catalog name, and ${NO_SPACE}` :
       write;
 }
 
-// Why no name to write is given when that name would hold a space.
-export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
+// Why no name to write is given when that name would hold whitespace that
+// hasUnquotedWhitespace counts.
+export const NO_SPACE =
+    "a source can hold a space in the table's own name, but not at its end";
+
+// Why a source or a deployment target with whitespace at either end is refused.
+export const AROUND_WHITESPACE = 'begins or ends with whitespace; remove it';
 
 // The resource name of a table in each Google Cloud service a source can
 // name, with a placeholder for each name in it. A Cloud SQL table has one
@@ -3598,14 +3627,33 @@ function quotePairs(text: string): Array<[number, number]> {
 }
 
 // True when `source` holds whitespace outside a pair of backticks or double
-// quotes, which marks it as a query.
+// quotes, which marks it as a query. A space in the table's own name does not
+// count (see withoutTableNameSpaces).
 export function hasUnquotedWhitespace(source: string): boolean {
+  const text = withoutTableNameSpaces(source);
   let from = 0;
-  for (const [open, close] of quotePairs(source)) {
-    if (/\s/.test(source.slice(from, open))) return true;
+  for (const [open, close] of quotePairs(text)) {
+    if (/\s/.test(text.slice(from, open))) return true;
     from = close + 1;
   }
-  return /\s/.test(source.slice(from));
+  return /\s/.test(text.slice(from));
+}
+
+// `source` with the spaces removed from the table's own name, the last segment
+// of a resource name, resource URI, system entry name or catalog name. A name
+// that ends with whitespace is left as it is.
+function withoutTableNameSpaces(source: string): string {
+  const named = RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
+      !!source.match(ENTRY_NAME)?.[1].startsWith('@');
+  const catalog =
+      CATALOG_NAME_FORMS.some(([prefix]) => source.startsWith(prefix));
+  const last = named ? source.lastIndexOf('/') :
+      catalog        ? source.lastIndexOf('.') :
+                       -1;
+  const name = source.slice(last + 1);
+  return last < 0 || /\s$/.test(name) ?
+      source :
+      source.slice(0, last + 1) + name.replaceAll(' ', '');
 }
 
 // The database a source lives in, for the one-database rule and source
@@ -3782,16 +3830,17 @@ export function spannerDatabaseOf(source: string): string|undefined {
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
 // Undefined for any other source. The entry id of a Google Cloud table in a
 // system entry group is its GCP resource name, so the message names it as the
-// source to write, without quotes. Any other id, such as a dataset's, gets an
-// example. An id that holds a space gets no name to write.
+// source to write, without quotes, when the loader accepts that name. Any
+// other id, such as a dataset's, gets an example. An id with whitespace
+// outside the table's own name gets no name to write.
 function systemEntrySourceError(source: string, ctx: string): string|undefined {
   const entry = source.match(ENTRY_NAME);
   if (!entry?.[1].startsWith('@')) return undefined;
   const id = entry[2].replace(/^\/\//, '').replace(/["`]/g, '');
   const where = `Semantic model load error: ${ctx}: source '${source}' is a ` +
       `Knowledge Catalog entry name in the system entry group '${entry[1]}'`;
-  if (/\s/.test(id)) return `${where}, and ${NO_SPACE}.`;
-  const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
+  if (hasUnquotedWhitespace(id)) return `${where}, and ${NO_SPACE}.`;
+  const write = RESOURCE_NAME.test(id) && isAcceptedSource(id) ?
       `: '${id}'` :
       `, such as ` +
           `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'`;
@@ -3867,6 +3916,10 @@ export function parseSource(
         `to a physical table using its GCP resource name (e.g. ` +
         `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>').`);
   }
+  if (trimmed !== source) {
+    throw new SemanticModelError(`Semantic model load error: ${ctx}: source '${
+        source}' ${AROUND_WHITESPACE}.`);
+  }
 
   const problem = oldSourceForm(trimmed);
   // The accepted forms: a GCP resource name, or a third-party entry name.
@@ -3928,24 +3981,25 @@ export function parseSource(
             `complete each bare table name from the database or Knowledge ` +
             `Catalog entry group that <prefix> names.` :
         '';
-    // A name holding a space gets no name to write. Any other name gets an
-    // example built from its parts when the loader accepts the example, and
-    // the general error below otherwise, which says so when only a quoted
-    // name's dot keeps the example out. A path in one pair of backticks counts
-    // as its parts, as import reads it under a BigQuery or BigLake prefix.
+    // A name whose example would hold whitespace kcmd cannot write gets no
+    // name to write. Any other name gets an example built from its parts when
+    // the loader accepts the example, and the general error below otherwise,
+    // which says so when only a quoted name's dot keeps the example out. A
+    // path in one pair of backticks counts as its parts, as import reads it
+    // under a BigQuery or BigLake prefix.
     const segs = bareNameSegments(trimmed, true);
     if (segs.length > 0 && segs.length <= 4 && segs.every(s => s.length > 0)) {
-      if (segs.some(s => /\s/.test(s))) {
-        throw new SemanticModelError(
-            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
-      }
       const form =
           segs.length === 4 ? TABLE_FORMS.biglake : TABLE_FORMS.bigquery;
       const write = segs.length === 4 ?
           'Write its BigLake resource name instead:' :
           "Write the table's GCP resource name instead, for example:";
       const example = fillForm(form, segs)!;
+      if (hasUnquotedWhitespace(example)) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
+      }
       if (oldSourceForm(example) === undefined && isAcceptedSource(example)) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +

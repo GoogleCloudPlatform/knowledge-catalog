@@ -52,6 +52,32 @@ scenarios('kcmd profiles reports what push rejects', [
     rejects: [has("action 'nothing' is not in the logical model")],
     report: {flags: {profile: 'prod'}, code: 1, rejects: {prod: [pushed()]}},
   },
+  // Push rejects the profile a deployment applies, and prints none of its
+  // warnings, such as the one for the ANSI_SQL "c_id".
+  ...([
+    ['its actions', {deployments: [graph('prod', 'prod')]},
+     {actions: UNKNOWN_ACTION}, ["action 'nothing' is not in the logical model"]],
+    ['its tables',
+     {deployments: [{name: 'g', target: spannerGraph('commerce'), profile: 'prod'}]},
+     {}, ["entity 'customer' to", "entity 'purchase' to"]],
+    ["its action's statement",
+     {deployments: [graph('prod', 'prod')], actions: [{name: 'refund'}]},
+     {actions: [{name: 'refund', executor: {sql: {statements:
+       ['UPDATE purchase SET p_id = @missing']}}}]},
+     ["statement 1 binds '@missing'"]],
+  ] as Array<[string, Scope, object, string[]]>).map(
+      ([why, scope, extra, rejected]): Case => ({
+    name: `prints no warning of a profile push rejects for ${why}`,
+    ...scope,
+    profiles: {prod: {...PROD, ...extra, entities: {...PROD.entities,
+      customer: {...PROD.entities.customer, fields: [{name: 'c_id',
+        expression: {dialects: [{dialect: 'ANSI_SQL', expression: '"c_id"'}]}}]}}}},
+    rejects: rejected.map(has),
+    warnings: [],
+    report: {code: 1, rejects: {prod: [pushed()]}, check: (_, __, warnings) => {
+      expect(warnings).toEqual([]);
+    }},
+  })),
   ...([
     ['a profile file overrides an action the model lacks', {}],
     ['the model lists no deployments and a profile file overrides an action',

@@ -32,7 +32,7 @@
 // validator and named in errors) rather than silently skipped.
 
 import {DeploymentSpec, SemanticModel} from './ir';
-import {asResourceName, asResourceUri, resourceUriFix} from './loader';
+import {AROUND_WHITESPACE, asResourceName, asResourceUri, resourceUriFix} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -218,6 +218,7 @@ export function targetProblem(at: string, target: string): string|undefined {
 
 /** Why `target` is not accepted. `at` says where it is written. */
 function targetError(at: string, target: string): string {
+  if (target !== target.trim()) return `${at}, which ${AROUND_WHITESPACE}.`;
   const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
     return `${at}, the instance-based AlloyDB name, which names no real ` +

@@ -191,36 +191,36 @@
     },
     "TableSource": {
       "type": "string",
-      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @. Neither form takes double quotes or backticks.",
+      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @. Neither form takes double quotes or backticks. Only the table's own name, the last part of a resource name, may hold a space, but not at its end.",
       "pattern": "^[^\"`]*$",
       "anyOf": [
         {
           "title": "BigQuery table",
-          "pattern": "^bigquery\\.googleapis\\.com/projects/[^/]+/datasets/[^/.]+/tables/[^/.]+$"
+          "pattern": "^bigquery\\.googleapis\\.com/projects/[^/\\s]+/datasets/[^/.\\s]+/tables/ *[^/.\\s]+(?: +[^/.\\s]+)*$"
         },
         {
           "title": "BigLake table",
-          "pattern": "^biglake\\.googleapis\\.com/projects/[^/]+/catalogs/[^/.]+/(namespaces|databases)/[^/.]+/tables/[^/.]+$"
+          "pattern": "^biglake\\.googleapis\\.com/projects/[^/\\s]+/catalogs/[^/.\\s]+/(namespaces|databases)/[^/.\\s]+/tables/ *[^/.\\s]+(?: +[^/.\\s]+)*$"
         },
         {
           "title": "Spanner table",
-          "pattern": "^spanner\\.googleapis\\.com/projects/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+          "pattern": "^spanner\\.googleapis\\.com/projects/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/tables/ *[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "AlloyDB table",
-          "pattern": "^alloydb\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/clusters/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+          "pattern": "^alloydb\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/clusters/[^/\\s]+/databases/[^/\\s]+/schemas/[^/\\s]+/tables/ *[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Cloud SQL for MySQL table",
-          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/tables/ *[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Cloud SQL for PostgreSQL or SQL Server table",
-          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/\\s]+/locations/[^/\\s]+/instances/[^/\\s]+/databases/[^/\\s]+/schemas/[^/\\s]+/tables/ *[^/\\s]+(?: +[^/\\s]+)*$"
         },
         {
           "title": "Table outside Google Cloud",
-          "pattern": "^projects/[^/]+/locations/[^/]+/entryGroups/[^/@][^/]*/entries/\\S+$"
+          "pattern": "^projects/[^/\\s]+/locations/[^/\\s]+/entryGroups/[^/@\\s][^/\\s]*/entries/\\S+$"
         }
       ]
     },
@@ -314,7 +314,6 @@
         },
         "primary_key": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/ColumnName"
@@ -518,7 +517,6 @@
         },
         "primary_key": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/ColumnName"
@@ -594,7 +592,15 @@
           "$ref": "#/$defs/DeploymentTarget"
         },
         "profile": {
-          "$ref": "#/$defs/ModelName"
+          "anyOf": [
+            {
+              "const": "default"
+            },
+            {
+              "$ref": "#/$defs/ProfileName"
+            }
+          ],
+          "description": "The profile whose bindings the deployment uses. 'default' means the model file's own bindings; any other value names a profile the model declares."
         }
       }
     },
@@ -838,7 +844,6 @@
         },
         "deployments": {
           "type": "array",
-          "minItems": 1,
           "items": {
             "$ref": "#/$defs/Deployment"
           }
@@ -958,6 +963,19 @@
         }
       ]
     },
+    "ProfileName": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ModelName"
+        },
+        {
+          "not": {
+            "pattern": "^[Dd][Ee][Ff][Aa][Uu][Ll][Tt]$"
+          }
+        }
+      ],
+      "description": "A profile name. 'default', in any casing, is reserved."
+    },
     "FieldName": {
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,299}$",
@@ -971,17 +989,7 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/ModelName"
-            },
-            {
-              "not": {
-                "pattern": "^[Dd][Ee][Ff][Aa][Uu][Ll][Tt]$"
-              }
-            }
-          ],
-          "description": "A profile name. 'default', in any casing, is reserved."
+          "$ref": "#/$defs/ProfileName"
         },
         "entities": {
           "type": "array",

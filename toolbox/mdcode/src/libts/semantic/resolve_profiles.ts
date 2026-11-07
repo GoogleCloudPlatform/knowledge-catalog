@@ -493,11 +493,11 @@ export function applyProfile(
  * error that stops it, naming the profile. The warnings are those of the
  * model file's load (`opts.from`), less the ones about values the profile
  * replaces, followed by those for the values it sets, each prefixed with the
- * document name.
+ * document name. With `skipActions`, the profile's actions are not read.
  */
 export function applyProfileFile(
     model: SemanticModel, text: string, profileName: string,
-    opts: Omit<ApplyProfileOptions, 'warnings'> = {}):
+    opts: Omit<ApplyProfileOptions, 'warnings'> = {}, skipActions = false):
     {model: SemanticModel; warnings: string[]}|{error: string} {
   // Checked before the profile is read, so a model with a `sql` executor
   // reports that first even when the profile file does not parse.
@@ -506,7 +506,7 @@ export function applyProfileFile(
   if (sql) return {error: sql};
   let profile: ProfileSpec;
   try {
-    profile = loadProfileFile(text, profileName);
+    profile = loadProfileFile(text, profileName, {skipActions});
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
     return {error: err.message};
@@ -556,36 +556,49 @@ export interface AppliedProfile {
 /**
  * Loads the model document `doc` on its own and applies `profile` to it. An
  * error says whether the document failed to load or the profile failed to
- * apply, since the callers word the two differently.
+ * apply, since the callers word the two differently. With `skipActions`,
+ * neither the profile's actions nor the model's take part.
  */
 function applyProfileToDocument(
-    doc: {name: string; text: string}, profile: ProfileSpec,
-    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    doc: {name: string; text: string}, profile: ProfileSpec, load: DialectLoad,
+    skipActions: boolean):
+    AppliedProfile|{error: string; stage: 'load'|'apply'} {
+  const {actions: _, ...bindings} = profile;
   return applyToDocument(
-      doc, (base, from) => applyProfileSpec(base, profile, {from, load}), load);
+      doc,
+      (base, from) => applyProfileSpec(
+          base, skipActions ? bindings : profile, {from, load}),
+      load, skipActions);
 }
 
 /** applyProfileToDocument for the profile file `text`. */
 function applyProfileFileToDocument(
     doc: {name: string; text: string}, text: string, profileName: string,
-    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad, skipActions: boolean):
+    AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
       doc,
-      (base, from) => applyProfileFile(base, text, profileName, {from, load}),
-      load);
+      (base, from) =>
+          applyProfileFile(base, text, profileName, {from, load}, skipActions),
+      load, skipActions);
 }
 
+// Loads `doc` on its own and calls `apply` on its model, without the model's
+// actions when `skipActions` is set.
 function applyToDocument(
     doc: {name: string; text: string},
     apply: (base: SemanticModel,
             from: {document: string; warnings: string[]}) =>
         {model: SemanticModel; warnings: string[]}|{error: string},
-    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad, skipActions: boolean):
+    AppliedProfile|{error: string; stage: 'load'|'apply'} {
   const loaded = loadSemanticModels(
       [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
+  const {model} = loaded.models[0];
   const res = apply(
-      loaded.models[0].model, {document: doc.name, warnings: loaded.warnings});
+      skipActions ? {...model, actions: []} : model,
+      {document: doc.name, warnings: loaded.warnings});
   if ('error' in res) return {error: res.error, stage: 'apply'};
   return {model: res.model, warnings: res.warnings};
 }
@@ -645,29 +658,37 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|
 /**
  * Finds the profile `profileName` among `profiles`, the ones the model
  * document `doc` declares, and applies it, as push, `kcmd profiles` and the
- * runtime do. It applies to the document loaded on its own.
+ * runtime do. It applies to the document loaded on its own. With
+ * `skipActions`, neither the profile's actions nor the model's take part, as
+ * in the profile push publishes to Knowledge Catalog.
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
-    profileName: string, load: DialectLoad = {}): DocumentProfile {
+    profileName: string, load: DialectLoad = {},
+    opts: {skipActions?: boolean} = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
+  const skipActions = !!opts.skipActions;
   const res = 'spec' in chosen ?
-      applyProfileToDocument(doc, chosen.spec, load) :
-      applyProfileFileToDocument(doc, chosen.text, profileName, load);
+      applyProfileToDocument(doc, chosen.spec, load, skipActions) :
+      applyProfileFileToDocument(
+          doc, chosen.text, profileName, load, skipActions);
   return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
 }
 
 /**
  * The warnings that applying the profile `profileName` among `profiles` to the
- * model document `doc` gives, each labeled with the profile. The warnings in
- * `own`, which the document's own load gives, are left out. Empty unless
- * profileForDocument applies the profile as a profile file.
+ * model document `doc` gives, each labeled with the profile. The profile is
+ * applied as push publishes it, without actions, so a profile whose actions
+ * do not apply gives them too. The warnings in `own`, which the document's own
+ * load gives, are left out. Empty unless profileForDocument applies the
+ * profile as a profile file.
  */
 export function appliedProfileWarnings(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
     profileName: string, own: string[], load: DialectLoad = {}): string[] {
-  const res = profileForDocument(doc, profiles, profileName, load);
+  const res =
+      profileForDocument(doc, profiles, profileName, load, {skipActions: true});
   if (res.kind !== 'file') return [];
   return res.warnings.filter(w => !own.includes(w))
       .map(w => `profile '${profileName}': ${w}`);

@@ -158,6 +158,7 @@ describe('resolveModelDeployments: rejected targets', () => {
          // A graph name kcmd cannot accept is not given a `graphs/` name to
          // write, which would be rejected in turn.
          [SPANNER.replace('/graphs/retail', '/propertyGraphs/bad.name'), notADestination],
+         [`${BQ} `, 'which begins or ends with whitespace; remove it.'],
          ['bigquery:acme.sales.retail', notADestination],
          ['bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders', notADestination],
          ['//bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders', notADestination],

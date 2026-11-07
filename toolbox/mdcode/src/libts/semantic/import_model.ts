@@ -7,7 +7,7 @@ import {checkProfileFileName, ProfileFileError, profileNameError, profileParseEr
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
@@ -206,8 +206,13 @@ function sourceWarning(
     const parts = prefixSegments(source, k.form);
     return !parts.length || parts.some(p => /[`"]/.test(p));
   });
+  // Only the table's own name, the last part, may hold a space, and not at
+  // its end. No part may hold any other whitespace.
+  const segments = bareNameSegments(source, true);
+  const spaced = segments.slice(0, -1).some(s => /\s/.test(s)) ||
+      /[^\S ]|\s$/.test(segments.at(-1) ?? '');
   const cannot = !bare || rerun ? undefined :
-      /\s/.test(source)        ? NO_SPACE :
+      spaced                   ? NO_SPACE :
       quoted                   ? NO_QUOTE :
                                  undefined;
   const dotted = !bare || rerun || cannot ?
@@ -524,10 +529,10 @@ function validateObjectNames(
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
+  const word = entityWord(doc.targetVersion);
   for (const ds of doc.datasets) {
     validateName('entity', ds.name);
-    const dsScope =
-        typeof ds.name === 'string' ? `dataset '${ds.name}'` : 'dataset';
+    const dsScope = typeof ds.name === 'string' ? `${word} '${ds.name}'` : word;
     validateRecords('field', asRecords(ds.fields), dsScope);
   }
   validateRecords('relationship', doc.relationships);
@@ -725,7 +730,7 @@ async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
 function completeFromEntryGroup(
     ds: Record<string, any>, source: string,
     parts: Array<{text: string; quoted: boolean}>, doc: ImportDocument): void {
-  const dsLabel = `dataset '${ds.name}'`;
+  const dsLabel = `${entityWord(doc.targetVersion)} '${ds.name}'`;
   const group = doc.entryGroup!.base;
   // Compared from the end, so a name with more parts than an entry's matches
   // none.
@@ -920,19 +925,28 @@ function repairField(
 }
 
 /**
- * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
- * table names against `doc.sourcePrefix` or completing them from
- * `doc.entryTables`, and warning on unaccepted sources), truncates its
- * `description`, and repairs each of its `fields`.
+ * Repairs a dataset's `source` (removing whitespace around it, removing
+ * query-valued sources, qualifying bare table names against
+ * `doc.sourcePrefix` or completing them from `doc.entryTables`, and warning on
+ * unaccepted sources), truncates its `description`, and repairs each of its
+ * `fields`.
  */
 function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
   // Google version), qualify bare table names against `doc.sourcePrefix` or
   // complete them from `doc.entryTables`, or warn on unaccepted source
   // formats.
-  const dsLabel = `dataset '${ds.name}'`;
+  const word = entityWord(doc.targetVersion);
+  const dsLabel = `${word} '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
+    // Push rejects whitespace around a source. A query is reported below.
+    if (trimmed !== ds.source && !hasUnquotedWhitespace(trimmed)) {
+      doc.warnOrError(
+          `${dsLabel}: removed the whitespace around source '${trimmed}'.`);
+      ds.source = trimmed;
+      doc.modified = true;
+    }
     const qualified = doc.sourcePrefix ?
         qualifyTableSource(trimmed, doc.sourcePrefix) :
         undefined;
@@ -942,11 +956,11 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.errors.push(
             `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
-            `every dataset.`);
+            `every ${word}.`);
       } else {
         doc.warnOrError(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
-            `dataset is now unbound.`);
+            `${word} is now unbound.`);
         delete ds.source;
         doc.modified = true;
       }
@@ -1073,9 +1087,10 @@ async function readSourceDialects(
 
 /**
  * Phase 3 (Repair): Repairs third-party constructs in-place on `doc` (pruning
- * extra models, repairing datasets and their fields, pruning unanchored
- * metrics, and truncating descriptions > 2,000 chars). Returns the source
- * dialects it reads after repairing the datasets.
+ * extra models, removing the whitespace around deployment targets, repairing
+ * datasets and their fields, pruning unanchored metrics, and truncating
+ * descriptions > 2,000 chars). Returns the source dialects it reads after
+ * repairing the datasets.
  */
 async function repairDocument(
     doc: ImportDocument,
@@ -1095,6 +1110,18 @@ async function repairDocument(
     doc.modified = true;
   }
   truncateDescription(doc.model, `model '${doc.model.name}'`, doc);
+  // Remove the whitespace around each deployment target, which push rejects
+  // as it does around a source. A vanilla model's targets sit in a GOOGLE
+  // block, which only --input first-party reads. That mode writes nothing on
+  // an error, so push's own check reports them.
+  for (const d of asRecords(doc.model.deployments)) {
+    if (typeof d.target !== 'string' || d.target === d.target.trim()) continue;
+    d.target = d.target.trim();
+    doc.modified = true;
+    doc.warnOrError(
+        `deployment '${d.name}': removed the whitespace around target '${
+            d.target}'.`);
+  }
 
   // 2. Repair each dataset (its table `source`, `description`, and `fields`).
   for (const ds of doc.datasets) {
@@ -1603,12 +1630,12 @@ function validateOssieConversion(
   for (const e of model.entities) {
     if (e.abstract) {
       doc.errors.push(
-          `${prefix}: entity '${e.name}' is 'abstract', which version ` +
+          `${prefix}: dataset '${e.name}' is 'abstract', which version ` +
           `'${OSSIE_VERSION}' does not support.`);
       continue;
     }
     if (!e.authoredSource && !e.dataSource) {
-      doc.errors.push(`${prefix}: entity '${e.name}' has no 'source'.`);
+      doc.errors.push(`${prefix}: dataset '${e.name}' has no 'source'.`);
     }
     for (const f of e.fields) {
       if (!isFieldBound(f)) {
@@ -1630,12 +1657,16 @@ function validateOssieConversion(
 
 /**
  * Loads `doc.root` into the `SemanticModel` IR for cross-version conversion,
- * recording any `SemanticModelError` on `doc.errors`.
+ * recording any `SemanticModelError` on `doc.errors` in the words of the
+ * flavor import writes.
  */
 function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
   try {
-    const loaded = fromDocument(
-        doc.root, {bindingOptional: true, warnUnacceptedSource: true});
+    const loaded = fromDocument(doc.root, {
+      bindingOptional: true,
+      warnUnacceptedSource: true,
+      messageFlavor: doc.targetVersion,
+    });
     return loaded.models[0];
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;

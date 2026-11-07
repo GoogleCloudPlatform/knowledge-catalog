@@ -437,7 +437,7 @@ semantic_model:
 
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0]))).toEqual([
-      "Error: Model document 'commerce': Semantic model load error: dataset " +
+      "Error: Model document 'commerce': Semantic model load error: entity " +
           "'Customer': source 'not a table' looks like a SQL query; a " +
           'query-valued source is not supported yet. Bind \'source\' to a ' +
           'physical table using its GCP resource name (e.g. ' +

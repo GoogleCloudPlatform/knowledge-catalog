@@ -2901,9 +2901,9 @@ describe('profile completeness: dialects and struct paths', () => {
     expect(validateProfileCompleteness(bqOnly(), rebound(SP('Orders'), 'Amount'))).toEqual([]);
   });
 
-  // The one-database rule reads a source as the loader's reader does, trimmed,
-  // and an empty source is reported once.
-  test('a padded source is read trimmed, and an empty one reported once', () => {
+  // A source with whitespace around it, and an empty source, are each
+  // reported once, and not again by the one-database rule.
+  test('a padded source and an empty one are each reported once', () => {
     const model: SemanticModel = {
       name: 'shop',
       entities: [
@@ -2919,8 +2919,9 @@ describe('profile completeness: dialects and struct paths', () => {
       entities: [keyedById('orders', source), keyedById('items', BQ('items'))],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model, spec(` ${SP('Orders')} `)).join('\n'))
-        .toContain('more than one database');
+    expect(validateProfileCompleteness(model, spec(` ${SP('Orders')} `))).toEqual([
+      `profile 'p': entity 'orders': source ' ${SP('Orders')} ' begins or ends with ` +
+      'whitespace; remove it.']);
     const empty = validateProfileCompleteness(model, spec(''));
     expect(empty.filter(e => e.includes("'orders'") || e.includes("source ''")))
         .toHaveLength(1);

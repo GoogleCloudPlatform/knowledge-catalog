@@ -334,15 +334,17 @@ describe('lossy edges are flagged', () => {
 
 
 describe('serialize flags loader-invalid reconstructions', () => {
-  test('a model with no entities warns that datasets is required', () => {
-    const model: SemanticModel = {
-      name: 'empty',
-      entities: [],
-      relationships: [],
-      metrics: [],
-    };
-    const {warnings} = serializeModel(model);
-    expect(warnings.some(w => /no datasets/i.test(w))).toBe(true);
+  test('a model with no entities warns in the words of its flavor', () => {
+    for (const [version, none, one] of [
+           ['0.2.0.dev0/google', 'entities', 'an entity'],
+           ['0.2.0.dev0', 'datasets', 'a dataset'],
+         ] as const) {
+      const model: SemanticModel =
+          {name: 'empty', version, entities: [], relationships: [], metrics: []};
+      expect(serializeModel(model).warnings).toContain(
+          `model 'empty': no ${none}; the document requires at least one ` +
+          `and will not load until ${one} is present.`);
+    }
   });
 
   test('a field with no expression warns that one is required', () => {
@@ -1200,6 +1202,22 @@ describe('dual-version model serialization', () => {
     expect(warnings).toEqual([
       `field 'id': 1 GOOGLE custom_extension(s) have no representation on a field under '0.2.0.dev0' and are not serialized`,
     ]);
+  });
+
+  test('writes an entity source on one line whatever its length', () => {
+    const source = 'bigquery.googleapis.com/projects/kc-looker-external/' +
+        'datasets/kcmd_loader_live_1105/tables/order items';
+    // A custom ai_context member named source is folded like any other value.
+    const note = 'the finance team owns this table, refreshes it every night and ' +
+        'answers questions about it';
+    const model: SemanticModel = {
+      ...emptyModel,
+      entities: [{...baseOrders, authoredSource: source,
+                  aiContext: {additionalProperties: {source: note}}}],
+    };
+    const text = serializeModel(model).yaml;
+    expect(text).toContain(`source: ${source}\n`);
+    expect(text).not.toContain(note);
   });
 
   for (const compactFlow of [false, true]) {

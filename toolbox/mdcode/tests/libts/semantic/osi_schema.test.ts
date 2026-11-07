@@ -257,22 +257,33 @@ function rename(m: any, kind: Part|'deployment', name: string): void {
 }
 
 // `loaderBug` says why kcmd disagrees with the schema on this case: a bug,
-// whose entry is removed once the loader is fixed, or a rule no JSON Schema
-// can state. The test then expects the disagreement.
+// whose entry is removed once the loader is fixed, or a rule the schema does
+// not state. The test then expects the disagreement.
 type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 
 // The loader accepts an empty name or description here; the schema does not.
 const EMPTY_TEXT_BUG = 'b/577102892';
 
-// One valid and one malformed case per source form, the '//' URI form, and
-// a name with double quotes or backticks.
+// One valid and one malformed case per source form, a table name with a
+// space in each form, the '//' URI form, and a name with double quotes or
+// backticks. Only a resource name's last part may hold a space, and not at
+// its end.
 function sourceCases(withSource: (source: string) => any): Case[] {
   return [
     ...(Object.keys(SOURCE) as (keyof typeof SOURCE)[]).flatMap((form): Case[] => [
       [`a ${form} source`, withSource(SOURCE[form]), true],
       [`a malformed ${form} source`, withSource(BAD_SOURCE[form]), false],
+      [`a ${form} source whose table name holds a space`,
+        withSource(SOURCE[form].replace(/orders$/, 'my orders')), form !== 'thirdParty'],
+      [`a ${form} source whose table name begins with a space`,
+        withSource(SOURCE[form].replace(/orders$/, ' orders')), form !== 'thirdParty'],
     ]),
+    ['a source whose dataset name holds a space',
+      withSource(SOURCE.bigquery.replace('datasets/d/', 'datasets/d x/')), false],
+    ['a source whose table name holds a tab', withSource(SOURCE.bigquery.replace('orders', 'my\torders')), false],
     ['a source with a leading //', withSource(`//${SOURCE.bigquery}`), false],
+    ['a source with a leading space', withSource(` ${SOURCE.bigquery}`), false],
+    ['a source with a trailing space', withSource(`${SOURCE.bigquery} `), false],
     ['a source with double quotes', withSource(SOURCE.bigquery.replace('orders', '"orders"')), false],
     ['a source with backticks', withSource(SOURCE.bigquery.replace('orders', '`orders`')), false],
   ];
@@ -328,6 +339,15 @@ const MODEL_CASES: Case[] = [
   ['an inline profiles: key', base(m => { m.profiles = [{ name: 'p' }]; }), false],
   ['a deployment_target: key', base(m => { m.deployment_target = TARGET.bigquery; }), false],
   ['an unknown key on an entity', base(m => { m.entities[0].colour = 'red'; }), false],
+  ['an empty deployments list', base(m => { m.deployments = []; }), true],
+  ['an empty primary_key', base(m => { m.entities[0].primary_key = []; }), true],
+  ["an empty primary_key on a relationship's target",
+    base(m => { m.entities[1].primary_key = []; }), true,
+    "push needs a key on a relationship's target; the schema checks each entity alone"],
+  ['an empty primary_key on the entity of a metric a graph deploys', base(m => {
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
+    m.entities[0].primary_key = [];
+  }), true, "a graph needs a key on a metric's entity; the schema checks each entity alone"],
 
   // Dialects and datatypes.
   ['a dialect outside the list', base(m => {
@@ -357,12 +377,20 @@ const MODEL_CASES: Case[] = [
   ] as const).map(([what, edit]): Case => [
     `an abstract entity with ${what}`,
     docOf(fullModel(), m => edit(m.entities[0])), false]),
+  ['an abstract entity with an empty primary_key',
+    docOf(fullModel(), m => { m.entities[0].primary_key = []; }), false,
+    'push refuses only a non-empty key on an abstract entity'],
 
   // Descriptions: the model, an entity, a metric and a relationship hold 2000.
   ...(['model', 'entity', 'metric', 'relationship'] as const).flatMap(kind =>
     [2000, 2001].map((n): Case => [
       `a ${kind} description of ${n} characters`,
       base(m => { partOf(m, kind).description = 'd'.repeat(n); }), n === 2000])),
+  ['a model description of 1001 emoji', base(m => { m.description = '\u{1F600}'.repeat(1001); }),
+    true, 'Dataplex and push count UTF-16 code units; JSON Schema counts code points'],
+  ['a model description of 2000 characters with a space at either end',
+    base(m => { m.description = ` ${'d'.repeat(2000)} `; }), false,
+    'push counts the text it stores, without the whitespace around it'],
 
   // Names.
   ...([
@@ -414,6 +442,20 @@ const MODEL_CASES: Case[] = [
         { parameters: [{ name: 'id', type: 'Integer', required: true }] } : {}),
     }];
   }), valid]),
+  // Push refuses a sql statement that is not a single write. Actions are out
+  // of preview scope, so the schema gains no rule for it.
+  ...([
+    ['two statements', 'DELETE FROM orders WHERE id = @id; DELETE FROM orders WHERE id = @id'],
+    ['only a comment', '-- DELETE FROM orders WHERE id = @id'],
+    ['a query', 'SELECT 1'],
+  ] as const).map(([what, statement]): Case => [`a sql executor statement that is ${what}`,
+    base(m => {
+      m.actions = [{
+        name: 'cancel_order', description: 'Cancels an order.',
+        executor: { sql: { statements: [statement] } },
+        parameters: [{ name: 'id', type: 'Integer', required: true }],
+      }];
+    }), true, 'actions are out of preview scope']),
   // A constraint states a non-blank judgment and its on_violation.
   ...([
     ['no judgment', { name: 'c', on_violation: 'warn' }],
@@ -446,9 +488,9 @@ const MODEL_CASES: Case[] = [
       }), valid],
     ];
   }),
-  ['a deployment profile with a space', base(m => {
-    m.deployments = [{ name: 'prod', target: TARGET.bigquery, profile: 'prod us' }];
-  }), false],
+  ...['prod us', 'Default', 'DEFAULT'].map((profile): Case => [
+    `a deployment profile '${profile}'`,
+    base(m => { m.deployments = [{ name: 'prod', target: TARGET.bigquery, profile }]; }), false]),
   // Rules about what a metric's SQL reads, which no JSON Schema can see.
   ['a metric reading a field with no expression', base(m => {
     m.entities[0].fields.push({ name: 'amount' });
@@ -489,6 +531,8 @@ const MODEL_CASES: Case[] = [
       m.deployments = [{ name: 'prod', target: BAD_TARGET[form as keyof typeof TARGET] }];
     }), false],
   ]),
+  ...[` ${TARGET.bigquery}`, `${TARGET.bigquery} `].map((target): Case => [
+    `a target '${target}'`, base(m => { m.deployments = [{ name: 'prod', target }]; }), false]),
 ];
 
 describeAgreement('the Google schema and the loader agree on model documents',
@@ -623,10 +667,12 @@ const PROFILE_CASES: Case[] = [
 describeAgreement('the Google schema and the loader agree on profile files',
   validateProfile, profileErrors, PROFILE_CASES);
 
-// The schema cannot see the model file, so this case checks the schema alone.
-test('a profile entity with no primary_key passes the schema', () => {
+// The schema cannot see the model file, so these cases check the schema alone.
+test('a profile entity with no primary_key, or an empty one, passes the schema', () => {
   expect(schemaErrors(validateProfile,
     profile(p => { delete p.entities[1].primary_key; }))).toBeUndefined();
+  expect(schemaErrors(validateProfile,
+    profile(p => { p.entities[1].primary_key = []; }))).toBeUndefined();
 });
 
 test('the Google flavor rejects a GOOGLE custom_extensions block in any letter case', () => {

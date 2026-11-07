@@ -421,7 +421,8 @@ describe('abstract datasets and their source constraint', () => {
         name: 'm',
         datasets: [{ name: 'orders', primary_key: ['id'], fields: [] }],
       }],
-    })).toThrow(/non-abstract dataset requires a source/);
+    })).toThrow("entity 'orders': a non-abstract entity requires a source; set 'source', or " +
+      "mark it 'abstract: true' if it has no table");
   });
 
   test('an abstract dataset that also declares a source is a hard error', () => {
@@ -1496,7 +1497,7 @@ describe('a purely logical model loads only under bindingOptional', () => {
     // A non-abstract dataset in a graph leg still requires a source. The
     // expression-less fields are unbound, not errors -- the availability pass
     // drops them -- so only the missing-source check fires here.
-    expect(message).toContain("dataset 'orders': a non-abstract dataset requires a source");
+    expect(message).toContain("entity 'orders': a non-abstract entity requires a source");
     expect(message).not.toContain("requires an expression");
   });
 
@@ -1559,6 +1560,52 @@ function irAt(m: any, level: Level): any {
     case 'metric': return m.metrics[0];
   }
 }
+
+// A message about an entry of `entities` calls it an entity in a Google model
+// and a dataset in a vanilla one.
+describe('messages name an entity in the words of its flavor', () => {
+  const google = (data: object) => [{ vendor_name: 'GOOGLE', data: JSON.stringify(data) }];
+  const proto = () => JSON.parse('{"__proto__": 1}');
+  // [mistake, edit of fullModel in each flavor, message with <e> for the word]
+  const cases: Array<[string, (m: any, v: string) => void, string]> = [
+    ['an undefined endpoint', m => { m.relationships[0].to = 'ghost'; },
+      "relationship 'orders_to_customers': 'to' <e> 'ghost' is not defined in the model"],
+    ['two entity names', m => { m.datasets[1].name = 'Orders'; },
+      "model 'm': duplicate <e> name 'Orders' (case-insensitive collision with 'orders'); names must be unique."],
+    ['two field names', m => { m.datasets[0].fields[1].name = 'id'; },
+      "<e> 'orders': duplicate field name 'id'; names must be unique."],
+    ['a field name', m => { m.datasets[0].fields[1].name = 'customer id'; },
+      "<e> 'orders': Field name 'customer id' is not valid; names must match " +
+      '^[A-Za-z_][A-Za-z0-9_]{0,299}$: a letter or underscore, then letters, digits or underscores.'],
+    ['a source', m => { m.datasets[0].source = 'bigquery.googleapis.com/projects/p/datasets/d'; },
+      "<e> 'orders': source 'bigquery.googleapis.com/projects/p/datasets/d' is not a valid table reference."],
+    ['a metric anchor', (m, v) => {
+      if (v === GOOGLE) m.metrics[0].entity = 'ghost';
+      else m.metrics[0].custom_extensions = google({ entity: 'ghost' });
+    }, "metric 'order_count': 'entity' names 'ghost', which is not <a e> in this model."],
+    ['an ai_context member', (m, v) => {
+      m.datasets[0].ai_context = v === GOOGLE ? { custom: proto() } : proto();
+    }, "<e> 'orders': custom ai_context member '__proto__' is not supported; rename it."],
+  ];
+  for (const [mistake, edit, message] of cases) {
+    test(mistake, () => {
+      for (const [v, word] of [[GOOGLE, 'entity'], [VANILLA, 'dataset']]) {
+        const m = fullModel();
+        edit(m, v);
+        expect(() => load(v, m)).toThrow(message
+          .replace('<a e>', word === 'entity' ? 'an entity' : 'a dataset')
+          .replace('<e>', word));
+      }
+    });
+  }
+
+  test('a GOOGLE block on an entity', () => {
+    expect(() => load(GOOGLE, fullModel('dataset', { custom_extensions: google({}) }))).toThrow(
+      "entity 'orders': a 'GOOGLE' custom_extensions block is not accepted in a " +
+      "'0.2.0.dev0/google' document. Everything it would carry is a native key in this flavor; " +
+      'write it as one.');
+  });
+});
 
 describe('a document holds exactly one semantic model', () => {
   test('one model loads', () => {
@@ -1803,7 +1850,7 @@ describe('metric entity anchor', () => {
   });
   test('an anchor naming an unknown dataset is rejected', () => {
     expect(() => load(GOOGLE, countStar({ entity: 'nope' })))
-      .toThrow(/'entity' names 'nope', which is not a dataset in this model/);
+      .toThrow(/'entity' names 'nope', which is not an entity in this model/);
   });
   test('infers metric entity from the leading qualifier of a struct path', () => {
     for (const exprText of [
@@ -2987,7 +3034,7 @@ ${body}    datasets:
     };
     const base = doc({});
     (base.semantic_model[0].datasets[0] as any).ai_context = proto();
-    expect(() => fromDocument(base)).toThrow("dataset 'orders': custom ai_context member '__proto__'");
+    expect(() => fromDocument(base)).toThrow("entity 'orders': custom ai_context member '__proto__'");
     const rel = doc({});
     (rel.semantic_model[0].relationships[0] as any).ai_context = proto();
     expect(() => fromDocument(rel)).toThrow("relationship 'placed_by': custom ai_context member '__proto__'");
@@ -3207,6 +3254,12 @@ describe('strict entity sources', () => {
     datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
   });
 
+  test('a source with whitespace at either end is rejected', () => {
+    expect(() => loadSource(' bigquery.googleapis.com/projects/p/datasets/d/tables/orders')).toThrow(
+      "entity 'orders': source ' bigquery.googleapis.com/projects/p/datasets/d/tables/orders' " +
+      'begins or ends with whitespace; remove it.');
+  });
+
   // A string with a `/` is never a bare table name, so a resource name whose
   // host is misspelled or not lowercase is rejected as its URI is.
   test('a resource name with a misspelled host is rejected, as is its URI', () => {
@@ -3256,13 +3309,16 @@ describe('strict entity sources', () => {
   // A resource URI or a Knowledge Catalog name of a table kcmd reads is
   // rejected, and the message names the resource name to write.
   test('a resource URI or a catalog name is rejected, naming the resource name to write', () => {
+    const lead = BQ.replace(/orders$/, ' orders');
     for (const [written, kind, name] of [
       [`//${BQ}`, 'uri', BQ],
+      [`//${lead}`, 'uri', lead],
       [`//${SPANNER}`, 'uri', SPANNER],
       [`//${MYSQL}`, 'uri', MYSQL],
       [`//${HIVE}`, 'uri', HIVE],
       ['bigquery:acme.raw.orders', 'fqn', BQ],
       ['bigquery:acme.raw."orders"', 'fqn', BQ],
+      ['bigquery:acme.raw. orders', 'fqn', lead],
       ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
       ['spanner:acme.regional-us-central1.inst.db.orders', 'fqn', SPANNER],
       ['alloydb:acme.us-central1.cl.db.public.orders', 'fqn', ALLOYDB],
@@ -3280,7 +3336,7 @@ describe('strict entity sources', () => {
           datasets: [{ name: 'orders', source: written, primary_key: ['id'], fields: [] }],
           }))
           .toThrow(
-              `dataset 'orders': source '${written}' is ${form}: '${name}'.`);
+              `entity 'orders': source '${written}' is ${form}: '${name}'.`);
     }
   });
 
@@ -3291,13 +3347,14 @@ describe('strict entity sources', () => {
   test('an entry name in a system entry group is rejected, naming the resource name', () => {
     for (const [group, name] of [
       ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
+      ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/ orders'],
       ['@spanner', 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
       ['@biglake', HIVE],
     ]) {
       const source = `projects/acme/locations/us/entryGroups/${group}/entries/${name}`;
       expect(databaseOf(source)).toBeUndefined();
       expect(() => loadSource(source)).toThrow(
-        `dataset 'orders': source '${source}' is a Knowledge Catalog entry ` +
+        `entity 'orders': source '${source}' is a Knowledge Catalog entry ` +
         `name in the system entry group '${group}'; write the table's ` +
         `resource name instead: '${name}'.`);
     }
@@ -3351,7 +3408,7 @@ describe('strict entity sources', () => {
           name: 'm',
           datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
         })).toThrow(
-          `dataset 'orders': source '${source}' is a ${service} resource; the ` +
+          `entity 'orders': source '${source}' is a ${service} resource; the ` +
           `preview does not support ${service} sources yet.`);
       }
     }
@@ -3376,7 +3433,7 @@ describe('strict entity sources', () => {
     ]) {
       expect(databaseOf(source)).toBeUndefined();
       expect(() => loadSource(source)).toThrow(
-        `dataset 'orders': source '${source}' is a Knowledge Catalog name; ` +
+        `entity 'orders': source '${source}' is a Knowledge Catalog name; ` +
         `write the entry name of the table's Knowledge Catalog entry instead, ` +
         `such as 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.`);
     }
@@ -3458,17 +3515,16 @@ describe('strict entity sources', () => {
     // 1. Query-valued source. A space after a quote that never closes is
     // unquoted.
     const TABLE = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables';
-    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items',
-      `${TABLE}/"order items`, `${TABLE}/\`order items`]) {
-      expect(() => loadSource(query)).toThrow(`dataset 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
+    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items']) {
+      expect(() => loadSource(query)).toThrow(`entity 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
     }
-    // A space inside double quotes or backticks belongs to a table name, which
-    // kcmd cannot name. The message says how to write a table outside Google
-    // Cloud.
-    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
-    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"',
-      'acme.cat.ns."order items"']) {
-      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
+    // A space inside double quotes or backticks belongs to a name. A table's
+    // own name may hold one, but not at its end, and no other name may. The
+    // message then says how to write a table outside Google Cloud.
+    const NO_SPACE = "a source can hold a space in the table's own name, but not at its end.";
+    for (const bare of ['"my schema".orders', 'public."orders "']) {
+      expect(() => loadSource(bare)).toThrow(
+        `bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
         'A table outside Google Cloud is written as the entry name');
     }
     // A resource name or entry name takes no double quotes or backticks; the
@@ -3482,8 +3538,7 @@ describe('strict entity sources', () => {
     const QUOTES = 'is a name with quotes in it; resource names and entry names take no quotes';
     for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
       const plain = quoted.replace(/["`]/g, '');
-      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}${
-        /\s/.test(plain) ? `, and ${NO_SPACE}` : `, so write '${plain}'.`}`);
+      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}, so write '${plain}'.`);
     }
     // Quotes that fill a segment leave no name to write.
     const CLOUDSQL_TABLES = 'cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables';
@@ -3492,23 +3547,26 @@ describe('strict entity sources', () => {
         expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
       }
     }
-    // A quoted system entry name gets the system entry message. It names the
-    // resource name without quotes, or says kcmd cannot name the table.
+    // A system entry name, quoted or not, gets the system entry message. It
+    // names the resource name without quotes only when the loader accepts it.
     const SYSTEM = 'projects/acme/locations/us/entryGroups/@bigquery/entries';
     for (const [id, end] of [
       ['"orders"', "; write the table's resource name instead, such as"],
       [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
-      [`${TABLE}/"order items"`, `, and ${NO_SPACE}`],
+      [`${TABLE}/"order items"`, `; write the table's resource name instead: '${TABLE}/order items'.`],
+      [`${TABLE}/ order.items`, "; write the table's resource name instead, such as"],
+      [TABLE.replace('sales', '"my sales"') + '/orders', `, and ${NO_SPACE}`],
     ]) {
       expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
     }
     // Every catalog name the loader reads is rejected, naming the resource
     // name when it can.
     for (const [fqn, end] of [
-      ['bigquery:acme.sales."a/b c"', `, and ${NO_SPACE}`],
       ['bigquery:acme.sales.``` `', `, and ${NO_SPACE}`],
-      ['bigquery:acme.raw.`order items`', `, and ${NO_SPACE}`],
-      ['bigquery:acme.raw."order items"', `, and ${NO_SPACE}`],
+      ...['bigquery:acme.raw.`order items`', 'bigquery:acme.raw."order items"'].map(fqn => [fqn,
+        "; write the table's GCP resource name: " +
+        "'bigquery.googleapis.com/projects/acme/datasets/raw/tables/order items'."]),
+      ['bigquery:acme.sales."a/b c"', "; write the table's GCP resource name."],
       ['bigquery:acme.raw.a/b', "; write the table's GCP resource name."],
       ['bigquery:acme.raw.""', "; write the table's GCP resource name."],
       ['biglake:table:acme.c.n.""', "; write the table's GCP resource name."],
@@ -3525,13 +3583,15 @@ describe('strict entity sources', () => {
     for (const [bare, hint] of [
       ['orders', 'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders'],
       ['raw.orders', 'bigquery.googleapis.com/projects/<project>/datasets/raw/tables/orders'],
+      ['public."order items"', 'bigquery.googleapis.com/projects/<project>/datasets/public/tables/order items'],
+      ['shop." orders"', 'bigquery.googleapis.com/projects/<project>/datasets/shop/tables/ orders'],
       ['acme.raw.orders', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
     ]) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
       })).toThrow(
-        `dataset 'orders': bare table name '${bare}' is not a valid source. ` +
+        `entity 'orders': bare table name '${bare}' is not a valid source. ` +
         `Write the table's GCP resource name instead, for example:\n` +
         `  source: ${hint}\n` + VIA_IMPORT,
       );
@@ -3546,7 +3606,7 @@ describe('strict entity sources', () => {
       name: 'm',
       datasets: [{ name: 'orders', source: 'acme.lake.sales.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write its BigLake resource name instead:\n  source: biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders\n" + VIA_IMPORT,
+      "entity 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write its BigLake resource name instead:\n  source: biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders\n" + VIA_IMPORT,
     );
 
     // 4. Overlong source (> 4000 characters)
@@ -3561,7 +3621,7 @@ describe('strict entity sources', () => {
     for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'oracle:p.i.t', '//trino.example.com/anything',
       'SNOWFLAKE:acct.db.public.orders', 'biglake.googleapis.com/projects/acme/catalogs/cat/tables/orders']) {
       expect(() => loadSource(bad)).toThrow(
-        `Semantic model load error: dataset 'orders': source '${bad}' is not a valid table ` +
+        `Semantic model load error: entity 'orders': source '${bad}' is not a valid table ` +
         "reference. Expected a GCP resource name ('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', " +
         "'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', " +
         "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', " +
@@ -3632,12 +3692,12 @@ describe('deployments and inline profiles', () => {
     })).toThrow("model 'sales': duplicate deployment name 'prod'");
   });
 
-  test('duplicate deployment targets are rejected (after trimming), naming both deployments, and whitespace-only targets are rejected', () => {
+  test('duplicate deployment targets are rejected, naming both deployments, and an empty target is rejected', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [
         { name: 'prod', target: BQ_TARGET },
-        { name: 'staging', target: `${BQ_TARGET}  ` },
+        { name: 'staging', target: BQ_TARGET },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
@@ -3647,7 +3707,7 @@ describe('deployments and inline profiles', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [
-        { name: 'prod', target: '   ' },
+        { name: 'prod', target: '' },
       ],
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
     })).toThrow("deployment 'prod': 'target' is empty; it takes a non-empty string");
@@ -3882,7 +3942,7 @@ describe('names are checked on load', () => {
     const cases: Array<[Parameters<typeof doc>[0], string]> = [
       [{ model: 'sales/orders' }, "Model name 'sales/orders' is not valid"],
       [{ entity: 'my-entity' }, "Entity name 'my-entity' is not valid"],
-      [{ field: 'order date' }, "dataset 'orders': Field name 'order date' is not valid"],
+      [{ field: 'order date' }, "entity 'orders': Field name 'order date' is not valid"],
       [{ relationship: 'placed-by' }, "Relationship name 'placed-by' is not valid"],
       [{ metric: '2024_orders' }, "Metric name '2024_orders' is not valid"],
       [{ deployment: 'prod,us' }, "model 'sales-analytics': Deployment name 'prod,us' is not valid"],
@@ -3939,7 +3999,7 @@ describe('names are checked on load', () => {
           ],
           relationships: [], metrics: [],
         },
-        "dataset 'customers': duplicate field name 'customer_id'; names must be unique."
+        "entity 'customers': duplicate field name 'customer_id'; names must be unique."
       ],
       [
         {
@@ -3952,7 +4012,7 @@ describe('names are checked on load', () => {
           ],
           relationships: [], metrics: [],
         },
-        "dataset 'customers': duplicate field name 'Customer_ID' (case-insensitive collision with 'customer_id'); names must be unique."
+        "entity 'customers': duplicate field name 'Customer_ID' (case-insensitive collision with 'customer_id'); names must be unique."
       ],
       [
         {
@@ -3962,7 +4022,7 @@ describe('names are checked on load', () => {
           ],
           relationships: [], metrics: [],
         },
-        "model 'sales-analytics': duplicate dataset name 'Orders' (case-insensitive collision with 'orders'); names must be unique."
+        "model 'sales-analytics': duplicate entity name 'Orders' (case-insensitive collision with 'orders'); names must be unique."
       ],
       [
         {
