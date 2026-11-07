@@ -27,6 +27,7 @@ import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {catalogForm} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
@@ -1641,8 +1642,23 @@ async function pullSemanticModel(
   }
 
   const pulled = result.models[0];
-  // The catalog stores no profile's actions, so a profile file keeps the
-  // actions it binds locally. A vanilla model declares no action.
+  const {files, warnings} = pulledModelFiles(layout, pulled);
+  for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
+  const kept = filesHoldingCatalog(layout, source, pulled.name, files);
+  for (const [id, sidecar] of result.overviews ?? []) {
+    files.push({
+      fileName: `${id}.overview.md`,
+      content: formatOverviewSidecar(sidecar),
+    });
+  }
+  return writePulledFiles(layout, pulled.name, files, options, kept);
+}
+
+
+// The model and profile files pull writes for `pulled`. The catalog stores no
+// profile's actions, so a profile file keeps the actions it binds locally. A
+// vanilla model declares no action.
+function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
   const model = pulled.version === OSSIE_VERSION ? pulled : {
     ...pulled,
     profiles: pulled.profiles?.map(p => {
@@ -1650,15 +1666,32 @@ async function pullSemanticModel(
       return actions ? {...p, actions} : p;
     }),
   };
-  const {files, warnings} = serializeModelFiles(model, {logical: true});
-  for (const w of warnings) console.warn(`Warning: [${model.name}] ${w}`);
-  for (const [id, sidecar] of result.overviews ?? []) {
-    files.push({
-      fileName: `${id}.overview.md`,
-      content: formatOverviewSidecar(sidecar),
-    });
+  return serializeModelFiles(model, {logical: true});
+}
+
+
+// The names of `files`, which pull built from the catalog for model `model`,
+// whose local file already holds that content: pull would write the same text
+// for the local model and profile files, had push written them to the catalog
+// (see pull_update.ts). Pull keeps those files as they are. Warns, and keeps
+// none, when the local model file does not load.
+function filesHoldingCatalog(
+    layout: SemanticModelLayout, source: SemanticModelSource, model: string,
+    files: readonly SerializedFile[]): Set<string> {
+  const doc = layout.modelDocuments().find(
+      d => layout.modelPath(d.name) === layout.modelPath(model));
+  if (!doc) return new Set();
+  const local = catalogForm(doc, profileDocsReader(layout), source);
+  if ('error' in local) {
+    console.warn(
+        `Warning: local model file ${layout.modelPath(doc.name)} does not ` +
+        `load (${local.error}), so pull writes its files from the catalog.`);
+    return new Set();
   }
-  return writePulledFiles(layout, model.name, files, options);
+  const texts = new Map(pulledModelFiles(layout, local.model)
+                            .files.map(f => [f.fileName, f.content]));
+  return new Set(files.filter(f => texts.get(f.fileName) === f.content)
+                     .map(f => f.fileName));
 }
 
 
@@ -1679,11 +1712,12 @@ function localProfileActions(
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
-// read. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove.
+// read. A local file named in `kept` already holds the catalog's content and
+// stays as it is. Then it names each local profile file and overview sidecar
+// that the pull did not write, or deletes it under --force-remove.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions): number {
+    options: PullOptions, kept: ReadonlySet<string>): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
   for (const {fileName, content} of files) {
@@ -1698,9 +1732,10 @@ function writePulledFiles(
     written.add(path.resolve(target.path));
     const before =
         fs.existsSync(target.path) ? fs.readFileSync(target.path) : undefined;
-    const state = !before                   ? 'created' :
-        before.equals(Buffer.from(content)) ? 'unchanged' :
-                                              'updated';
+    const state = !before ? 'created' :
+        kept.has(fileName) || before.equals(Buffer.from(content)) ?
+                            'unchanged' :
+                            'updated';
     counts[state]++;
     if (state === 'unchanged') {
       console.log(`  unchanged ${target.path}`);
