@@ -505,7 +505,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
         {name: 'revenue_k', expression: 'SUM(orders.amount) / 1000'},
         {
           name: 'fulfilled_share',
-          expression: 'SAFE_DIVIDE(SUM(IF(orders.status = \'F\', ' +
+          expression: 'SAFE_DIVIDE(SUM(IF(orders.status = \'😀\', ' +
               'orders.amount, 0)), SUM(orders.amount))'
         },
         {
@@ -520,7 +520,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
       'amount,',
       'status,',
       'net_amount AS net,',
-      'IF(status = \'F\', amount, 0) AS fulfilled_share_input,',
+      'IF(status = \'😀\', amount, 0) AS fulfilled_share_input,',
       'MEASURE(SUM(amount) / COUNT(order_id)) AS avg_order_value,',
       'MEASURE(SUM(amount) / 1000) AS revenue_k,',
       'MEASURE(SAFE_DIVIDE(SUM(fulfilled_share_input), SUM(amount))) AS ' +
@@ -530,7 +530,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
     ]);
   });
 
-  test('each operand is exposed as a single aggregate\'s is', () => {
+  test('each operand is exposed the way a single aggregate\'s operand is', () => {
     const {ddl, warnings} = generatePropertyGraph(model(
         // Two aggregates over one field share its property.
         {name: 'range', expression: 'MAX(orders.amount) - MIN(orders.amount)'},
@@ -547,6 +547,11 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
           name: 'distinct_share',
           expression: 'COUNT(DISTINCT orders.status) / COUNT(orders.status)'
         },
+        // A sign before an aggregate is not part of it.
+        {
+          name: 'signed',
+          expression: 'SUM(orders.amount) * +(COUNT(orders.order_id))'
+        },
     ), GEN_OPTS);
     expect(warnings).toEqual([]);
     expect(ordersProperties(ddl).slice(4)).toEqual([
@@ -556,7 +561,8 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
       'MEASURE(SUM(m_input) / SUM(m_input_2)) AS m,',
       'MEASURE(AVG(m_input_2) * 2) AS n,',
       'MEASURE(SUM(net) / COUNT(order_id)) AS net_per_order,',
-      'MEASURE(COUNT(DISTINCT status) / COUNT(status)) AS distinct_share',
+      'MEASURE(COUNT(DISTINCT status) / COUNT(status)) AS distinct_share,',
+      'MEASURE(SUM(amount) * +(COUNT(order_id))) AS signed',
     ]);
   });
 
@@ -583,7 +589,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
   test('a metric that cannot be a measure is skipped with the reason push gives', () => {
     for (const [expression, body, why] of [
            ['orders.amount - SUM(orders.status)', 'amount - SUM(status)',
-            'it reads column \'amount\' outside an aggregate'],
+            'it reads field \'amount\' outside an aggregate'],
            ['STDDEV(orders.amount)', 'STDDEV(amount)',
             'it uses STDDEV, which BigQuery does not allow in a measure ' +
                 '(SUM, AVG, COUNT, MIN, MAX)'],
@@ -596,6 +602,13 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
                 'takes one'],
            ['orders.amount * 2', 'amount * 2',
             'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+           ['`p.ds.safe_ratio`(SUM(orders.amount), COUNT(orders.order_id))',
+            '`p.ds.safe_ratio`(SUM(amount), COUNT(order_id))',
+            'it calls user-defined function \'p.ds.safe_ratio\' outside an ' +
+                'aggregate, which BigQuery cannot read in a measure'],
+           ['ds.f(SUM(orders.amount))', 'ds.f(SUM(amount))',
+            'it calls user-defined function \'ds.f\' outside an aggregate, ' +
+                'which BigQuery cannot read in a measure'],
          ]) {
       const {ddl, warnings} = generatePropertyGraph(
           model({name: 'm', expression, entity: 'orders'}), GEN_OPTS);
@@ -623,7 +636,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
     expect(ddl).not.toContain('m_input');
   });
 
-  test('one over two entities is left to the check that it reads one', () => {
+  test('a ratio over two entities gets only the warning that it spans multiple tables', () => {
     const {warnings} = generatePropertyGraph(model({
       name: 'm',
       expression: 'SUM(orders.amount) / COUNT(customers.c_id)'

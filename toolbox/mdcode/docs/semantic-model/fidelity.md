@@ -61,8 +61,9 @@ agree on every structural row and differ only where a Spanner target has no
    comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
    default push drops the marker entirely.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
-   is rejected. It must also reduce to one supported aggregate over one
-   operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
+   is rejected. It must also read every field inside `SUM`, `AVG`, `COUNT`,
+   `MIN` or `MAX`, each over one operand, and scalar SQL may combine them, as
+   in `SUM(orders.amount) / COUNT(orders.order_id)`. Otherwise the push is
    rejected. A push of a profile in the older `<model>.profiles/` layout
    skips the metric with a warning instead.
 5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;

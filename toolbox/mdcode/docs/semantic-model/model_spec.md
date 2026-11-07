@@ -330,7 +330,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
-| `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and reads columns only inside aggregates · [§4.1](#41-narrowings-stricter-than-ossie) |
+| `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and reads fields only inside aggregates · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | stricter; adds names | SQL dialects only; adds Google Cloud engines · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
 | `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
@@ -370,18 +370,22 @@ Each rule and its reason:
   Spanner imposes no such rule (it has no measures). A metric that resolves to no
   entity or spans several is rejected at push.
 
-- **A graph-bound metric MUST read every column inside a supported aggregate.**
+- **A graph-bound metric MUST read every field inside a supported aggregate.**
   For a BigQuery target, a metric becomes one `MEASURE`. Each aggregate in it
   MUST be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over one operand, with at most
-  `DISTINCT` or `ALL`, and every column it reads MUST sit inside one of them.
+  `DISTINCT` or `ALL`, and every field it reads MUST sit inside one of them.
   `COUNT(*)` on a keyed node also passes. Arithmetic, `CASE`, `IF`,
   `SAFE_DIVIDE` and other scalar functions, and literals, may combine the
-  aggregates, as in `SUM(orders.amount) / COUNT(orders.order_id)`. No aggregate
-  may hold another, and the metric may hold no window or subquery. A metric that
-  breaks this cannot become a `MEASURE`, and the push is rejected (see
+  aggregates, as in `SUM(orders.amount) / COUNT(orders.order_id)`. A function
+  around the aggregates MUST be a BigQuery built-in function; a user-defined
+  function may appear only inside an aggregate's operand. No aggregate may hold
+  another, and the metric may hold no window or subquery. A metric that breaks
+  this cannot become a `MEASURE`, and the push is rejected (see
   [Validation](reference.md#validation)). *Why:* BigQuery allows only these five
   aggregates in a measure, and a measure aggregates the rows of one node table,
-  so a column outside an aggregate has no single value.
+  so a field outside an aggregate has no single value. BigQuery accepts a
+  measure that calls a user-defined function outside its aggregates, but cannot
+  query it.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`

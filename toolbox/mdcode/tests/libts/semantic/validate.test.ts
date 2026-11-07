@@ -3072,7 +3072,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
   });
 
   // A BigQuery graph turns each metric into a measure on the node table of a
-  // keyed entity: aggregates of the five, with every column inside one.
+  // keyed entity: aggregates of the five, with every field inside one.
   describe('BigQuery', () => {
     // The model with metric `metric` on a BigQuery deployment, with
     // `purchase` merged into entity purchase. bigQuery gives its errors.
@@ -3094,7 +3094,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           'measure (SUM, AVG, COUNT, MIN, MAX)';
       for (const [e, why] of [
              ['purchase.amount - SUM(purchase.p_id)',
-              "it reads column 'amount' outside an aggregate"],
+              "it reads field 'amount' outside an aggregate"],
              ['STDDEV(purchase.amount)', STDDEV],
              ['COUNTIF(purchase.amount > 0)',
               'it uses COUNTIF, which BigQuery does not allow in a measure ' +
@@ -3107,6 +3107,12 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                   'takes one'],
              ['purchase.amount * 2',
               'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+             ['`p.ds.safe_ratio`(SUM(purchase.amount), COUNT(purchase.p_id))',
+              "it calls user-defined function 'p.ds.safe_ratio' outside an " +
+                  'aggregate, which BigQuery cannot read in a measure'],
+             ['ds.f(SUM(purchase.amount))',
+              "it calls user-defined function 'ds.f' outside an aggregate, " +
+                  'which BigQuery cannot read in a measure'],
            ]) {
         expect({e, errors: bigQuery(anchored(e))})
             .toEqual({e, errors: [MEASURE(why)]});
@@ -3147,6 +3153,24 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         expect({e, errors: bigQuery(anchored(e), {keys: [], uniqueKeys: [['p_id']]})})
             .toEqual({e, errors: []});
       }
+    });
+
+    // The parser reserves `Date`, so it reads a metric on entity Date only with
+    // the qualifier renamed, as the generator reads it.
+    test('reads a metric on an entity named like a word the parser reserves', () => {
+      const onDate = (e: string) => {
+        const m = onBigQuery(`{ name: m, expression: "${e}" }`);
+        m.entities.push({...m.entities[1], name: 'Date'});
+        return check(m);
+      };
+      expect(onDate('SUM(Date.amount) / COUNT(Date.p_id)')).toEqual([]);
+      expect(onDate('STDDEV(Date.amount)')).toEqual([
+        MEASURE('it uses STDDEV, which BigQuery does not allow in a measure ' +
+                '(SUM, AVG, COUNT, MIN, MAX)'),
+      ]);
+      expect(onDate('Date.amount - SUM(Date.amount)')).toEqual([
+        MEASURE("it reads field 'amount' outside an aggregate"),
+      ]);
     });
 
     // Each metric is reported once.

@@ -327,7 +327,9 @@ export function singleAggregate(expression: string, dialect: string):
   // The call as written: its name, `(`, DISTINCT or ALL if written, the
   // operand and `)`, inside any parentheses around the whole call.
   const tokens = unparenthesized(sqlTokens(expression, dialect) ?? []);
-  if (tokens.length < 4 || tokens[1].token_type !== 'L_PAREN' ||
+  if (tokens.length < 4 ||
+      !SUPPORTED_AGGREGATES.includes(tokens[0].text.toUpperCase()) ||
+      tokens[1].token_type !== 'L_PAREN' ||
       closingParen(tokens, 1) !== tokens.length - 1) {
     return undefined;
   }
@@ -359,11 +361,12 @@ export interface MeasureAggregate {
 
 // The aggregates of `expression`, read in `dialect`, in the order written,
 // when it can be a BigQuery measure; else why it cannot, as a clause such as
-// `it reads column 'amount' outside an aggregate`. It can be one when it holds
+// `it reads field 'amount' outside an aggregate`. It can be one when it holds
 // an aggregate; each aggregate it holds is one singleAggregate reads; no window
-// or subquery sits outside them; and every column it reads sits inside one.
-// Arithmetic, CASE, IF and other scalar functions, and literals, may surround
-// the aggregates, as in `SUM(o.amount) / COUNT(o.id)`. The push checks and the
+// or subquery sits outside them; every field it reads sits inside one; and it
+// calls no user-defined function outside them. Arithmetic, CASE, IF and
+// BigQuery's other built-in scalar functions, and literals, may surround the
+// aggregates, as in `SUM(o.amount) / COUNT(o.id)`. The push checks and the
 // BigQuery generator both read a measure so.
 export function measureAggregates(expression: string, dialect: string):
     {aggregates: MeasureAggregate[]}|{problem: string} {
@@ -372,8 +375,8 @@ export function measureAggregates(expression: string, dialect: string):
   if (!tree || !tokens || tokens.some(t => t.token_type === 'SEMICOLON')) {
     return {problem: 'the SQL parser cannot read it as one expression'};
   }
-  const {calls, windowed} = aggregateCalls(tree);
-  if (windowed) return {problem: 'it uses a window or a subquery'};
+  const {calls, windowOrSubquery} = aggregateCalls(tree);
+  if (windowOrSubquery) return {problem: 'it uses a window or a subquery'};
   if (!calls.length) {
     return {
       problem: `it holds no aggregate (${SUPPORTED_AGGREGATES.join(', ')})`
@@ -385,7 +388,7 @@ export function measureAggregates(expression: string, dialect: string):
   }
   // Where each call is written: the first call, from the left, that
   // singleAggregate reads, then the next one after it. A function in a
-  // namespace, such as `SAFE.SUM`, is not one of the aggregates.
+  // namespace, such as `ds.SUM`, is not one of the aggregates.
   const chars = Array.from(expression);
   const aggregates: MeasureAggregate[] = [];
   for (let i = 0; i + 1 < tokens.length; i++) {
@@ -413,16 +416,69 @@ export function measureAggregates(expression: string, dialect: string):
     rest += `${chars.slice(after, start).join('')} 0 `;
     after = end;
   }
-  const outside = sqlColumns(rest + chars.slice(after).join(''), dialect);
+  rest += chars.slice(after).join('');
+  const outside = sqlColumns(rest, dialect);
   if (!outside) {
     return {problem: 'the SQL parser cannot read it as one expression'};
   }
   if (outside.length) {
     return {
-      problem: `it reads column '${outside[0].name}' outside an aggregate`
+      problem: `it reads field '${outside[0].name}' outside an aggregate`
+    };
+  }
+  // BigQuery accepts a graph whose measure calls a user-defined function
+  // outside its aggregates, but every GRAPH_EXPAND query on that node table
+  // then fails with "Function not found". One inside an aggregate's operand
+  // becomes a property, so it stays allowed.
+  const udf = userDefinedFunction(sqlExpressionTree(rest, dialect));
+  if (udf) {
+    return {
+      problem: `it calls user-defined function '${udf}' outside an ` +
+          `aggregate, which BigQuery cannot read in a measure`
     };
   }
   return {aggregates};
+}
+
+// The namespaces of BigQuery's own functions, as in `SAFE.SAFE_DIVIDE` or
+// `NET.HOST`. A call whose name has a dot and starts with any other names a
+// user-defined function.
+const BUILT_IN_NAMESPACES = [
+  'SAFE', 'NET', 'KEYS', 'AEAD', 'HLL_COUNT', 'KLL_QUANTILES', 'ML', 'AI', 'OBJ'
+];
+
+// The first user-defined function the parser's tree `node` calls, by its
+// dotted name, such as `ds.f`, or undefined when it calls none: a call whose
+// name has a dot and does not start with one of BUILT_IN_NAMESPACES. The
+// parser reads `` `p.ds.f`(…) `` as a function of that name, and `ds.f(…)` or
+// `p.ds.f(…)` as a method call on a column.
+function userDefinedFunction(node: unknown): string|undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  for (const [kind, value] of Object.entries(node)) {
+    const name = kind === 'function' ? String(value.name) :
+        kind === 'method_call' ?
+        [...namePath(value.this), value.method?.name].join('.') :
+        '';
+    const parts = name.split('.');
+    if (parts.length > 1 &&
+        !BUILT_IN_NAMESPACES.includes(parts[0].toUpperCase())) {
+      return name;
+    }
+    const inner = userDefinedFunction(value);
+    if (inner) return inner;
+  }
+  return undefined;
+}
+
+// The parts of the dotted name the parser's tree `node` reads, such as
+// ['p', 'ds'] for `p.ds`, or none when it reads something else.
+function namePath(node: any): string[] {
+  if (node?.column) {
+    const {table, name} = node.column;
+    return table ? [table.name, name.name] : [name.name];
+  }
+  if (node?.dot) return [...namePath(node.dot.this), node.dot.field.name];
+  return [];
 }
 
 // Why the parser's aggregate call `call`, of node kind `kind`, cannot be in a
@@ -467,21 +523,23 @@ function aggregateProblem(kind: string, call: any): string|undefined {
 // The aggregate calls in the parser's tree `node`, outermost first, each as
 // its node kind and the call, and whether a window or a subquery sits outside
 // them. A call of the name of one of SUPPORTED_AGGREGATES that the parser
-// reads as a plain function, such as `MIN(a, b)`, counts as one.
+// reads as a plain function, such as `MIN(a, b)` or `SAFE.SUM(a)`, counts as
+// one.
 function aggregateCalls(node: unknown):
-    {calls: Array<[string, any]>; windowed: boolean} {
-  const found = {calls: [] as Array<[string, any]>, windowed: false};
+    {calls: Array<[string, any]>; windowOrSubquery: boolean} {
+  const found = {calls: [] as Array<[string, any]>, windowOrSubquery: false};
   const visit = (n: unknown): void => {
     if (Array.isArray(n)) return n.forEach(visit);
     if (n === null || typeof n !== 'object') return;
     for (const [kind, value] of Object.entries(n)) {
       if (kind === 'window_function' || kind === 'subquery' ||
           kind === 'select') {
-        found.windowed = true;
+        found.windowOrSubquery = true;
       } else if (
           isAggregateCall(kind, value) ||
           (kind === 'function' &&
-           SUPPORTED_AGGREGATES.includes(String(value.name).toUpperCase()))) {
+           SUPPORTED_AGGREGATES.includes(
+               String(value.name).split('.').pop()!.toUpperCase()))) {
         found.calls.push([kind, value]);
       } else {
         visit(value);

@@ -284,8 +284,6 @@ function measureProblem(
     model: SemanticModel, metric: Metric): string|undefined {
   const text = expressionForDialect(metric, 'BIGQUERY');
   if (text === undefined) return undefined;
-  const columns = columnsForSource(text, 'BIGQUERY');
-  if (!columns) return undefined;
   const entities = model.entities ?? [];
   const placed =
       measureEntities(text, entities.map(e => e.name), metric.entity);
@@ -298,9 +296,10 @@ function measureProblem(
   // Read as the generator reads it (see bigquery.ts placeMetric), with the
   // entity's qualifier renamed to a name the SQL parser does not reserve, as
   // in `SUM(Date.days)`.
-  const read = measureAggregates(
-      requalified(text, entity.name, unusedName(text, 'kcmd_entity')),
-      'BIGQUERY');
+  const written =
+      requalified(text, entity.name, unusedName(text, 'kcmd_entity'));
+  if (!columnsForSource(written, 'BIGQUERY')) return undefined;
+  const read = measureAggregates(written, 'BIGQUERY');
   if ('problem' in read) return read.problem;
   if (!statesKey(entity.keys, entity.uniqueKeys)) {
     return `it belongs to entity '${entity.name}', which has no primary key ` +
