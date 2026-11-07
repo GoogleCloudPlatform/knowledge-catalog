@@ -261,9 +261,6 @@ function rename(m: any, kind: Part|'deployment', name: string): void {
 // not state. The test then expects the disagreement.
 type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 
-// The loader accepts an empty name or description here; the schema does not.
-const EMPTY_TEXT_BUG = 'b/577102892';
-
 // One valid and one malformed case per source form, a table name with a
 // space in each form, the '//' URI form, and a name with double quotes or
 // backticks. Only a resource name's last part may hold a space, and not at
@@ -519,8 +516,7 @@ const MODEL_CASES: Case[] = [
     ['constraint description',
       { constraints: [{ name: 'c', judgment: 'j', on_violation: 'warn', description: '' }] }],
   ] as const).map(([what, patch]): Case => [
-    `an empty ${what}`, base(m => Object.assign(m, structuredClone(patch))), false,
-    EMPTY_TEXT_BUG]),
+    `an empty ${what}`, base(m => Object.assign(m, structuredClone(patch))), false]),
 
   ...sourceCases(source => base(m => { m.entities[0].source = source; })),
 

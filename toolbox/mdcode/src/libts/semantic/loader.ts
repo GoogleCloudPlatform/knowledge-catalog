@@ -655,7 +655,7 @@ const executorSchema =
 // model is in scope and the message can name the fix.
 const parameterSchema = z.object({
   // Optional: a derived parameter takes the field's name unless it renames it.
-  name: z.string().optional(),
+  name: z.string().min(1).optional(),
   // A scalar DataType, and only on a standalone parameter. Resolved against
   // the model in convertParameter, not here, so the schema stays a plain
   // string. `datatype` is accepted as an alias for `type` so parameters can be
@@ -664,7 +664,7 @@ const parameterSchema = z.object({
   datatype: z.string().optional(),
   concept: z.string().optional(),
   field: z.string().optional(),
-  description: z.string().optional(),
+  description: z.string().min(1).optional(),
   label: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   required: z.boolean().optional(),
@@ -1009,8 +1009,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   const parameter = parameterSchema.strict();
 
   const action = z.object({
-                    name: z.string(),
-                    description: z.string().optional(),
+                    name: z.string().min(1),
+                    description: z.string().min(1).optional(),
                     executor: executorSchema.nullish(),
                     parameters: z.array(parameter).optional(),
                     guards: z.array(z.string()).optional(),
@@ -1023,10 +1023,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   // `expression` is the reserved name of the removed body; see
   // rejectExpressionBody, which is what turns it into a useful error.
   const constraint = z.object({
-                        name: z.string(),
+                        name: z.string().min(1),
                         expression: unlisted(z.unknown().optional()),
                         judgment: z.string().optional(),
-                        description: z.string().optional(),
+                        description: z.string().min(1).optional(),
                         // What a violation does; required. See
                         // VIOLATION_EFFECTS.
                         on_violation: z.enum(VIOLATION_EFFECTS).optional(),

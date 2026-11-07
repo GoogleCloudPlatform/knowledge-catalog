@@ -40,6 +40,7 @@
 // graph").
 
 import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {listed, plural} from '../../loader';
 
 import {OwlModel, OwlOntology} from './model';
 
@@ -221,6 +222,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
   const classNames = new Set(owl.classes.map(c => c.localName));
+  const classNameOfIri = new Map(owl.classes.map(c => [c.iri, c.localName]));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
@@ -254,12 +256,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // parent (a typo, or a superclass imported from another ontology) cannot be
     // resolved, and the loader hard-fails on an unknown supertype, so it is
     // DROPPED here with a warning rather than emitted into a model that could
-    // not be pushed.
+    // not be pushed. A declared parent that shares its local name with an
+    // earlier class is dropped the same way, with its own warning, since import
+    // writes no entity for it.
     if (c.subClassOf.length) {
       const parents = dedupe(c.subClassOf);
       const known = parents.filter(name => classNames.has(name));
-      const unknown = parents.filter(name => !classNames.has(name));
+      const declared = parents.filter(
+          name => !classNames.has(name) && classNameOfIri.has(name));
+      const unknown = parents.filter(
+          name => !classNames.has(name) && !classNameOfIri.has(name));
       if (known.length) entity.extends = known;
+      for (const iri of declared) {
+        const name = classNameOfIri.get(iri);
+        const also = name === c.localName ? 'also ' : '';
+        warnings.push(
+            `class '${c.localName}' extends another class ${also}named '${
+                name}' (${iri}); import leaves out that superclass, because ` +
+            `a model cannot have two entities with the same name.`);
+      }
       if (unknown.length) {
         warnings.push(
             `class '${c.localName}' declares rdfs:subClassOf a non-class ` +
@@ -287,6 +302,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     let produced = false;
     for (const domain of p.domains) {
       const entity = entitiesByName.get(domain);
+      const name = classNameOfIri.get(domain);
+      if (!entity && name !== undefined) {
+        warnings.push(
+            `datatype property '${p.localName}' has domain '${name}' (${
+                domain}), a second class with that name; import leaves out ` +
+            `that class and the field on it, because a model cannot have ` +
+            `two entities with the same name.`);
+        continue;
+      }
       if (!entity) {
         warnings.push(
             `datatype property '${p.localName}' has domain '${domain}', ` +
@@ -360,6 +384,34 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
   }
 
+  // The direct subclasses of each class, as written to `extends`.
+  const subclasses = new Map<string, string[]>();
+  for (const e of entities) {
+    for (const parent of e.extends ?? []) {
+      subclasses.set(parent, [...(subclasses.get(parent) ?? []), e.name]);
+    }
+  }
+  // The sentence naming the classes under `name` that have no subclasses, in
+  // class order.
+  const leavesSentence = (name: string): string => {
+    const under = new Set<string>();
+    const walk = (c: string) => {
+      for (const s of subclasses.get(c) ?? []) {
+        if (under.has(s)) continue;
+        under.add(s);
+        walk(s);
+      }
+    };
+    walk(name);
+    const leaves = entities.map(e => e.name)
+                       .filter(n => under.has(n) && !subclasses.has(n))
+                       .map(n => `'${n}'`);
+    if (!leaves.length) return `Every class under '${name}' has subclasses.`;
+    return `The ${plural(leaves.length, 'class', 'classes')} under '${
+        name}' with no subclasses ${plural(leaves.length, 'is', 'are')} ${
+        listed(leaves)}.`;
+  };
+
   // Object properties -> relationships (edges). Both endpoints must be known
   // classes. The edge is logical: it carries only its direction (source entity
   // -> destination entity), no join columns. The foreign-key / key columns are
@@ -372,6 +424,59 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
           `rdfs:range; skipped (a relationship needs both endpoints).`);
+      continue;
+    }
+    // An endpoint import leaves out because an earlier class has its name.
+    const leftOut = ([['domain', domain], ['range', range]] as const)
+                        .filter(([, c]) =>
+                                !classNames.has(c) && classNameOfIri.has(c))
+                        .map(([end, c]) => `${end} '${
+                                 classNameOfIri.get(c)}' (${c})`);
+    if (leftOut.length) {
+      warnings.push(
+          `object property '${p.localName}' has ${leftOut.join(' and ')}, ${
+              plural(
+                  leftOut.length, 'a second class',
+                  'each a second class')} with that name; import leaves ` +
+          `out ${plural(leftOut.length, 'that class', 'those classes')} and ` +
+          `the property, because a model cannot have two entities with the ` +
+          `same name.`);
+      continue;
+    }
+    if (!classNames.has(domain) || !classNames.has(range)) {
+      warnings.push(
+          `object property '${p.localName}' references a non-class endpoint ` +
+          `(domain '${domain}', range '${range}'); skipped.`);
+      continue;
+    }
+    if (relationships.some(r => r.name === p.localName)) {
+      warnings.push(
+          `object property '${
+              p.localName}' duplicates an existing relationship ` +
+          `name; skipped (relationship names must be unique).`);
+      continue;
+    }
+    // Leave out, with a warning, a property push rejects as a relationship.
+    const parents = dedupe([domain, range]).filter(c => subclasses.has(c));
+    const back = relationships.find(
+        r => r.source.entity === range && r.destination.entity === domain);
+    let problem: string|undefined;
+    if (parents.length) {
+      problem = `it connects ${listed(parents.map(c => `'${c}'`))}, ${
+                    plural(parents.length, 'which has', 'which have')} ` +
+          `subclasses, and a relationship may connect only classes with no ` +
+          `subclasses. ${parents.map(leavesSentence).join(' ')}`;
+    } else if (domain === range) {
+      problem = `it runs from '${domain}' to itself, and a relationship ` +
+          `must join two different classes.`;
+    } else if (back) {
+      problem = `it runs from '${domain}' to '${range}', and object ` +
+          `property '${back.name}' runs the other way. The relationships ` +
+          `between two classes must run in one direction.`;
+    }
+    if (problem) {
+      warnings.push(
+          `object property '${p.localName}' is not imported: ${problem}`);
       continue;
     }
     // A relationship maps ONE source to ONE destination. Multiple domains or
@@ -388,19 +493,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `(${ignored.join(', ')}); a relationship maps one source to one ` +
           `destination, so only domain '${domain}' -> range '${
               range}' is kept.`);
-    }
-    if (!classNames.has(domain) || !classNames.has(range)) {
-      warnings.push(
-          `object property '${p.localName}' references a non-class endpoint ` +
-          `(domain '${domain}', range '${range}'); skipped.`);
-      continue;
-    }
-    if (relationships.some(r => r.name === p.localName)) {
-      warnings.push(
-          `object property '${
-              p.localName}' duplicates an existing relationship ` +
-          `name; skipped (relationship names must be unique).`);
-      continue;
     }
     const relationship: Relationship = {
       name: p.localName,

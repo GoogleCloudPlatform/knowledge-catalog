@@ -27,10 +27,3 @@ semantic_model:
           - Person
           - Employee
         description: An employee who manages others.
-    relationships:
-      - name: managedBy
-        from: Employee
-        to: Manager
-      - name: worksWith
-        from: Employee
-        to: Employee

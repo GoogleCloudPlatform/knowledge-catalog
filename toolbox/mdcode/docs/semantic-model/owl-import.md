@@ -135,7 +135,9 @@ wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
 document is written into the semantic-model layout dir so the next `kcmd push`
-picks it up; pass `--out <path>` to write it elsewhere. The output uses the
+picks it up; pass `--out <path>` to write it elsewhere. An entry group holds
+one model, so without `--out` the import is refused when the entry group folder
+already holds another model's file. The output uses the
 block layout shown below; pass `--compact` for the compact flow layout
 (`primary_key: [id]`, inline `{ name, datatype }` field and relationship maps)
 instead. Either way it is a purely **logical** model — `kcmd push` publishes it
@@ -232,12 +234,19 @@ appears nowhere above.
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
 | term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
-A datatype property whose domain is not a class, or an object property missing an
-endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import. An object property that declares *more than one* `rdfs:domain`
-or `rdfs:range` is kept — a relationship maps one source to one destination, so
-the first of each is used and the extra endpoints are dropped with a warning
-(unlike a multi-domain *datatype* property, which lands on every domain).
+A datatype property whose domain is not a class, or an object property with a
+missing or non-class endpoint, cannot be placed; it is **skipped with a warning**
+rather than failing the whole import. Import matches a domain or range to a class
+by its full IRI, as it does a superclass. A domain or range of `foaf:Person` does
+not match a local `Person`, and its warning names the full IRI. Import also
+leaves out each object property push would reject,
+with a warning: one on a class with subclasses, one whose `rdfs:domain` and
+`rdfs:range` are one class, and one that runs opposite to an object property
+imported before it. An object property that declares *more than one*
+`rdfs:domain` or `rdfs:range` is kept — a relationship maps one source to one
+destination, so the first of each is used and the extra endpoints are dropped
+with a warning (unlike a multi-domain *datatype* property, which lands on every
+domain).
 
 ### Datatypes (`rdfs:range`)
 
@@ -331,9 +340,12 @@ the `Person` and `Customer` entities come out as (`Customer` carrying
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
 order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
-similar) is not a named class, so it is ignored, as are the implicit universal
-superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
-carry no inheritance information).
+similar) is not a named class, so it is ignored, as are the class itself and the
+implicit universal superclasses `owl:Thing` / `rdfs:Resource` (every class
+subclasses them, so they carry no inheritance information). A superclass import
+does not write as an entity is dropped with a warning that names its full IRI.
+That covers `foaf:Person` above a local `Person`, whether or not the ontology
+declares `foaf:Person` as a class.
 
 Two boundaries to be clear about:
 
@@ -346,9 +358,9 @@ Two boundaries to be clear about:
   publishes each entity with exactly the fields it declares, records its
   `extends` on its entry, and links the entry to each parent's with a
   `reference` link. Every push accepts a
-  relationship only between concrete leaf entities. An object property whose
-  `rdfs:domain` or `rdfs:range` is a class with subclasses imports as written,
-  and push rejects it until you move it onto the leaf classes.
+  relationship only between concrete leaf entities. Import leaves out an object
+  property whose `rdfs:domain` or `rdfs:range` is a class with subclasses, and
+  its warning names the classes under that class with no subclasses.
 - **Native inheritance is entity-level only.** `extends` lives on `entities`,
   never on relationships — the boundary is structural. `rdfs:subPropertyOf`
   (property / relationship inheritance) has no such native slot, so it is **not
@@ -359,10 +371,7 @@ Two boundaries to be clear about:
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in. Push rejects a relationship on
-a class with subclasses, as described above. It also rejects an object property
-whose `rdfs:domain` and `rdfs:range` are one class, and two object properties
-that join the same two classes in opposite directions:
+fields, and keys) with nothing more to fill in.
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog

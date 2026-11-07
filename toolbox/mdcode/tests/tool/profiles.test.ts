@@ -1138,6 +1138,23 @@ semantic_model:
       expect(await profiles()).toBe(1);
       expect(rejects(profileSection('staging'))).toEqual(errors);
       expect(section(INLINE)).toEqual([]);
+      logs.length = 0;
+      expect(await profiles({printStore: true})).toBe(1);
+      expect(logs).toEqual(errors.map(e => `Error: ${e}`));
+    });
+
+    // --print-store prints no store for a scope push refuses for a join that
+    // covers no key, and gives push's errors.
+    test('and --print-store refuses the scope with push\'s errors', async () => {
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}),
+        'commerce.profile.a.yaml': profileFile('a'),
+        'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
+      });
+      const {code, errors} = await pushResult();
+      expect(code).toBe(1);
+      expect(await profiles({printStore: true})).toBe(1);
+      expect(logs).toEqual(errors.map(e => `Error: ${e}`));
     });
 
     // The completeness check also requires each field a profile binds to hold
@@ -2412,6 +2429,8 @@ semantic_model:
 entities:
   - name: Customer
     source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customers
+    primary_key: [CustomerId]
+    fields: [{ name: key, expression: CustomerId }]
 `);
     const code = await profiles({printStore: true, profile: 'prod'});
     expect(code).not.toBe(0);

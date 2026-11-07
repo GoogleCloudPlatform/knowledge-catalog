@@ -54,6 +54,8 @@ export interface OwlCommonAnnotations {
 
 /** An `owl:Class` -- becomes an OSI dataset (entity). */
 export interface OwlClass extends OwlCommonAnnotations {
+  // The class's full IRI.
+  iri: string;
   // The term's local name (the part after the namespace `#`/`/`), used as the
   // OSI entity name, e.g. `Customer`.
   localName: string;
@@ -71,9 +73,11 @@ export interface OwlClass extends OwlCommonAnnotations {
   // Local names of the properties named by owl:hasKey -> the entity's
   // primary_key (grain). Empty when the class declares no key.
   keys: string[];
-  // Local names of `rdfs:subClassOf` superclasses, in document order -> the
-  // entity's `extends` (entity-level inheritance). Named superclasses only;
-  // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
+  // `rdfs:subClassOf` superclasses, in document order -> the entity's
+  // `extends` (entity-level inheritance). A superclass import writes as an
+  // entity is kept by local name, and any other as its full IRI. Named
+  // superclasses only; blank-node axioms (owl:Restriction, ...) and the class
+  // itself are not recorded. Empty when none.
   subClassOf: string[];
   // Referent IRIs of `owl:equivalentClass` classes, in document order. No
   // native OSI home (a class is one entity; equivalence is a fact ABOUT it, not
@@ -105,8 +109,9 @@ export interface OwlClass extends OwlCommonAnnotations {
  */
 export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   localName: string;
-  // Local names of every rdfs:domain class this property hangs off; the field
-  // is added to each. A property may declare more than one domain (it then
+  // Every rdfs:domain class this property hangs off; the field is added to
+  // each. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A property may declare more than one domain (it then
   // appears on each entity). Empty when no domain is declared (skipped with a
   // warning -- an unattached field has nowhere to live).
   domains: string[];
@@ -147,8 +152,9 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
  */
 export interface OwlObjectProperty extends OwlCommonAnnotations {
   localName: string;
-  // Local names of the rdfs:domain (edge source) and rdfs:range (edge
-  // destination) classes. A relationship maps a single source to a single
+  // The rdfs:domain (edge source) and rdfs:range (edge destination) classes.
+  // A class import writes as an entity is kept by local name, and any other by
+  // its full IRI. A relationship maps a single source to a single
   // destination, so the mapper uses the first of each and warns when more are
   // declared (multiple domains/ranges mean an intersection in OWL, which has no
   // clean single-edge shape). Empty when none is declared (skipped with a

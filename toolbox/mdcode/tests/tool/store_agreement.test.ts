@@ -20,11 +20,11 @@
 // expression, action or constraint still gets a store and a skill. So does a
 // model whose deployment breaks the rules of its engine, or whose model file
 // binds a field with no text in the dialect of its entity's source. Like push,
-// the runtime loads every profile file. It does not run push's checks that
-// every named profile applies to the model, is complete and has valid keys
-// and join columns. So a
-// model whose profile file or GOOGLE block profile those checks refuse still
-// gets a store and a skill under the default profile. The runtime skips the
+// the runtime loads every profile file. skills-generate does not run push's
+// checks that every named profile applies to the model, is complete and has
+// valid keys and join columns. So a model whose profile file or GOOGLE block
+// profile those checks refuse still gets a skill under the default profile.
+// --print-store runs those checks and refuses it. The runtime skips the
 // checks of push's Knowledge Catalog leg, such as one model per entry group,
 // and push's check that each model and profile file is valid UTF-8. Two
 // models that deploy to one graph each get a skill.
@@ -40,6 +40,7 @@ import * as yaml from 'yaml';
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
@@ -669,9 +670,9 @@ entities:
 
   // Push checks every profile file, whichever profile it deploys, so under the
   // default profile it refuses a profile file that names an entity the model
-  // lacks. The report refuses it too. The runtime applies only the profile it
-  // is given, so --print-store and skills-generate accept the file.
-  test('a profile file that does not apply: push refuses it under default, the runtime accepts it',
+  // lacks. The report and --print-store refuse it too. skills-generate applies
+  // only the profile it is given, so it accepts the file.
+  test('a profile file that does not apply: push and --print-store refuse it under default, skills-generate accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -694,11 +695,63 @@ entities:
 `,
          });
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
          expect(r.push.out).toContain(
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
+         expect(r.printStore.out).toBe(r.push.out);
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
+       });
+
+  // --print-store judges a profile file's text in the dialect push reads for
+  // its tables: POSTGRES on a PostgreSQL-dialect Spanner database, and the
+  // dialect a third-party table's entry names. It refuses, as push does, an
+  // entry that gives no dialect or names no table. A database a script has
+  // not created yet still gets its store.
+  test('a profile file on a PostgreSQL-dialect Spanner database or a third-party table: --print-store agrees with push',
+       async () => {
+         const PG = SPANNER_DB.replace('/commerce', '/pg');
+         const ENTRY = 'projects/test-project/locations/us/entryGroups/sf/entries/o';
+         spyOn(SpannerClient.prototype, 'getDatabase').mockImplementation(
+             (async (_p: string, _i: string, db: string) => ({status: 200, result: {
+               databaseDialect: db === 'pg' ? 'POSTGRESQL' : 'GOOGLE_STANDARD_SQL'}})) as any);
+         for (const [source, dialect, fqn, code] of [
+                  [ENTRY, 'DATABRICKS', 'snowflake:a.db.public.o', 1],
+                  [ENTRY, 'SNOWFLAKE', undefined, 1],
+                  [ENTRY, 'SNOWFLAKE', 'snowflake:a.db', 1],
+                  [`${PG}/tables/orders`, 'POSTGRES', undefined, 0]] as const) {
+           spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue(
+               {status: 200, result: {fullyQualifiedName: fqn}} as any);
+           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+           writeScope({
+             'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/graphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+             'commerce.profile.other.yaml': `name: other
+entities:
+  - name: Order
+    source: ${source}
+    primary_key: [o_id]
+    fields: [{ name: key, expression: {dialects: [{dialect: ${dialect}, expression: o_id}]} }]
+`,
+           });
+           const r = await runAll();
+           expect([r.push.code, r.printStore.code]).toEqual([code, code]);
+           if (code) expect(r.printStore.out).toBe(r.push.out);
+         }
+         spyOn(SpannerClient.prototype, 'getDatabase')
+             .mockResolvedValue({status: 404, message: 'not found'} as any);
+         expect(await profiles({printStore: true})).toBe(0);
        });
 
   test('a profile file that sets a key a profile may not set: every command refuses',
@@ -870,11 +923,7 @@ semantic_model:
         fields:
           - { name: key, expression: OrderId }
 `,
-      'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
+      'commerce.profile.prod.yaml': PROD_PROFILE,
     });
     const r = await runAll('prod');
     expect(r.printStore.out).toBe('acme-ops/prod/commerce');

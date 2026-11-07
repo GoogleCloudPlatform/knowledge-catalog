@@ -111,6 +111,12 @@ export interface CreateRuntimeOptions {
   oneModel?: boolean|((count: number) => string);
   /** The scope, already loaded. Defaults to a load of `path`. */
   snapshot?: CatalogSnapshot;
+  /**
+   * A check of the caller's own. It runs before the runtime loads each profile
+   * file on its own, checks `oneModel` or looks up a store. When it returns
+   * false, the result is an empty list.
+   */
+  proceed?: () => Promise<boolean>;
 }
 
 
@@ -239,6 +245,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     const error = undeclaredProfileError(document, model, declared);
     if (error) return {error};
   }
+  if (options.proceed && !await options.proceed()) return [];
 
   // Push then loads every profile file, whichever profile it deploys, and
   // refuses one that does not load.

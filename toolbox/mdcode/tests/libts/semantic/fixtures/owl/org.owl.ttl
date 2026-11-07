@@ -5,11 +5,10 @@
 #   - a single key, a composite key, and an inverse-functional key that IS the
 #     primary key (so it is NOT also emitted as a unique_keys constraint);
 #   - a multi-domain datatype property (one field replicated onto two entities);
-#   - a self-referential edge and an edge into a composite-key class (so the
-#     destination binds to two columns);
+#   - a property from Employee to itself, which import leaves out with a
+#     warning, and an edge into a composite-key class;
 #   - redundant vs. genuine labels, skos synonyms, and comments.
-# Everything here maps cleanly to native OSI (no warnings) and stays UNBOUND
-# except where a declared key binds an edge's destination columns.
+# Everything else maps cleanly to native OSI with no warning and stays UNBOUND.
 
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -79,19 +78,19 @@ ex:notes a owl:DatatypeProperty ;
 
 # --- Object properties. ---
 # Redundant edge label dropped, skos synonym kept, comment -> instructions.
-# Destination (Department) has a key -> the edge's `to` columns bind to it.
+# Destination (Department) has a key.
 ex:worksIn a owl:ObjectProperty ;
     rdfs:domain ex:Employee ; rdfs:range ex:Department ;
     rdfs:label    "works in" ;
     skos:altLabel "member of" ;
     rdfs:comment  "The department an employee belongs to." .
 
-# Self-referential edge into a single-key class.
+# A property from Employee to itself, which import leaves out with a warning.
 ex:reportsTo a owl:ObjectProperty ;
     rdfs:domain ex:Employee ; rdfs:range ex:Employee ;
     rdfs:comment "The manager an employee reports to." .
 
-# Edge into a composite-key class: `to` binds to (portfolio, projectNo).
+# Edge into a composite-key class.
 ex:worksOn a owl:ObjectProperty ;
     rdfs:domain ex:Employee ; rdfs:range ex:Project ;
     rdfs:label "works on" .

@@ -21,7 +21,7 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
@@ -29,7 +29,7 @@ import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelErr
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1146,13 +1146,53 @@ async function printStore(
   // One line, because the caller is `STORE=$(kcmd profiles --print-store)` and
   // a second line makes that variable address the wrong database. A scope
   // holding several models has no single answer, so it says so instead,
-  // before any AlloyDB lookup.
-  const opened = await createSemanticRuntimes(
-      {profile: named, ctx, oneModel: true, snapshot});
+  // before any AlloyDB lookup. A scope that push refuses for its named
+  // profiles gets push's errors, also before any AlloyDB lookup.
+  let refused: string[] = [];
+  const opened = await createSemanticRuntimes({
+    profile: named,
+    ctx,
+    oneModel: true,
+    snapshot,
+    proceed: async () => {
+      const layout = snapshot.layout as SemanticModelLayout;
+      const docs = layout.modelDocuments();
+      const profileDocs = profileDocsReader(layout);
+      // The check reads each source's dialect as push does. When a read
+      // fails, the check skips the dialect rules for that source, so a script
+      // can still get the store of a database it has not created yet. An
+      // entry that reads but gives no dialect or names no table gets push's
+      // error.
+      const read = await readDialects(ctx, [
+        ...docs.map(d => d.text),
+        ...docs.flatMap(d => profileDocs(d.name).map(p => p.text)),
+      ]);
+      refused = read.errors.filter(e => !read.unread.includes(e));
+      if (refused.length) return false;
+      const load = {
+        sourceDialects: read.dialects,
+        sourceDatabases: read.databases,
+      };
+      const {models} =
+          loadSemanticModels(docs, {bindingOptional: true, ...load});
+      // Push refuses several models, or a deployment target in no accepted
+      // form, before it checks the named profiles. The runtime refuses both.
+      if (models.length > 1 ||
+          models.some(m => 'error' in resolveModelDeployments(m.model))) {
+        return true;
+      }
+      refused = namedProfileErrors(
+                    docs, new Map(models.map(m => [m.document, m.model])),
+                    profileDocs, declaredProfilesReader(profileDocs), [], load)
+                    .map(e => e.error);
+      return !refused.length;
+    },
+  });
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
     return 1;
   }
+  if (refused.length) return printErrors(...refused);
   for (const {store, storeError} of opened) {
     if (!store) {
       console.error(`Error: ${storeError}`);
@@ -1892,6 +1932,14 @@ export async function owl(
     return 1;
   }
 
+  // Without --out, the model goes into the scope's entry group, which holds
+  // one model. A second model is refused before the summary, as above.
+  const layout = options.out ? undefined : await workspaceLayout();
+  if (layout && typeof layout !== 'string') {
+    const {error} = otherModelFiles(layout, modelName, file);
+    if (error) return printErrors(error);
+  }
+
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +
       `${objectProperties} ` +
@@ -1906,12 +1954,12 @@ export async function owl(
   // layout places the document under the scope's entry group so `kcmd push`
   // finds it.
   let writtenPath: string;
-  if (options.out) {
-    writeFileAt(options.out, result.yaml);
-    writtenPath = options.out;
+  if (!layout) {
+    writeFileAt(options.out!, result.yaml);
+    writtenPath = options.out!;
+  } else if (typeof layout === 'string') {
+    return printErrors(layout);
   } else {
-    const layout = await workspaceLayout();
-    if (typeof layout === 'string') return printErrors(layout);
     layout.writeModelDocument(modelName, result.yaml);
     writtenPath = layout.modelPath(modelName);
   }
@@ -2031,21 +2079,10 @@ export async function importModel(
     const model = result.files[0].fileName.replace(YAML_FILE, '');
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
-    // Re-importing the same model replaces its file. The input itself may be
-    // in the entry group under another name.
-    const docs = layout.modelDocuments()
-                     .map(d => layout.modelPath(d.name))
-                     .filter(p => p !== layout.modelPath(model));
-    const others = docs.filter(p => path.resolve(p) !== path.resolve(file));
-    const refusals: string[] = [];
-    if (others.length) {
-      refusals.push(
-          `the entry group already holds another model's file (${
-              others.join(', ')}), and an entry group holds one model; ` +
-          `remove it if this model replaces it, pass --out <path> to write ` +
-          `elsewhere, or import into another entry group's scope.`);
-    }
-    if (others.length < docs.length) {
+    // The input itself may be in the entry group under another name.
+    const {inputThere, error} = otherModelFiles(layout, model, file);
+    const refusals = error ? [error] : [];
+    if (inputThere) {
       refusals.push(
           `the input file ${file} sits in the entry group, so the import ` +
           `would leave this model in two files there, ${file} and ${
@@ -2118,6 +2155,28 @@ async function workspaceLayout(): Promise<SemanticModelLayout|string> {
         `first, or pass --out <path> to write the file directly.`;
   }
   return snapshot.layout as SemanticModelLayout;
+}
+
+// Refuses to write `model` into `layout`'s entry group beside another
+// model's file, since an entry group holds one model. `inputThere` says
+// whether the input file `input` is one of those files. The error leaves it
+// out, since kcmd import refuses it on its own.
+function otherModelFiles(
+    layout: SemanticModelLayout, model: string,
+    input: string): {inputThere: boolean; error?: string} {
+  const files = layout.modelDocuments()
+                    .map(d => layout.modelPath(d.name))
+                    .filter(p => p !== layout.modelPath(model));
+  const others = files.filter(p => path.resolve(p) !== path.resolve(input));
+  const inputThere = others.length < files.length;
+  if (!others.length) return {inputThere};
+  return {
+    inputThere,
+    error: `the entry group already holds another model's file (${
+               others.join(', ')}), and an entry group holds one model; ` +
+        `remove it if this model replaces it, pass --out <path> to write ` +
+        `elsewhere, or import into another entry group's scope.`,
+  };
 }
 
 
