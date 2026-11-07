@@ -1,6 +1,6 @@
-// The entries a push with KC_V2_ASPECTS off (first-generation aspects plus a
-// file copy) writes for a tiny model, captured from production so tests need
-// not build them with the first-generation emitter.
+// The entries an older kcmd's push with KC_V2_ASPECTS off (first-generation
+// aspects plus a file copy) wrote for a tiny model, captured from production,
+// since kcmd no longer writes them.
 //
 // Captured 2026-11-04 (b/575695037): `kcmd push` with KC_V2_ASPECTS unset, at
 // main 075d6d3a, of the model in FIRST_GEN_MODEL_FILE into

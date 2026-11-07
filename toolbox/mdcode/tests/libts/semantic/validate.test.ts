@@ -2627,7 +2627,7 @@ ${extraMetric}`;
 
 // Push checks names again, for a model built in memory and a profile that
 // reaches `model.profiles` without the loader, and is the only place the
-// description limit, link IDs and metric-field collisions are checked.
+// description limit and metric-field collisions are checked.
 describe('push checks names and description lengths', () => {
   const customer: Entity =
       {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
@@ -2638,8 +2638,7 @@ describe('push checks names and description lengths', () => {
     }, customer],
     ...over,
   });
-  const errorsOf = (m: SemanticModel, v2Aspects?: boolean) =>
-      validatePushRequirements([loaded(m)], {v2Aspects});
+  const errorsOf = (m: SemanticModel) => validatePushRequirements([loaded(m)]);
 
   test('a valid model passes', () => {
     expect(errorsOf(withNames())).toEqual([]);
@@ -2755,34 +2754,6 @@ describe('push checks names and description lengths', () => {
       expect(validateExpressionReferences([loaded(m)], false))
           .toEqual([COLLIDES('revenue', 'revenue')]);
     });
-  });
-
-  // Normalising a name to a link ID loses information: `__` reads as `-`, and
-  // everything past 63 characters is cut, which a long model name makes
-  // likely. With KC_V2_ASPECTS on, push writes no such link ID.
-  test('rejects two relationships whose names give one Knowledge Catalog link ID', () => {
-    const rel = (name: string) => ({
-      name,
-      source: {entity: 'orders', columns: ['id']},
-      destination: {entity: 'customer', columns: ['id']},
-    });
-    const longModel = `m_${'a'.repeat(50)}`;
-    const cases: Array<[model: string, a: string, b: string, linkId: string,
-                        v2Aspects?: boolean]> = [
-      ['retail', 'order_customer', 'order__customer', 'retail-order-customer'],
-      [longModel, 'rel_shared_prefix_one', 'rel_shared_prefix_two',
-       `m-${'a'.repeat(50)}-rel-shared`],
-      ['retail', 'order_customer', 'order__customer', 'retail-order-customer',
-       true],
-    ];
-    for (const [name, a, b, linkId, v2Aspects] of cases) {
-      expect(errorsOf(withNames({name, relationships: [rel(a), rel(b)]}),
-                      v2Aspects))
-          .toEqual(v2Aspects ? [] : [
-            `Relationships '${a}' and '${b}' in model '${name}' (doc) collide ` +
-            `on Knowledge Catalog link ID '${linkId}'; rename one of them.`,
-          ]);
-    }
   });
 });
 

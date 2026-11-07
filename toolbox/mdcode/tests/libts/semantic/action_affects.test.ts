@@ -32,8 +32,6 @@ const OPTS = {
   entryGroup: 'eg',
   v2Aspects: true
 };
-// The first-generation layout, for tests of the first-generation writer.
-const FIRST_GEN = {...OPTS, v2Aspects: false};
 
 const MCP_EXECUTOR = {
   mcp: {server: '//agentregistry.googleapis.com/x', tool: 'place_order'},
@@ -453,67 +451,6 @@ describe('validatePushRequirements checks every affected concept', () => {
     const errs = validatePushRequirements([m], {fieldsPruned: true});
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain('extends unknown entity');
-  });
-});
-
-
-describe('publishing says when a blast radius outruns the push', () => {
-  // An action is published whole while entities are not: the first-generation
-  // types skip an abstract one, and a binding profile drops any concept it
-  // cannot bind.
-  // `affects` is left untouched by both, so the catalog can end up recording a
-  // change to a concept it holds no entry for. That is the right entry to
-  // publish -- the action does change it -- but it is a divergence, and pulling
-  // the model back and pushing it unpruned fails hard on the same name. So it
-  // is reported where it is created.
-  function published(affects: any[], opts = OPTS) {
-    const model: SemanticModel = {
-      name: 'm',
-      entities: [
-        {
-          name: 'orders',
-          dataSource: 'p.d.o',
-          keys: ['id'],
-          fields: [{name: 'id'}],
-        },
-        // No physical table, so no dataSource or keys -- exactly what
-        // the first-generation entity loop skips.
-        {
-          name: 'Party',
-          abstract: true,
-          dataSource: '',
-          keys: [],
-          fields: [{name: 'id'}],
-        },
-      ],
-      relationships: [{
-        name: 'orders_to_customer',
-        source: {entity: 'orders', columns: ['id']},
-        destination: {entity: 'orders', columns: ['id']},
-      }],
-      metrics: [],
-      actions: [{
-        name: 'PlaceOrder',
-        executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
-        parameters: [],
-        affects,
-      }],
-    };
-    return generateCatalogResources(model, opts).warnings;
-  }
-
-  test('a concept this push publishes draws no warning', () => {
-    // Including a relationship, which is never in publishedEntities and would
-    // warn on every well-formed model if that were the only set consulted.
-    const w = published([{concept: 'orders'}, {concept: 'orders_to_customer'}]);
-    expect(w.filter(x => x.includes('affects'))).toEqual([]);
-  });
-
-  test('an abstract concept is published, with a warning', () => {
-    const w = published([{concept: 'Party', operation: 'modify'}], FIRST_GEN);
-    const about = w.filter(x => x.includes(`affects 'Party'`));
-    expect(about).toHaveLength(1);
-    expect(about[0]).toContain('has no entry for');
   });
 });
 

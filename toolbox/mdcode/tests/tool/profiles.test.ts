@@ -951,28 +951,22 @@ semantic_model:
           `data: ${'x'.repeat(130 * 1024)}}\n`);
   // Push gives a scope with two models its one-model error, once, and does
   // not check the aspects.
-  for (const [label, model, v2] of [
-         ['', commerce(), false],
-         [' and an aspect over the size limit with KC_V2_ASPECTS on',
-          bigBlock(commerce()), true],
-       ] as const) {
-    test(`prints only push's one-model error for two models${label}`,
-         async () => {
-           if (!v2) process.env.KC_V2_ASPECTS = '0';
-           writeScope({
-             'commerce.yaml': model,
-             'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
-           });
-           const pushed = await pushResult();
-           expect(pushed.errors).toEqual(
-               [expect.stringContaining('would receive 2 models')]);
-           expect(await profiles()).toBe(1);
-           expect(rejects(logs, '')).toEqual(pushed.errors);
-           expect(logs.filter(l => l.includes('would receive 2 models')))
-               .toHaveLength(1);
-           expect(logs.join('\n')).not.toContain('too large');
+  test('prints only push\'s one-model error for two models and an aspect ' +
+           'over the size limit',
+       async () => {
+         writeScope({
+           'commerce.yaml': bigBlock(commerce()),
+           'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
          });
-  }
+         const pushed = await pushResult();
+         expect(pushed.errors).toEqual(
+             [expect.stringContaining('would receive 2 models')]);
+         expect(await profiles()).toBe(1);
+         expect(rejects(logs, '')).toEqual(pushed.errors);
+         expect(logs.filter(l => l.includes('would receive 2 models')))
+             .toHaveLength(1);
+         expect(logs.join('\n')).not.toContain('too large');
+       });
 
   // Push refuses a model or profile file that is not valid UTF-8 before any
   // graph deploys, so every push of the scope fails, once.
@@ -1050,7 +1044,7 @@ semantic_model:
        });
 
   test('prints push\'s warnings for a custom ai_context member push leaves ' +
-           'out and a sidecar that names no entry, with KC_V2_ASPECTS on',
+           'out and a sidecar that names no entry',
        async () => {
          const warned: string[] = [];
          spyOn(console, 'warn').mockImplementation((m: any) => {
@@ -1059,12 +1053,8 @@ semantic_model:
          const model = commerce().replace(
              '  - name: commerce\n',
              '  - name: commerce\n    ai_context: {custom: {cap: .inf}}\n');
-         // With the flag on, link IDs are hashes, so push takes `placed__by`
-         // beside `placed_by`.
          writeScope({
-           'commerce.yaml': `${model}      - {name: placed__by, from: ` +
-               'purchase, to: customer, from_columns: [p_customer], ' +
-               'to_columns: [c_id]}\n',
+           'commerce.yaml': model,
            'commerce/metrics/gone.overview.md': 'Old.\n',
          });
          const warning = '[commerce] model \'commerce\': ai_context member ' +
@@ -1086,12 +1076,6 @@ semantic_model:
            expect(warned.splice(0))
                .toEqual([warning, sidecar].map(w => `Warning: ${w}`));
          }
-         process.env.KC_V2_ASPECTS = '0';
-         for (const m of [model, deployed]) {
-           writeScope({'commerce.yaml': m});
-           expect(await profiles()).toBe(0);
-         }
-         expect(warned).toEqual([]);
        });
 
   test('reads each profile file once', async () => {
@@ -1113,24 +1097,20 @@ semantic_model:
 
   // When push stops at a profile file that breaks a layout rule, the report
   // throws push's message before anything prints.
-  for (const v2Aspects of [false, true]) {
-    test(`throws push's error for a profile file that breaks a layout rule${
-             v2Aspects ? ' with KC_V2_ASPECTS on' : ''}`,
-         async () => {
-           if (!v2Aspects) process.env.KC_V2_ASPECTS = '0';
-           writeScope({
-             'commerce.yaml': commerce(),
-             'commerce.profile.prod.yaml': profileFile('other'),
-           });
-           const pushed = await pushResult();
-           expect(pushed).toEqual({
-             code: 1,
-             errors: [expect.stringContaining("declares name 'other'")],
-           });
-           await expect(profiles()).rejects.toThrow(pushed.errors[0]);
-           expect(logs).toEqual([]);
+  test('throws push\'s error for a profile file that breaks a layout rule',
+       async () => {
+         writeScope({
+           'commerce.yaml': commerce(),
+           'commerce.profile.prod.yaml': profileFile('other'),
          });
-  }
+         const pushed = await pushResult();
+         expect(pushed).toEqual({
+           code: 1,
+           errors: [expect.stringContaining("declares name 'other'")],
+         });
+         await expect(profiles()).rejects.toThrow(pushed.errors[0]);
+         expect(logs).toEqual([]);
+       });
 
   test('reports a SQL parser that cannot load', async () => {
     writeScope({'commerce.yaml': commerce({targets: 1})});

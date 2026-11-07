@@ -7,10 +7,11 @@ import {Entry, EntryLink, EntryReference} from '../gcp/dataplex';
 import {DEFAULT_TYPE_LOCATION, DEFAULT_TYPE_PROJECT, entryIdOf} from './kc_ids';
 import {KcResources} from './knowledge_catalog';
 
-/** Options overriding the system-type project, location, and V2 aspect mode. */
+/** Options overriding the system-type project and location. */
 export interface SystemTypeOptions {
   systemTypeProject?: string;
   systemTypeLocation?: string;
+  // Not read. It goes with KC_V2_ASPECTS (b/575695037).
   v2Aspects?: boolean;
 }
 
@@ -148,13 +149,13 @@ export function isDependentEntry(entry: Entry): boolean {
 }
 
 /**
- * Returns true when `link` is of a kind push writes for a model: `schema-join`
- * in V1, and in V2 `semantic-link` or a `reference` link whose ID starts with
- * `semantic-relationship-` or `semantic-extends-`.
+ * Returns true when `link` is of a kind push writes for a model: `semantic-link`
+ * or a `reference` link whose ID starts with `semantic-relationship-` or
+ * `semantic-extends-`, or the `schema-join` link an older kcmd wrote.
  *
- * Includes both V1 and V2 regardless of `v2Aspects`, so a model pushed with V1
- * and then V2 still discovers and cleans up its old `schema-join` links
- * without passing a link type in a server-side `lookupEntryLinks` filter.
+ * `schema-join` stays so that a push over a model an older kcmd pushed still
+ * finds and deletes its links, without passing a link type in a server-side
+ * `lookupEntryLinks` filter.
  */
 export function isModelLink(link: EntryLink): boolean {
   const type = linkTypeId(link);
@@ -216,7 +217,7 @@ const LINK_CONTAINER_RE =
  *
  * `link.name` and its references must spell the project the same way.
  */
-export function collectOwnedReferences(
+function collectOwnedReferences(
     owner: KcOwner, link: EntryLink): EntryReference[] {
   // A reference `r` in `link.entryReferences` is owned by `owner` when:
   //   1. Either `link.name` has no container prefix, or `r.name` starts with
@@ -261,7 +262,7 @@ function systemTypeProjectAndLocation(
  * Returns the set of aspect keys to include when updating `entry`.
  *
  * Includes every aspect key present on `entry.aspects` plus the optional
- * `<proj>.<loc>.guidelines` aspect. When `opts?.v2Aspects` is true:
+ * `<proj>.<loc>.guidelines` aspect. It also:
  *   * Adds `<proj>.<loc>.semantic-extensions` and `<proj>.<loc>.overview` on
  *     model, entity, metric and relationship entries, so Dataplex removes the
  *     aspect when the object no longer has content for it.
@@ -277,8 +278,6 @@ export function entryAspectKeys(
     ...Object.keys(entry.aspects ?? {}).filter(key => !key.includes('@')),
     `${proj}.${loc}.guidelines`,
   ]);
-  if (!opts?.v2Aspects) return keys;
-
   if (isSemanticObjectEntry(entry)) {
     keys.add(`${proj}.${loc}.semantic-extensions`);
     keys.add(`${proj}.${loc}.overview`);

@@ -462,8 +462,8 @@ function checkUtf8(
   }
 }
 
-// What checkCatalogAspects reports for a flag-on push of `models` to `source`
-// with the overview sidecars `overviews`.
+// What checkCatalogAspects reports for a push of `models` to `source` with the
+// overview sidecars `overviews`.
 function catalogAspects(
     models: LoadedModel[], source: SemanticModelSource,
     overviews?: ReadonlyMap<string, OverviewSidecar>):
@@ -1022,10 +1022,9 @@ async function checkBeforeWrites(
       if (error) return fail(error);
     }
   }
-  // With KC_V2_ASPECTS on, the catalog writes each overview sidecar, which
-  // must be valid UTF-8 too.
+  // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
-  if (kcV2Aspects() && docs.length === 1) {
+  if (docs.length === 1) {
     try {
       for (const {path: sidecar} of layout.overviewSidecarPaths()) {
         const error = checkUtf8(
@@ -1297,9 +1296,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load}, true);
   const pushErrors = 'errors' in checked ? checked.errors : [];
-  // With KC_V2_ASPECTS on, push prints the emitter's warnings and checks
-  // every aspect's size once the local checks pass, before any write.
-  if (kcV2Aspects() && 'kcModels' in checked) {
+  // Push prints the emitter's warnings and checks every aspect's size once the
+  // local checks pass, before any write.
+  if ('kcModels' in checked) {
     const {error, warnings} =
         catalogAspects(checked.kcModels, source, checked.overviews);
     for (const w of warnings) console.warn(`Warning: ${w}`);
@@ -1540,12 +1539,11 @@ function reportCatalogResult(
   const removed = result.deleted ? `; removed ${result.deleted} orphaned entr${
                                        result.deleted === 1 ? 'y' : 'ies'}` :
                                    '';
-  // With KC_V2_ASPECTS on, the relationships of an ordered entity pair share
-  // one link, so the count is of links.
+  // The relationships of an ordered entity pair share one link, so the count
+  // is of links.
   const plural = result.linked === 1 ? '' : 's';
-  const linked = !result.linked ? '' :
-      kcV2Aspects() ? `; wrote ${result.linked} entry link${plural}` :
-                      `; linked ${result.linked} relationship${plural}`;
+  const linked =
+      result.linked ? `; wrote ${result.linked} entry link${plural}` : '';
   const unlinked = result.unlinked ?
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :

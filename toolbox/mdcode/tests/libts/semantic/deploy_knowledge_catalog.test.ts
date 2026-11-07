@@ -31,9 +31,8 @@ const DOCS = [{name: 'sales.yaml', text: OSSIE}];
 
 // A model with a direct-FK relationship: 6 entries (anchor + 2 entities + 2
 // metrics + the relationship) plus 3 entry links (the semantic-link from
-// orders to customer and the relationship's 2 reference links), or 5 entries
-// plus 1 schema-join link with the first-generation layout. Used to exercise
-// the link write path the OSSIE fixture (no relationship) cannot.
+// orders to customer and the relationship's 2 reference links). Used to
+// exercise the link write path the OSSIE fixture (no relationship) cannot.
 const STAR =
     fs.readFileSync(path.join(FIXTURES, 'star_orders_customer.yaml'), 'utf8');
 const STAR_DOCS = [{name: 'star.yaml', text: STAR}];
@@ -75,8 +74,6 @@ const OPTS = {
   entryCreateTries: 1,
   v2Aspects: true
 };
-// The first-generation layout, for tests of the first-generation writer.
-const FIRST_GEN = {...OPTS, v2Aspects: false};
 
 // The most data Dataplex stores in an aspect other than schema.
 const LIMIT = 122_880;
@@ -272,32 +269,6 @@ describe('deployKnowledgeCatalog: happy path', () => {
 
 
 describe('deployKnowledgeCatalog: re-push upserts', () => {
-  test('an entry that already exists is updated in place', async () => {
-    const {create, update} = stubClient({
-      create: () => err(409, 'entry already exists'),
-      update: ok({}),
-    });
-
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, FIRST_GEN);
-
-    expect(result.success).toBe(true);
-    expect(result.created).toBe(0);
-    expect(result.updated).toBe(3);
-    expect(create).toHaveBeenCalledTimes(3);
-    // The fourth update labels the model entry finished.
-    expect(update).toHaveBeenCalledTimes(4);
-    // Dataplex keeps an aspect that aspectKeys names and the body leaves out
-    // unless deleteMissingAspects is set, so a removed guidelines aspect is
-    // only deleted with it.
-    // With deleteMissingAspects set, aspectKeys is what keeps aspects other
-    // tools attached: it names the entry's own aspects and guidelines only.
-    for (const call of update.mock.calls.slice(0, 3)) {
-      const own = Object.keys((call[0] as any).aspects ?? {});
-      expect([...(call[2] as string[])].sort())
-          .toEqual([...new Set([...own, 'dataplex-types.global.guidelines'])].sort());
-      expect(call[3]).toBe(true);
-    }
-  });
 
   test('a failed entry update fails the push, naming the entry', async () => {
     stubClient({
@@ -350,36 +321,26 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
   const updated = (update: any, id: string) => update.mock.calls.find(
       (c: any[]) => c[0].name.endsWith(`/entries/${id}`))!;
   const ENTITY = 'sales/entities/orders';
-  // Labels another writer set on the model entry and on entity `entity`.
-  const labeled = (entity = ENTITY):
-      {id: string; type: string; labels: Record<string, string>}[] => [
+  // Labels another writer set on the model entry and on its orders entity.
+  const labeled = () => [
     {id: 'sales', type: MODEL_TYPE, labels: {'owner': 'data-team'}},
-    {id: entity, type: ENTITY_TYPE, labels: {'owner': 'data-team'}},
+    {id: ENTITY, type: ENTITY_TYPE, labels: {'owner': 'data-team'}},
   ];
   const exists = () => err(409, 'entry already exists');
 
-  // The update replaces the whole entrySource, so it carries them over, with
-  // either flag.
-  for (const [opts, entity] of [
-         [FIRST_GEN, 'sales.entities.orders'], [OPTS, ENTITY]
-       ] as [typeof OPTS, string][]) {
-    test(`a re-push keeps the labels another writer set (v2Aspects ${
-             opts === OPTS})`,
-         async () => {
-           const {update} =
-               stubClient({create: exists, existing: labeled(entity)});
-           expect((await deployKnowledgeCatalog(models(DOCS), CTX, opts))
-                      .success)
-               .toBe(true);
-           const [entry, mask] = updated(update, 'sales');
-           expect(entry.entrySource.labels)
-               .toEqual({'owner': 'data-team', ...WRITING});
-           // The mask names the entrySource, so Dataplex stores the labels.
-           expect(mask).toContain('entry_source');
-           expect(updated(update, entity)[0].entrySource.labels)
-               .toEqual({'owner': 'data-team'});
-         });
-  }
+  // The update replaces the whole entrySource, so it carries them over.
+  test('a re-push keeps the labels another writer set', async () => {
+    const {update} = stubClient({create: exists, existing: labeled()});
+    expect((await deployKnowledgeCatalog(models(DOCS), CTX, OPTS)).success)
+        .toBe(true);
+    const [entry, mask] = updated(update, 'sales');
+    expect(entry.entrySource.labels)
+        .toEqual({'owner': 'data-team', ...WRITING});
+    // The mask names the entrySource, so Dataplex stores the labels.
+    expect(mask).toContain('entry_source');
+    expect(updated(update, ENTITY)[0].entrySource.labels)
+        .toEqual({'owner': 'data-team'});
+  });
 
   test('a re-push keeps the source fields another writer set', async () => {
     const source = {
@@ -482,25 +443,6 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
 
 
 describe('deployKnowledgeCatalog: relationship entry links', () => {
-  test('a direct-FK relationship is written as one schema-join link', async () => {
-    const {create, createLink, updateLink} = stubClient();
-
-    const result =
-        await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-    expect(result.success).toBe(true);
-    expect(result.created).toBe(5);  // anchor + 2 entities + 2 metrics
-    expect(result.linked).toBe(1);
-    expect(create).toHaveBeenCalledTimes(5);
-    expect(createLink).toHaveBeenCalledTimes(1);
-    expect(updateLink).not.toHaveBeenCalled();
-    // Links are written to the same destination the entries are.
-    const [project, location, entryGroup, linkId] = createLink.mock.calls[0];
-    expect(project).toBe('dest');
-    expect(location).toBe('us');
-    expect(entryGroup).toBe('eg');
-    expect(linkId).toBe('sales-orders-to-customer');
-  });
 
   test('a link that already exists is upserted via updateEntryLink', async () => {
     // Reading the link shows it joins this model's two entities. Its
@@ -646,70 +588,13 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
       });
 
   test(
-      'a link under this model\'s link ID that joins one of its entities to ' +
-          'an entry of the same ID in another entry group is not changed',
-      async () => {
-        const got = gotLinkEntry(
-            'sales-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer']);
-        got.entryReferences[1].name =
-            'projects/123456789/locations/us/entryGroups/other-eg/entries/' +
-            'sales.entities.customer';
-        const {delLink, updateLink} = stubClient({
-          createLink: () => err(409, 'entry link already exists'),
-          getLink: ok(got),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists and references entry ' +
-                '\'projects/123456789/locations/us/entryGroups/other-eg/' +
-                'entries/sales.entities.customer\' outside this model; ' +
-                'rename the relationship or delete the existing link');
-        expect(updateLink).not.toHaveBeenCalled();
-        expect(delLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a link under this model\'s link ID that joins one of its entities to ' +
-          'an entry of the same ID in another project is not changed',
-      async () => {
-        const got = gotLinkEntry(
-            'sales-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer']);
-        got.entryReferences[1].name =
-            entryName('sales.entities.customer', '987654321');
-        const {delLink, updateLink} = stubClient({
-          createLink: () => err(409, 'entry link already exists'),
-          getLink: ok(got),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists and references entry ' +
-                '\'projects/987654321/locations/us/entryGroups/eg/entries/' +
-                'sales.entities.customer\' outside this model; rename the ' +
-                'relationship or delete the existing link');
-        expect(updateLink).not.toHaveBeenCalled();
-        expect(delLink).not.toHaveBeenCalled();
-      });
-
-  test(
       'a 404 on reading the link after a 409 on createEntryLink fails the ' +
-          'push because another link holds those endpoints, with no update',
+          'push with the 409\'s text and no update when the lookup finds no ' +
+          'link between the two entries',
       async () => {
         // No link holds the ID, so the 409 came from another link on the
-        // pair. The error carries the create's own text.
+        // pair, which is gone by the time push looks it up. This push deleted
+        // nothing, so the error has no push-again hint.
         const {createLink, updateLink} = stubClient({
           createLink: starLinkExists(
               'EntryLink already exists, for the given entry reference and ' +
@@ -725,10 +610,7 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
         expect(result.linked).toBe(2);
         expect(result.details)
             .toBe(
-                'Model \'sales\': failed to create entry link ' +
-                `'${STAR_SEMANTIC_LINK}' because another 'semantic-link' ` +
-                'link already connects \'sales/entities/orders\' and ' +
-                '\'sales/entities/customer\'; Knowledge Catalog returned: ' +
+                `Model 'sales': entry link '${STAR_SEMANTIC_LINK}': ` +
                 'EntryLink already exists, for the given entry reference and ' +
                 'link type');
         expect(createLink).toHaveBeenCalledTimes(3);
@@ -786,73 +668,6 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
             .toBe(
                 `Model 'sales': entry link '${STAR_SEMANTIC_LINK}': ` +
                 'socket hang up');
-        expect(updateLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a link of another type under this model\'s link ID is not changed, ' +
-          'and the push fails naming its type',
-      async () => {
-        // Another tool's `related` link joins the model's two entities under
-        // the emitted ID. The lookup skips links of other types, and so does
-        // the read.
-        const related = gotLinkEntry(
-            'sales-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer']);
-        related.entryLinkType =
-            'projects/dataplex-types/locations/global/entryLinkTypes/related';
-        const {delLink, updateLink} = stubClient({
-          existing: [
-            {id: 'sales', type: MODEL_TYPE},
-            {id: 'sales.entities.orders', type: ENTITY_TYPE},
-            {id: 'sales.entities.customer', type: ENTITY_TYPE},
-          ],
-          links: () => ok([{
-            ...related,
-            name: 'projects/123456789/locations/us/entryGroups/eg/' +
-                'entryLinks/sales-orders-to-customer',
-          }]),
-          createLink: () =>
-              err(409, 'EntryLink with the given id already exists.'),
-          getLink: ok(related),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists with link type \'related\'; rename the ' +
-                'relationship or delete the existing link');
-        expect(delLink).not.toHaveBeenCalled();
-        expect(updateLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a link under this model\'s link ID that joins two entries outside ' +
-          'the model is not changed, and the push fails naming the link',
-      async () => {
-        // The lookup cannot return such a link, because it references none
-        // of the model's entities.
-        const {updateLink} = stubClient({
-          createLink: () => err(409, 'entry link already exists'),
-          getLink: ok(linkEntry(
-              'sales-orders-to-customer', ['tool.a', 'tool.b'], '123456789')),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.linked).toBe(0);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists and references entries \'tool.a\' and ' +
-                '\'tool.b\' outside this model; rename the relationship or ' +
-                'delete the existing link');
         expect(updateLink).not.toHaveBeenCalled();
       });
 
@@ -1305,8 +1120,9 @@ const SEMANTIC_LINK_TYPE =
 const FILE_TYPE =
     'projects/dest/locations/global/entryTypes/semantic-model-file';
 
-// A schema-join entry link as lookupEntryLinks returns it: `refIds` are the two
-// endpoint entry ids (undirected, both UNSPECIFIED).
+// A schema-join entry link, the kind an older kcmd wrote, as lookupEntryLinks
+// returns it: `refIds` are the two endpoint entry ids (undirected, both
+// UNSPECIFIED).
 function linkEntry(id: string, refIds: string[], project = 'dest'): any {
   return {
     name: `projects/${project}/locations/us/entryGroups/eg/entryLinks/${id}`,
@@ -1317,16 +1133,6 @@ function linkEntry(id: string, refIds: string[], project = 'dest'): any {
           name: `projects/${project}/locations/us/entryGroups/eg/entries/${r}`,
           type: 'UNSPECIFIED',
         })),
-  };
-}
-
-// A schema-join entry link as getEntryLink returns it. Dataplex spells the
-// name as push requested it, with the scope's project 'dest', and the
-// references with the project number 123456789.
-function gotLinkEntry(id: string, refIds: string[]): any {
-  return {
-    ...linkEntry(id, refIds, '123456789'),
-    name: `projects/dest/locations/us/entryGroups/eg/entryLinks/${id}`,
   };
 }
 
@@ -1393,107 +1199,14 @@ const starLinkExists = (message = 'entry link already exists') =>
 
 
 describe('deployKnowledgeCatalog: link reconciliation', () => {
-  // With the first-generation layout, the STAR model 'sales' has entities
-  // orders + customer and emits exactly one schema-join link,
-  // 'sales-orders-to-customer'.
-  const KEPT = linkEntry(
-      'sales-orders-to-customer',
-      ['sales.entities.orders', 'sales.entities.customer']);
-
-  // The model's entity entries, as the first-generation layout names them,
-  // that the destination already holds (a re-push). The deploy pipeline looks
-  // up links via these server-known entities, so they must be in the
-  // pre-write listing for a link to be discoverable.
+  // STAR's entity entries as an older kcmd named them, which the destination
+  // still holds. The deploy pipeline looks up links via these server-known
+  // entities, so they must be in the pre-write listing for a link to be
+  // discoverable.
   const STAR_ENTITIES = [
     {id: 'sales.entities.orders', type: ENTITY_TYPE},
     {id: 'sales.entities.customer', type: ENTITY_TYPE},
   ];
-
-  test('deletes an owned schema-join link the model no longer emits',
-     async () => {
-       // The server also still holds a link to a dropped relationship (both
-       // endpoints under this model). It is returned from both endpoints it
-       // touches (orders + customer), so the dedup path is exercised too.
-       const orphan = linkEntry(
-           'sales-orders-to-supplier',
-           ['sales.entities.orders', 'sales.entities.supplier']);
-       const {delLink} = stubClient({
-         existing: STAR_ENTITIES,
-         links: () => ok([orphan, KEPT]),
-       });
-
-       const result =
-           await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-       expect(result.success).toBe(true);
-       expect(result.unlinked).toBe(1);
-       expect(delLink).toHaveBeenCalledTimes(1);
-       expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-supplier');
-     });
-
-  test(
-      'renaming a relationship while keeping its endpoints deletes the old ' +
-          'link before creating the new one',
-      async () => {
-        // Dataplex allows one link per type between two entries: creating the
-        // renamed link (`sales-orders-to-customer`) before deleting the old
-        // link (`sales-old-orders-to-customer`) between the same two entities
-        // returns 409.
-        const renamedFrom = linkEntry(
-            'sales-old-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer'], '123456789');
-        let oldDeleted = false;
-        const {createLink, delLink, updateLink} = stubClient({
-          existing: STAR_ENTITIES,
-          links: () => ok([renamedFrom]),
-          delLink: (id) => {
-            if (id === 'sales-old-orders-to-customer') oldDeleted = true;
-            return ok({});
-          },
-          createLink: () => oldDeleted ?
-              ok({}) :
-              err(409,
-                  'EntryLink already exists, for the given entry reference ' +
-                      'and link type'),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(true);
-        expect(result.unlinked).toBe(1);
-        expect(result.linked).toBe(1);
-        expect(delLink).toHaveBeenCalledTimes(1);
-        expect(delLink.mock.calls[0][3]).toBe('sales-old-orders-to-customer');
-        expect(createLink).toHaveBeenCalledTimes(1);
-        expect(updateLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'when creating a renamed relationship link fails after deleting the ' +
-          'old link, the error includes the push-again hint',
-      async () => {
-        // The lookup spells the old link with the project number and lists
-        // its ends in the other order. It still joins the same two entities.
-        const renamedFrom = linkEntry(
-            'sales-old-orders-to-customer',
-            ['sales.entities.customer', 'sales.entities.orders'], '123456789');
-        stubClient({
-          existing: STAR_ENTITIES,
-          links: () => ok([renamedFrom]),
-          createLink: () => err(500, 'create failed'),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.unlinked).toBe(1);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\': ' +
-                'create failed (push again to restore the link)');
-      });
 
   test(
       'a failed orphan delete after another orphan\'s delete freed the ' +
@@ -1545,48 +1258,6 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         expect(createLink).not.toHaveBeenCalled();
       });
 
-  test(
-      'an error on a link that no deleted link made way for has no ' +
-          'push-again hint',
-      async () => {
-        // The orphan belongs to a dropped relationship, so no emitted link
-        // takes its place. The link whose update fails still exists.
-        const orphan = linkEntry(
-            'sales-orders-to-supplier',
-            ['sales.entities.orders', 'sales.entities.supplier']);
-        stubClient({
-          existing: STAR_ENTITIES,
-          links: () => ok([orphan, KEPT]),
-          createLink: () => err(409, 'already exists'),
-          updateLink: err(500, 'backend error'),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.unlinked).toBe(1);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\': ' +
-                'backend error');
-      });
-
-  test('keeps a link the model still emits', async () => {
-    const {delLink} = stubClient({
-      existing: STAR_ENTITIES,
-      links: (entry: string) =>
-          entry.endsWith('sales.entities.orders') ? ok([KEPT]) : ok([KEPT]),
-    });
-
-    const result =
-        await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-    expect(result.success).toBe(true);
-    expect(result.unlinked).toBe(0);
-    expect(delLink).not.toHaveBeenCalled();
-  });
-
   test('never deletes a link that touches an entry outside the model',
      async () => {
        // One endpoint is another model's entity: not owned, so not this model's
@@ -1635,74 +1306,6 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         expect(result.success).toBe(true);
         expect(result.unlinked).toBe(0);
         expect(delLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a looked-up link under the model\'s link ID that joins one of its ' +
-          'entities to an entry in another entry group fails the push',
-      async () => {
-        // Its references match the emitted link's entry IDs, but one of them
-        // names an entry in another entry group.
-        const crossGroup = linkEntry(
-            'sales-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer'], '123456789');
-        crossGroup.entryReferences[1].name =
-            'projects/123456789/locations/us/entryGroups/other-eg/entries/' +
-            'sales.entities.customer';
-        const {delLink, updateLink} = stubClient({
-          existing: STAR_ENTITIES,
-          links: () => ok([crossGroup]),
-          createLink: () => err(409, 'entry link already exists'),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists and references entry ' +
-                '\'projects/123456789/locations/us/entryGroups/other-eg/' +
-                'entries/sales.entities.customer\' outside this model; ' +
-                'rename the relationship or delete the existing link');
-        expect(updateLink).not.toHaveBeenCalled();
-        expect(delLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a renamed relationship whose new link ID is held by a link outside ' +
-          'the model fails before the old link is deleted',
-      async () => {
-        // The lookup returns the old link only. The read of the new ID, made
-        // before any delete, finds a link between two entries outside the
-        // model.
-        const renamedFrom = linkEntry(
-            'sales-old-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer'], '123456789');
-        const outside = gotLinkEntry(
-            'sales-orders-to-customer', ['tool.a', 'tool.b']);
-        const {createLink, delLink, updateLink} = stubClient({
-          existing: STAR_ENTITIES,
-          links: () => ok([renamedFrom]),
-          createLink: () => err(409, 'entry link already exists'),
-          getLink: ok(outside),
-        });
-
-        const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-        expect(result.success).toBe(false);
-        expect(result.unlinked).toBe(0);
-        expect(result.details)
-            .toBe(
-                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                'already exists and references entries \'tool.a\' and ' +
-                '\'tool.b\' outside this model; rename the relationship or ' +
-                'delete the existing link');
-        expect(delLink).not.toHaveBeenCalled();
-        expect(createLink).not.toHaveBeenCalled();
-        expect(updateLink).not.toHaveBeenCalled();
       });
 
   test(
@@ -2603,70 +2206,11 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
         ]);
         expect(actionUpdateCall![3]).toBe(true);
       });
-
-  test(
-      'with v2Aspects off, updating model, entity, metric, and action ' +
-          'entries passes the exact V1 aspectKeys list and ' +
-          'deleteMissingAspects: true',
-      async () => {
-        const {update} = stubClient({
-          create: () => err(409, 'already exists'),
-          update: ok({}),
-        });
-
-        const salesResult =
-            await deployKnowledgeCatalog(models(DOCS), CTX, FIRST_GEN);
-        const actionsResult =
-            await deployKnowledgeCatalog(models(ACTIONS_DOCS), CTX, FIRST_GEN);
-
-        expect(salesResult.success).toBe(true);
-        expect(actionsResult.success).toBe(true);
-
-        const modelUpdateCall = update.mock.calls.find(
-            c => (c[0].name as string).endsWith('/entries/sales'));
-        const entityUpdateCall = update.mock.calls.find(
-            c => (c[0].name as string).endsWith('sales.entities.orders'));
-        const metricUpdateCall = update.mock.calls.find(
-            c => (c[0].name as string).endsWith('sales.metrics.total_revenue'));
-        const actionUpdateCall = update.mock.calls.find(
-            c =>
-                (c[0].name as string).endsWith('commerce.actions.RefundOrder'));
-
-        expect(modelUpdateCall).toBeDefined();
-        expect(entityUpdateCall).toBeDefined();
-        expect(metricUpdateCall).toBeDefined();
-        expect(actionUpdateCall).toBeDefined();
-
-        expect(modelUpdateCall![2]).toEqual([
-          'dataplex-types.global.semantic-model',
-          'dataplex-types.global.guidelines',
-        ]);
-        expect(modelUpdateCall![3]).toBe(true);
-
-        expect(entityUpdateCall![2]).toEqual([
-          'dataplex-types.global.semantic-entity',
-          'dataplex-types.global.schema',
-          'dataplex-types.global.guidelines',
-        ]);
-        expect(entityUpdateCall![3]).toBe(true);
-
-        expect(metricUpdateCall![2]).toEqual([
-          'dataplex-types.global.semantic-metric',
-          'dataplex-types.global.guidelines',
-        ]);
-        expect(metricUpdateCall![3]).toBe(true);
-
-        expect(actionUpdateCall![2]).toEqual([
-          'dest.global.semantic-action',
-          'dataplex-types.global.guidelines',
-        ]);
-        expect(actionUpdateCall![3]).toBe(true);
-      });
 });
 
 
 describe(
-    'deployKnowledgeCatalog: link recreation when type or references change',
+    'deployKnowledgeCatalog: link recreation when references change',
     () => {
       // STAR's relationship orders_to_customer once ran from supplier, which
       // the model no longer has. The previous push left supplier's entry, the
@@ -2675,13 +2219,15 @@ describe(
       // at supplier.
       const FROM_SUPPLIER =
           semanticLinkId('link', 'sales', 'supplier', 'customer');
+      const SOURCE_LINKS = [
+        semanticLink(FROM_SUPPLIER, 'supplier', 'customer'),
+        ...references('orders_to_customer', 'supplier', 'customer'),
+      ];
       const SOURCE_MOVED = {
         existing: [
           ...V2_ENTRIES, {id: 'sales/entities/supplier', type: ENTITY_TYPE},
         ],
-        links: linksTo(
-            semanticLink(FROM_SUPPLIER, 'supplier', 'customer'),
-            ...references('orders_to_customer', 'supplier', 'customer')),
+        links: linksTo(...SOURCE_LINKS),
         // The target reference link still exists.
         createLink: (id: string) =>
             id === STAR_REFERENCES[1] ? EXISTS() : ok({}),
@@ -2738,100 +2284,6 @@ describe(
           });
 
       test(
-          'deletes and recreates an existing link when its link type ' +
-              'changed even if endpoint references match',
-          async () => {
-            // Stage an existing `semantic-link` link whose `entryReferences`
-            // already match the V1 `schema-join` link emitted by `STAR_DOCS`.
-            // Because `entryLinkType` is immutable in Dataplex, the link must
-            // still be deleted and recreated.
-            const sameRefsWrongType = {
-              ...linkEntry(
-                  'sales-orders-to-customer',
-                  ['sales.entities.orders', 'sales.entities.customer']),
-              entryLinkType: SEMANTIC_LINK_TYPE,
-            };
-            const {createLink, updateLink, delLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([sameRefsWrongType]),
-              createLink: () => ok({}),
-            });
-
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(true);
-            expect(result.linked).toBe(1);
-            expect(delLink).toHaveBeenCalledTimes(1);
-            expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-customer');
-            expect(createLink).toHaveBeenCalledTimes(1);
-            expect(updateLink).not.toHaveBeenCalled();
-          });
-
-      test(
-          'updates an existing link in place without deleting when its ' +
-              'endpoint references match',
-          async () => {
-            // Dataplex returns project numbers in server-side resource names,
-            // whereas the emitted link carries the project ID ('dest').
-            const matchingLink = linkEntry(
-                'sales-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.customer'],
-                '123456789');
-            const {createLink, updateLink, delLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([matchingLink]),
-              createLink: () => err(409, 'already exists'),
-              updateLink: ok({}),
-            });
-
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(true);
-            expect(result.linked).toBe(1);
-            expect(createLink).toHaveBeenCalledTimes(1);
-            expect(updateLink).toHaveBeenCalledTimes(1);
-            expect(delLink).not.toHaveBeenCalled();
-          });
-
-      test(
-          'a schema-join link whose references come back in the opposite ' +
-              'order still matches and is updated in place',
-          async () => {
-            const reversedLink = linkEntry(
-                'sales-orders-to-customer',
-                ['sales.entities.customer', 'sales.entities.orders']);
-            const {createLink, updateLink, delLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([reversedLink]),
-              createLink: () => err(409, 'already exists'),
-              updateLink: ok({}),
-            });
-
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(true);
-            expect(result.linked).toBe(1);
-            expect(createLink).toHaveBeenCalledTimes(1);
-            expect(updateLink).toHaveBeenCalledTimes(1);
-            expect(delLink).not.toHaveBeenCalled();
-          });
-
-      test(
           'a link that lookupEntryLinks does not return is updated in place',
           async () => {
             const {createLink, updateLink, delLink} = stubClient({
@@ -2884,73 +2336,62 @@ describe(
                     'Permission denied on resource (or it may not exist)');
           });
 
-      test(
-          'a 409 on creating the ID of a deleted stale link blames another ' +
-              'link and says to push again',
-          async () => {
-            // The push deletes the stale link, so its ID has no link when the
-            // create returns 409, and the read returns 404. Another link holds
-            // the new endpoints.
-            const staleLink = linkEntry(
-                'sales-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.supplier']);
-            stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([staleLink]),
-              createLink: () => err(409, 'already exists'),
-            });
-
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(false);
-            expect(result.details)
-                .toBe(
-                    'Model \'sales\': failed to create entry link ' +
-                    '\'sales-orders-to-customer\' because another ' +
-                    '\'schema-join\' link already connects ' +
-                    '\'sales.entities.orders\' and \'sales.entities.customer\'; ' +
-                    'Knowledge Catalog returned: already exists (push again to ' +
-                    'restore the link)');
+      // The create of the source reference link, whose stale link the push
+      // deleted, returns 409 and the read returns 404: another link held the
+      // two entries. FOREIGN is another tool's link between them, which
+      // push's lookup through the entities leaves alone. Each case fails with
+      // `details`.
+      const DUPLICATE =
+          'EntryLink already exists, for the given entry reference and link type';
+      const FOREIGN = directed(
+          'reference', 'catalog-reference-1',
+          'sales/relationships/orders_to_customer', 'sales/entities/orders');
+      // A link of another type between the same two entries, which does not
+      // block a reference link.
+      const RELATED = {...FOREIGN, entryLinkType: FOREIGN.entryLinkType.replace(
+          /reference$/, 'related')};
+      for (const [name, links, createLink, details] of [
+        ['a 409 on creating the ID of a deleted stale link names the other ' +
+             'link and says to delete it, with no push-again hint',
+         linksTo(...SOURCE_LINKS, FOREIGN),
+         (id: string) => id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :
+                                                      SOURCE_MOVED.createLink(id),
+         `Model 'sales': failed to create entry link '${STAR_REFERENCES[0]}' ` +
+             `because another 'reference' link 'catalog-reference-1' already ` +
+             `goes from 'sales/relationships/orders_to_customer' to ` +
+             `'sales/entities/orders'; delete that link, then push again`],
+        ['a 409 on creating the ID of a deleted stale link, with no other ' +
+             'link of its type between the two entries any more, gives the ' +
+             '409\'s text and the push-again hint',
+         linksTo(...SOURCE_LINKS, RELATED),
+         (id: string) => id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :
+                                                      SOURCE_MOVED.createLink(id),
+         `Model 'sales': entry link '${STAR_REFERENCES[0]}': ${DUPLICATE} ` +
+             `(push again to restore the link)`],
+        ['a link a deleted orphan made way for still gets the push-again ' +
+             'hint when another link is blocked',
+         linksTo(...SOURCE_LINKS, BACK_LINK, FOREIGN),
+         (id: string) => id === STAR_SEMANTIC_LINK ?
+             err(500, 'backend unavailable') :
+             id === STAR_REFERENCES[0] ? err(409, DUPLICATE) :
+                                         SOURCE_MOVED.createLink(id),
+         `Model 'sales': entry link '${STAR_SEMANTIC_LINK}': backend ` +
+             `unavailable (push again to restore the link)`],
+      ] as [string, Stubs['links'], Stubs['createLink'], string][]) {
+        test(name, async () => {
+          stubClient({
+            ...SOURCE_MOVED,
+            links,
+            createLink,
+            getLink: err(404, 'EntryLink does not exist.'),
           });
 
-      test(
-          'a link with a reference outside the model is not deleted, and ' +
-              'the push fails naming the link before any orphan is deleted',
-          async () => {
-            const foreignRefLink = linkEntry(
-                'sales-orders-to-customer',
-                ['sales.entities.orders', 'other.entities.customer']);
-            const orphan = linkEntry(
-                'sales-orders-to-supplier',
-                ['sales.entities.orders', 'sales.entities.supplier']);
-            const {createLink, updateLink, delLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([foreignRefLink, orphan]),
-            });
+          const result =
+              await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(false);
-            expect(result.details)
-                .toBe(
-                    'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
-                    'already exists and references entry ' +
-                    '\'other.entities.customer\' outside this model; rename ' +
-                    'the relationship or delete the existing link');
-            expect(delLink).not.toHaveBeenCalled();
-            expect(updateLink).not.toHaveBeenCalled();
-            expect(createLink).not.toHaveBeenCalled();
-          });
+          expect(result).toMatchObject({success: false, details});
+        });
+      }
 
       test(
           'returns an error when deleting a link with changed references fails',
@@ -2971,44 +2412,6 @@ describe(
                     'Deleting stale entry link ' +
                     `'${STAR_REFERENCES[0]}' from model 'sales' ` +
                     'failed: delete failed');
-            expect(createLink).not.toHaveBeenCalled();
-          });
-
-      test(
-          'a failed stale link delete after the delete of a renamed ' +
-              'relationship\'s link says to push again',
-          async () => {
-            // `sales-old-orders-to-customer` joins the entities that the
-            // emitted `sales-orders-to-customer` joins, so the push deletes it
-            // to make way. The push then stops before writing the new link.
-            const renamedFrom = linkEntry(
-                'sales-old-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.customer']);
-            const staleLink = linkEntry(
-                'sales-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.supplier']);
-            const {createLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-              ],
-              links: () => ok([renamedFrom, staleLink]),
-              delLink: (id) => id === 'sales-orders-to-customer' ?
-                  err(500, 'delete failed') :
-                  ok({}),
-            });
-
-            const result =
-                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(false);
-            expect(result.unlinked).toBe(1);
-            expect(result.details)
-                .toBe(
-                    'Deleting stale entry link ' +
-                    '\'sales-orders-to-customer\' from model \'sales\' ' +
-                    'failed: delete failed (push again to restore the link)');
             expect(createLink).not.toHaveBeenCalled();
           });
 
@@ -3116,98 +2519,6 @@ describe(
             expect(result.details)
                 .toBe('Model \'sales\': entry link \'sales-b\': backend error');
           });
-
-      test(
-          'two relationships that swap entity pairs have both stale links ' +
-              'deleted before either new link is created',
-          async () => {
-            const swapDoc = `
-version: "0.2.0.dev0"
-semantic_model:
-  - name: sales
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
-        primary_key: [o_orderkey]
-        fields:
-          - name: o_orderkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
-          - name: o_custkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_custkey }]
-          - name: o_suppkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_suppkey }]
-      - name: customer
-        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/customer
-        primary_key: [c_custkey]
-        fields:
-          - name: c_custkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: c_custkey }]
-      - name: supplier
-        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/supplier
-        primary_key: [s_suppkey]
-        fields:
-          - name: s_suppkey
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: s_suppkey }]
-    relationships:
-      - name: rel_a
-        from: orders
-        to: customer
-        from_columns: [o_custkey]
-        to_columns: [c_custkey]
-      - name: rel_b
-        from: orders
-        to: supplier
-        from_columns: [o_suppkey]
-        to_columns: [s_suppkey]
-`;
-            // Previously, `rel_a` connected orders <-> supplier and `rel_b`
-            // connected orders <-> customer (the opposite pairs).
-            const oldRelA = linkEntry(
-                'sales-rel-a',
-                ['sales.entities.orders', 'sales.entities.supplier']);
-            const oldRelB = linkEntry(
-                'sales-rel-b',
-                ['sales.entities.orders', 'sales.entities.customer']);
-            const callOrder: string[] = [];
-            const {createLink, delLink, updateLink} = stubClient({
-              existing: [
-                {id: 'sales', type: MODEL_TYPE},
-                {id: 'sales.entities.orders', type: ENTITY_TYPE},
-                {id: 'sales.entities.customer', type: ENTITY_TYPE},
-                {id: 'sales.entities.supplier', type: ENTITY_TYPE},
-              ],
-              links: () => ok([oldRelA, oldRelB]),
-              delLink: (id) => {
-                callOrder.push(`delLink:${id}`);
-                return ok({});
-              },
-              createLink: (id) => {
-                callOrder.push(`createLink:${id}`);
-                return ok({});
-              },
-            });
-
-            const result = await deployKnowledgeCatalog(
-                models([{name: 'swap.yaml', text: swapDoc}]), CTX, FIRST_GEN);
-
-            expect(result.success).toBe(true);
-            expect(result.linked).toBe(2);
-            expect(result.unlinked).toBe(0);
-            expect(delLink).toHaveBeenCalledTimes(2);
-            expect(createLink).toHaveBeenCalledTimes(2);
-            expect(updateLink).not.toHaveBeenCalled();
-            expect(callOrder).toEqual([
-              'delLink:sales-rel-a',
-              'delLink:sales-rel-b',
-              'createLink:sales-rel-a',
-              'createLink:sales-rel-b',
-            ]);
-          });
     });
 
 
@@ -3294,63 +2605,34 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
         // A relationship link created in a sibling entry group (`other-eg`)
         // that references this model's entities must not shadow the model's
         // own link on update or be treated as an orphan to delete in `eg`.
-        const siblingSameIdLink = {
-          ...linkEntry(
-              'sales-orders-to-customer',
-              ['sales.entities.orders', 'other.entities.external']),
-          name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
-              'entryLinks/sales-orders-to-customer',
-          entryReferences: [
-            {
-              name: entryName('sales.entities.orders', '123456789'),
-              type: 'UNSPECIFIED',
-            },
-            {
-              name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
-                  'entries/other.entities.external',
-              type: 'UNSPECIFIED',
-            },
-          ],
+        // `link` stored in `other-eg`, with its second reference there too.
+        const inSibling = (link: any) => {
+          const sibling = structuredClone(link);
+          sibling.name = sibling.name.replace(
+              '/entryGroups/eg/', '/entryGroups/other-eg/');
+          sibling.entryReferences[1].name =
+              sibling.entryReferences[1].name.replace(
+                  '/entryGroups/eg/', '/entryGroups/other-eg/');
+          return sibling;
         };
-        const siblingOrphanCandidate = {
-          ...linkEntry(
-              'sales-sibling-link',
-              ['sales.entities.orders', 'sales.entities.customer']),
-          name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
-              'entryLinks/sales-sibling-link',
-          entryReferences: [
-            {
-              name: entryName('sales.entities.orders', '123456789'),
-              type: 'UNSPECIFIED',
-            },
-            {
-              name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
-                  'entries/sales.entities.customer',
-              type: 'UNSPECIFIED',
-            },
-          ],
-        };
+        // One holds the ID of STAR's link, and one joins its two entities.
+        const siblingSameIdLink =
+            inSibling(semanticLink(STAR_SEMANTIC_LINK, 'orders', 'supplier'));
+        const siblingOrphanCandidate =
+            inSibling(semanticLink(SUPPLIER_ID, 'orders', 'customer'));
         const {createLink, updateLink, delLink} = stubClient({
-          existing: [
-            {id: 'sales', type: MODEL_TYPE},
-            {id: 'sales.entities.orders', type: ENTITY_TYPE},
-            {id: 'sales.entities.customer', type: ENTITY_TYPE},
-          ],
-          links: () => ok([siblingSameIdLink, siblingOrphanCandidate]),
-          createLink: () => err(409, 'already exists'),
-          getLink: ok(gotLinkEntry(
-              'sales-orders-to-customer',
-              ['sales.entities.orders', 'sales.entities.customer'])),
+          existing: V2_ENTRIES,
+          links: linksTo(siblingSameIdLink, siblingOrphanCandidate),
+          createLink: starLinkExists(),
+          getLink: ok(gotStarLink()),
           updateLink: ok({}),
         });
 
         const result =
-            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, FIRST_GEN);
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
-        expect(result.success).toBe(true);
-        expect(result.linked).toBe(1);
-        expect(result.unlinked).toBe(0);
-        expect(createLink).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({success: true, linked: 3, unlinked: 0});
+        expect(createLink).toHaveBeenCalledTimes(3);
         expect(updateLink).toHaveBeenCalledTimes(1);
         expect(delLink).not.toHaveBeenCalled();
       });
@@ -3438,13 +2720,12 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
-      'with Resource Manager denied, a read link whose references spell a ' +
-          'project number fails the push, saying the number could not be ' +
-          'found',
+      'a link read back with its references under a project number is ' +
+          'updated in place, with no Resource Manager call',
       async () => {
-        // The listing spells the project as requested, so it gives no number.
-        // The read spells the references with a number, and push cannot tell
-        // whether it is the scope's.
+        // The listing spells the project as requested, so it gives no number,
+        // and the read spells the references with one. Push compares the
+        // references by entry ID, so it needs no project number.
         const project = 'unresolved-proj';
         const got = {
           ...directed(
@@ -3459,51 +2740,16 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
           project: () => err(403, 'Permission denied'),
           createLink: starLinkExists(),
           getLink: ok(got),
+          updateLink: ok({}),
         });
 
         const result = await deployKnowledgeCatalog(
             models(STAR_DOCS), CTX, {...OPTS, project});
 
-        expect(result.success).toBe(false);
-        expect(result.details)
-            .toBe(
-                `Model 'sales': entry link '${STAR_SEMANTIC_LINK}' ` +
-                'already exists, and push could not get the number of ' +
-                'project \'unresolved-proj\' from Cloud Resource Manager to ' +
-                'check its references; check that the caller has ' +
-                'resourcemanager.projects.get on the project');
-        expect(getProject).toHaveBeenCalledTimes(1);
-        expect(updateLink).not.toHaveBeenCalled();
+        expect(result.success).toBe(true);
+        expect(updateLink).toHaveBeenCalledTimes(1);
         expect(delLink).not.toHaveBeenCalled();
-      });
-
-  test(
-      'a Resource Manager outage on the read path gets a message that does ' +
-          'not blame a missing permission alone',
-      async () => {
-        const project = 'outage-proj';
-        const got = {
-          ...directed(
-              'semantic-link', STAR_SEMANTIC_LINK, 'sales/entities/orders',
-              'sales/entities/customer', '999031'),
-          name: `projects/${project}/locations/us/entryGroups/eg/entryLinks/` +
-              STAR_SEMANTIC_LINK,
-        };
-        const {updateLink} = stubClient({
-          createLink: starLinkExists(),
-          getLink: ok(got),
-          project: () => err(503, 'The service is currently unavailable.'),
-        });
-
-        const result = await deployKnowledgeCatalog(
-            models(STAR_DOCS), CTX, {...OPTS, project});
-
-        expect(result.success).toBe(false);
-        expect(result.details).toContain(
-            'could not get the number of project \'outage-proj\' from Cloud ' +
-            'Resource Manager');
-        expect(result.details).not.toContain('needs');
-        expect(updateLink).not.toHaveBeenCalled();
+        expect(getProject).not.toHaveBeenCalled();
       });
 
   test(
@@ -3672,8 +2918,7 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
 
 describe('deployKnowledgeCatalog: a relationship with no join columns', () => {
   // `previous_department` and `requested_department` have no join columns.
-  // `assignment` joins `employee` to `department` and publishes the link
-  // `hr-assignment`.
+  // `assignment` joins `employee` to `department` on `department_id`.
   const HR_DOCS = [{
     name: 'hr.yaml',
     text: `
@@ -3709,59 +2954,31 @@ semantic_model:
 `,
   }];
 
-  const HR_WARNINGS = ['previous_department', 'requested_department'].map(
-      name => `[hr] relationship '${name}': no join columns, so it is not ` +
-          'published to Knowledge Catalog yet; add its from_columns and ' +
-          'to_columns to the relationship in the model to publish the link.');
-
-  test('validateOnly warns about each one and plans no link for it',
+  test('validateOnly plans its entry and reference links, with no warning',
        async () => {
          const {list, create, createLink} = stubClient();
 
          const result = await deployKnowledgeCatalog(
-             models(HR_DOCS), CTX, {...FIRST_GEN, validateOnly: true});
+             models(HR_DOCS), CTX, {...OPTS, validateOnly: true});
 
          expect(result.success).toBe(true);
-         expect(result.warnings).toEqual(HR_WARNINGS);
-         expect(result.plan).toContain('  1 schema-join link:');
-         expect(result.plan).toContain('    - hr-assignment');
+         expect(result.warnings).toEqual([]);
+         expect(result.plan).toContain(
+             '    - hr/relationships/previous_department ' +
+             '(semantic-relationship)');
+         // One semantic-link for the pair, and two reference links for each
+         // of the three relationships.
+         expect(result.plan).toContain('  1 semantic-link link:');
+         expect(result.plan).toContain('  6 reference links:');
          expect(list).not.toHaveBeenCalled();
          expect(create).not.toHaveBeenCalled();
          expect(createLink).not.toHaveBeenCalled();
        });
+});
 
-  test('a push skips it and writes every other link', async () => {
-    const {createLink} = stubClient();
 
-    const result =
-        await deployKnowledgeCatalog(models(HR_DOCS), CTX, FIRST_GEN);
-
-    expect(result.success).toBe(true);
-    expect(result.warnings).toEqual(HR_WARNINGS);
-    expect(result.linked).toBe(1);
-    expect(createLink.mock.calls.map(c => c[3])).toEqual(['hr-assignment']);
-  });
-
-  test('a push passes the warnings to onWarnings before the first write',
-       async () => {
-         const events: string[] = [];
-         stubClient({
-           create: (id) => {
-             events.push(`create:${id}`);
-             return ok({});
-           },
-         });
-
-         const result = await deployKnowledgeCatalog(models(HR_DOCS), CTX, {
-           ...FIRST_GEN,
-           onWarnings: (warnings) => events.push(...warnings),
-         });
-
-         expect(result.success).toBe(true);
-         expect(events.slice(0, 3)).toEqual([...HR_WARNINGS, 'create:hr']);
-       });
-
-  test('deployEmittedModels also passes them before the first write',
+describe('deployEmittedModels', () => {
+  test('passes the warnings to onWarnings before the first write',
        async () => {
          const events: string[] = [];
          stubClient({create: (id) => (events.push(`create:${id}`), ok({}))});
@@ -4041,8 +3258,6 @@ describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
      ['x', tooLarge('schema', 'entry \'sales/entities/orders\'', 2_097_313,
                     2 * 1024 * 1024)],
      {...OPTS, validateOnly: true}, 'd'.repeat(2 * 1024 * 1024)],
-    ['with the flag off, no aspect size is checked', ['x'.repeat(LIMIT)],
-     {...FIRST_GEN, validateOnly: true}],
   ] as [string, string[], Opts?, string?][]) {
     test(name, async () => {
       const {list, create} = stubClient();

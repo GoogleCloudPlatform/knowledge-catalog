@@ -17,7 +17,6 @@ import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bi
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
-import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
@@ -40,8 +39,7 @@ import {SqlColumn} from './sql_parser';
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
 //
-// `v2Aspects` says push writes the second-generation Knowledge Catalog types
-// (the CLI sets it unless KC_V2_ASPECTS=0).
+// `v2Aspects` is not read. It goes with KC_V2_ASPECTS (b/575695037).
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
@@ -51,7 +49,7 @@ export function validatePushRequirements(
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
-    errors.push(...nameAndDescriptionErrors(model, document, !!opts.v2Aspects));
+    errors.push(...nameAndDescriptionErrors(model, document));
     const deployInfo = googleDeploymentTargets(model);
 
     // A model that targets a graph (BigQuery OR Spanner) must have every
@@ -103,15 +101,13 @@ export function validatePushRequirements(
   return errors;
 }
 
-// Each name in `model` that breaks its kind's pattern or length limit, each
-// pair of relationships whose names give one Knowledge Catalog link ID, and
+// Each name in `model` that breaks its kind's pattern or length limit, and
 // each description too long for the Knowledge Catalog entry that stores it.
-// The link-ID check applies with `v2Aspects` off only.
 // The loader checks names too; this check is for a model built in memory and
-// a profile that reaches `model.profiles` some other way. Link IDs and
-// description limits are checked at push only, since only push writes them.
+// a profile that reaches `model.profiles` some other way. Description limits
+// are checked at push only, since only push writes them.
 function nameAndDescriptionErrors(
-    model: SemanticModel, document: string, v2Aspects: boolean): string[] {
+    model: SemanticModel, document: string): string[] {
   const at = `model '${model.name}' (${document})`;
   const errors: string[] = [];
   const check = (kind: NameKind, name: string) => {
@@ -138,22 +134,9 @@ function nameAndDescriptionErrors(
     check('metric', m.name);
     tooLong(`metric '${m.name}'`, m.description);
   }
-  // The relationship that first took each link ID.
-  const byLinkId = new Map<string, string>();
   for (const r of model.relationships ?? []) {
     check('relationship', r.name);
     tooLong(`relationship '${r.name}'`, r.description);
-    if (v2Aspects) continue;
-    const linkId = relationshipLinkId(model.name, r.name);
-    const first = byLinkId.get(linkId);
-    if (first === undefined) {
-      byLinkId.set(linkId, r.name);
-    } else {
-      errors.push(
-          `Relationships '${first}' and '${r.name}' in model '${
-              model.name}' (${document}) collide on Knowledge Catalog link ` +
-          `ID '${linkId}'; rename one of them.`);
-    }
   }
   for (const d of model.deployments ?? []) check('deployment', d.name);
   for (const p of model.profiles ?? []) check('profile', p.name);
@@ -1953,11 +1936,10 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// Whether Knowledge Catalog push writes the second-generation built-in aspect
-// fields and entry-id layout. It does unless `KC_V2_ASPECTS=0`; every other
-// value, including unset and `''`, is on. `KC_V2_ASPECTS=0` is a temporary
-// escape hatch to the first-generation push, removed with that path
-// (b/575695037). Pull always reads the second-generation types.
+// False when `KC_V2_ASPECTS=0`, and true for every other value, including
+// unset and `''`. Nothing reads the `v2Aspects` options it fills: push and
+// pull use the second-generation types whatever it says. It goes with the
+// variable (b/575695037).
 export function kcV2Aspects(): boolean {
   return process.env.KC_V2_ASPECTS !== '0';
 }

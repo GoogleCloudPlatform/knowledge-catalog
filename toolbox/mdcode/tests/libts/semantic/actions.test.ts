@@ -24,8 +24,6 @@ const OPTS = {
   entryGroup: 'eg',
   v2Aspects: true
 };
-// The first-generation layout, for tests of the first-generation writer.
-const FIRST_GEN = {...OPTS, v2Aspects: false};
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -952,14 +950,10 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
 });
 
 
-describe('actions projecting concepts the push does not publish', () => {
+describe('an action parameter projected from an abstract entity', () => {
   test(
-      'a parameter projected from an abstract entity publishes, and warns ' +
-          'only with the first-generation types',
+      'publishes with no warning, since the entity has an entry',
       () => {
-        // With the first-generation types the Knowledge Catalog leg skips an
-        // abstract entity. The published parameter then names a concept with
-        // no entry, which draws the warning.
         const {models} = fromDocument(
             {
               version: '0.2.0.dev0/google',
@@ -992,15 +986,8 @@ describe('actions projecting concepts the push does not publish', () => {
         // Resolved against the ontology, which includes abstract entities.
         expect(models[0].actions![0].parameters[0].type).toBe('String');
 
-        const {warnings} = generateCatalogResources(models[0], FIRST_GEN);
-        expect(warnings.some(
-                   w => w.includes('parameter \'who\'') &&
-                       w.includes('does not publish')))
-            .toBe(true);
-        // The second-generation types give the entity an entry, so the
-        // parameter draws no warning.
         expect(generateCatalogResources(models[0], OPTS)
-                   .warnings.filter(w => w.includes('does not publish')))
+                   .warnings.filter(w => w.includes('parameter \'who\'')))
             .toEqual([]);
       });
 });

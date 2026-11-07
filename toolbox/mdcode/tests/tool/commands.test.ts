@@ -993,9 +993,6 @@ describe('push checks that each file is valid UTF-8', () => {
        ]) {
     test(`a ${file} that is not valid UTF-8 fails the push, naming it`,
          async () => {
-           // Push reads overview sidecars only with the second-generation
-           // types.
-           process.env.KC_V2_ASPECTS = '1';
            writeRoundTripWorkspace();
            fs.writeFileSync(path.join(entryGroupDir(), file), latin1(text));
            const {create} = fakeCatalog();
@@ -1011,7 +1008,6 @@ describe('push checks that each file is valid UTF-8', () => {
   }
 
   test('a file holding U+FFFD as text is pushed', async () => {
-    process.env.KC_V2_ASPECTS = '1';
     writeRoundTripWorkspace(
         `# \uFFFD marks a lost character.\n${ROUND_TRIP_PROFILE}`);
     fs.writeFileSync(
@@ -1548,44 +1544,37 @@ describe('a pull', () => {
 
 // An older kcmd stored a copy of each model and profile file under the
 // model's `.files.` entry id prefix, which push still owns, so the next push
-// deletes the copies. With KC_V2_ASPECTS on, it also deletes the
-// first-generation entries, whose dotted ids the second-generation types do
-// not use. The catalog holds what that kcmd pushed, as captured.
+// deletes the copies. It also deletes the first-generation entries, whose
+// dotted ids the second-generation types do not use. The catalog holds what
+// that kcmd pushed, as captured.
 describe('a push over an entry group an older kcmd pushed', () => {
   const GROUP = `projects/${FIRST_GEN_OPTS.project}/locations/` +
       `${FIRST_GEN_OPTS.location}/entryGroups/${FIRST_GEN_OPTS.entryGroup}`;
-  for (const [flag, deleted] of [
-    ['1', ['shop.files.shop.yaml', 'shop.entities.orders',
-           'shop.entities.customers', 'shop.metrics.revenue']],
-    ['0', ['shop.files.shop.yaml']],
-  ] as const) {
-    test(`with KC_V2_ASPECTS=${flag}, exits 0 and deletes ` +
-             deleted.join(', '),
-         async () => {
-           process.env.KC_V2_ASPECTS = flag;
-           const {project, location, entryGroup} = FIRST_GEN_OPTS;
-           fs.writeFileSync(
-               'catalog.yaml',
-               `scope: semantic-model.${project}.${location}.${entryGroup}\n`);
-           const eg = path.join('catalog', 'EntryGroups', entryGroup);
-           fs.mkdirSync(eg, {recursive: true});
-           fs.writeFileSync(path.join(eg, 'shop.yaml'), FIRST_GEN_MODEL_FILE);
-           const {entries} = fakeCatalog();
-           for (const e of firstGenEntries()) entries.set(e.name, e);
-           for (const id of deleted) {
-             expect(entries.has(`${GROUP}/entries/${id}`)).toBe(true);
-           }
+  const deleted = ['shop.files.shop.yaml', 'shop.entities.orders',
+                   'shop.entities.customers', 'shop.metrics.revenue'];
+  test(`exits 0 and deletes ${deleted.join(', ')}`, async () => {
+    const {project, location, entryGroup} = FIRST_GEN_OPTS;
+    fs.writeFileSync(
+        'catalog.yaml',
+        `scope: semantic-model.${project}.${location}.${entryGroup}\n`);
+    const eg = path.join('catalog', 'EntryGroups', entryGroup);
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'shop.yaml'), FIRST_GEN_MODEL_FILE);
+    const {entries} = fakeCatalog();
+    for (const e of firstGenEntries()) entries.set(e.name, e);
+    for (const id of deleted) {
+      expect(entries.has(`${GROUP}/entries/${id}`)).toBe(true);
+    }
 
-           expect(await push({})).toBe(0);
-           expect(messages(console.error)).toBe('');
-           for (const id of deleted) {
-             expect(entries.has(`${GROUP}/entries/${id}`)).toBe(false);
-           }
-           expect([...entries.values()].filter(
-                      e => e.entryType.endsWith('/semantic-model-file')))
-               .toEqual([]);
-         });
-  }
+    expect(await push({})).toBe(0);
+    expect(messages(console.error)).toBe('');
+    for (const id of deleted) {
+      expect(entries.has(`${GROUP}/entries/${id}`)).toBe(false);
+    }
+    expect([...entries.values()].filter(
+               e => e.entryType.endsWith('/semantic-model-file')))
+        .toEqual([]);
+  });
 });
 
 
@@ -1633,110 +1622,109 @@ describe('a --force-remove rename that stopped after deleting the old model', ()
 describe('the push-state label on the model entry', () => {
   const ANCHOR = 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
       'entries/commerce';
-  for (const v2 of [true, false]) {
-    const flag = `with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}`;
-    test(`${flag}, pull refuses after a push that stopped at any write, ` +
-             'until a push finishes',
-         async () => {
-           if (!v2) process.env.KC_V2_ASPECTS = '0';
-           writeRoundTripWorkspace();
-           const {entries, stop} = fakeCatalog();
-           expect(await push({deployment: false})).toBe(0);
-           // Rename the entity in the model file and the profile file.
-           for (const [f, text] of Object.entries(localFiles())) {
-             fs.writeFileSync(f, text.replaceAll('Customer', 'Client'));
+  test('pull refuses after a push that stopped at any write, until a push ' +
+           'finishes',
+       async () => {
+         writeRoundTripWorkspace();
+         const {entries, stop} = fakeCatalog();
+         expect(await push({deployment: false})).toBe(0);
+         // Rename the entity in the model file and the profile file.
+         for (const [f, text] of Object.entries(localFiles())) {
+           fs.writeFileSync(f, text.replaceAll('Customer', 'Client'));
+         }
+         const authored = localFiles();
+
+         // Each push stops one write later than the one before, until one
+         // finishes. Each pull in between writes and deletes nothing.
+         let code = 1;
+         let refused = '';
+         for (let n = 1; n < 50; n++) {
+           stop.after = n;
+           code = await push({deployment: false});
+           if (!code) break;
+           refused = await pull({forceRemove: true})
+                         .then(() => '', (e: Error) => e.message);
+           expect(refused)
+               .toStartWith('the last push of model \'commerce\' did not ' +
+                            'finish: ');
+           expect(localFiles()).toEqual(authored);
+         }
+         expect(code).toBe(0);
+         // The push before the one that finished wrote every entry and
+         // stopped before its last write, so only the label tells.
+         expect(refused).toContain(
+             'its model entry\'s kcmd-push-state label still says writing, ' +
+             'so pull writes nothing. Push again, then pull.');
+
+         // --validate-only, which --dry-run runs too, writes nothing, so it
+         // leaves the label as it is.
+         stop.after = 0;
+         expect(await push({deployment: false, validateOnly: true})).toBe(0);
+         stop.after = Infinity;
+         expect(await pull()).toBe(0);
+         expect(Object.values(localFiles()).join()).not.toContain('Customer');
+         expect([...entries.keys()].join()).not.toContain('Customer');
+       });
+
+  test('a push keeps the label and the source update time another writer ' +
+           'sets on the model entry while it runs',
+       async () => {
+         writeRoundTripWorkspace();
+         const {entries} = fakeCatalog();
+         expect(await push({deployment: false})).toBe(0);
+         // Another writer changes the model entry right after the push
+         // writes it. Like Dataplex, the fake then refuses an entrySource
+         // update that leaves the update time out or moves it back.
+         const updateTime = '2026-11-04T08:00:00Z';
+         const update =
+             CatalogClient.prototype.updateEntry as unknown as Mock<any>;
+         const write = update.getMockImplementation()!;
+         update.mockImplementation(async (entry: Entry, mask: string[]) => {
+           const held = entries.get(entry.name)!.entrySource?.updateTime;
+           const sent = entry.entrySource?.updateTime;
+           if (held && (!sent || sent < held)) {
+             return {status: 400, message: 'update_time is required'};
            }
-           const authored = localFiles();
-
-           // Each push stops one write later than the one before, until one
-           // finishes. Each pull in between writes and deletes nothing.
-           let code = 1;
-           let refused = '';
-           for (let n = 1; n < 50; n++) {
-             stop.after = n;
-             code = await push({deployment: false});
-             if (!code) break;
-             refused = await pull({forceRemove: true})
-                           .then(() => '', (e: Error) => e.message);
-             expect(refused)
-                 .toStartWith('the last push of model \'commerce\' did not ' +
-                              'finish: ');
-             expect(localFiles()).toEqual(authored);
+           const res = await write(entry, mask);
+           if (entry.name === ANCHOR && mask.includes('aspects')) {
+             const source = entries.get(ANCHOR)!.entrySource!;
+             source.updateTime = updateTime;
+             source.labels = {...source.labels, steward: 'data-team'};
            }
-           expect(code).toBe(0);
-           // The push before the one that finished wrote every entry and
-           // stopped before its last write, so only the label tells.
-           expect(refused).toContain(
-               'its model entry\'s kcmd-push-state label still says writing, ' +
-               'so pull writes nothing. Push again, then pull.');
-
-           // --validate-only, which --dry-run runs too, writes nothing, so it
-           // leaves the label as it is.
-           stop.after = 0;
-           expect(await push({deployment: false, validateOnly: true})).toBe(0);
-           stop.after = Infinity;
-           expect(await pull()).toBe(0);
-           expect(Object.values(localFiles()).join()).not.toContain('Customer');
-           expect([...entries.keys()].join()).not.toContain('Customer');
+           return res;
          });
-
-    test(`${flag}, a push keeps the label and the source update time ` +
-             'another writer sets on the model entry while it runs',
-         async () => {
-           if (!v2) process.env.KC_V2_ASPECTS = '0';
-           writeRoundTripWorkspace();
-           const {entries} = fakeCatalog();
-           expect(await push({deployment: false})).toBe(0);
-           // Another writer changes the model entry right after the push
-           // writes it. Like Dataplex, the fake then refuses an entrySource
-           // update that leaves the update time out or moves it back.
-           const updateTime = '2026-11-04T08:00:00Z';
-           const update =
-               CatalogClient.prototype.updateEntry as unknown as Mock<any>;
-           const write = update.getMockImplementation()!;
-           update.mockImplementation(async (entry: Entry, mask: string[]) => {
-             const held = entries.get(entry.name)!.entrySource?.updateTime;
-             const sent = entry.entrySource?.updateTime;
-             if (held && (!sent || sent < held)) {
-               return {status: 400, message: 'update_time is required'};
-             }
-             const res = await write(entry, mask);
-             if (entry.name === ANCHOR && mask.includes('aspects')) {
-               const source = entries.get(ANCHOR)!.entrySource!;
-               source.updateTime = updateTime;
-               source.labels = {...source.labels, steward: 'data-team'};
-             }
-             return res;
-           });
-           expect(await push({deployment: false})).toBe(0);
-           expect(entries.get(ANCHOR)!.entrySource).toMatchObject({
-             updateTime,
-             labels: {'steward': 'data-team', 'kcmd-push-state': 'finished'},
-           });
+         expect(await push({deployment: false})).toBe(0);
+         expect(entries.get(ANCHOR)!.entrySource).toMatchObject({
+           updateTime,
+           labels: {'steward': 'data-team', 'kcmd-push-state': 'finished'},
          });
+       });
 
-    // The push reads the model entry before it labels it finished. With the
-    // flag on, the read answers an error. With it off, the read throws.
-    test(`${flag}, a push that cannot label the model entry finished says ` +
-             'to push again before you pull, and that works',
+  // The push reads the model entry before it labels it finished. The read can
+  // answer an error, or throw when the request fails.
+  for (const [how, read, reason] of [
+    ['answers an error',
+     async () => ({status: 503, message: 'Service unavailable.'}),
+     'Service unavailable'],
+    ['throws', async () => {
+      throw new Error('fetch failed');
+    }, 'fetch failed'],
+  ] as const) {
+    test(`a push whose read of the model entry ${how} before it labels it ` +
+             'finished says to push again before you pull, and that works',
          async () => {
-           if (!v2) process.env.KC_V2_ASPECTS = '0';
            writeRoundTripWorkspace();
            fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
            (CatalogClient.prototype.getEntry as unknown as Mock<any>)
-               .mockImplementationOnce(async () => {
-                 if (v2) return {status: 503, message: 'Service unavailable.'};
-                 throw new Error('fetch failed');
-               });
+               .mockImplementationOnce(read);
            expect(await push({deployment: false})).toBe(1);
            expect(messages(console.error))
                .toBe(
                    'Error pushing semantic model to Knowledge Catalog: Model ' +
                    '\'commerce\': setting the kcmd-push-state label of entry ' +
-                   '\'commerce\' to finished failed: ' +
-                   (v2 ? 'Service unavailable' : 'fetch failed') +
-                   '. Push again before you pull.');
+                   `'commerce' to finished failed: ${reason}. Push again ` +
+                   'before you pull.');
            expect(await push({deployment: false})).toBe(0);
            expect(await pull()).toBe(0);
          });
@@ -1822,38 +1810,8 @@ semantic_model:
   const named = (id: string) =>
       `projects/test-project/locations/us/entryGroups/commerce_eg/entries/${id}`;
 
-  test('exits 0, removes the aspect, and finishes the writes and deletions ' +
-           'after the update',
-       async () => {
-         process.env.KC_V2_ASPECTS = '0';
-         writeWorkspace();
-         const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
-         fs.writeFileSync(modelPath, WITH_INSTRUCTIONS);
-         const {entries} = fakeCatalog();
-         patchLikeDataplex(entries);
-         const customer = () =>
-             Object.keys(entries.get(named('commerce.entities.Customer'))!
-                             .aspects ?? {});
-         expect(await push({})).toBe(0);
-         expect(customer()).toContain('dataplex-types.global.guidelines');
-
-         fs.writeFileSync(modelPath, WITHOUT_INSTRUCTIONS);
-         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-         const code = await push({});
-
-         expect(messages(errorSpy)).toBe('');
-         expect(code).toBe(0);
-         expect(customer()).not.toContain('dataplex-types.global.guidelines');
-         // The metric is written after the entities, and an orphaned entry is
-         // deleted last.
-         expect(entries.get(named('commerce.metrics.customers'))!.entrySource
-                    ?.description)
-             .toBe('Customer count');
-         expect(entries.has(named('commerce.entities.Order'))).toBe(false);
-       });
-
-  test('with KC_V2_ASPECTS on, exits 0 and removes sql-expressions and a ' +
-           'field\'s guidelines too',
+  test('exits 0, removes the aspect, sql-expressions and a field\'s ' +
+           'guidelines, and finishes the writes and deletions after the update',
        async () => {
          writeWorkspace();
          const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
@@ -1865,7 +1823,7 @@ semantic_model:
              entries.get(named('commerce/entities/Customer'))!.aspects!;
          expect(Object.keys(customer()))
              .toContain('dataplex-types.global.guidelines');
-         // Another writer adds two aspects that push owns under the flag.
+         // Another writer adds two aspects that push owns.
          customer()['dataplex-types.global.sql-expressions'] = {
            aspectType:
                'projects/dataplex-types/locations/global/aspectTypes/' +
@@ -1889,6 +1847,8 @@ semantic_model:
            'dataplex-types.global.schema',
            'dataplex-types.global.semantic-entity',
          ]);
+         // The metric is written after the entities, and an orphaned entry is
+         // deleted last.
          expect(entries.get(named('commerce/metrics/customers'))!.entrySource
                     ?.description)
              .toBe('Customer count');
@@ -2836,13 +2796,13 @@ describe('what a push says about relationships', () => {
 `;
   const PAID_BY = /\n      - \{ name: paid_by[^}]*\}\n/;
   // Each case gives the exit code and a line the push prints.
-  const cases: [string, boolean, string, number, string][] = [
-    ['with KC_V2_ASPECTS on, counts entry links: one for the relationships ' +
-         'on one pair, and two reference links for each relationship',
-     true, TWO_ON_ONE_PAIR, 0,
+  const cases: [string, string, number, string][] = [
+    ['counts entry links: one for the relationships on one pair, and two ' +
+         'reference links for each relationship',
+     TWO_ON_ONE_PAIR, 0,
      'Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 5 entry ' +
          'links.'],
-    ['relationships in both directions on one pair stop the push', true,
+    ['relationships in both directions on one pair stop the push',
      TWO_ON_ONE_PAIR.replace(
          PAID_BY,
          '\n      - { name: first_order_of, from: Customer, to: Order, ' +
@@ -2852,7 +2812,7 @@ describe('what a push says about relationships', () => {
          "runs from 'Customer' to 'Order', and relationship 'bought_by' runs " +
          'the other way; keep the relationships between two entities in one ' +
          'direction.'],
-    ['a relationship from an entity to itself stops the push', true,
+    ['a relationship from an entity to itself stops the push',
      TWO_ON_ONE_PAIR.replace(
          PAID_BY,
          '\n      - { name: referred_by, from: Customer, to: Customer, ' +
@@ -2861,16 +2821,11 @@ describe('what a push says about relationships', () => {
      "Error: relationship 'referred_by' in model 'commerce' (commerce) " +
          "runs from 'Customer' to itself; a relationship joins two " +
          'different entities.'],
-    ['with KC_V2_ASPECTS off, counts linked relationships', false,
-     TWO_ON_ONE_PAIR.replace(PAID_BY, '\n'), 0,
-     'Wrote 3 new and 0 updated Knowledge Catalog entries; linked 1 ' +
-         'relationship.'],
   ];
-  for (const [title, v2, model, code, line] of cases) {
+  for (const [title, model, code, line] of cases) {
     test(title, async () => {
       writeWorkspace();
       fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
-      if (!v2) process.env.KC_V2_ASPECTS = '0';
       fakeCatalog();
 
       expect(await push({})).toBe(code);

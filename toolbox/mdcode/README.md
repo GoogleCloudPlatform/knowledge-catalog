@@ -206,14 +206,14 @@ NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are a
 #### Environment variables
 
 Two optional variables override where `kcmd` talks to the catalog. Both default
-to production, so you normally leave them unset. A third, `KC_V2_ASPECTS`, is a
-temporary escape hatch.
+to production, so you normally leave them unset. A third, `KC_V2_ASPECTS`, has
+no effect.
 
 | Variable | Effect |
 |----------|--------|
 | `DATAPLEX_ENDPOINT` | Base URL for the Knowledge Catalog (Dataplex) API. Defaults to `https://dataplex.googleapis.com`. Set it to reach a non-prod host. |
 | `KC_TYPE_PROJECT` | Project the built-in `semantic-*` system types are read from on a semantic-model push. Defaults to `dataplex-types`. |
-| `KC_V2_ASPECTS` | Push uses the second-generation Knowledge Catalog types by default. `KC_V2_ASPECTS=0` temporarily makes push write the first-generation types, a path that will be removed; any other value has no effect. Pull always reads the second-generation types, whatever the variable says. |
+| `KC_V2_ASPECTS` | Has no effect, and will be removed. Push writes, and pull reads, the second-generation Knowledge Catalog types, whatever the variable says. |
 
 ### MCP Server
 

@@ -108,14 +108,13 @@ descriptions, fields, keys, metrics, relationships, inheritance, actions and
 constraints. They also cover the model file's own bindings and each profile
 import writes. For each deployment they cover its profile, bindings, metrics,
 tables and graph. A profile file beside a vanilla `<file>` and a
-`<model>.profiles/` directory beside `<file>` are checked too. Unless
-`KC_V2_ASPECTS=0`, the checks also make sure Knowledge Catalog can store each
-aspect push writes. The deployment checks include the names a BigQuery or
-Spanner graph cannot hold and BigQuery's description and synonym limits. Import
-reports what these checks reject as an error under
-`--input first-party` and as a warning otherwise, except a deployment target in
-no accepted form, which is an error either way. It reports their warnings as
-warnings in either mode. They include push's warnings about the Knowledge
+`<model>.profiles/` directory beside `<file>` are checked too. The checks also
+make sure Knowledge Catalog can store each aspect push writes. The deployment
+checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
+description and synonym limits. Import reports what these checks reject as an
+error under `--input first-party` and as a warning otherwise, except a
+deployment target in no accepted form, which is an error either way. It reports
+their warnings as warnings in either mode. They include push's warnings about the Knowledge
 Catalog entries, about the fields each deployment leaves out and about each
 graph. Import leaves out push's notes. A profile file that does not parse is
 always an error. Under `--input first-party`, a message from these checks names
@@ -454,11 +453,9 @@ the shared label's signature is present on every subtype table. An abstract
 entity that no concrete entity extends has nothing to attach to and is dropped
 with a warning. `abstract` is an explicit marker: a non-abstract entity with no
 `source` is treated as a binding error and fails the push, never
-silently dropped as if it were table-less. With the first-generation types, the
-Knowledge Catalog leg skips an abstract entity with a warning and publishes its
-concrete subtypes. With the second-generation types (the default), every
-entity gets an entry, and a `reference` link runs from each entity to each
-parent it extends.
+silently dropped as if it were table-less. In Knowledge Catalog, every entity
+gets an entry, abstract or not, and a `reference` link runs from each entity to
+each parent it extends.
 
 A supertype **may** instead be concrete — carry its own `source` and key. It then
 becomes both its own node table and a label on its subtypes. Every subtype table
@@ -623,11 +620,10 @@ the metadata stores and what is never stored, see
 
 ### The second-generation types
 
-Push and pull use a newer set of Knowledge Catalog types.
-`KC_V2_ASPECTS=0` temporarily makes push write the first-generation types
-described above instead; that path will be removed. Pull always reads the
-newer types: it rebuilds no model pushed with the first-generation types, and
-warns about it instead.
+Push and pull use a newer set of Knowledge Catalog types than the
+first-generation types described above, which an older `kcmd` used. Pull
+rebuilds no model pushed with the first-generation types, and warns about it
+instead.
 
 Each relationship other than a many-to-many association has an entry of its
 own. Entry ids are `<model>`, `<model>/entities/<entity>`,

@@ -21,23 +21,21 @@
 //   * Preflight validates that exactly one model is deployed per entry group,
 //     snapshots the destination entry group to guard against foreign models
 //     (unless `--force-remove` is set), and checks that any required custom
-//     entry/aspect types exist in the target project. With the
-//     second-generation aspects, it also checks every aspect's size.
+//     entry/aspect types exist in the target project. It also checks every
+//     aspect's size.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
 //     `semantic-explore`).
-//   * Relationship edges are published as entry links between two entity
-//     entries after that model's entries exist: a `schema-join` link per
-//     relationship, or with v2Aspects a `semantic-link` per ordered entity
-//     pair, a `reference` link from each relationship entry to each of its
-//     entities, and one from each entity to each parent it extends. A re-push
-//     first deletes any orphaned links (no longer emitted) and stale links
-//     (whose type or endpoint references changed), then creates new or
-//     recreated links and updates unchanged links' aspects in place. The
-//     caller additionally needs
-//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`,
-//     and with v2Aspects `useReferenceEntryLink`, on the destination entry
+//   * Relationships are published as entry links after that model's entries
+//     exist: a `semantic-link` per ordered pair of related entities, a
+//     `reference` link from each relationship entry to each of its entities,
+//     and one from each entity to each parent it extends. A re-push first
+//     deletes any orphaned links (no longer emitted, such as the `schema-join`
+//     links an older kcmd wrote) and stale links (whose endpoint references
+//     changed), then creates new or recreated links and updates unchanged
+//     links' aspects in place. The caller additionally needs
+//     `dataplex.entryGroups.useReferenceEntryLink` on the destination entry
 //     group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
@@ -56,7 +54,7 @@ import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
 import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
+import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
@@ -76,17 +74,11 @@ export interface KcDeployOptions {
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
-  // Emit the SQL-expression fields not yet in the published system-type
-  // templates (per-field `schema.semantics` and `semantic-metric.expression`).
-  // Off by default so the push matches the live types; see
-  // KcGenerateOptions.emitExpressions.
-  emitExpressions?: boolean;
-  // Emit the second-generation built-in aspect fields and entry-id layout
-  // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
-  // false).
+  // Not read: push always writes the second-generation types. It goes with
+  // KC_V2_ASPECTS (b/575695037).
   v2Aspects?: boolean;
   // The overview sidecar of each entry, by entry id, which the emitter writes
-  // into the entry's overview when v2Aspects is on.
+  // into the entry's overview.
   overviews?: ReadonlyMap<string, OverviewSidecar>;
   // Called with the warnings once the preflight passes, before the first
   // catalog write, so a caller can show them before anything is written. The
@@ -124,8 +116,8 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join or semantic-link) entry links written --
-  // created, updated, or recreated (0 for validateOnly).
+  // Entry links written -- created, updated, or recreated (0 for
+  // validateOnly).
   linked: number;
   // Orphaned relationship links deleted -- from relationships dropped or
   // renamed on a still-present model, and from force-removed models (0 for
@@ -191,7 +183,7 @@ function sleep(ms: number): Promise<void> {
  *      model exists in the target project.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
- * With `opts.v2Aspects` set, step 2 also checks every aspect's size.
+ * Step 2 also checks every aspect's size.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
@@ -289,10 +281,9 @@ export async function deployEmittedModels(
  * Runs read-only preflight checks on already-emitted models.
  *
  * The method performs the following checks:
- *   1. Validates locally that `emitted` contains a single model and, with
- *      `opts.v2Aspects` set, that every aspect size and instance count is
- *      within its limit. Builds the dry-run plan and returns early when
- *      `opts.validateOnly` is set.
+ *   1. Validates locally that `emitted` contains a single model and that
+ *      every aspect size and instance count is within its limit. Builds the
+ *      dry-run plan and returns early when `opts.validateOnly` is set.
  *   2. Validates that the destination entry group exists. Lists it and
  *      validates that it contains no foreign models unless `--force-remove`
  *      is set.
@@ -320,7 +311,7 @@ async function preflightEmittedModels(
   // Once `validateEmittedModels` passes and `emitted` is non-empty, `emitted`
   // is guaranteed to contain exactly one model (`emitted[0]`).
   const model = emitted[0];
-  const aspectsError = opts.v2Aspects ? emittedAspectsError(model) : undefined;
+  const aspectsError = emittedAspectsError(model);
   if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
   if (opts.validateOnly) return {result: result(true)};
@@ -446,8 +437,7 @@ const MAX_SCHEMA_ASPECT_DATA_BYTES = 2 * 1024 * 1024;
 
 /**
  * The emitter's warnings for `models`, and the first aspect too large to
- * store. With v2Aspects on, that error is why push's catalog leg cannot write
- * them. Calls no service.
+ * store, which is why push's catalog leg cannot write them. Calls no service.
  */
 export function checkCatalogAspects(
     models: LoadedModel[],
@@ -570,7 +560,6 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
       entryGroup: opts.entryGroup,
       systemTypeProject: opts.systemTypeProject,
       systemTypeLocation: opts.systemTypeLocation,
-      emitExpressions: opts.emitExpressions,
       v2Aspects: opts.v2Aspects,
       overviews: opts.overviews,
     });
@@ -633,9 +622,9 @@ interface WriteModelsOutcome {
  *   2. Looks up the model's existing relationship links when the pre-write
  *      entry group contains entities owned by the model.
  *   3. Deletes any orphaned relationship links (no longer emitted) and stale
- *      relationship links (changed type or endpoints) owned by the model.
- *      Before the first delete, reads each emitted link ID the lookup did not
- *      return, and fails when push may not change the link under it.
+ *      relationship links (changed endpoints) owned by the model. Before the
+ *      first delete, reads each emitted link ID the lookup did not return,
+ *      and fails when a read fails.
  *   4. Creates or updates the model's relationship links.
  *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
@@ -658,7 +647,7 @@ async function writeEmittedModels(
     // When the pre-write listing contains entity entries this model owns, look
     // up the model's existing links once and share the map between
     // findOrphanedEntryLinks (to delete dropped or renamed links) and
-    // findStaleEntryLinks (to delete links whose type or endpoints changed).
+    // findStaleEntryLinks (to delete links whose endpoints changed).
     // Look up links via the model's entity entries known to the server (the
     // pre-write snapshot `existing`), not the ones this push emits: only a
     // server-side entry can already carry a link, and enumerating the snapshot
@@ -684,23 +673,20 @@ async function writeEmittedModels(
     }
 
     // Find orphaned links (dropped or renamed) and stale links (same ID,
-    // changed type or endpoints) in `existingLinks` and delete both BEFORE
-    // creating current links so renamed links, swapped endpoint pairs, and
-    // taken-over endpoint pairs do not collide with an existing link.
+    // changed endpoints) in `existingLinks` and delete both BEFORE creating
+    // current links so renamed links, swapped endpoint pairs, and taken-over
+    // endpoint pairs do not collide with an existing link.
     const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
     const staleLinks = findStaleEntryLinks(resources, existingLinks);
-    if (staleLinks.error) {
-      return {error: `Model '${model}': ${staleLinks.error}`};
-    }
     // Before a link is deleted, read each emitted ID the lookup did not
-    // return. A link under one of them that push may not change would fail
-    // its write after the delete and leave the relationship with no link.
+    // return. A read that fails here could fail that link's write after the
+    // delete too, and leave the relationship with no link.
     const foundUnchanged = new Set<string>();
     if (orphanedLinks.length || staleLinks.links.length) {
       for (const link of resources.entryLinks) {
         if (existingLinks.has(linkId(link))) continue;
         const read =
-            await readEmittedLink(cat, opts, resources, link, isScopeProject)
+            await readEmittedLink(cat, link)
                 .catch((err: any): ReadLinkOutcome => ({
                          error: `entry link '${linkId(link)}': ${
                              String(err?.message || err).trim()}`,
@@ -714,9 +700,13 @@ async function writeEmittedModels(
     // `deletedLinks` collects the links deleted so far. An error after a
     // delete gets the push-again hint when a link is missing because of it.
     const deletedLinks: EntryLink[] = [];
-    const hint = (written: ReadonlySet<string> = new Set()) => restoreHint(
-        deletedLinks, resources.entryLinks,
-        new Set([...staleLinks.current, ...foundUnchanged, ...written]));
+    const hint =
+        (written: ReadonlySet<string> = new Set(),
+         blocked: ReadonlySet<string> = new Set()) =>
+            restoreHint(
+                deletedLinks, resources.entryLinks,
+                new Set([...staleLinks.current, ...foundUnchanged, ...written]),
+                blocked);
     const orphanedLinkDeletions =
         await deleteEntryLinks(cat, opts, orphanedLinks);
     counts.unlinked += orphanedLinkDeletions.deleted.length;
@@ -741,12 +731,15 @@ async function writeEmittedModels(
 
     // Links reference this model's entity entries, so they follow the entries
     // above (both endpoints must exist first).
-    const links = await writeEntryLinks(
-        cat, opts, resources, staleLinks.current, isScopeProject);
+    const links =
+        await writeEntryLinks(cat, opts, resources, staleLinks.current);
     counts.linked += links.linked;
     deletedLinks.push(...links.deleted);
     if (links.error) {
-      return {error: `Model '${model}': ${links.error}${hint(links.written)}`};
+      return {
+        error: `Model '${model}': ${links.error}${
+            hint(links.written, links.blocked)}`,
+      };
     }
 
     // Finally, delete any entry this model owns but no longer emits.
@@ -810,15 +803,17 @@ function withPushState(
  *
  * An emitted link is missing when this push deleted a link with its ID or its
  * two entries, and `presentIds` does not hold it. `presentIds` holds the IDs
- * of the links written or found unchanged.
+ * of the links written or found unchanged. A link in `blockedIds` is never
+ * missing: another link holds its two entries, so pushing again cannot write
+ * it until that link is deleted, as its error says.
  */
 function restoreHint(
     deletedLinks: readonly EntryLink[], emittedLinks: readonly EntryLink[],
-    presentIds: ReadonlySet<string>): string {
+    presentIds: ReadonlySet<string>, blockedIds: ReadonlySet<string>): string {
   const ends = (link: EntryLink) =>
       link.entryReferences.map(r => entryId(r)).sort().join('|');
   const missing = emittedLinks.some(
-      link => !presentIds.has(linkId(link)) &&
+      link => !presentIds.has(linkId(link)) && !blockedIds.has(linkId(link)) &&
           deletedLinks.some(
               d => linkId(d) === linkId(link) || ends(d) === ends(link)));
   return missing ? ' (push again to restore the link)' : '';
@@ -1050,21 +1045,19 @@ function findOrphanedEntryLinks(
 }
 
 interface StaleLinksOutcome {
-  // The model's own links under an emitted ID whose type or endpoints changed.
+  // The model's own links under an emitted ID whose endpoints changed.
   links: EntryLink[];
-  // Emitted IDs whose looked-up link is the model's own with the same type and
-  // endpoints.
+  // Emitted IDs whose looked-up link has the same endpoints.
   current: Set<string>;
-  error?: string;
 }
 
 /**
  * Returns the existing entry links in `existingLinks` that share a bare link ID
- * with an emitted link in `resources.entryLinks` but have a different link type
- * or endpoint references, so they must be deleted before recreating the link.
+ * with an emitted link in `resources.entryLinks` but have different endpoint
+ * references, so they must be deleted before recreating the link.
  *
- * Fails with `error` (before any link is deleted) if a matching existing link
- * references an entry outside `resources`.
+ * A link ID names the link's kind and hashes the model's name, so only this
+ * model's push writes a link under one of its IDs.
  */
 function findStaleEntryLinks(
     resources: kcEmit.KcResources,
@@ -1075,21 +1068,12 @@ function findStaleEntryLinks(
   for (const link of resources.entryLinks) {
     const id = linkId(link);
     const existingLink = existingLinks.get(id);
-    // Check whether `existingLink` is stale and safe to delete:
+    // Check whether `existingLink` is stale:
     //   1. If no link with this ID exists yet, `writeEntryLinks` creates it.
-    //   2. If an existing link with this ID references an entry outside this
-    //      model, we do not own it and must fail before deleting anything.
-    //   3. If we own it and its link type and endpoint references are
-    //      unchanged, `writeEntryLinks` updates its aspects in place.
-    // Otherwise, its immutable type or endpoints changed, so it is stale.
+    //   2. If its endpoint references are unchanged, `writeEntryLinks` updates
+    //      its aspects in place.
+    // Otherwise, its immutable endpoints changed, so it is stale.
     if (!existingLink) continue;
-    if (!isLinkOwner(resources, existingLink)) {
-      return {
-        links: [],
-        current,
-        error: outsideReferenceError(resources, existingLink),
-      };
-    }
     if (isStaleLink(existingLink, link)) {
       links.push(existingLink);
     } else {
@@ -1100,40 +1084,11 @@ function findStaleEntryLinks(
 }
 
 /**
- * Returns true when `existingLink` has a different immutable `entryLinkType`
- * or `entryReferences` from `link` and must be deleted and recreated rather
- * than updated in place.
+ * Returns true when `existingLink` has different immutable `entryReferences`
+ * from `link` and must be deleted and recreated rather than updated in place.
  */
 function isStaleLink(existingLink: EntryLink, link: EntryLink): boolean {
-  return linkTypeId(existingLink) !== linkTypeId(link) ||
-      !sameLinkReferences(existingLink, link);
-}
-
-/**
- * Returns the error for an existing link that holds an ID this model emits and
- * references an entry outside the model. Push does not delete or change such
- * a link.
- */
-function outsideReferenceError(
-    resources: kcEmit.KcResources, link: EntryLink,
-    asReturned: EntryLink = link): string {
-  // A reference whose entry ID this model owns is outside the model because it
-  // names an entry in another entry group or project, so the error gives its
-  // full name, as Dataplex returned it. `asReturned` is `link` before push
-  // respelled its project.
-  const ownedReferences = collectOwnedReferences(resources, link);
-  const externalIds: string[] = [];
-  link.entryReferences.forEach((r, i) => {
-    if (ownedReferences.includes(r)) return;
-    const shown = isEntryOwner(resources, r) ?
-        asReturned.entryReferences[i].name :
-        entryId(r);
-    externalIds.push(`'${shown}'`);
-  });
-  return `entry link '${linkId(link)}' already exists and references ${
-             externalIds.length === 1 ? 'entry' : 'entries'} ${
-             externalIds.join(' and ')} outside this model; ` +
-      `rename the relationship or delete the existing link`;
+  return !sameLinkReferences(existingLink, link);
 }
 
 /**
@@ -1281,9 +1236,11 @@ interface LinksOutcome {
   linked: number;
   // IDs of the links written.
   written: Set<string>;
-  // Existing links deleted so that an emitted link with a new type or new
-  // endpoints could take their ID. The caller uses them for the push-again
-  // hint.
+  // IDs of the links another link blocks: their create returned 409, no link
+  // holds their ID, and a lookup found the other link between their entries.
+  blocked: Set<string>;
+  // Existing links deleted so that an emitted link with new endpoints could
+  // take their ID. The caller uses them for the push-again hint.
   deleted: EntryLink[];
   error?: string;
 }
@@ -1292,42 +1249,50 @@ interface LinksOutcome {
  * Writes a model's relationship entry links concurrently.
  *
  * Both endpoint entries already exist because `writeEntries` runs first, and
- * any orphaned or stale links the lookup found have already been deleted. On
- * the flag-off path the emitter gives each pair of entries at most one link,
- * and with the flag on, each ordered pair. A stale link the lookup missed is
- * replaced during these writes, so a link that needs the pair it frees can fail
- * with the duplicate-endpoints error. That error gets the push-again hint, and
- * the next push writes the link. Uses `Promise.allSettled` so a thrown network
+ * any orphaned or stale links the lookup found have already been deleted. The
+ * emitter gives each pair of entries at most one link of a type, so a 409 on a
+ * link whose ID no link holds means another link joined its two entries when
+ * push wrote it. Once every write is done, `blockedOutcome` looks that link
+ * up. A stale link the lookup missed is replaced during these writes, so the
+ * link in the way may be gone by then, and pushing again is enough. Uses
+ * `Promise.allSettled` so a thrown network
  * error on one link waits for any in-flight link writes to finish and reports
  * the link ID in the returned error. `current` holds the emitted IDs whose
- * looked-up link is the model's own with the same type and endpoints.
- * `isScopeProject` tells whether a project part names the destination project.
+ * looked-up link has the same endpoints.
  */
 async function writeEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    current: ReadonlySet<string>,
-    isScopeProject: ProjectMatcher): Promise<LinksOutcome> {
+    current: ReadonlySet<string>): Promise<LinksOutcome> {
   const entryLinks = resources.entryLinks;
   const written = new Set<string>();
+  const blocked = new Set<string>();
   const deleted: EntryLink[] = [];
-  if (!entryLinks.length) return {linked: 0, written, deleted};
-  const settled = await Promise.allSettled(entryLinks.map(
-      l => writeEntryLink(
-          cat, opts, resources, l, current, isScopeProject)));
-  const res = settled.map((s, i): LinkWriteOutcome => {
-    if (s.status === 'fulfilled') return s.value;
-    const id = linkId(entryLinks[i]);
-    const msg = s.reason?.message || String(s.reason);
-    return {error: `entry link '${id}': ${msg}`};
-  });
+  if (!entryLinks.length) return {linked: 0, written, blocked, deleted};
+  const settled = await Promise.allSettled(
+      entryLinks.map(l => writeEntryLink(cat, opts, l, current)));
+  const res = await Promise.all(settled.map((s, i): LinkWriteOutcome |
+                                              Promise<LinkWriteOutcome> => {
+    if (s.status === 'rejected') {
+      const id = linkId(entryLinks[i]);
+      const msg = s.reason?.message || String(s.reason);
+      return {error: `entry link '${id}': ${msg}`};
+    }
+    const {conflict} = s.value;
+    return conflict === undefined ?
+        s.value :
+        blockedOutcome(cat, opts, entryLinks[i], conflict);
+  }));
   res.forEach((r, i) => {
     if (r.deleted) deleted.push(r.deleted);
+    if (r.blocked) blocked.add(linkId(entryLinks[i]));
     if (!r.error) written.add(linkId(entryLinks[i]));
   });
   const linked = res.filter(r => !r.error).length;
   const firstErr = res.find(r => r.error);
-  if (firstErr) return {linked, written, deleted, error: firstErr.error};
-  return {linked, written, deleted};
+  if (firstErr) {
+    return {linked, written, blocked, deleted, error: firstErr.error};
+  }
+  return {linked, written, blocked, deleted};
 }
 
 interface WriteOutcome {
@@ -1338,6 +1303,11 @@ interface WriteOutcome {
 interface LinkWriteOutcome {
   // The existing link deleted so that the emitted link could take its ID.
   deleted?: EntryLink;
+  // True when another link holds the two entries of the emitted link.
+  blocked?: boolean;
+  // The text of a 409 on creating a link whose ID no link holds.
+  // `writeEntryLinks` turns it into `error` once every write is done.
+  conflict?: string;
   error?: string;
 }
 
@@ -1346,13 +1316,11 @@ interface LinkWriteOutcome {
  *
  * Attempts to create `link`. When `createEntryLink` returns HTTP 409, updates
  * the link under its ID, replaces it, or reports why push cannot write it.
- * `current` holds the emitted IDs whose looked-up link is the model's own with
- * the same type and endpoints.
+ * `current` holds the emitted IDs whose looked-up link has the same endpoints.
  */
 async function writeEntryLink(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    link: EntryLink, current: ReadonlySet<string>,
-    isScopeProject: ProjectMatcher): Promise<LinkWriteOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    current: ReadonlySet<string>): Promise<LinkWriteOutcome> {
   const id = linkId(link);
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, id, link);
@@ -1362,16 +1330,15 @@ async function writeEntryLink(
   }
 
   // The lookup did not return a link under this ID, so read it.
-  const read = await readEmittedLink(cat, opts, resources, link, isScopeProject);
+  const read = await readEmittedLink(cat, link);
   if (read.error) return {error: read.error};
   if (!read.existing) {
     // No link holds the ID. Dataplex allows one link of a type between two
-    // entries, so the 409 means another link already joins them.
-    return {error: duplicateEndpointsError(link, errText(res))};
+    // entries, so the 409 means another link joined them.
+    return {conflict: errText(res)};
   }
-  // The update patches only the aspects, and a link's type and references are
-  // immutable. The model's own link whose type or endpoints changed is
-  // deleted and created again.
+  // The update patches only the aspects, and a link's references are
+  // immutable. A link whose endpoints changed is deleted and created again.
   if (isStaleLink(read.existing, link)) {
     return replaceEntryLink(cat, opts, read.existing, link);
   }
@@ -1379,52 +1346,25 @@ async function writeEntryLink(
 }
 
 interface ReadLinkOutcome {
-  // The model's own relationship link under the emitted ID, with the
-  // destination project spelled as `opts.project`. Unset when no link holds
-  // the ID.
+  // The link under the emitted ID. Unset when no link holds the ID.
   existing?: EntryLink;
   error?: string;
 }
 
 /**
- * Reads the link under the ID of the emitted link `link` and checks that push
- * may change it.
- *
- * Returns the error when the read fails with anything but 404, when the link
- * is not of a kind push writes, when it references an entry outside the model,
- * and when push cannot resolve the project number its references need.
+ * Reads the link under the ID of the emitted link `link`, and returns the
+ * error when the read fails with anything but 404.
  */
 async function readEmittedLink(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    link: EntryLink, isScopeProject: ProjectMatcher): Promise<ReadLinkOutcome> {
-  const id = linkId(link);
+    cat: CatalogClient, link: EntryLink): Promise<ReadLinkOutcome> {
   const found = await cat.getEntryLink(link.name!);
   if (isNotFoundStatus(found)) return {};
   if (!isOkStatus(found) || !found.result) {
-    return {error: `reading entry link '${id}' failed: ${errText(found)}`};
-  }
-  const existing =
-      await respellScopeProject(found.result, opts.project, isScopeProject);
-  if (!existing) {
     return {
-      error: `entry link '${id}' already exists, and push could not get the ` +
-          `number of project '${opts.project}' from Cloud Resource Manager ` +
-          `to check its references; check that the caller has ` +
-          `resourcemanager.projects.get on the project`,
+      error: `reading entry link '${linkId(link)}' failed: ${errText(found)}`,
     };
   }
-  // Push manages only the kinds of link it writes, as the lookup does.
-  if (!isModelLink(existing)) {
-    return {
-      error: `entry link '${id}' already exists with link type '${
-                 linkTypeId(existing)}'; ` +
-          `rename the relationship or delete the existing link`,
-    };
-  }
-  if (!isLinkOwner(resources, existing)) {
-    return {error: outsideReferenceError(resources, existing, found.result)};
-  }
-  return {existing};
+  return {existing: found.result};
 }
 
 /**
@@ -1437,41 +1377,8 @@ function linkOutcome(
 }
 
 /**
- * Returns `link` with the destination project spelled as `project` in its name
- * and references, or undefined when a project number in them cannot be
- * resolved.
- *
- * Dataplex spells a read link's name as requested and its references with the
- * project number. `isLinkOwner` compares the two as text, so they must spell
- * the project the same way.
- */
-async function respellScopeProject(
-    link: EntryLink, project: string,
-    isScopeProject: ProjectMatcher): Promise<EntryLink|undefined> {
-  const respell = async (resourceName: string) => {
-    const part = /^projects\/([^/]+)\//.exec(resourceName)?.[1];
-    if (!part) return resourceName;
-    const isScope = await isScopeProject(part);
-    if (isScope === undefined) return undefined;
-    return isScope ?
-        `projects/${project}/${resourceName.slice(`projects/${part}/`.length)}` :
-        resourceName;
-  };
-  const name = link.name && await respell(link.name);
-  const references = await Promise.all(link.entryReferences.map(
-      async r => ({...r, name: await respell(r.name)})));
-  if (name === undefined && link.name !== undefined) return undefined;
-  if (references.some(r => r.name === undefined)) return undefined;
-  return {
-    ...link,
-    name,
-    entryReferences: references as EntryLink['entryReferences'],
-  };
-}
-
-/**
  * Deletes `existingLink`, a stale relationship entry link, and recreates it as
- * `link` with its updated `entryLinkType` and `entryReferences`.
+ * `link` with its updated `entryReferences`.
  *
  * Once the delete succeeds, the outcome carries `existingLink`, which the
  * caller uses to add the push-again hint to an error after the delete.
@@ -1508,17 +1415,47 @@ async function updateEntryLink(
 }
 
 /**
- * Returns the error when `createEntryLink` returns 409 because another link
- * under a different ID already connects the same endpoints. `createError` is
- * the text of that 409.
+ * The outcome of `link`, whose create returned 409 with the text `conflict`
+ * although no link holds its ID. Looks up the links of its first entry for
+ * another link of its type between its two entries. When one is there, the
+ * error names it and says to delete it. Otherwise the link that was in the way
+ * is gone, and the error gives the 409's own text, which the caller gives the
+ * push-again hint when a delete of this push left the link missing. A failed
+ * lookup counts as finding nothing.
  */
-function duplicateEndpointsError(link: EntryLink, createError: string): string {
+async function blockedOutcome(
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    conflict: string): Promise<LinkWriteOutcome> {
   const id = linkId(link);
-  const endpoints =
-      link.entryReferences.map(r => `'${entryId(r)}'`).join(' and ');
-  return `failed to create entry link '${id}' because another '${
-             linkTypeId(link)}' link already connects ${endpoints}; ` +
-      `Knowledge Catalog returned: ${createError}`;
+  // Dataplex spells a looked-up link's references with the project number.
+  const ends = (l: EntryLink) =>
+      l.entryReferences.map(r => r.name.replace(/^projects\/[^/]+\//, ''))
+          .sort()
+          .join('|');
+  const found = await cat
+                    .lookupEntryLinks(
+                        opts.project, opts.location,
+                        {entry: link.entryReferences[0].name})
+                    .catch(() => undefined);
+  const other = found && isOkStatus(found) ?
+      (found.result ?? [])
+          .find(
+              l => linkId(l) !== id && linkTypeId(l) === linkTypeId(link) &&
+                  ends(l) === ends(link)) :
+      undefined;
+  if (!other) return {error: `entry link '${id}': ${conflict}`};
+  const source = other.entryReferences.find(r => r.type === 'SOURCE');
+  const target = other.entryReferences.find(r => r.type === 'TARGET');
+  const joins = source && target ?
+      `goes from '${entryId(source)}' to '${entryId(target)}'` :
+      `connects ${
+          other.entryReferences.map(r => `'${entryId(r)}'`).join(' and ')}`;
+  return {
+    error: `failed to create entry link '${id}' because another '${
+               linkTypeId(link)}' link '${linkId(other)}' already ${joins}; ` +
+        `delete that link, then push again`,
+    blocked: true,
+  };
 }
 
 /**
@@ -1563,10 +1500,10 @@ const KEPT_SOURCE_FIELDS =
  * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
  * true` makes a re-push converge: a still-present optional aspect is refreshed,
  * and a removed one (such as `guidelines` when `ai_context.instructions` is
- * deleted, `sql-expressions`, or a field's instance, matched by its `@*` key
- * under `v2Aspects`) is deleted so a later `pull` does not bring it back. Push
- * owns the optional aspects `entryAspectKeys` lists, so it removes any that the
- * model does not declare even if someone added them in the console. Every other
+ * deleted, `sql-expressions`, or a field's instance, matched by its `@*` key)
+ * is deleted so a later `pull` does not bring it back. Push owns the optional
+ * aspects `entryAspectKeys` lists, so it removes any that the model does not
+ * declare even if someone added them in the console. Every other
  * aspect another tool attached is left alone, since `aspectKeys` names only the
  * types kcmd writes.
  *

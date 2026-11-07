@@ -55,12 +55,11 @@ agree on every structural row and differ only where a Spanner target has no
    `String` → un-typed. A field with no type and a `String` field both store
    `dataType STRING` (with `metadataType` `OTHER` and `STRING` respectively),
    and `pull` writes no `datatype` for either, so only `String` is lost.
-3. **Expressions and dimension role.** The second-generation types (the
-   default) store each field's expression in its entity's `sql-expressions`
-   aspect, and its dimension role and `is_time` in the `schema` aspect, and
-   `pull` rebuilds both from there. The first-generation types that a push
-   with `KC_V2_ASPECTS=0` writes omit the per-field `semantics` block, and
-   pull rebuilds no model pushed with them.
+3. **Expressions and dimension role.** Push stores each field's expression in
+   its entity's `sql-expressions` aspect, and its dimension role and `is_time`
+   in the `schema` aspect, and `pull` rebuilds both from there. The
+   first-generation types an older `kcmd` used omit the per-field
+   `semantics` block, and pull rebuilds no model pushed with them.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
    is rejected. It must also reduce to one supported aggregate over one
    operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
@@ -148,13 +147,12 @@ agree on every structural row and differ only where a Spanner target has no
     realizations in sibling `<model>.profile.<name>.yaml` files and reference
     them from `deployments` (see [Binding profiles](profiles.md) and
     [Reference → push](reference.md#push)); two deployments claiming the same
-    target are rejected before anything deploys. With the second-generation
-    types (the default), push records each named profile and what it binds on
-    the model's entries, and `pull` rebuilds one profile file per named
-    profile from them. The catalog stores no profile's actions, so a pulled
-    profile file keeps the actions the local one binds. The first-generation
-    types (`KC_V2_ASPECTS=0`) hold no profile, and pull rebuilds no model
-    pushed with them.
+    target are rejected before anything deploys. Push records each named
+    profile and what it binds on the model's entries, and `pull` rebuilds one
+    profile file per named profile from them. The catalog stores no profile's
+    actions, so a pulled profile file keeps the actions the local one binds.
+    The first-generation types an older `kcmd` used hold no profile, and
+    pull rebuilds no model pushed with them.
 15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
@@ -184,11 +182,11 @@ and list both in `deployments`. Push records each named profile in the catalog
 metadata, and `pull` rebuilds the profile files from it (footnote 14; see
 [Reference → push](reference.md#push)).
 
-In the v1 catalog aspects (`KC_V2_ASPECTS=0`), SQL expressions are omitted
+In the v1 catalog aspects an older `kcmd` used, SQL expressions are omitted
 because the published v1 system-type templates do not carry a per-field
-`semantics` block or a `semantic-metric.expression` field (with the
-second-generation types, the default, expressions are stored in the
-`sql-expressions` aspect). The v1 catalog aspects also do not store
+`semantics` block or a `semantic-metric.expression` field (the
+second-generation types store expressions in the `sql-expressions` aspect).
+The v1 catalog aspects also do not store
 `ai_context.synonyms` / `examples`, field-level `ai_context` (only model,
 entity, and metric `instructions` have a home, in the `guidelines` aspect), or
 the original vendor SQL (`importedExpression` — for example the `SNOWFLAKE` or

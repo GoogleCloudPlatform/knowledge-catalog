@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Entity, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {entryIdOf, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, semanticLinkId, slug} from '../../../src/libts/semantic/kc_ids';
+import {entryIdOf, Namer, NamerOptions, ownedEntryIdPrefixes, semanticLinkId, slug} from '../../../src/libts/semantic/kc_ids';
 
 const BASE_OPTS: NamerOptions = {
   project: 'p',
@@ -36,30 +36,11 @@ const REL: Relationship = {
   destination: {entity: 'customers', columns: ['id']},
 };
 
-describe('Namer entry and link IDs under v2Aspects flag states', () => {
-  test('flag off (default / false) emits dotted entry IDs', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.modelId(MODEL)).toBe('retail_sales');
-    expect(names.entityId(MODEL, ENTITY))
-        .toBe('retail_sales.entities.store_orders');
-    expect(names.metricId(MODEL, METRIC))
-        .toBe('retail_sales.metrics.total_revenue');
-    expect(names.linkId(MODEL, REL)).toBe('retail-sales-order-customer');
-    expect(names.entry(names.entityId(MODEL, ENTITY)))
-        .toBe(
-            'projects/p/locations/us/entryGroups/default/entries/' +
-            'retail_sales.entities.store_orders');
-    expect(names.entryLink(names.linkId(MODEL, REL)))
-        .toBe(
-            'projects/p/locations/us/entryGroups/default/entryLinks/' +
-            'retail-sales-order-customer');
-  });
-
+describe('Namer entry IDs', () => {
   test(
-      'flag on (v2Aspects: true) emits slash-separated entry IDs, keeping a ' +
-          'relationship\'s authored name, and same linkId',
+      'are slash-separated, keeping a relationship\'s authored name',
       () => {
-        const names = new Namer({...BASE_OPTS, v2Aspects: true});
+        const names = new Namer(BASE_OPTS);
         expect(names.modelId(MODEL)).toBe('retail_sales');
         expect(names.entityId(MODEL, ENTITY))
             .toBe('retail_sales/entities/store_orders');
@@ -69,15 +50,10 @@ describe('Namer entry and link IDs under v2Aspects flag states', () => {
             .toBe('retail_sales/relationships/order_customer');
         expect(names.relationshipId(MODEL, {...REL, name: 'Order_Customer'}))
             .toBe('retail_sales/relationships/Order_Customer');
-        expect(names.linkId(MODEL, REL)).toBe('retail-sales-order-customer');
         expect(names.entry(names.entityId(MODEL, ENTITY)))
             .toBe(
                 'projects/p/locations/us/entryGroups/default/entries/' +
                 'retail_sales/entities/store_orders');
-        expect(names.entryLink(names.linkId(MODEL, REL)))
-            .toBe(
-                'projects/p/locations/us/entryGroups/default/entryLinks/' +
-                'retail-sales-order-customer');
       });
 });
 
@@ -193,54 +169,11 @@ describe('entryIdOf', () => {
   });
 });
 
-describe('relationshipLinkId', () => {
-  test('matches Namer.linkId', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(relationshipLinkId(MODEL.name, REL.name))
-        .toBe(names.linkId(MODEL, REL));
-  });
-
-  test(
-      'collapses two distinct relationship names that normalize to the same link ID',
-      () => {
-        expect(relationshipLinkId('retail_sales', 'order_customer'))
-            .toBe(relationshipLinkId('retail_sales', 'order__customer'));
-      });
-});
-
-describe('slug and linkSlug', () => {
+describe('slug', () => {
   test(
       'slug preserves letters, digits, underscores, dots and hyphens, mapping others to _',
       () => {
         expect(slug('retail_sales.v1-test/name with spaces'))
             .toBe('retail_sales.v1-test_name_with_spaces');
       });
-
-  test('linkSlug maps characters outside [a-z0-9-] to hyphens', () => {
-    expect(linkSlug('a_b.c/d:e@f')).toBe('a-b-c-d-e-f');
-  });
-
-  test('linkSlug lowercases and collapses runs of hyphens', () => {
-    expect(linkSlug('Retail___Sales---Order')).toBe('retail-sales-order');
-  });
-
-  test('linkSlug strips leading non-letters and edge hyphens', () => {
-    expect(linkSlug('123-_-order_customer---')).toBe('order-customer');
-  });
-
-  test(
-      'linkSlug truncates at 63 chars and strips any trailing hyphen exposed by truncation',
-      () => {
-        // 62 'a's + '_' + 'b' -> 62nd index (63rd char) is '-', which must be
-        // stripped after slicing to 63 chars.
-        const input = `${'a'.repeat(62)}_b`;
-        const result = linkSlug(input);
-        expect(result.length).toBe(62);
-        expect(result).toBe('a'.repeat(62));
-      });
-
-  test('linkSlug falls back to "link" when no usable letters remain', () => {
-    expect(linkSlug('12345___---...')).toBe('link');
-    expect(linkSlug('')).toBe('link');
-  });
 });
