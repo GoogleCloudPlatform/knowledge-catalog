@@ -35,7 +35,7 @@ const RESOURCE_ID_RE = new RegExp(
     `^projects/[^/]+/locations/[^/]+/` +
     `(?:${ENTRY_GROUP_PATH_RE.source}|${TYPE_PATH_RE.source})/(.+)$`);
 
-/** Destination and layout options for constructing Knowledge Catalog names. */
+/** Destination and system-type options for building Knowledge Catalog names. */
 export interface NamerOptions {
   project: string;
   location: string;

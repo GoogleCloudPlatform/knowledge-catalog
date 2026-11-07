@@ -3063,8 +3063,8 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
 
 
 type Stubs = NonNullable<Parameters<typeof stubClient>[0]>;
-// Pushes `docs` over a catalog that lists `existing`
-// and answers each create with 409. `stubs` overrides any stub.
+// Pushes `docs` over a catalog that lists `existing` and answers each create
+// with 409. `stubs` overrides any stub.
 async function pushAgain(
     docs: {name: string; text: string}[], existing: Stubs['existing'],
     stubs: Stubs = {}) {

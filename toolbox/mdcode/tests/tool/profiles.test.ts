@@ -995,10 +995,10 @@ semantic_model:
       profileFile(p).replace(/fields: \[\{ name: c_id.*/, WIDE),
     ])),
   });
-  // Push reads the overview sidecars and checks every
-  // aspect the catalog leg writes, before any graph deploys. A malformed
-  // sidecar is reported once, for the scope. For a push in two phases, an
-  // aspect too large belongs to the model.
+  // Push reads the overview sidecars and checks every aspect the catalog leg
+  // writes, before any graph deploys. A malformed sidecar is reported once, for
+  // the scope. For a push in two phases, an aspect too large belongs to the
+  // model.
   for (const [label, files, error, indent = '  '] of [
          ['an aspect over the size limit in a graph push',
           {'commerce.yaml': bigBlock(commerce({targets: 1}))},
