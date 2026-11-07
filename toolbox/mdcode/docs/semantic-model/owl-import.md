@@ -238,7 +238,10 @@ A datatype property whose domain is not a class, or an object property with a
 missing or non-class endpoint, cannot be placed; it is **skipped with a warning**
 rather than failing the whole import. Import matches a domain or range to a class
 by its full IRI, as it does a superclass. A domain or range of `foaf:Person` does
-not match a local `Person`, and its warning names the full IRI. Import also
+not match a local `Person`, and its warning names the full IRI. Import writes no
+entity for an anonymous class, a blank node such as
+`[ a owl:Class ; owl:unionOf ( ex:A ex:B ) ]`. A property whose `rdfs:domain` or
+`rdfs:range` is an anonymous class is left out with a warning. Import also
 leaves out each object property push would reject,
 with a warning: one on a class with subclasses, one whose `rdfs:domain` and
 `rdfs:range` are one class, and one that runs opposite to an object property
@@ -279,7 +282,9 @@ BigQuery Graph / BI treats it as one.
   it has no field to back it; because keeping only the columns that do exist
   would silently narrow a composite key to a possibly non-unique one, the
   **entire `primary_key` is dropped** with a warning rather than left to fail
-  later at graph generation.
+  later at graph generation. Import matches a key property to a field by its
+  full IRI, as it does a domain or range. A key of `foaf:id` does not select the
+  field `id` written for `ex:id`, and the warning names the full IRI.
 - An **`owl:InverseFunctionalProperty`** (a datatype property that uniquely
   identifies its subject) becomes a `unique_keys` constraint — unless it is
   already the `primary_key`, in which case it is not repeated. If a class

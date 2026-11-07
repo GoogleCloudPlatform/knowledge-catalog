@@ -658,9 +658,42 @@ describe('keys and edge binding', () => {
         const {warnings} = convertOwlToOsi(ttl, 'x');
         expect(loadOwl(ttl).entities[0].keys).toEqual([]);
         expect(warnings.some(
-                   w => w.includes(`'ghost'`) && w.includes('primary_key')))
+                   w => w.includes(`'http://example.com/x#ghost'`) &&
+                       w.includes('primary_key')))
             .toBe(true);
       });
+
+  // A key property matches by full IRI, so foaf:id never selects the field
+  // written for ex:id.
+  const keyDropped = (iri: string) => `class 'Person' owl:hasKey names ` +
+      `'${iri}' which is not a datatype property on the class; dropping the ` +
+      `entire primary_key (keeping only the remaining columns would change ` +
+      `the entity's grain).`;
+  test.each([
+    ['foaf:id',
+     'ex:id a owl:DatatypeProperty ; rdfs:domain ex:Person . foaf:id a owl:DatatypeProperty',
+     [], [
+       expect.stringContaining('no rdfs:domain'),
+       keyDropped('http://xmlns.com/foaf/0.1/id'),
+     ]],
+    ['ex:id',
+     'foaf:id a owl:DatatypeProperty ; rdfs:domain ex:Person . ex:id a owl:DatatypeProperty ; rdfs:domain ex:Person',
+     [], [
+       expect.stringContaining('duplicates an existing field name'),
+       keyDropped('http://example.com/x#id'),
+     ]],
+    ['foaf:id',
+     'ex:id a owl:DatatypeProperty, owl:InverseFunctionalProperty ; rdfs:domain ex:Person',
+     ['id'], [
+       keyDropped('http://xmlns.com/foaf/0.1/id'),
+       expect.stringContaining('no usable owl:hasKey'),
+     ]],
+  ])('owl:hasKey ( %s ) beside %s', (key, triples, keys, expected) => {
+    const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class ; owl:hasKey ( ${key} ) . ${triples} .`, 'x');
+    expect(warnings).toEqual(expected);
+    expect(load(yaml).models[0].entities[0].keys).toEqual(keys);
+  });
 
   // A class whose only key material is a single inverse-functional property (no
   // owl:hasKey) has a natural identifier; it is promoted to primary_key so the
@@ -709,7 +742,8 @@ describe('keys and edge binding', () => {
     const person = loadOwl(ttl).entities[0];
     expect(person.keys).toEqual(['email']);
     expect(person.uniqueKeys).toBeUndefined();
-    expect(warnings.some(w => w.includes(`'ghost'`))).toBe(true);
+    expect(warnings.some(w => w.includes(`'http://example.com/x#ghost'`)))
+        .toBe(true);
     expect(warnings.some(w => w.includes('no usable owl:hasKey'))).toBe(true);
   });
 });
@@ -997,6 +1031,27 @@ describe('mapping table rules (labels, comments, skips)', () => {
       ...Array(2).fill(expect.stringContaining('declared more than once')),
       warning,
     ]);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
+  // Import writes no entity or field for a blank node, and leaves out a
+  // property whose domain or range is an anonymous class.
+  const notRead = 'which import does not read; import leaves out the property.';
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ] ; rdfs:range xsd:string',
+     [`datatype property 'name' has a union of classes as its domain, ${notRead}`]],
+    ['ex:owns a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range [ owl:intersectionOf ( ex:A ex:B ) ]',
+     [`object property 'owns' has an intersection of classes as its range, ${notRead}`]],
+    ['ex:owns a owl:ObjectProperty ; rdfs:domain [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ] ; rdfs:range [ owl:complementOf ex:A ]',
+     [`object property 'owns' has a union of classes as its domain and an ` +
+      `anonymous class as its range, ${notRead}`]],
+    ['ex:A owl:equivalentClass [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ]', []],
+    ['[ a owl:DatatypeProperty ; rdfs:domain ex:A ]', []],
+  ])('%s imports only A and B', (triples, expected) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class . ${triples} .`, 'x');
+    expect(warnings).toEqual(expected);
     expect(stats).toEqual(
         {classes: 2, datatypeProperties: 0, objectProperties: 0});
   });
