@@ -55,6 +55,12 @@ jobs:
           EXPECTED_VERSION: ${{ inputs.expected_version || '' }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
+          case "${VERSION}" in
+            *-semantic*)
+              echo "Error: refusing to publish '${VERSION}' to public npm." >&2
+              exit 1
+              ;;
+          esac
           if [ -n "${EXPECTED_VERSION}" ] && [ "${EXPECTED_VERSION}" != "${VERSION}" ]; then
             echo "Error: expected_version '${EXPECTED_VERSION}' does not match package.json version '${VERSION}'." >&2
             exit 1

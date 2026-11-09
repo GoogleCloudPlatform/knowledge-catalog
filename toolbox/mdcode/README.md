@@ -144,12 +144,6 @@ kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projec
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 
-# Initialize a new catalog snapshot for a locally-authored Semantic Model.
-# The scope names the EntryGroup the model belongs to; the model is authored as
-# a single Apache Ossie document at
-# catalog/EntryGroups/<entryGroupId>/<model>.yaml.
-kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
-
 # Initialize an OKF workspace for an EntryGroup (or --kb): the entries are kept
 # as an Open Knowledge Format bundle under bundle/, with entry links in
 # bundle/_links.yaml. init records `layout: okf` in catalog.yaml, and pull and
@@ -178,40 +172,16 @@ kcmd status
 kcmd push
 ```
 
-For the semantic-model scope, `kcmd push` deploys the model as a property graph
-(`CREATE OR REPLACE PROPERTY GRAPH`) to the backend each entry of the model's
-`deployments` list names in its `target`: **BigQuery Graph** or **Spanner
-Graph**. The same authored model deploys to either. Pass `--validate-only
---print` to print the generated DDL without executing it. For a BigQuery
-target this path additionally reads the target dataset's metadata
-(`bigquery.datasets.get`) to pin the query job's processing location; the call
-degrades gracefully when the permission is absent, so a narrower service account
-still works but falls back to BigQuery's own location inference. Each dataset
-`source` is the table's GCP resource name, such as
-`bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`.
-(A Spanner target names its tables inside one database. Spanner Graph has no
-`MEASURE`, so a Spanner deployment uses a profile that excludes every metric.)
-Spanner Graph needs an Enterprise or Enterprise Plus edition instance, or a free
-trial instance. Push refuses a Spanner target on a Standard edition instance
-before it writes anything.
-
-`kcmd push` publishes the model and its sibling profile files to Knowledge
-Catalog before deploying the selected `deployments` entries (see
-[Reference — `kcmd push`](docs/semantic-model/reference.md#push) for
-`--deployment`, `--no-deployment`, `--print`, and `--force-remove`, and
-[docs/semantic-model/](docs/semantic-model/README.md) for the full guide).
-
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 
 #### Environment variables
 
-Two optional variables override where `kcmd` talks to the catalog. Both default
-to production, so you normally leave them unset.
+An optional variable overrides where `kcmd` talks to the catalog. It defaults to
+production, so you normally leave them unset.
 
 | Variable | Effect |
 |----------|--------|
 | `DATAPLEX_ENDPOINT` | Base URL for the Knowledge Catalog (Dataplex) API. Defaults to `https://dataplex.googleapis.com`. Set it to reach a non-prod host. |
-| `KC_TYPE_PROJECT` | Project the built-in `semantic-*` system types are read from on a semantic-model push. Defaults to `dataplex-types`. |
 
 ### MCP Server
 

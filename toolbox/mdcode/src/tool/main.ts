@@ -1,7 +1,10 @@
 // Main CLI entrypoint
 //
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as cac from 'cac';
+import * as yaml from 'yaml';
 
 import pkg from '../../package.json';
 import * as commands from './commands';
@@ -10,6 +13,39 @@ import * as mcp from './mcp';
 declare const __KCMD_COMMIT__: string|undefined;
 const BUILD_COMMIT =
     typeof __KCMD_COMMIT__ === 'string' && __KCMD_COMMIT__ ? `+${__KCMD_COMMIT__}` : '';
+declare const __KCMD_VERSION__: string|undefined;
+const CLI_VERSION =
+    typeof __KCMD_VERSION__ === 'string' && __KCMD_VERSION__ ?
+    __KCMD_VERSION__ :
+    pkg.version;
+
+declare const __KCMD_ENABLE_SEMANTIC__: boolean|undefined;
+const ENABLE_SEMANTIC =
+    typeof __KCMD_ENABLE_SEMANTIC__ === 'boolean' ?
+    __KCMD_ENABLE_SEMANTIC__ :
+    true;
+const UNSUPPORTED_SEMANTIC_SCOPE_MESSAGE =
+    'catalog.yaml names a semantic-model scope, which this version of kcmd does not support.';
+
+function assertScopeSupported(basePath = '.'): void {
+  if (ENABLE_SEMANTIC) return;
+  const manifestPath = path.join(basePath, 'catalog.yaml');
+  if (!fs.existsSync(manifestPath)) return;
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    // Malformed YAML is reported by CatalogManifest.load() downstream.
+    return;
+  }
+  const scope = (parsed as {scope?: unknown}|null)?.scope;
+  const isSemantic = (s: unknown): boolean =>
+      typeof s === 'string' &&
+      (s === 'semantic-model' || s.startsWith('semantic-model.'));
+  if (isSemantic(scope) || (Array.isArray(scope) && scope.some(isSemantic))) {
+    throw new Error(UNSUPPORTED_SEMANTIC_SCOPE_MESSAGE);
+  }
+}
 
 
 // Runs a command and exits with the code it gives. An exception prints as an
@@ -24,8 +60,8 @@ async function run(command: () => Promise<number>): Promise<void> {
   process.exit(exitCode);
 }
 
-const cli = cac.cac('kcmd').version(`${pkg.version}${BUILD_COMMIT}`).help();
-cli.command('init', 'Initialize a new catalog snapshot')
+const cli = cac.cac('kcmd').version(`${CLI_VERSION}${BUILD_COMMIT}`).help();
+const initCmd = cli.command('init', 'Initialize a new catalog snapshot')
     .option(
         '--entry-group <id>',
         'Identifier of the EntryGroup (project.location.id)')
@@ -34,15 +70,24 @@ cli.command('init', 'Initialize a new catalog snapshot')
         'Identifier of the BigQuery dataset(s) (project.datasetId)')
     .option(
         '--kb <id>',
-        'Identifier of the Knowledge Base EntryGroup (project.location.id)')
-    .option(
-        '--semantic-model <id>',
-        'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
-    .option('--pull', 'Optionally pull catalog entries during initialization')
+        'Identifier of the Knowledge Base EntryGroup (project.location.id)');
+if (ENABLE_SEMANTIC) {
+  initCmd.option(
+      '--semantic-model <id>',
+      'Semantic model scope as <projectId>.<locationId>.<entryGroupId>');
+}
+initCmd.option('--pull', 'Optionally pull catalog entries during initialization')
     .option(
         '--format <format>',
         'How the workspace stores entries on disk, recorded in catalog.yaml for pull and push. Only `okf` (an OKF bundle under bundle/) is accepted; omit for the scope\'s default layout')
-    .action((options) => run(() => commands.init(options)));
+    .action((options) => run(async () => {
+      // Fail before commands.init(), whose error message lists --semantic-model.
+      if (!ENABLE_SEMANTIC && !options.entryGroup && !options.bigqueryDataset &&
+          !options.kb) {
+        throw new Error('Must provide --entry-group, --bigquery-dataset, or --kb');
+      }
+      return commands.init(options);
+    }));
 
 
 cli.command('pull', 'Pull catalog entries')
@@ -51,132 +96,153 @@ cli.command('pull', 'Pull catalog entries')
         'Reconstruct and report only; do not write or delete files')
     .option(
         '--force-remove',
-        'Delete a differently-named local model or stale local OKF concept file not in Knowledge Catalog')
-    .action((options) => run(() => commands.pull(options)));
+        ENABLE_SEMANTIC ?
+            'Delete a differently-named local model or stale local OKF concept file not in Knowledge Catalog' :
+            'Delete stale local OKF concept files not in Knowledge Catalog')
+    .action((options) => run(async () => {
+      assertScopeSupported();
+      return commands.pull(options);
+    }));
 
-cli.command('push', 'Push catalog entries')
-    .option('--force', 'Has no effect')
-    .option(
-        '--force-remove',
-        'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
-    .option(
-        '--emit-expressions',
-        'No longer supported; push publishes expression fields by default')
+const pushCmd = cli.command('push', 'Push catalog entries')
+    .option('--force', 'Has no effect');
+if (ENABLE_SEMANTIC) {
+  pushCmd
+      .option(
+          '--force-remove',
+          'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
+      .option(
+          '--emit-expressions',
+          'No longer supported; push publishes expression fields by default');
+}
+pushCmd
     .option(
         '--dry-run',
         'Run every check and show what would change, without applying anything')
-    .option('--validate-only', 'Same as --dry-run')
-    .option(
-        '--skip-source-check',
-        'Skip the checks that every source names a table Knowledge Catalog knows about and that the BigQuery and BigLake tables of each profile share a location; a Cloud SQL, Spanner or third-party source is still looked up for its dialect; semantic-model push only')
-    .option(
-        '--no-profile',
-        'No longer supported on push; use --no-deployment to skip database deployments, or --deployment <name> to select one')
-    .option(
-        '--no-kc',
-        'No longer supported on push; every push publishes the model to Knowledge Catalog')
-    .option(
-        '--print',
-        'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
-    .option(
-        '--transpile',
-        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and each profile whose tables are all in BigQuery or BigLake')
-    .option(
-        '--profile [name]',
-        'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')
-    .option(
-        '--all-profiles',
-        'No longer supported on push; kcmd push deploys every entry under deployments: by default')
-    // The value is optional because --no-deployment defaults this option to
-    // true, which cac reports as a missing value when the value is required.
-    .option('--deployment [names...]', 'Deploy only these deployments, by name')
-    .option(
-        '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
-    // --emit-expressions, --no-profile, --no-kc, --profile and --all-profiles
-    // stay registered only so push can say what replaces each: cac refuses an
-    // unregistered option before push runs.
-    .action((options) => run(async () => {
-      const args = process.argv.slice(2);
-      const deployment = commands.typedDeployment(args);
-      // cac gives a bare --profile, or --profile= with no value, the same true
-      // it gives an absent one, so read whether it was typed, as for
-      // --deployment.
-      const end = args.indexOf('--');
-      const typed = end < 0 ? args : args.slice(0, end);
-      const profile = options.profile === true &&
-              typed.some(a => a === '--profile' || a.startsWith('--profile=')) ?
-          '' :
-          options.profile;
-      return commands.push({...options, deployment, profile});
-    }));
+    .option('--validate-only', 'Same as --dry-run');
+if (ENABLE_SEMANTIC) {
+  pushCmd
+      .option(
+          '--skip-source-check',
+          'Skip the checks that every source names a table Knowledge Catalog knows about and that the BigQuery and BigLake tables of each profile share a location; a Cloud SQL, Spanner or third-party source is still looked up for its dialect; semantic-model push only')
+      .option(
+          '--no-profile',
+          'No longer supported on push; use --no-deployment to skip database deployments, or --deployment <name> to select one')
+      .option(
+          '--no-kc',
+          'No longer supported on push; every push publishes the model to Knowledge Catalog')
+      .option(
+          '--print',
+          'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
+      .option(
+          '--transpile',
+          'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and each profile whose tables are all in BigQuery or BigLake')
+      .option(
+          '--profile [name]',
+          'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')
+      .option(
+          '--all-profiles',
+          'No longer supported on push; kcmd push deploys every entry under deployments: by default')
+      // The value is optional because --no-deployment defaults this option to
+      // true, which cac reports as a missing value when the value is required.
+      .option('--deployment [names...]', 'Deploy only these deployments, by name')
+      .option(
+          '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing');
+}
+// --emit-expressions, --no-profile, --no-kc, --profile and --all-profiles
+// stay registered only so push can say what replaces each: cac refuses an
+// unregistered option before push runs.
+pushCmd.action((options) => run(async () => {
+  assertScopeSupported();
+  const args = process.argv.slice(2);
+  const deployment = commands.typedDeployment(args);
+  // cac gives a bare --profile, or --profile= with no value, the same true
+  // it gives an absent one, so read whether it was typed, as for
+  // --deployment.
+  const end = args.indexOf('--');
+  const typed = end < 0 ? args : args.slice(0, end);
+  const profile = options.profile === true &&
+          typed.some(a => a === '--profile' || a.startsWith('--profile=')) ?
+      '' :
+      options.profile;
+  return commands.push({...options, deployment, profile});
+}));
 
 
-cli.command(
-       'profiles',
-       'List a semantic model\'s binding profiles, what each can answer, and what push would reject')
-    .option(
-        '--profile [name]',
-        'Report only this binding profile; defaults to every profile the model declares')
-    .option(
-        '--print-store',
-        'Print only the store the profile deploys to, on one line and nothing else, for a script to read: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
-    .action((options) => run(() => commands.profiles(options)));
+if (ENABLE_SEMANTIC) {
+  cli.command(
+         'profiles',
+         'List a semantic model\'s binding profiles, what each can answer, and what push would reject')
+      .option(
+          '--profile [name]',
+          'Report only this binding profile; defaults to every profile the model declares')
+      .option(
+          '--print-store',
+          'Print only the store the profile deploys to, on one line and nothing else, for a script to read: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
+      .action((options) => run(() => commands.profiles(options)));
 
 
-cli.command(
-       'owl <action> <file>',
-       'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
-    .option(
-        '--out <path>',
-        'Write the generated OSI document to this path instead of the semantic-model layout dir')
-    .option(
-        '--compact',
-        'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
-    .action(
-        (action, file, options) =>
-            run(() => commands.owl(action, file, options)));
+  cli.command(
+         'owl <action> <file>',
+         'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
+      .option(
+          '--out <path>',
+          'Write the generated OSI document to this path instead of the semantic-model layout dir')
+      .option(
+          '--compact',
+          'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
+      .action(
+          (action, file, options) =>
+              run(() => commands.owl(action, file, options)));
 
 
-cli.command(
-       'import <file>',
-       'Import a semantic model file, repairing a third-party file or converting a first-party one, into the flavor --flavor names')
-    .option(
-        '--input <who>',
-        'Who wrote the file: third-party, a file another product wrote (default), or first-party, a file written for kcmd')
-    .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
-    .option(
-        '--source-prefix <prefix>',
-        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d, or the Knowledge Catalog entry group projects/p/locations/l/entryGroups/g whose table entries complete them by fullyQualifiedName')
-    .option(
-        '--transpile',
-        'Add a BigQuery translation beside SQL in another dialect when it can translate the text, in the model file and in each GOOGLE block profile or profile file the import writes, when all the profile\'s tables are in BigQuery or BigLake; off by default')
-    .option(
-        '--out <path>',
-        'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')
-    .action((file, options) => run(() => commands.importModel(file, options)));
+  cli.command(
+         'import <file>',
+         'Import a semantic model file, repairing a third-party file or converting a first-party one, into the flavor --flavor names')
+      .option(
+          '--input <who>',
+          'Who wrote the file: third-party, a file another product wrote (default), or first-party, a file written for kcmd')
+      .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
+      .option(
+          '--source-prefix <prefix>',
+          'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d, or the Knowledge Catalog entry group projects/p/locations/l/entryGroups/g whose table entries complete them by fullyQualifiedName')
+      .option(
+          '--transpile',
+          'Add a BigQuery translation beside SQL in another dialect when it can translate the text, in the model file and in each GOOGLE block profile or profile file the import writes, when all the profile\'s tables are in BigQuery or BigLake; off by default')
+      .option(
+          '--out <path>',
+          'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')
+      .action((file, options) => run(() => commands.importModel(file, options)));
 
 
-cli.command(
-       'skills-generate',
-       'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
-    .option(
-        '--out <dir>',
-        'Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`')
-    .option(
-        '--name <name>',
-        'Name the skill, and so its directory; lowercase letters, digits and single hyphens. Defaults to the model\'s own name. Applies only to a scope with one model')
-    .option(
-        '--profile [name]',
-        'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to the inline bindings')
-    .option(
-        '--force',
-        'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
-    .action((options) => run(() => commands.skillsGenerate(options)));
+  cli.command(
+         'skills-generate',
+         'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
+      .option(
+          '--out <dir>',
+          'Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`')
+      .option(
+          '--name <name>',
+          'Name the skill, and so its directory; lowercase letters, digits and single hyphens. Defaults to the model\'s own name. Applies only to a scope with one model')
+      .option(
+          '--profile [name]',
+          'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to the inline bindings')
+      .option(
+          '--force',
+          'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
+      .action((options) => run(() => commands.skillsGenerate(options)));
+}
 
 
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {
+      try {
+        assertScopeSupported(options.path ?? '.');
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        process.exit(1);
+      }
       try {
         await mcp.startServer(options.path);
       } catch (err: any) {

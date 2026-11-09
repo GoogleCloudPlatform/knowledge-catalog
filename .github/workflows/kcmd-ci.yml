@@ -46,3 +46,4 @@ jobs:
           npm run compile
           npm run build
           CLOUDSDK_CONFIG="$(mktemp -d)" npm test
+          CLOUDSDK_CONFIG="$(mktemp -d)" npm run test:semantic-pkg
