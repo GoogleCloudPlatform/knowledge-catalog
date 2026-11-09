@@ -1264,9 +1264,17 @@ semantic_model:
     return catalog;
   }
 
+  // Push checks a profile without the model's actions, so a `sql` executor in
+  // the model does not count against the profile file.
+  const WITH_SQL_ACTION = `${MODEL}    actions:
+      - name: CloseBooks
+        executor: {sql: {statements: ["UPDATE ledger SET closed = TRUE"]}}
+`;
   for (const [flavor, files] of [
     ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla', {'commerce.yaml': VANILLA}],
+    ['Google-flavor with a sql action',
+     {'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE}],
   ] as const) {
     test(`that changes nothing keeps the ${flavor} files byte for byte`,
          async () => {
@@ -1309,22 +1317,87 @@ semantic_model:
              .toBe(PROFILE);
        });
 
-  test('writes the files in full, with a warning, when the local model file ' +
-           'does not load',
+  // A local model file push would refuse is written from the catalog. Its
+  // profile file still holds the catalog's content beside the model file pull
+  // writes, so it stays.
+  for (const [why, text, warning] of [
+    ['does not load', Buffer.from(`${MODEL}    colour: red\n`),
+     `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
+         'pull writes it from the catalog: '],
+    // The bad byte is in a comment, so the content is the catalog's.
+    ['is not valid UTF-8',
+     Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]),
+                    Buffer.from(`\n${MODEL}`)]),
+     undefined],
+  ] as const) {
+    test(`writes the model file in full when it ${why}, and keeps the ` +
+             'profile file',
+         async () => {
+           await pushed(
+               {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+           fs.writeFileSync(local('commerce.yaml'), text);
+           const warnSpy = console.warn as Mock<any>;
+
+           expect(await pull()).toBe(0);
+           if (warning) {
+             expect(messages(warnSpy)).toContain(warning);
+           } else {
+             expect(messages(warnSpy)).not.toContain('does not load');
+           }
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+               .not.toContain('# Hand-written model.');
+           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+               .toBe(PROFILE);
+         });
+  }
+
+  // A local profile file push would refuse is written from the catalog, and
+  // the model file stays.
+  for (const [why, profile] of [
+    ['names another profile',
+     PROFILE.replace('name: prod', 'name: production')],
+    ['excludes a metric the model does not declare',
+     PROFILE.replace('[orders, customers]', '[orders, customers, zz]')],
+  ] as const) {
+    test(`keeps the model file and writes the profile file in full, with a ` +
+             `warning, when the profile file ${why}`,
+         async () => {
+           await pushed(
+               {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+           fs.writeFileSync(local('commerce.profile.prod.yaml'), profile);
+           const warnSpy = console.warn as Mock<any>;
+
+           expect(await pull()).toBe(0);
+           expect(messages(warnSpy)).toContain(
+               "Warning: the local profile files of model 'commerce' do not " +
+               'load, so pull writes them from the catalog: ');
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(MODEL);
+           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+               .not.toContain('# Production bindings.');
+         });
+  }
+
+  test('writes a profile file that holds the catalog\'s content only beside ' +
+           'the local model file',
        async () => {
-         await pushed(
-             {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
-         fs.writeFileSync(local('commerce.yaml'), `${MODEL}    colour: red\n`);
-         const warnSpy = console.warn as Mock<any>;
+         // The catalog adds metric `buyers` and excludes it from prod, so prod
+         // excludes every metric. Locally prod excludes every metric too, as
+         // the local model has no `buyers`.
+         await pushed({
+           'commerce.yaml': MODEL,
+           'commerce.profile.prod.yaml': PROFILE.replace(
+               '[orders, customers]', '[orders, customers, buyers]'),
+         });
+         const older = MODEL.replace(
+             '      - { name: buyers, expression: COUNT(Order.buyer) }\n', '');
+         fs.writeFileSync(local('commerce.yaml'), older);
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
 
          expect(await pull()).toBe(0);
-         expect(messages(warnSpy)).toContain(
-             `Warning: local model file ${shown('commerce.yaml')} does not ` +
-             'load (');
          expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
-             .not.toContain('colour');
+             .toContain('name: buyers');
          expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
-             .not.toContain('# Production bindings.');
+             .not.toBe(PROFILE);
        });
 });
 

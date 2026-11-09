@@ -795,7 +795,8 @@ function warningsAfterProfile(
 // structure, and each action, entity, field, relationship and metric it names
 // that the model does not declare or a profile cannot bind. applyProfile
 // throws the first, and validateProfileCompleteness lists them all.
-function profileProblems(model: SemanticModel, profile: ProfileSpec): string[] {
+export function profileProblems(
+    model: SemanticModel, profile: ProfileSpec): string[] {
   const at = `profile '${profile.name}'`;
   const problems: string[] = [];
   const sql = logicalSqlExecutorError(model, profile.name);

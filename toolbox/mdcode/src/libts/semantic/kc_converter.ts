@@ -143,7 +143,8 @@ export function modelsFromCatalogResources(entries: Entry[]): ReadResult {
     const model =
         readModelV2(anchor, nameOf(anchor), entities, metrics, relationships);
     readActionsAndConstraints(
-        model, children(actionEntries), children(constraintEntries), warnings);
+        model, sortedByName(children(actionEntries)),
+        sortedByName(children(constraintEntries)), warnings);
     return model;
   });
 
@@ -445,8 +446,9 @@ function dataTypeOf(dataType: unknown): DataType|undefined {
 }
 
 
-// `entries` sorted by the last segment of their entry ids, which is the name
-// of the object each holds.
+// `entries` sorted by the last segment of their entry ids. One model's entries
+// of one kind differ only in the name of the object each holds, so this is
+// name order.
 function sortedByName(entries: Entry[]): Entry[] {
   return [...entries].sort((a, b) => {
     const [x, y] = [idOf(a.name), idOf(b.name)];

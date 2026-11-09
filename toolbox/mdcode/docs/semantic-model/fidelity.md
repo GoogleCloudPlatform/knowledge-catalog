@@ -340,10 +340,9 @@ and round-trip losslessly through `pull` — see
 section describes. A local model or profile file that already holds what the
 catalog holds stays as it is, byte for byte: pull compares the files it would
 write for the local files with the ones it writes for the catalog, so a
-difference that is only one of the normal forms below, or only the order of
-entities, metrics, relationships, custom `ai_context` members or
-`metrics_exclude`, leaves the file alone. Pull writes every other file whole,
-and keeps none of its comments, key order or formatting.
+difference that is only one of the normal forms below leaves the file alone.
+Pull writes every other file whole, and keeps none of its comments, key order
+or formatting.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 Pull reads the second-generation types. It rebuilds the model file, profile
@@ -363,12 +362,12 @@ not prune the model to a deployment's profile first.
   back sorted by name.
 - A profile's `metrics_exclude` comes back as `"*"` when it excludes every
   metric, and otherwise as a list in name order.
-- Entities, relationships and metrics come back sorted by name. Field order
-  within each entity is kept.
+- Entities, relationships, metrics, actions and constraints come back sorted
+  by name. Field order within each entity is kept.
 
-**So a file pull writes is not your original file.** Treat a
-rebuilt document as a faithful copy of the catalog metadata rather than of the
-authored model, and keep the authored document as the source of truth.
+**So a file pull writes is not your original file.** Treat a rebuilt
+document as a faithful copy of the catalog metadata rather than of the authored
+model, and keep the authored document as the source of truth.
 
 (A deployment target in no supported form is **not** a pull gap. Every push
 rejects it at the validation gate before anything is written, a catalog-only
