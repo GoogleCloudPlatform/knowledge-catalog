@@ -947,10 +947,9 @@ interface LinkLookupOutcome {
  * (`projects/<project>/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
  * `isScopeProject` tells whether a link's project part names the destination
  * project. A link whose project number push cannot resolve is kept only when
- * all its references are entries in its own entry group, spelled with the same
- * project. Dataplex spells a looked-up link's name and references alike, and
- * one reference is the looked-up entry, so such a link is in the destination
- * project.
+ * every reference spells the same project as the link's name. Dataplex spells
+ * a looked-up link's name and references alike, and one reference is the
+ * looked-up entry, so such a link is in the destination project.
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
@@ -970,10 +969,9 @@ async function lookupEntryLinks(
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];
       if (!project) continue;
-      const entries = `projects/${project}/locations/${
-          opts.location}/entryGroups/${opts.entryGroup}/entries/`;
       const inScope = (await isScopeProject(project)) ??
-          link.entryReferences.every(r => r.name.startsWith(entries));
+          link.entryReferences.every(
+              r => r.name.startsWith(`projects/${project}/`));
       if (!inScope || !isModelLink(link)) continue;
       const id = linkId(link);
       if (!links.has(id)) links.set(id, link);

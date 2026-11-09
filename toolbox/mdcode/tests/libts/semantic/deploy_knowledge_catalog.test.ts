@@ -2750,12 +2750,12 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
-      'lookupEntryLinks keeps a link under any project number when the ' +
-          'scope\'s project number cannot be found',
+      'lookupEntryLinks keeps a link whose references spell its own ' +
+          'project when the scope\'s project number cannot be found',
       async () => {
         // Neither the scope nor the listing spells a number, and Resource
-        // Manager denies the lookup, so the filter cannot tell the scope's
-        // number from another project's.
+        // Manager denies the lookup. The link's references spell its own
+        // project, so push keeps it.
         const orphan = linkEntry(
             'sales-orders-to-supplier',
             ['sales.entities.orders', 'sales.entities.supplier'], '987654321');
@@ -2776,8 +2776,8 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
-      'lookupEntryLinks keeps a link under any project number when ' +
-          'Resource Manager throws',
+      'lookupEntryLinks keeps a link whose references spell its own ' +
+          'project when Resource Manager throws',
       async () => {
         const orphan = linkEntry(
             'sales-orders-to-supplier',
