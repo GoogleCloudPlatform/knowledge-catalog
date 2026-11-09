@@ -2,7 +2,9 @@
 //
 
 import * as gcp from './gcp';
+import { CatalogLayout } from './layout';
 import { BUNDLE_DIR, OkfLayout } from './layouts/okf';
+import { SplitLayout } from './layouts/split';
 import {
   entryLinkId,
   isStaleEntryLink,
@@ -12,6 +14,12 @@ import {
 } from './okf/links';
 import { CatalogSnapshot, toLocalEntry } from './snapshot';
 import { entryGroupCoordinates } from './source';
+
+function okfLayoutOf(layout: CatalogLayout): OkfLayout | undefined {
+  if (layout instanceof OkfLayout) return layout;
+  if (layout instanceof SplitLayout) return layout.okf;
+  return undefined;
+}
 
 export interface SyncResult {
   success: boolean;
@@ -915,9 +923,10 @@ export class CatalogSync {
 
   // Lists metadata in the Catalog service to create or update the local snapshot.
   async pull(options?: PullSyncOptions): Promise<SyncResult> {
-    if (this._snapshot.layout instanceof OkfLayout) {
+    const okfLayout = okfLayoutOf(this._snapshot.layout);
+    if (okfLayout) {
       try {
-        return await this._pullOkf(this._snapshot.layout, options ?? {});
+        return await this._pullOkf(okfLayout, options ?? {});
       } catch (e: any) {
         return { success: false, details: e.message };
       }
@@ -1015,9 +1024,10 @@ export class CatalogSync {
   // but no create or update is issued -- mirroring the dry-run contract the
   // semantic-model legs honor, so the flag behaves the same on every scope.
   async push(options?: PushSyncOptions): Promise<SyncResult> {
-    if (this._snapshot.layout instanceof OkfLayout) {
+    const okfLayout = okfLayoutOf(this._snapshot.layout);
+    if (okfLayout) {
       try {
-        return await this._pushOkf(this._snapshot.layout, options ?? {});
+        return await this._pushOkf(okfLayout, options ?? {});
       } catch (e: any) {
         return { success: false, details: e.message };
       }
@@ -1236,7 +1246,12 @@ export class CatalogSync {
         return slashDiff !== 0 ? slashDiff : entryId(a).localeCompare(entryId(b));
       });
 
-    if (!entries.length && !toDelete.length && !declaredLinks.length) {
+    if (
+      !(this._snapshot.layout instanceof SplitLayout) &&
+      !entries.length &&
+      !toDelete.length &&
+      !declaredLinks.length
+    ) {
       return {
         success: false,
         details: `no OKF concepts found in ${BUNDLE_DIR}/`,
@@ -1276,6 +1291,30 @@ export class CatalogSync {
       ...[...existing.keys()].filter(name => !deletedNames.has(name)),
     ]);
     const inGroupPrefix = `${entryGroup}/entries/`;
+    if (this._snapshot.layout instanceof SplitLayout && declaredLinks.length) {
+      const uncheckedInGroup = new Set<string>();
+      for (const link of declaredLinks) {
+        for (const ref of link.entryReferences ?? []) {
+          if (
+            ref.name.startsWith(inGroupPrefix) &&
+            !knownInGroup.has(ref.name) &&
+            !deletedNames.has(ref.name)
+          ) {
+            uncheckedInGroup.add(ref.name);
+          }
+        }
+      }
+      await mapConcurrent([...uncheckedInGroup], READ_CONCURRENCY, async (name) => {
+        try {
+          const res = await this._catalog.lookupEntry(project, location, name);
+          if (res.status === 200 && res.result) {
+            knownInGroup.add(name);
+          }
+        } catch {
+          // Leave out of knownInGroup if unreachable.
+        }
+      });
+    }
     const links = declaredLinks.filter(link => {
       const missing = (link.entryReferences ?? [])
         .map(ref => ref.name)

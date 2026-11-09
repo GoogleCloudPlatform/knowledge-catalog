@@ -144,6 +144,13 @@ kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projec
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 
+# Initialize a combined Context Set workspace (an OSI+G semantic model under
+# catalog/EntryGroups/<entryGroupId>/ plus an OKF bundle under bundle/).
+# Creates the entry group with type: context-set (requires
+# roles/dataplex.contentCreator on the project, and roles/dataplex.contentEditor
+# on the group for teammates and CI).
+kcmd init --context-set <projectId>.<locationId>.<entryGroupId>
+
 # Initialize an OKF workspace for an EntryGroup (or --kb): the entries are kept
 # as an Open Knowledge Format bundle under bundle/, with entry links in
 # bundle/_links.yaml. init records `layout: okf` in catalog.yaml, and pull and

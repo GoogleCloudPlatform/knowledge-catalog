@@ -14,6 +14,7 @@ import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
 import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
@@ -73,6 +74,7 @@ export interface InitOptions {
   bigqueryDataset?: string|string[];
   kb?: string;
   semanticModel?: string;
+  contextSet?: string;
   pull?: boolean;
 }
 
@@ -144,7 +146,9 @@ function pruningDialect(model: SemanticModel): string|null|undefined {
 export async function init(options: InitOptions): Promise<number> {
   const okf = okfSelected(options);
 
-  if (okf && (options.bigqueryDataset || options.semanticModel)) {
+  if (okf &&
+      (options.bigqueryDataset || options.semanticModel ||
+       options.contextSet)) {
     throw new Error(
         `Manifest error: layout '${OKF_FORMAT}' applies only to ` +
         `'${Sources.ENTRYGROUP}' and '${Sources.KB}' scopes.`);
@@ -222,9 +226,42 @@ export async function init(options: InitOptions): Promise<number> {
     fs.mkdirSync(
         path.join('catalog', 'EntryGroups', source.entryGroup),
         {recursive: true});
+  } else if (options.contextSet) {
+    const parts = options.contextSet.split('.');
+    if (parts.length !== 3 || parts.some(p => !p)) {
+      throw new Error(
+          `Context set must be in format <projectId>.<locationId>.<entryGroupId>`);
+    }
+    const [project, location, entryGroup] = parts;
+    const catalog = new dataplex.CatalogClient(ctx);
+    const created =
+        await dataplex.createContextSet(catalog, project, location, entryGroup);
+    if (created.error) {
+      if (created.existing) {
+        console.error(`Error: ${created.error}`);
+      } else {
+        console.error(
+            `Error: ${created.error}. Creating a context set needs ` +
+            `roles/dataplex.contentCreator on the project (and ` +
+            `roles/dataplex.contentEditor on the group for teammates and CI).`);
+      }
+      return 1;
+    }
+    manifest =
+        await kcmd.CatalogManifest.initWithContextSet(options.contextSet, ctx);
+    const provisioned = await provisionCustomTypes(catalog, {project});
+    for (const w of provisioned.warnings ?? []) console.warn(`Warning: ${w}`);
+    if (provisioned.error) {
+      console.error(`Error: ${provisioned.error}`);
+      return 1;
+    }
+    if (provisioned.denied) console.warn(`Warning: ${provisioned.denied}`);
+    fs.mkdirSync(
+        path.join('catalog', 'EntryGroups', entryGroup), {recursive: true});
+    fs.mkdirSync('bundle', {recursive: true});
   } else {
     console.error(
-        'Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
+        'Error: Must provide --entry-group, --bigquery-dataset, --kb, --semantic-model, or --context-set');
     return 1;
   }
 
@@ -309,6 +346,23 @@ export async function pull(options: PullOptions = {}): Promise<number> {
     return await pullSemanticModel(ctx, snapshot, options);
   }
 
+  if (snapshot.manifest.source.type === Sources.CONTEXT_SET) {
+    const split = snapshot.layout as SplitLayout;
+    const modelCode =
+        await pullSemanticModel(ctx, snapshot, options, split.semantic);
+    if (modelCode !== 0) return modelCode;
+    const catalog = new dataplex.CatalogClient(ctx);
+    const sync = new kcmd.CatalogSync(catalog, snapshot);
+    const result = await sync.pull({
+      dryRun: options.dryRun,
+      forceRemove: options.forceRemove,
+    });
+    if (!result.success) {
+      throw new Error(result.details || 'Error pulling OKF bundle');
+    }
+    return 0;
+  }
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
@@ -337,9 +391,20 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 // Pull and init still work in such a scope, so neither the manifest load nor
 // the layout rejects them. A scope that is not a semantic-model scope gives
 // none, since each command reports that itself.
+function semanticLayoutOf(snapshot: kcmd.CatalogSnapshot):
+    SemanticModelLayout|undefined {
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+    return snapshot.layout as SemanticModelLayout;
+  }
+  if (snapshot.manifest.source.type === Sources.CONTEXT_SET) {
+    return (snapshot.layout as SplitLayout).semantic;
+  }
+  return undefined;
+}
+
 function legacyProfileFormErrors(snapshot: kcmd.CatalogSnapshot): string[] {
-  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) return [];
-  const layout = snapshot.layout as SemanticModelLayout;
+  const layout = semanticLayoutOf(snapshot);
+  if (!layout) return [];
   const errors: string[] = [];
   // The manifest load drops a key its schema does not have, so the key is
   // read from the file. The load has parsed the file as a mapping already.
@@ -556,6 +621,59 @@ function extractOkfRootMetadata(
   return {displayName, description, overviewContent};
 }
 
+async function publishContextSetOverview(
+  catalog: dataplex.CatalogClient,
+  ctx: context.ApiContext,
+  project: string,
+  location: string,
+  groupId: string,
+  overviewContent: string,
+  createdEg = false,
+): Promise<void> {
+  const pnum = await crm.projectNumber(project, ctx);
+  const repCandidates: string[] = [];
+  if (pnum) {
+    repCandidates.push(
+      `projects/${project}/locations/${location}/entryGroups/@dataplex/entries/` +
+        `projects/${pnum}/locations/${location}/entryGroups/${groupId}`,
+    );
+  }
+  repCandidates.push(
+    `projects/${project}/locations/${location}/entryGroups/${groupId}/entries/${groupId}_entry`,
+  );
+  const ovKey = 'dataplex-types.global.overview';
+  const maxAttempts = createdEg ? 5 : 2;
+  let patchedRep = false;
+  for (let attempt = 0; attempt < maxAttempts && !patchedRep; attempt++) {
+    for (const repName of repCandidates) {
+      const res = await catalog.updateEntry(
+        {
+          name: repName,
+          entryType:
+            'projects/dataplex-types/locations/global/entryTypes/entrygroup',
+          aspects: {
+            [ovKey]: {
+              data: {
+                content: overviewContent,
+                contentType: 'MARKDOWN',
+              },
+            },
+          },
+        },
+        ['aspects'],
+        [ovKey],
+      );
+      if (res.status === 200) {
+        patchedRep = true;
+        break;
+      }
+    }
+    if (!patchedRep && attempt < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+}
+
 // The error for each flag `options` carries that push no longer takes, naming
 // what replaces it where something does. cac gives `--no-profile` and
 // `--no-kc` as false, and a numeric profile name as a number. main.ts passes a
@@ -739,48 +857,9 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     if (!options.validateOnly && rootMeta.overviewContent) {
-      const pnum = await crm.projectNumber(project, ctx);
-      const repCandidates: string[] = [];
-      if (pnum) {
-        repCandidates.push(
-          `projects/${project}/locations/${location}/entryGroups/@dataplex/entries/` +
-            `projects/${pnum}/locations/${location}/entryGroups/${groupId}`,
-        );
-      }
-      repCandidates.push(
-        `projects/${project}/locations/${location}/entryGroups/${groupId}/entries/${groupId}_entry`,
-      );
-      const ovKey = 'dataplex-types.global.overview';
-      const maxAttempts = createdEg ? 5 : 2;
-      let patchedRep = false;
-      for (let attempt = 0; attempt < maxAttempts && !patchedRep; attempt++) {
-        for (const repName of repCandidates) {
-          const res = await catalog.updateEntry(
-            {
-              name: repName,
-              entryType:
-                'projects/dataplex-types/locations/global/entryTypes/entrygroup',
-              aspects: {
-                [ovKey]: {
-                  data: {
-                    content: rootMeta.overviewContent,
-                    contentType: 'MARKDOWN',
-                  },
-                },
-              },
-            },
-            ['aspects'],
-            [ovKey],
-          );
-          if (res.status === 200) {
-            patchedRep = true;
-            break;
-          }
-        }
-        if (!patchedRep && attempt < maxAttempts - 1) {
-          await new Promise((r) => setTimeout(r, 600));
-        }
-      }
+      await publishContextSetOverview(
+          catalog, ctx, project, location, groupId, rootMeta.overviewContent,
+          createdEg);
     }
     return 0;
   }
@@ -788,20 +867,46 @@ export async function push(options: PushOptions): Promise<number> {
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   if (options.force) console.warn('Warning: --force has no effect.');
 
-  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    // The semantic-model source always resolves to the SemanticModel layout
-    // (see createLayout), so this cast is safe.
+  const contextSet = snapshot.manifest.source.type === Sources.CONTEXT_SET;
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL || contextSet) {
     const legacy = legacyProfileFormErrors(snapshot);
     if (legacy.length) return printErrors(...legacy);
-    const layout = snapshot.layout as SemanticModelLayout;
+    const layout = semanticLayoutOf(snapshot)!;
     const source = snapshot.manifest.source as SemanticModelSource;
     const layoutDocs = layout.modelDocuments();
     const profileDocs = profileDocsReader(layout);
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
-    return pushInTwoPhases(
-        options, {ctx, layout, source, docs: layoutDocs, profileDocs});
+    // In a context-set workspace that has no model YAML (unless --deployment
+    // was explicitly requested), skip the semantic-model push leg and proceed
+    // directly to the OKF bundle leg.
+    if (!contextSet || layoutDocs.length > 0 ||
+        deploymentFlags(options.deployment).named) {
+      const code = await pushInTwoPhases(
+          options, {ctx, layout, source, docs: layoutDocs, profileDocs});
+      if (code !== 0 || !contextSet) return code;
+    }
+    const catalog = new dataplex.CatalogClient(ctx);
+    const sync = new kcmd.CatalogSync(catalog, snapshot);
+    const result = await sync.push({
+      force: options.force,
+      validateOnly: options.validateOnly,
+      ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
+    });
+    if (!result.success) {
+      if (result.details) console.error(`Error: ${result.details}`);
+      return 1;
+    }
+    const rootMeta = extractOkfRootMetadata(
+        snapshot.basePath || '.', source.project, source.location,
+        source.entryGroup);
+    if (!options.validateOnly && rootMeta.overviewContent) {
+      await publishContextSetOverview(
+          catalog, ctx, source.project, source.location, source.entryGroup,
+          rootMeta.overviewContent);
+    }
+    return 0;
   }
 
   // These flags only take effect on a semantic-model push; on a regular
@@ -1282,12 +1387,12 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const only =
       typeof options.profile === 'string' ? options.profile : undefined;
 
-  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+  const layout = semanticLayoutOf(snapshot);
+  if (!layout) {
     console.error(
         'Error: `kcmd profiles` applies only to a semantic-model scope.');
     return 1;
   }
-  const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
   if (!await sqlParserReady()) return 1;
 
@@ -1631,10 +1736,11 @@ function reportCatalogResult(
 // is written. Returns a process exit code (0 on success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
-    options: PullOptions): Promise<number> {
+    options: PullOptions,
+    modelLayout?: SemanticModelLayout): Promise<number> {
   // The semantic-model source always resolves to the SemanticModel layout
-  // (see createLayout), so these casts are safe.
-  const layout = snapshot.layout as SemanticModelLayout;
+  // (see createLayout), and a context-set passes split.semantic explicitly.
+  const layout = modelLayout ?? (snapshot.layout as SemanticModelLayout);
   const source = snapshot.manifest.source as SemanticModelSource;
 
   console.log(
@@ -2307,12 +2413,13 @@ async function workspaceLayout(): Promise<SemanticModelLayout|string> {
   }
   const snapshot =
       await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
-  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+  const layout = semanticLayoutOf(snapshot);
+  if (!layout) {
     return `this catalog is not a semantic-model scope, so there is no ` +
         `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
         `first, or pass --out <path> to write the file directly.`;
   }
-  return snapshot.layout as SemanticModelLayout;
+  return layout;
 }
 
 // Refuses to write `model` into `layout`'s entry group beside another

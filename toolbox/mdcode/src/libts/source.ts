@@ -9,12 +9,14 @@ import { EntryGroupSource } from './sources/entrygroup';
 import { BigQueryDatasetSource } from './sources/bq-dataset';
 import { KnowledgeBaseSource } from './sources/kb';
 import { SemanticModelSource } from './sources/semantic-model';
+import { SplitSource } from './sources/split';
 
 export enum Sources {
   ENTRYGROUP = 'entryGroup',
   BIGQUERY_DATASET = 'bq-dataset',
   KB = 'kb',
-  SEMANTIC_MODEL = 'semantic-model'
+  SEMANTIC_MODEL = 'semantic-model',
+  CONTEXT_SET = 'context-set'
 }
 
 
@@ -98,6 +100,9 @@ export async function createSource(type: string, name: string,
       return new KnowledgeBaseSource(Sources.KB, name, knowledgeBase);
     case Sources.SEMANTIC_MODEL:
       return new SemanticModelSource(Sources.SEMANTIC_MODEL, name);
+    case Sources.CONTEXT_SET:
+      const contextSet = await getEntryGroup(name, ctx);
+      return new SplitSource(Sources.CONTEXT_SET, name, contextSet);
     default:
       throw new Error(`Unknown source type: ${type}`);
   }
@@ -110,11 +115,22 @@ export interface EntryGroupCoordinates {
   container: string;
 }
 
+// The scope types backed by an entry group, whose coordinates
+// entryGroupCoordinates gives.
+export const ENTRY_GROUP_SCOPES: readonly string[] = [
+  Sources.ENTRYGROUP,
+  Sources.KB,
+  Sources.SEMANTIC_MODEL,
+  Sources.CONTEXT_SET,
+];
+
 /** Validates and extracts `<project>.<location>.<entryGroup>` coordinates. */
 export function entryGroupCoordinates(source: CatalogSource): EntryGroupCoordinates {
-  if (source.type && source.type !== Sources.ENTRYGROUP && source.type !== Sources.KB) {
+  if (source.type && !ENTRY_GROUP_SCOPES.includes(source.type)) {
     throw new Error(
-        `OKF layout applies only to '${Sources.ENTRYGROUP}' and '${Sources.KB}' scopes, got '${source.type}'.`);
+        `Entry group coordinates apply only to ${
+            ENTRY_GROUP_SCOPES.map(s => `'${s}'`).join(', ')} scopes, got '${
+            source.type}'.`);
   }
   const project = source.project ?? source.name.split('.')[0];
   const location = source.location ?? source.name.split('.')[1];

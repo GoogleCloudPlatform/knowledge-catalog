@@ -18,6 +18,7 @@ import {AlloyDbClient} from '../../gcp/alloydb';
 import * as context from '../../gcp/context';
 import {CatalogClient} from '../../gcp/dataplex';
 import {fileNameOf, SemanticModelLayout} from '../../layouts/semantic-model';
+import {SplitLayout} from '../../layouts/split';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
@@ -141,10 +142,13 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   } catch (err: any) {
     return {error: `${err?.message ?? err}`};
   }
-  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL &&
+      snapshot.manifest.source.type !== Sources.CONTEXT_SET) {
     return {error: `'${base}' is not a semantic-model scope.`};
   }
-  const layout = snapshot.layout as SemanticModelLayout;
+  const layout = snapshot.layout instanceof SplitLayout ?
+      snapshot.layout.semantic :
+      snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
   const profile = options.profile ?? DEFAULT_PROFILE;
 
