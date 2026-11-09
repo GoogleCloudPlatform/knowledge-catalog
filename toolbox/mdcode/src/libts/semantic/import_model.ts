@@ -15,7 +15,7 @@ import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plai
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
-import {transpileModel} from './transpile';
+import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
@@ -94,6 +94,8 @@ interface ParsedSourcePrefix {
   base: string;
   known: string[];
   child?: string;
+  tableParts?: number;
+  defaultSchema?: string;
 }
 
 /** A `--source-prefix` that names a Knowledge Catalog entry group. */
@@ -153,6 +155,11 @@ interface ImportDocument {
    * bare table name.
    */
   entryTables?: TableEntry[];
+  /**
+   * The dialect `sourcesDialect` gives the repaired sources, in which push
+   * reads an `ANSI_SQL` text of the model file. Set by the repair step.
+   */
+  impliedDialect?: string|null;
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
   /** True when any mutations have been applied to `root`. */
@@ -228,7 +235,8 @@ function sourceWarning(
                    `instead, such as '${dotted.form}'. ` :
                     '; ') +
       `'kcmd push' rejects the file until it is repointed` +
-      (rerun ? `, or until 'kcmd import' runs again with '--source-prefix'.` :
+      (rerun ? `, or until 'kcmd import' runs again with ${
+                   prefix ? 'a different ' : ''}'--source-prefix'.` :
                '.') +
       (isGoogleCloudForm(source) ? '' : ` ${THIRD_PARTY_SOURCE}`);
 }
@@ -255,9 +263,16 @@ const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
 };
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
-// adds under it, if any, and the resource name of a table under it.
-const SOURCE_PREFIX_PATTERNS:
-    ReadonlyArray<{re: RegExp; child?: string; form: string}> = [
+// adds under it, if any, the resource name of a table under it, the most
+// parts a table's name takes where that is more than one, and the schema a
+// table's name leaves out, if any.
+const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{
+  re: RegExp;
+  child?: string;
+  form: string;
+  tableParts?: number;
+  defaultSchema?: string;
+}> = [
   {
     re: /^bigquery\.googleapis\.com\/projects\/([^/]+)$/,
     child: 'datasets',
@@ -283,6 +298,12 @@ const SOURCE_PREFIX_PATTERNS:
   {
     re: /^spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)$/,
     form: TABLE_FORMS.spanner,
+    // A table in a named schema is named '<schema>.<table>'.
+    tableParts: 2,
+    // In a PostgreSQL-dialect Spanner database, a table in the default schema
+    // `public` has no schema in its Knowledge Catalog name, so
+    // `public.stations` is the table `stations`.
+    defaultSchema: 'public',
   },
   {
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)$/,
@@ -395,7 +416,9 @@ function parseImportDocument(
                       .find(x => x.m !== null);
     const group = base.match(ENTRY_GROUP_PREFIX);
     if (match?.m) {
-      sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
+      const {child, tableParts, defaultSchema} = match.p;
+      sourcePrefix =
+          {base, known: match.m.slice(1), child, tableParts, defaultSchema};
     } else if (group?.[3].startsWith('@')) {
       return `sourcePrefix '${opts.sourcePrefix}' names the system entry ` +
           `group '${group[3]}', whose entries are Google Cloud tables. Pass ` +
@@ -624,27 +647,34 @@ function foldedPart(source: string, prefix: ParsedSourcePrefix):
 function qualifyTableSource(
     source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
     undefined {
-  // Verify that any leading segments overlapping `prefix.known` match.
   const segs = sourceParts(source, prefix);
   if (!segs) return undefined;
-  const needed = prefix.child ? 2 : 1;
-  const overlap = segs.length - needed;
-  if (overlap < 0 || overlap > prefix.known.length) return undefined;
   const read = (s: {text: string; quoted: boolean}) => readPart(prefix.base, s);
   const agrees = (s: {text: string; quoted: boolean}, k: string) =>
       read(s) === k || (ignoreCase && lowerAscii(s.text) === lowerAscii(k));
-  const tail = prefix.known.slice(prefix.known.length - overlap);
-  if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
-
-  // Append the remaining child container (if any) and table segment onto
-  // `prefix.base` and verify the resulting resource name is accepted.
-  const rest = segs.slice(overlap).map(read);
-  const qualified = prefix.child ?
-      `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
-      `${prefix.base}/tables/${rest[0]}`;
-  return oldSourceForm(qualified) === undefined && isAcceptedSource(qualified) ?
-      qualified :
-      undefined;
+  // The table's name takes the last part, or up to `prefix.tableParts` parts,
+  // and any parts before the child container must match the end of
+  // `prefix.known`. Fewer table parts win, so `db.t` under database `db` is `t`.
+  for (let count = 1; count <= (prefix.tableParts ?? 1); count++) {
+    const overlap = segs.length - count - (prefix.child ? 1 : 0);
+    if (overlap < 0 || overlap > prefix.known.length) continue;
+    const tail = prefix.known.slice(prefix.known.length - overlap);
+    if (tail.some((k, i) => !agrees(segs[i], k))) continue;
+    const rest = segs.slice(overlap).map(read);
+    let names = rest.slice(prefix.child ? 1 : 0);
+    // A table in the default schema has no schema part in its name.
+    if (names.length > 1 && names[0] === prefix.defaultSchema) {
+      names = names.slice(1);
+    }
+    const table = names.join('.');
+    const qualified = prefix.child ?
+        `${prefix.base}/${prefix.child}/${rest[0]}/tables/${table}` :
+        `${prefix.base}/tables/${table}`;
+    if (oldSourceForm(qualified) === undefined && isAcceptedSource(qualified)) {
+      return qualified;
+    }
+  }
+  return undefined;
 }
 
 // The parts of the bare name `source` as a prefix that begins as `base` does
@@ -666,11 +696,16 @@ function prefixSegments(source: string, base: string): string[] {
 function prefixFor(
     kind: typeof SOURCE_PREFIX_PATTERNS[number],
     parts: string[]): ParsedSourcePrefix|undefined {
-  const base =
-      fillForm(kind.form, parts)?.split('/').slice(0, kind.child ? -4 : -2)
-          .join('/');
+  // A name with more parts than the form's placeholders may end in a table
+  // name of up to `kind.tableParts` parts, such as `p.i.db.ops.stations`.
+  const filled = fillForm(kind.form, parts) ??
+      (kind.tableParts ? fillForm(kind.form, parts.slice(0, 1 - kind.tableParts)) :
+                         undefined);
+  const base = filled?.split('/').slice(0, kind.child ? -4 : -2).join('/');
   const known = base?.match(kind.re)?.slice(1);
-  return base && known ? {base, known, child: kind.child} : undefined;
+  const {child, tableParts, defaultSchema} = kind;
+  return base && known ? {base, known, child, tableParts, defaultSchema} :
+                         undefined;
 }
 
 // True when a --source-prefix of one of `kinds` completes `source`. Each
@@ -837,10 +872,13 @@ function normalizeExpressionDialects(
  * Returns why an unanchored metric `mt` is rejected by push's
  * `validateExpressionReferences` (`'reaches no declared entity'` or
  * `'reaches multiple entities (...)'`), or `undefined` when anchored or valid.
+ * When `translatesLater` is true, `--transpile` translates the model after
+ * this check, and a metric whose `ANSI_SQL` text double-quotes a name is left
+ * for the checks after translation.
  */
 function unanchoredMetricProblem(
     mt: Record<string, any>, entityNames: string[],
-    impliedDialect?: string|null): string|undefined {
+    impliedDialect?: string|null, translatesLater = false): string|undefined {
   // 1. Skip metrics that already declare an `entity` anchor natively or inside
   // a `GOOGLE` `custom_extensions` block.
   if (mt.entity !== undefined ||
@@ -859,6 +897,13 @@ function unanchoredMetricProblem(
           .map(d => ({text: d.expression, dialect: d.dialect}));
   if (!sources.length ||
       sources.some(s => noSqlReason(s.text, s.dialect) !== undefined)) {
+    return undefined;
+  }
+  // BigQuery reads a double-quoted name as text. `--transpile` translates an
+  // `ANSI_SQL` text that holds one, so the check after translation decides.
+  if (translatesLater &&
+      sources.some(
+          s => s.dialect === 'ANSI_SQL' && hasDoubleQuotedColumn(s.text))) {
     return undefined;
   }
   const parsed =
@@ -1016,11 +1061,12 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
  * `false` when the metric is unanchored and reaches 0 or >1 entities so the
- * caller prunes it from `doc.metrics`.
+ * caller prunes it from `doc.metrics`. `translatesLater` is as for
+ * `unanchoredMetricProblem`.
  */
 function repairMetric(
-    mt: Record<string, any>, entityNames: string[],
-    impliedDialect: string|null|undefined, doc: ImportDocument): boolean {
+    mt: Record<string, any>, doc: ImportDocument,
+    translatesLater = false): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
@@ -1028,7 +1074,24 @@ function repairMetric(
         `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
     return true;
   }
-  const problem = unanchoredMetricProblem(mt, entityNames, impliedDialect);
+  if (!keepsMetric(mt, doc, translatesLater)) return false;
+  truncateDescription(mt, mtLabel, doc);
+  return true;
+}
+
+/**
+ * Returns `false`, and reports the removal, when metric `mt` is unanchored and
+ * its expression reaches 0 or >1 entities, so the caller prunes it from
+ * `doc.metrics`. `translatesLater` is as for `unanchoredMetricProblem`.
+ */
+function keepsMetric(
+    mt: Record<string, any>, doc: ImportDocument,
+    translatesLater = false): boolean {
+  const mtLabel = `metric '${mt.name}'`;
+  const entityNames = doc.datasets.map(ds => ds.name)
+                          .filter((n): n is string => typeof n === 'string');
+  const problem = unanchoredMetricProblem(
+      mt, entityNames, doc.impliedDialect, translatesLater);
   if (problem) {
     // In strict mode nothing is written, so the author edits the input.
     const flavor = doc.strict ? doc.inputVersion : doc.targetVersion;
@@ -1043,8 +1106,17 @@ function repairMetric(
     doc.modified = true;
     return false;
   }
-  truncateDescription(mt, mtLabel, doc);
   return true;
+}
+
+/** Keeps the metrics of `doc` for which `keep` returns true. */
+function filterMetrics(
+    doc: ImportDocument,
+    keep: (mt: Record<string, any>, doc: ImportDocument) => boolean): void {
+  doc.metrics = doc.metrics.filter(mt => keep(mt, doc));
+  if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
+    doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
+  }
 }
 
 /**
@@ -1131,11 +1203,11 @@ async function repairDocument(
   // 3. Read the source dialects, infer the model's source dialect from its
   // repaired datasets via `sourcesDialect`, and repair or prune each metric
   // (`repairMetric`). An ANSI_SQL text is not read when no lookup gave its
-  // tables' dialect, as push's checks read none.
+  // tables' dialect, as push's checks read none. Under `--transpile`, the
+  // metric check runs again after translation, or push's checks in strict
+  // mode.
   const load = await readSourceDialects(doc, opts);
-  const entityNames = doc.datasets.map(ds => ds.name)
-                          .filter((n): n is string => typeof n === 'string');
-  const impliedDialect = sourcesDialect({
+  doc.impliedDialect = sourcesDialect({
     entities: doc.datasets.map(ds => {
       const source = typeof ds.source === 'string' ? ds.source : undefined;
       const key = source && dialectLookupKey(source.trim());
@@ -1147,11 +1219,7 @@ async function repairDocument(
       };
     }),
   });
-  doc.metrics = doc.metrics.filter(
-      mt => repairMetric(mt, entityNames, impliedDialect, doc));
-  if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
-    doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
-  }
+  filterMetrics(doc, (mt, d) => repairMetric(mt, d, !!opts.transpile));
 
   // 4. Cap each relationship's `description`. A `GOOGLE` block comes only in
   // strict mode, which writes nothing, so its description is only reported.
@@ -1729,10 +1797,15 @@ async function generateAdaptedFiles(
   // 2. When `transpile` is enabled and no prior errors occurred, translate
   // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
   // and in each BigQuery profile, in its GOOGLE blocks or among `profiles`.
+  // Without strict mode, the repair step's metric check then runs on the
+  // translated text, which can reach entities the input text did not. In
+  // strict mode, push's checks refuse a metric whose translated text reaches
+  // no entity or several.
   if (transpile && doc.errors.length === 0) {
     profiles = await transpileDocument(
         doc, profiles,
         doc.inputVersion === doc.targetVersion ? profileFiles : profiles);
+    if (!doc.strict) filterMetrics(doc, keepsMetric);
   }
 
   // 3. Write `doc.root` into the input's text when modified or preserve the

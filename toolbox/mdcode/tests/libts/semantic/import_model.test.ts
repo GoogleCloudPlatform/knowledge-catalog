@@ -12,8 +12,8 @@ import {entryDenied} from '../gcp/location_responses';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
-const SPANNER_TABLE =
-    'spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/orders';
+const SPANNER_DB = 'spanner.googleapis.com/projects/acme/instances/i/databases/db';
+const SPANNER_TABLE = `${SPANNER_DB}/tables/orders`;
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
 const ALLOYDB_DB =
@@ -725,9 +725,9 @@ describe('profile checks', () => {
       `field 'orders.amount' in model 'retail' (${doc}) has no expression for ${dialect} or ` +
       `ANSI_SQL, and the model file binds entity 'orders' to a ${dialect} source.`;
   const SKIPPED = 'Import skipped the checks that need its dialect.';
-  // Entity customers, on a second table in orders' Spanner database.
-  const CUSTOMERS = '      - name: customers\n' +
-      `        source: ${SPANNER_TABLE.replace(/orders$/, 'customers')}\n` +
+  // Entity customers, on a second table in the same database as the table `orders`.
+  const customers = (orders = SPANNER_TABLE) => '      - name: customers\n' +
+      `        source: ${orders.replace(/orders$/, 'customers')}\n` +
       '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n';
   // [label, source, the dialect of amount's one text, the lookup, push's
   // refusal, other warnings, the entities after orders]. The refusal is an
@@ -788,7 +788,7 @@ describe('profile checks', () => {
   // several entities. A GoogleSQL database reads "customers" as text, so the
   // metric reaches orders alone.
   test('repairs an unanchored metric in the dialect it reads', async () => {
-    const input = model(AMOUNT('amount') + CUSTOMERS +
+    const input = model(AMOUNT('amount') + customers() +
         `    metrics:\n      - {name: total, expression: 'SUM(orders.amount) + COUNT(DISTINCT "customers".id)'}\n`,
         SPANNER_TABLE);
     const metrics = async (readDialects: any) => (await importSemanticModelYaml(
@@ -796,6 +796,45 @@ describe('profile checks', () => {
         f => loadModels(f.content).models[0].metrics.map(m => m.name));
     expect(await metrics(lookup({spanner: 'GOOGLE_STANDARD_SQL'}))).toEqual(['total']);
     expect(await metrics(lookup({}))).toEqual(['total']);
+  });
+
+  // BigQuery and GoogleSQL read the metric's double-quoted names as text, and
+  // its BigQuery translation reaches two entities. Under --input first-party,
+  // push's checks refuse it.
+  const ALL_QUOTED = 'COUNT(DISTINCT "customers"."id") + COUNT("orders"."order_id")';
+  test.each([
+    ['BigQuery tables', BQ_TABLE, ALL_QUOTED],
+    ['BigLake tables', 'biglake.googleapis.com/projects/acme/catalogs/c/namespaces/n/tables/orders', ALL_QUOTED],
+    ['Spanner tables', SPANNER_TABLE, ALL_QUOTED],
+    ['BigQuery tables, quoting only its qualifiers', BQ_TABLE,
+     'COUNT(DISTINCT "customers".id) + COUNT("orders".order_id)'],
+  ])('removes an unanchored metric whose translation reaches two entities, on %s', async (_, orders, metric) => {
+    const input = model(customers(orders) +
+        `    metrics:\n      - {name: m, expression: '${metric}'}\n`, orders);
+    const opts = {flavor: 'google' as const, transpile: true,
+                  readDialects: lookup({spanner: 'GOOGLE_STANDARD_SQL'})};
+    const thirdParty = await importSemanticModelYaml(input, opts);
+    expect(thirdParty.warnings).toContain(
+        "metric 'm': removed unanchored metric whose expression reaches multiple entities " +
+        "(customers, orders); add the metric back with an 'entity' anchor.");
+    expect(loadModels(thirdParty.files[0].content).models[0].metrics).toEqual([]);
+    const firstParty = await importSemanticModelYaml(input, {...opts, ...strict});
+    expect(firstParty.errors).toEqual([
+      "metric 'm' in model 'retail' (sales) has no 'entity' anchor and its expression reaches " +
+      'multiple entities (customers, orders), so it does not resolve to a single entity; set ' +
+      "'entity' on the metric or scope its expression to one entity.",
+    ]);
+  });
+
+  // BigQuery reads "orders".order_id as a field of the text 'orders', which
+  // reaches no entity. The translation reaches orders.
+  test('keeps an unanchored metric whose translation reaches one entity', async () => {
+    const input = model(`    metrics:\n      - {name: m, expression: 'COUNT("orders".order_id)'}\n`);
+    for (const opts of [{}, strict]) {
+      const res = await importSemanticModelYaml(input, {...opts, flavor: 'google', transpile: true});
+      expect(loadModels(res.files[0].content).models[0].metrics[0].dialects).toContainEqual(
+          {dialect: 'BIGQUERY', expression: 'COUNT(`orders`.order_id)'});
+    }
   });
 
   test('reads the dialect of a table a profile file binds', async () => {
@@ -849,7 +888,7 @@ describe('profile checks', () => {
 
   // A model with metric total, deploying `deployment` with profile `profile`.
   const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
-  const SPANNER_GRAPH = 'spanner.googleapis.com/projects/acme/instances/i/databases/db/graphs/g';
+  const SPANNER_GRAPH = `${SPANNER_DB}/graphs/g`;
   const onSpanner = (more = {}) =>
       ({...orders({source: SPANNER_TABLE})[0], ...more});
   // [path, the label of pg's errors, its input and options]
@@ -1121,9 +1160,8 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
-  // A path in one pair of backticks gives its parts under a BigLake prefix,
-  // a part in double quotes keeps its dot, and a Hive database prefix
-  // completes the database form.
+  // Names that a prefix kind reads in its own way: a backticked path under
+  // BigLake, a double-quoted dot, a Hive database, and a Spanner schema.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
   const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
   const ALLOYDB_APP =
@@ -1136,6 +1174,12 @@ describe('sources', () => {
     ['public."order items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order items`],
     ['shop." orders"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/shop/tables/ orders`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
+    ['ops.stations', SPANNER_DB, `${SPANNER_DB}/tables/ops.stations`],
+    ['public.stations', SPANNER_DB, `${SPANNER_DB}/tables/stations`],
+    ['db.public.stations', SPANNER_DB, `${SPANNER_DB}/tables/stations`],
+    ['db.ops.stops', SPANNER_DB, `${SPANNER_DB}/tables/ops.stops`],
+    ['db.stops', SPANNER_DB, `${SPANNER_DB}/tables/stops`],
+    ['DB.stops', SPANNER_DB, `${SPANNER_DB}/tables/DB.stops`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
         ossieDoc({source: `'${bare}'`}), {sourcePrefix});
@@ -1153,11 +1197,13 @@ describe('sources', () => {
   const ADVICE = 'A table outside Google Cloud is written as the entry name of ' +
       "its Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
   const PUSH = "'kcmd push' rejects the file until it is repointed.";
-  const RERUN = "or until 'kcmd import' runs again with '--source-prefix'.";
+  const RERUN = "or until 'kcmd import' runs again with a different '--source-prefix'.";
   const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote.';
   test.each([
     ['no sourcePrefix', 'orders', {}, ADVICE],
     ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, `${RERUN} ${ADVICE}`],
+    ['a Spanner name in another database', 'other.ops.stops', {sourcePrefix: SPANNER_DB}, `${RERUN} ${ADVICE}`],
+    ['a five-part Spanner name in another project', 'p2.i2.db2.ops.stops', {sourcePrefix: SPANNER_DB}, `${RERUN} ${ADVICE}`],
     [
       'backtick-quoted table with dot',
       '\'sales.`my.table`\'',
