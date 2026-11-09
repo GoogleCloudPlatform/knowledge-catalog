@@ -2425,6 +2425,21 @@ describe('a metric operand that names a field', () => {
     expect(warnings).toEqual([]);
   });
 
+  test('a measure over a field bound to TRUE, FALSE or NULL aggregates that value', () => {
+    for (const value of ['TRUE', 'FALSE', 'NULL']) {
+      const {ddl, warnings} = generatePropertyGraph(
+          purchaseWith(
+              [{name: 'flag', expression: value}],
+              [{name: 'm', expression: 'MAX(purchase.flag)'}]),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          `      ${value} AS flag,\n` +
+          `      ${value} AS m_input,\n` +
+          '      MEASURE(MAX(m_input)) AS m\n');
+      expect(warnings).toEqual([]);
+    }
+  });
+
   test('COUNT(*) counts the key column, not a field named like another column', () => {
     // The key names column `purchase_id`, which field `id` reads, while
     // `legacy_id` reads column `id`.

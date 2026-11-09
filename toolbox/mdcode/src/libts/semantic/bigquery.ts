@@ -23,7 +23,7 @@
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
-import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
 export interface GenerateOptions {
@@ -145,9 +145,9 @@ function newLowering(
 
 // The column `sql`, BigQuery SQL local to a table, is when it is one column of
 // that table and nothing else, without its quotes, as in `amount` or
-// `` `order` ``. Undefined otherwise.
+// `` `order` ``. Undefined otherwise, as for TRUE, FALSE and NULL.
 function loneColumn(sql: string): string|undefined {
-  const column = soleColumn(quoteIfReserved(sql), 'BIGQUERY');
+  const column = soleColumn(quoteColumnIfReserved(sql), 'BIGQUERY');
   return column && column.qualifier === undefined ? column.name : undefined;
 }
 

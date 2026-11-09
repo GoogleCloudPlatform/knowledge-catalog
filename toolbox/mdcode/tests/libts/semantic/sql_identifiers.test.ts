@@ -5,7 +5,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {isReservedKeyword, leadingDmlVerb, quoteIdentifier, quoteIfReserved} from '../../../src/libts/semantic/sql_identifiers';
+import {isReservedKeyword, leadingDmlVerb, quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from '../../../src/libts/semantic/sql_identifiers';
 
 describe('isReservedKeyword', () => {
   test('recognizes reserved keywords case-insensitively', () => {
@@ -44,6 +44,26 @@ describe('quoteIfReserved', () => {
     // generators warn about; this helper must not rewrite it.
     expect(quoteIfReserved('a + b')).toBe('a + b');
     expect(quoteIfReserved('`already`')).toBe('`already`');
+  });
+});
+
+describe('quoteColumnIfReserved', () => {
+  test('backticks a lone reserved keyword, which a binding reads as a column', () => {
+    expect(quoteColumnIfReserved('order')).toBe('`order`');
+    expect(quoteColumnIfReserved('Range')).toBe('`Range`');
+  });
+
+  // Backticked, each would be a column of that name.
+  test('leaves TRUE, FALSE and NULL bare, in any case, since they are values', () => {
+    for (const value of ['TRUE', 'false', 'Null']) {
+      expect(quoteColumnIfReserved(value)).toBe(value);
+    }
+  });
+
+  test('passes anything else through unchanged', () => {
+    expect(quoteColumnIfReserved('order_id')).toBe('order_id');
+    expect(quoteColumnIfReserved('a + b')).toBe('a + b');
+    expect(quoteColumnIfReserved('`order`')).toBe('`order`');
   });
 });
 
