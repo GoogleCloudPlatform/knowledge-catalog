@@ -134,6 +134,52 @@ def test_cross_links_become_edges(tmp_path: Path):
     assert ("tables/events", "tables/users") in pairs
 
 
+def test_absolute_bundle_relative_links_become_edges(tmp_path: Path):
+    # SPEC §6.1: links beginning with "/" resolve from the bundle root and are
+    # the recommended cross-linking form.
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(
+        bundle / "tables" / "orders.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Orders
+        description: Orders, linked via bundle-root-absolute paths.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        ---
+        Joins [users](/tables/users.md); metric in [DAU](/references/metrics/dau.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("tables/orders", "tables/users") in pairs
+    assert ("tables/orders", "references/metrics/dau") in pairs
+
+
+def test_absolute_links_cannot_escape_bundle_root(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "tables" / "sneaky.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Sneaky
+        description: Tries to link outside the bundle.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        ---
+        Links [out](/../outside.md) and [up](../../outside.md).
+        """,
+    )
+    (tmp_path / "outside.md").write_text("---\ntype: X\n---\n", encoding="utf-8")
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    assert data["edges"] == []
+
+
 def test_missing_link_targets_are_skipped(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _write(
@@ -153,6 +199,30 @@ def test_missing_link_targets_are_skipped(tmp_path: Path):
     data = _extract_bundle_data(out.read_text(encoding="utf-8"))
     assert data["edges"] == []
     assert len(data["nodes"]) == 1
+
+
+def test_hidden_directories_are_not_walked(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    # Producer-internal state (e.g. a revision snapshot) must not become nodes.
+    _write(
+        bundle / ".oknoll" / "revisions" / "rev-000000000001" / "tables" / "users.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Users (snapshot)
+        description: Old revision snapshot.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-01T00:00:00+00:00'}
+        ---
+        Stale copy.
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    ids = {n["data"]["id"] for n in data["nodes"]}
+    assert len(ids) == 4
+    assert not any(i.startswith(".oknoll/") for i in ids)
 
 
 def test_node_colors_match_palette(tmp_path: Path):
