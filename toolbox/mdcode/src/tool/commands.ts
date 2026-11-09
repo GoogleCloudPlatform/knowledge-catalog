@@ -120,6 +120,9 @@ export interface PushOptions {
   // false for `--no-deployment`, in order. Outside a list, false is
   // `--no-deployment` alone and true is neither flag. Semantic-model push only.
   deployment?: string|boolean|Array<string|boolean>;
+  // Seconds to wait for Dataplex link IAM permissions on a newly created OKF
+  // context set (`--propagation-timeout <seconds>`).
+  propagationTimeout?: number|string;
 }
 
 
@@ -607,6 +610,18 @@ export async function push(options: PushOptions): Promise<number> {
 
   const refused = retiredPushFlagErrors(options);
   if (refused.length) return printErrors(...refused);
+  let propagationTimeoutMs: number|undefined;
+  if (options.propagationTimeout !== undefined) {
+    const raw = String(options.propagationTimeout).trim();
+    const secs = raw === '' || typeof options.propagationTimeout === 'boolean' ?
+        NaN :
+        Number(options.propagationTimeout);
+    if (!Number.isFinite(secs) || secs < 0) {
+      return printErrors(
+          `'--propagation-timeout' must be a non-negative number of seconds.`);
+    }
+    propagationTimeoutMs = Math.round(secs * 1000);
+  }
   ensureManifestExists('.');
   const ctx = context.ApiContext.default();
 
@@ -716,6 +731,7 @@ export async function push(options: PushOptions): Promise<number> {
     const result = await sync.push({
       force: options.force,
       validateOnly: options.validateOnly,
+      ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
     });
     if (!result.success) {
       if (result.details) console.error(`Error: ${result.details}`);

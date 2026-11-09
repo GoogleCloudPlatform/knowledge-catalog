@@ -10,8 +10,10 @@ import {
   EntryLink,
   MetadataChange,
 } from '../../../src/libts/gcp/dataplex';
+import {CatalogManifest} from '../../../src/libts/manifest';
 import {CatalogSnapshot} from '../../../src/libts/snapshot';
-import {CatalogSync} from '../../../src/libts/sync';
+import {Sources} from '../../../src/libts/source';
+import {CatalogSync, PushSyncOptions} from '../../../src/libts/sync';
 
 const CTX = new ApiContext('dst-project', 'us', 'token');
 const GROUP = 'projects/dst-project/locations/us/entryGroups/dst';
@@ -60,7 +62,7 @@ function bundle(): string {
 async function runPush(
   base: string,
   existing: string[] = [],
-  options: {validateOnly?: boolean} = {},
+  options: PushSyncOptions = {},
 ) {
   spyOn(CatalogClient.prototype, 'getEntryGroup').mockImplementation(
     async () => ({status: 200, result: {name: GROUP}}) as any,
@@ -585,40 +587,33 @@ describe('CatalogSync OKF push', () => {
   });
 
   test('reconcileLinks ignores 403 on lookupEntryLinks for newly created entries and retries 429 on createEntryLink', async () => {
-    const priorDelay = process.env.GCP_RETRY_DELAY_MS;
-    process.env.GCP_RETRY_DELAY_MS = '0';
-    try {
-      const base = bundle();
-      fs.writeFileSync(
-        path.join(base, 'bundle', '_links.yaml'),
-        'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
-        'utf8',
-      );
-      spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
-        async () => okOperation() as any,
-      );
-      spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
-        async () => ({status: 403, message: 'or it may not exist'}) as any,
-      );
-      let createCalls = 0;
-      spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
-        async (_p, _l, _g, _id, link) => {
-          createCalls++;
-          if (createCalls === 1) {
-            return {status: 429, message: 'rate limit'} as any;
-          }
-          return {status: 200, result: link} as any;
-        },
-      );
-      spyOn(console, 'log').mockImplementation(() => {});
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+      async () => ({status: 403, message: 'or it may not exist'}) as any,
+    );
+    let createCalls = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async (_p, _l, _g, _id, link) => {
+        createCalls++;
+        if (createCalls === 1) {
+          return {status: 429, message: 'rate limit'} as any;
+        }
+        return {status: 200, result: link} as any;
+      },
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
 
-      const res = await runPush(base, []);
-      expect(res.success).toBe(true);
-      expect(createCalls).toBe(2);
-    } finally {
-      if (priorDelay === undefined) delete process.env.GCP_RETRY_DELAY_MS;
-      else process.env.GCP_RETRY_DELAY_MS = priorDelay;
-    }
+    const res = await runPush(base, [], {retryDelayMs: 0});
+    expect(res.success).toBe(true);
+    expect(createCalls).toBe(2);
   });
 });
 
@@ -820,5 +815,342 @@ describe('CatalogSync OKF push change detection and link preflight', () => {
     expect(res.success).toBe(false);
     expect(lines.at(-1)).toContain('Pushed 2/2 change(s)');
     expect(errors.join('\n')).toContain('1 entry link change(s) failed.');
+  });
+});
+
+describe('CatalogSync OKF new-EntryGroup link propagation and manifest defaults', () => {
+  async function runPushWithGroup(
+    base: string,
+    existing: string[],
+    groupResult: Record<string, unknown>,
+    options: PushSyncOptions = {retryDelayMs: 0},
+  ) {
+    spyOn(CatalogClient.prototype, 'getEntryGroup').mockImplementation(
+      async () => ({status: 200, result: {name: GROUP, ...groupResult}}) as any,
+    );
+    spyOn(CatalogClient.prototype, 'listEntries').mockImplementation(
+      async function* () {
+        for (const id of existing) {
+          yield {
+            name: `${GROUP}/entries/${id}`,
+            entryType: id === 'dst_entry' ? ENTRYGROUP : DOCUMENT,
+          };
+        }
+      } as any,
+    );
+    const snapshot = await CatalogSnapshot.fromPath(base, CTX);
+    const sync = new CatalogSync(new CatalogClient(CTX), snapshot);
+    return await sync.push(options);
+  }
+
+  test('skips lookupEntryLinks on a newly created EntryGroup (ignoring synthetic <group>_entry), prints stderr progress, and retries transient 403/404 on createEntryLink', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    const lookupSpy = spyOn(
+      CatalogClient.prototype,
+      'lookupEntryLinks',
+    ).mockImplementation(
+      async () => ({status: 403, message: 'or it may not exist'}) as any,
+    );
+    let createCalls = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async (_p, _l, _g, _id, link) => {
+        createCalls++;
+        if (createCalls === 1) {
+          return {
+            status: 403,
+            message: `Permission denied on '//dataplex.googleapis.com/${GROUP}' (or it may not exist)`,
+          } as any;
+        }
+        if (createCalls === 2) {
+          return {
+            status: 404,
+            message: `Resource '${GROUP}/entries/assets' not found`,
+          } as any;
+        }
+        return {status: 200, result: link} as any;
+      },
+    );
+    const stderrLines: string[] = [];
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation((m: any) =>
+      void stderrLines.push(String(m)),
+    );
+
+    const res = await runPushWithGroup(base, ['dst_entry'], {
+      createTime: new Date().toISOString(),
+    });
+    expect(res.success).toBe(true);
+    expect(lookupSpy).not.toHaveBeenCalled();
+    expect(createCalls).toBe(3);
+    expect(
+      stderrLines.some((l) =>
+        l.includes("Waiting for Dataplex permissions on new context set 'dst'"),
+      ),
+    ).toBe(true);
+    expect(
+      stderrLines.some((l) => l.includes("Dataplex permissions on 'dst' ready")),
+    ).toBe(true);
+  });
+
+  test('probes a single lookupEntryLinks call sequentially before fanning out on immediate re-push within the propagation window', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    const attemptsByEntry = new Map<string, number>();
+    let ready = false;
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+      async (_p, _l, opts: {entry: string}) => {
+        const n = (attemptsByEntry.get(opts.entry) ?? 0) + 1;
+        attemptsByEntry.set(opts.entry, n);
+        if (!ready && n < 3) {
+          return {
+            status: 403,
+            message: `Permission denied on '//dataplex.googleapis.com/${opts.entry}' (or it may not exist)`,
+          } as any;
+        }
+        ready = true;
+        return {
+          status: 200,
+          result: [
+            {
+              name: `${GROUP}/entryLinks/link-orphaned`,
+              entryLinkType:
+                'projects/dataplex-types/locations/global/entryLinkTypes/related',
+              entryReferences: [
+                {name: `${GROUP}/entries/assets`, type: 'UNSPECIFIED'},
+                {name: `${GROUP}/entries/old`, type: 'UNSPECIFIED'},
+              ],
+            },
+          ],
+        } as any;
+      },
+    );
+    const deleted: string[] = [];
+    spyOn(CatalogClient.prototype, 'deleteEntryLink').mockImplementation(
+      async (_p, _l, _g, id: string) => {
+        deleted.push(id);
+        return {status: 200, result: {}} as any;
+      },
+    );
+    let created = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async (_p, _l, _g, _id, link) => {
+        created++;
+        return {status: 200, result: link} as any;
+      },
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await runPushWithGroup(
+      base,
+      ['assets', 'assets/t', 'dst_entry'],
+      {createTime: new Date(Date.now() - 40_000).toISOString()},
+    );
+    expect(res.success).toBe(true);
+    expect(attemptsByEntry.get(`${GROUP}/entries/assets`)).toBe(3);
+    expect(attemptsByEntry.get(`${GROUP}/entries/assets/t`)).toBe(1);
+    expect(attemptsByEntry.has(`${GROUP}/entries/dst_entry`)).toBe(false);
+    expect(deleted).toEqual(['link-orphaned']);
+    expect(created).toBe(1);
+  });
+
+  test('does not retry 403 naming an external group, a prefix-matching sibling group (<group>_archive), or an old EntryGroup', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      [
+        'links:',
+        '  - type: reference',
+        '    source: assets/t',
+        '    target: projects/ext/locations/us/entryGroups/@bigquery/entries/bq.p.d.secret',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    let createCalls = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async () => {
+        createCalls++;
+        return {
+          status: 403,
+          message:
+            "Permission denied on '//dataplex.googleapis.com/projects/ext/locations/us/entryGroups/@bigquery/entries/bq.p.d.secret'",
+        } as any;
+      },
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation(() => {});
+
+    const extRes = await runPushWithGroup(base, [], {
+      createTime: new Date().toISOString(),
+    });
+    expect(extRes.success).toBe(false);
+    expect(createCalls).toBe(1);
+
+    // Prefix group ID (`dst_archive` vs `dst`) must not count as our own group.
+    let prefixCalls = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async () => {
+        prefixCalls++;
+        return {
+          status: 403,
+          message:
+            "Permission denied on '//dataplex.googleapis.com/projects/dst-project/locations/us/entryGroups/dst_archive/entries/x' (or it may not exist)",
+        } as any;
+      },
+    );
+    const prefixRes = await runPushWithGroup(base, [], {
+      createTime: new Date().toISOString(),
+    });
+    expect(prefixRes.success).toBe(false);
+    expect(prefixCalls).toBe(1);
+
+    let oldLookupCalls = 0;
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+      async () => {
+        oldLookupCalls++;
+        return {status: 403, message: 'Permission denied'} as any;
+      },
+    );
+    const oldRes = await runPushWithGroup(base, ['assets', 'assets/t'], {
+      createTime: '2025-01-01T00:00:00Z',
+    });
+    expect(oldRes.success).toBe(false);
+    expect(oldLookupCalls).toBe(2);
+  });
+
+  test('stops retrying when propagationTimeoutMs runs out and reports a clear re-run hint', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      [
+        'links:',
+        '  - type: related',
+        '    entries:',
+        '      - assets',
+        '      - assets/t',
+        '  - type: reference',
+        '    source: assets',
+        '    target: assets/t',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () => okOperation() as any,
+    );
+    let createCalls = 0;
+    spyOn(CatalogClient.prototype, 'createEntryLink').mockImplementation(
+      async () => {
+        createCalls++;
+        return {
+          status: 403,
+          body: JSON.stringify({
+            error: {
+              code: 403,
+              message: 'Permission denied',
+              details: [
+                {
+                  '@type': 'type.googleapis.com/google.rpc.ResourceInfo',
+                  resourceName: `//dataplex.googleapis.com/${GROUP}`,
+                },
+              ],
+            },
+          }),
+          message: 'Permission denied',
+        } as any;
+      },
+    );
+    const stderrLines: string[] = [];
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation((m: any) =>
+      void stderrLines.push(String(m)),
+    );
+
+    const res = await runPushWithGroup(
+      base,
+      ['dst_entry'],
+      {createTime: new Date().toISOString()},
+      {propagationTimeoutMs: 20, retryDelayMs: 0},
+    );
+    expect(res.success).toBe(false);
+    expect(createCalls).toBeGreaterThan(1);
+    expect(res.details).toContain("re-run 'kcmd push' in ~2 minutes");
+    expect(stderrLines.join('\n')).toContain('--propagation-timeout');
+  });
+
+  test('skips link reconciliation when entry writes fail so missing entries do not trigger propagation waits', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata').mockImplementation(
+      async () =>
+        ({
+          status: 200,
+          result: {
+            name: 'op/1',
+            done: true,
+            metadata: {failedRequests: {'1': {code: 7, message: 'denied'}}},
+          },
+        }) as any,
+    );
+    const createLink = spyOn(CatalogClient.prototype, 'createEntryLink');
+    const stderrLines: string[] = [];
+    spyOn(console, 'log').mockImplementation(() => {});
+    spyOn(console, 'error').mockImplementation((m: any) =>
+      void stderrLines.push(String(m)),
+    );
+
+    const res = await runPushWithGroup(base, ['dst_entry'], {
+      createTime: new Date().toISOString(),
+    });
+    expect(res.success).toBe(false);
+    expect(createLink).not.toHaveBeenCalled();
+    expect(stderrLines.join('\n')).toContain(
+      'Skipping entry link reconciliation because entry changes failed.',
+    );
+  });
+
+  test('forPendingEntryGroup omits snapshot.aspects for OKF layout', () => {
+    const dir = makeTempDir('okf-manifest-');
+    const okfManifest = CatalogManifest.forPendingEntryGroup(
+      Sources.ENTRYGROUP,
+      'dst-project.us.dst',
+      'okf',
+    );
+    const okfPath = path.join(dir, 'okf.yaml');
+    okfManifest.save(okfPath);
+    const okfSaved = fs.readFileSync(okfPath, 'utf8');
+    expect(okfSaved).toContain('layout: okf');
+    expect(okfSaved).not.toContain('snapshot:');
+
+    const stdManifest = CatalogManifest.forPendingEntryGroup(
+      Sources.ENTRYGROUP,
+      'dst-project.us.dst',
+    );
+    const stdPath = path.join(dir, 'std.yaml');
+    stdManifest.save(stdPath);
+    expect(fs.readFileSync(stdPath, 'utf8')).toContain('snapshot:');
   });
 });

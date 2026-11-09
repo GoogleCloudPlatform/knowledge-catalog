@@ -119,7 +119,10 @@ pushCmd
     .option(
         '--dry-run',
         'Run every check and show what would change, without applying anything')
-    .option('--validate-only', 'Same as --dry-run');
+    .option('--validate-only', 'Same as --dry-run')
+    .option(
+        '--propagation-timeout <seconds>',
+        'Seconds to wait for IAM permissions to propagate on a newly created OKF context set (default: 120; 0 disables waiting)');
 if (ENABLE_SEMANTIC) {
   pushCmd
       .option(

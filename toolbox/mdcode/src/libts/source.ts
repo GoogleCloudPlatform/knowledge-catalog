@@ -28,6 +28,9 @@ export interface CatalogSource {
   // Present only for scopes that carry an EntryGroup (e.g. entryGroup, kb,
   // semantic-model); used to scope the local catalog layout to that group.
   readonly entryGroup?: string;
+  // RFC 3339 creation timestamp of the backing EntryGroup when loaded from the
+  // service; undefined on offline or non-EntryGroup sources.
+  readonly entryGroupCreateTime?: string;
   // The aspect types `kcmd init` lists under snapshot.aspects, so pull fetches
   // them along with those each entry's type requires. System-generated aspects
   // are left out, since push sends every local aspect back.

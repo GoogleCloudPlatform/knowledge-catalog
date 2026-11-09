@@ -114,6 +114,27 @@ describe('an OKF workspace (layout: okf)', () => {
     expect(pushSpy).toHaveBeenCalledWith({force: undefined, validateOnly: true});
   });
 
+  test('push forwards --propagation-timeout (in ms) and rejects negative values', async () => {
+    writeManifest('layout: okf\n');
+    const pushSpy = spyOn(CatalogSync.prototype, 'push').mockImplementation(
+      async () => ({success: true}),
+    );
+
+    expect(await push({propagationTimeout: '300'})).toBe(0);
+    expect(pushSpy).toHaveBeenCalledWith({
+      force: undefined,
+      validateOnly: undefined,
+      propagationTimeoutMs: 300_000,
+    });
+
+    const errors: string[] = [];
+    spyOn(console, 'error').mockImplementation((...a: any[]) =>
+      void errors.push(a.join(' ')),
+    );
+    expect(await push({propagationTimeout: '-5'})).toBe(1);
+    expect(errors.join('\n')).toContain('--propagation-timeout');
+  });
+
   test('push --dry-run works even when the EntryGroup does not exist yet', async () => {
     writeManifest('layout: okf\n');
     fs.mkdirSync(path.join(dir, 'bundle'), {recursive: true});
