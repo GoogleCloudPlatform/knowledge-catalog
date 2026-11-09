@@ -3139,10 +3139,22 @@ describe('deployKnowledgeCatalog: relationship entries and links', () => {
   });
   const [SOURCE_REF, TARGET_REF] =
       references('orders_to_customer', 'orders', 'customer');
-  // Each case pushes STAR again over the links `links` and expects creates of
-  // the link IDs `created` and updates of `updated`. STAR's other links count
-  // as unchanged.
-  for (const [name, links, created, updated] of [
+  // `link` as stored in another project, 987654321, from that project's
+  // entry with the ID of the link's source. The lookup of the link's target
+  // returns it.
+  const inOtherProject = (link: any) => {
+    const other = structuredClone(link);
+    for (const r of [other, other.entryReferences[0]]) {
+      r.name = r.name.replace('projects/123456789/', 'projects/987654321/');
+    }
+    return other;
+  };
+  // Resource Manager does not give the scope's project number.
+  const NO_NUMBER = {project: () => err(403, 'Permission denied')};
+  // Each case pushes STAR again over the links `links` with the stubs `stubs`
+  // and expects creates of the link IDs `created` and updates of `updated`.
+  // STAR's other links count as unchanged.
+  for (const [name, links, created, updated, stubs] of [
     ['an unchanged re-push sends no entry link write',
      [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF,
       TARGET_REF],
@@ -3157,10 +3169,25 @@ describe('deployKnowledgeCatalog: relationship entries and links', () => {
     ['a link the lookup did not return is created',
      [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF],
      [STAR_REFERENCES[1]], []],
-  ] as [string, object[], string[], string[]][]) {
+    ['with no project number, a link in another project that holds the ' +
+         'aspect does not count as unchanged',
+     [inOtherProject(storedLink('655216118709', ['orders_to_customer'])),
+      SOURCE_REF, TARGET_REF],
+     [STAR_SEMANTIC_LINK], [], NO_NUMBER],
+    ['with no project number, a link in another project whose aspect ' +
+         'differs gets no update',
+     [inOtherProject(storedLink('655216118709', ['old_name'])), SOURCE_REF,
+      TARGET_REF],
+     [STAR_SEMANTIC_LINK], [], NO_NUMBER],
+    ['with no project number, a link in another project does not hide the ' +
+         'project\'s own',
+     [inOtherProject(storedLink('655216118709', ['orders_to_customer'])),
+      storedLink('655216118709', ['old_name']), SOURCE_REF, TARGET_REF],
+     [], [STAR_SEMANTIC_LINK], NO_NUMBER],
+  ] as [string, object[], string[], string[], Stubs?][]) {
     test(name, async () => {
-      const {createLink, updateLink, result} =
-          await rePush({links: () => ok(links), createLink: () => ok({})});
+      const {createLink, updateLink, result} = await rePush(
+          {links: () => ok(links), createLink: () => ok({}), ...stubs});
       const linked = created.length + updated.length;
       expect(result).toMatchObject(
           {success: true, linked, unchangedLinks: 3 - linked});
