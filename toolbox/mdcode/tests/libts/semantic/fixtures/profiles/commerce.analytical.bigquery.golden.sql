@@ -12,8 +12,10 @@ NODE TABLES (
       order_id AS id,
       fk_customer AS customerId,
       gross_amount AS amount,
-      MEASURE(COUNT(id)) AS order_count,
-      MEASURE(SUM(amount)) AS total_amount
+      order_id,
+      gross_amount,
+      MEASURE(COUNT(order_id)) AS order_count,
+      MEASURE(SUM(gross_amount)) AS total_amount
     )
 )
 EDGE TABLES (

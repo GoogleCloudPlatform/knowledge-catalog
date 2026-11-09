@@ -6,14 +6,16 @@ NODE TABLES (
       cust_key AS id OPTIONS(description="Customer ID"),
       cust_name AS name,
       cust_segment AS segment,
-      MEASURE(COUNT(segment)) AS segment_count
+      cust_segment,
+      MEASURE(COUNT(cust_segment)) AS segment_count
     ),
   `acme-ops.ops.fct_order` AS `Order`
     KEY(order_key)
     PROPERTIES(
       order_key AS id,
       cust_key AS customerId,
-      MEASURE(COUNT(id)) AS order_count
+      order_key,
+      MEASURE(COUNT(order_key)) AS order_count
     )
 )
 EDGE TABLES (
