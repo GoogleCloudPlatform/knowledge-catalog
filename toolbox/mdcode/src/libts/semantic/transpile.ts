@@ -703,11 +703,76 @@ const BOOLEANS = new Set([
 // The kinds of node that compare two values.
 const COMPARISONS = new Set(['eq', 'neq', 'lt', 'lte', 'gt', 'gte']);
 
+// The kinds of node that compare, which BigQuery does not chain.
+const COMPARING = new Set([...COMPARISONS, 'is_null', 'like', 'in', 'between']);
+
+// The kinds in COMPARING that each source dialect binds, tightest first, as
+// its documentation orders them. The engine reads them all at one level from
+// left to right, so import translates one without parentheses as an operand of
+// another only where the dialect binds it tighter. MySQL also reads two of one
+// level from left to right. PostgreSQL rejects two of one level, and Databricks
+// does not say how it reads them. The other dialects are left out: Snowflake
+// documents no order for these operators, Spanner needs parentheses as BigQuery
+// does, SQL Server reads no comparison as a value, and an ANSI_SQL text runs by
+// the rules of its tables' database.
+const BINDING: Record<string, string[][]> = {
+  postgresql: [['between', 'in', 'like'], [...COMPARISONS], ['is_null']],
+  mysql: [[...COMPARISONS, 'is_null', 'like', 'in'], ['between']],
+  databricks: [[...COMPARISONS], ['between', 'in', 'like', 'is_null']],
+};
+
 // The operators a message names, by kind.
 const OPERATORS: Record<string, string> = {
   add: '+', sub: '-', mul: '*', neg: '-', eq: '=', neq: '<>', lt: '<', lte: '<=',
-  gt: '>', gte: '>=', between: 'BETWEEN', in: 'IN', case: 'CASE',
+  gt: '>', gte: '>=', between: 'BETWEEN', in: 'IN', case: 'CASE', like: 'LIKE',
+  is_null: 'IS NULL',
 };
+
+// The kind in COMPARING of `node`, an engine node, or undefined. The engine
+// reads `s NOT LIKE p` as NOT of a LIKE.
+function comparingKind(node: any): string|undefined {
+  const kind = kindOf(node?.not?.this) === 'like' ? 'like' : kindOf(node);
+  return COMPARING.has(kind!) ? kind : undefined;
+}
+
+// The operands of a node of `kind` in COMPARING, by name, first operand first.
+// IN's list stands inside its own parentheses.
+function operandNames(kind: string): string[] {
+  return kind === 'is_null' || kind === 'in' ? ['this'] :
+      kind === 'between' ? ['this', 'low', 'high'] : ['left', 'right'];
+}
+
+// The operator of `node`, a node comparingKind names, as written, for a message.
+function operatorName(node: any): string {
+  const kind = comparingKind(node)!;
+  if (node.not) return 'NOT LIKE';
+  const not: Record<string, string> =
+      {is_null: 'IS NOT NULL', in: 'NOT IN', between: 'NOT BETWEEN'};
+  return node[kind].not ? not[kind] : OPERATORS[kind];
+}
+
+// The message for `value`, a node of `kind` in COMPARING in the engine's
+// dialect `read`, when one of its operands compares too and import does not
+// translate the pair, or undefined. Without parentheses, the source may group
+// the two operators another way than the engine (see BINDING). BigQuery's LIKE
+// also takes no BOOL, and its IN and BETWEEN take a BOOL only beside another
+// BOOL, where some sources convert it.
+function nestedComparison(kind: string, value: any, read: string): string|undefined {
+  const levels = BINDING[read];
+  const level = (k: string) => levels.findIndex(l => l.includes(k));
+  for (const [i, name] of operandNames(kind).entries()) {
+    const inner = comparingKind(value[name]);
+    const grouped = !inner || (levels && (level(inner) < level(kind) ||
+        (i === 0 && read === 'mysql' && level(inner) === level(kind))));
+    if (grouped) continue;
+    const [outer, operand] = [operatorName({[kind]: value}), operatorName(value[name])];
+    const [first, second] = i === 0 ? [operand, outer] : [outer, operand];
+    return `${first} and ${second} without parentheses, which databases group in different orders`;
+  }
+  const values = comparedValues(kind, value) ?? [value.left, value.right];
+  return ['like', 'in', 'between'].includes(kind) && values.some(v => comparingKind(bare(v))) ?
+      `${operatorName({[kind]: value})} of a comparison` : undefined;
+}
 
 // The first construct in `node`, a source expression in the engine's dialect
 // `read`, that import does not translate, named for a message, or undefined.
@@ -745,6 +810,8 @@ function kindOf(node: any): string|undefined {
 // not translate the node.
 function nextNodes(kind: string, value: any, read: string):
     unknown[]|string|undefined {
+  const nested = COMPARING.has(kind) ? nestedComparison(kind, value, read) : undefined;
+  if (nested) return nested;
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
   // BigQuery gives a BOOL there.
   if (read === 'mysql') {
@@ -774,7 +841,7 @@ function nextNodes(kind: string, value: any, read: string):
     if (value.literal_type === 'date' && !PLAIN_DATE.test(value.value)) {
       return `DATE '${value.value}'`;
     }
-    const type = value.literal_type.replace('_', ' ');
+    const type = value.literal_type.replaceAll('_', ' ');
     return LITERALS.has(value.literal_type) ? [] : `${article(type)} ${type} literal`;
   }
   if (kind === 'cast' || kind === 'try_cast' || kind === 'safe_cast') {
@@ -807,7 +874,7 @@ function nextNodes(kind: string, value: any, read: string):
     if (read === 'tsql' && pattern.includes('[')) return 'LIKE with a bracket in its pattern';
   }
   if (kind === 'extract') {
-    const part = String(value.field?.Custom ?? value.field);
+    const part = String(partName(value.field));
     return PARTS[part.toLowerCase()] ? dateValue('EXTRACT', value.this) :
                                        `EXTRACT with part '${part.toUpperCase()}'`;
   }
@@ -1007,7 +1074,7 @@ function dateValue(name: string, node: any): unknown[]|string {
 function valueName(node: any): string {
   const kind = kindOf(node) ?? '';
   const value = node?.[kind];
-  const type = kind === 'literal' && value.literal_type.replace('_', ' ');
+  const type = kind === 'literal' && value.literal_type.replaceAll('_', ' ');
   if (type) return `${article(type)} ${type}`;
   if (kind === 'cast' || kind === 'try_cast') return `a cast to ${typeName(castType(value.to), '')}`;
   if (kind === 'function') return String(value.name).toUpperCase();
@@ -1019,7 +1086,7 @@ function valueName(node: any): string {
 // whole number of days, hours or minutes. An interval of months is translated
 // only in a function that adds it, with `adds`.
 function interval(value: any, adds = false): string|undefined {
-  const text = numberText(value?.this) ?? bare(value?.this)?.literal?.value;
+  const text = numberText(value?.this) ?? literalText(bare(value?.this)?.literal);
   const unit = value?.unit === null ? stringUnit(text)?.unit :
       value?.unit?.type === 'simple' && (text === undefined || /^\s*[+-]?\d+\s*$/.test(text)) ?
       String(value.unit.unit).toLowerCase() : undefined;
@@ -1027,11 +1094,30 @@ function interval(value: any, adds = false): string|undefined {
 }
 
 // `value`, an engine interval, as the source writes it after INTERVAL, for a
-// message.
+// message. Its unit is a name, such as DAY, a node, such as DAY(9), or a span
+// of two of either, such as HOUR TO MINUTE.
 function intervalText(value: any): string {
-  const text = numberText(value?.this) ?? bare(value?.this)?.literal?.value ?? '?';
-  const unit = value?.unit?.unit ?? value?.unit?.this;
-  return unit ? `${text} ${String(unit).toUpperCase()}` : `'${text}'`;
+  const text = numberText(value?.this) ?? literalText(bare(value?.this)?.literal) ?? '?';
+  const spec = value?.unit;
+  const unit = !spec ? undefined : spec.type === 'simple' ? unitName(spec.unit) :
+      spec.type === 'expr' ? unitName(spec) :
+      `${unitName(spec.this)} TO ${unitName(spec.expression)}`;
+  return unit ? `${text} ${unit}` : `'${text}'`;
+}
+
+// `unit`, an interval unit as the engine reads it, for a message: a name such
+// as `Day`, or a node such as DAY(9), whose kind is the unit.
+function unitName(unit: any): string {
+  if (typeof unit === 'string') return unit.toUpperCase();
+  const kind = Object.keys(unit ?? {}).find(k => k !== 'type') ?? '?';
+  const size = numberText(unit?.[kind]?.this);
+  return `${kind.toUpperCase()}${size === undefined ? '' : `(${size})`}`;
+}
+
+// The text of `literal`, an engine literal. The engine gives a triple-quoted
+// string as its text and its quote.
+function literalText(literal: any): string|undefined {
+  return Array.isArray(literal?.value) ? literal.value[0] : literal?.value;
 }
 
 // The amount and the unit, in lower case, of an interval string such as
@@ -1147,9 +1233,10 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 //
 // The engine (@polyglot-sql/sdk 0.9.1, and still 0.13.4) reads DATE_TRUNC and
 // DATE_PART as functions it does not know and writes them to BigQuery as they
-// were. It also keeps an interval string such as `INTERVAL '1 day'`, and the
-// name of Snowflake's TIMESTAMP_NTZ, and a comparison of a comparison without
-// parentheses. BigQuery rejects each of these, and the engine reports success.
+// were. It also keeps an interval string such as `INTERVAL '1 day'`, the name
+// of Snowflake's TIMESTAMP_NTZ, and a comparison, IS NULL, LIKE, IN or BETWEEN
+// of another without parentheses. BigQuery rejects each of these, and the
+// engine reports success.
 // It keeps TRIM(s), a decimal number such as 0.29, Snowflake's current date and
 // time, and Snowflake's division and average, which give another value in
 // BigQuery. So the adapter reads the engine's BigQuery output back and
@@ -1159,9 +1246,6 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
   TIMESTAMPNTZ: {data_type: 'custom', name: 'DATETIME'},
 };
-
-// The kinds of node that compare, which BigQuery does not chain.
-const COMPARING = new Set([...COMPARISONS, 'is_null', 'like', 'in', 'between']);
 
 // `sql`, the engine's BigQuery output from the engine's dialect `read`, with
 // the forms above rewritten, or an error when the engine cannot write the
@@ -1210,12 +1294,15 @@ function repairNode(node: any, read: string): unknown {
     return node.div ? {div: {...node.div, left: asNumeric(node.div.left)}} :
                       {avg: {...node.avg, this: asNumeric(node.avg.this)}};
   }
+  // BigQuery needs parentheses around an operand of a comparison that
+  // compares too.
   const compares = kindOf(node);
-  if (COMPARISONS.has(compares!)) {
+  if (COMPARING.has(compares!)) {
     const value = node[compares!];
-    const wrap = (n: any) => COMPARING.has(kindOf(n)!) ? {paren: {this: n}} : n;
-    if ([value.left, value.right].some(n => COMPARING.has(kindOf(n)!))) {
-      return {[compares!]: {...value, left: wrap(value.left), right: wrap(value.right)}};
+    const wrapped = operandNames(compares!).filter(n => comparingKind(value[n]));
+    if (wrapped.length) {
+      const parens = wrapped.map(n => [n, {paren: {this: value[n]}}]);
+      return {[compares!]: {...value, ...Object.fromEntries(parens)}};
     }
   }
   // BigQuery's own DATE_TRUNC(d, MONTH) names its part last, unquoted.
@@ -1316,14 +1403,26 @@ function asNumeric(node: unknown): unknown {
   return {cast: {...cast.cast, this: node}};
 }
 
-// The part a date function names: a string, or a bare name, which the engine
-// reads as a `var` or a column.
-function partName(arg: any): string|undefined {
-  const b = bare(arg);
+// The date part `part` names, or undefined. `part` is EXTRACT's field, which
+// the engine gives as a name such as `Month`, or as {Custom} or
+// {WeekWithModifier} for ISOWEEK or WEEK(MONDAY). Or it is a date function's
+// argument: a string, a bare name, which the engine reads as a `var` or a
+// column, or WEEK(MONDAY), which it reads as a function.
+function partName(part: any): string|undefined {
+  if (typeof part === 'string') {
+    return ({TimezoneHour: 'TIMEZONE_HOUR', TimezoneMinute: 'TIMEZONE_MINUTE'} as
+            Record<string, string>)[part] ?? part.toUpperCase();
+  }
+  if (part?.WeekWithModifier !== undefined) return `WEEK(${part.WeekWithModifier})`;
+  if (part?.Custom !== undefined) return part.Custom;
+  const b = bare(part);
   if (b?.literal?.literal_type === 'string') return b.literal.value;
   if (b?.var) return b.var.this;
   if (b?.column && !b.column.table) return b.column.name?.name;
-  return undefined;
+  const fn = b?.function;
+  const day = String(fn?.name).toUpperCase() === 'WEEK' && fn.args?.length === 1 &&
+      partName(fn.args[0]);
+  return day ? `${fn.name}(${day})` : undefined;
 }
 
 // --- SPANNER texts --------------------------------------------------------------
@@ -1357,6 +1456,12 @@ const ZONE_ARGS: Record<string, number> = {
 const SPANNER_DATE_PARTS = new Set([
   'YEAR', 'ISOYEAR', 'QUARTER', 'MONTH', 'WEEK', 'ISOWEEK', 'DAY', 'DAYOFWEEK',
   'DAYOFYEAR',
+]);
+
+// The parts of EXTRACT Spanner has. Spanner has no WEEK(<weekday>).
+const SPANNER_PARTS = new Set([
+  ...SPANNER_DATE_PARTS, 'NANOSECOND', 'MICROSECOND', 'MILLISECOND', 'SECOND', 'MINUTE', 'HOUR',
+  'DATE',
 ]);
 
 // The Spanner functions that visibly give a DATE or a TIMESTAMP.
@@ -1428,7 +1533,8 @@ function spannerNodes(kind: string, value: any): unknown[]|string|undefined {
         'TIMESTAMP of a value that may be a string with its own time zone';
   }
   if (kind === 'extract') {
-    const part = String(value.field?.Custom ?? value.field).toUpperCase();
+    const part = String(partName(value.field)).toUpperCase();
+    if (!SPANNER_PARTS.has(part)) return `EXTRACT with part '${part}'`;
     const type = zoned(value.this) ? 'zoned' : spannerType(value.this);
     if (type === 'string') return 'EXTRACT of a string';
     if (!['zoned', 'interval', 'date', 'timestamp'].includes(type!) && SPANNER_DATE_PARTS.has(part)) {
@@ -1544,9 +1650,8 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
   // DOY.
   const result = mapTree(rewrite(tree), node => {
     if (node.data_type === 'timestamp') node.timezone = true;
-    const part = node.extract && {DayOfWeek: 'DAYOFWEEK', DayOfYear: 'DAYOFYEAR'}[
-        node.extract.field as string];
-    if (part) node.extract.field = {Custom: part};
+    const part = node.extract && partName(node.extract.field);
+    if (part === 'DAYOFWEEK' || part === 'DAYOFYEAR') node.extract.field = {Custom: part};
     return undefined;
   });
   const written = engine.generate([result], 'bigquery');
