@@ -2258,7 +2258,8 @@ describe(
                 await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
             expect(result.success).toBe(true);
-            expect(result.linked).toBe(3);
+            expect(result.linked).toBe(2);
+            expect(result.unchangedLinks).toBe(1);
             expect(result.unlinked).toBe(1);
             const source =
                 createLink.mock.calls.find(c => c[3] === STAR_REFERENCES[0])!;
@@ -2273,11 +2274,11 @@ describe(
               `delLink:${FROM_SUPPLIER}`,
               `delLink:${STAR_REFERENCES[0]}`,
               `createLink:${STAR_SEMANTIC_LINK}`,
-              ...STAR_REFERENCES.map(id => `createLink:${id}`),
+              `createLink:${STAR_REFERENCES[0]}`,
               'delEntry:sales/entities/supplier',
             ]);
-            // The target reference link has no aspect, so push leaves it as
-            // it is.
+            // The lookup returned the target reference link with the same
+            // ends, and it has no aspect, so push sends no request for it.
             expect(updateLink).not.toHaveBeenCalled();
           });
 
@@ -2476,8 +2477,8 @@ describe(
               'no push-again hint',
           async () => {
             // `sales-old-a` joins the pair `sales-a` takes, and `sales-a` is
-            // written. The update of `sales-b` fails, and that link still
-            // exists.
+            // written. The stored `sales-b` lacks its aspect, so push updates
+            // it. That update fails, and the link still exists.
             const linkA = linkEntry(
                 'sales-a', ['sales.entities.orders', 'sales.entities.customer']);
             const linkB = {
@@ -2495,10 +2496,8 @@ describe(
                 linkEntry(
                     'sales-old-a',
                     ['sales.entities.orders', 'sales.entities.customer']),
-                linkB,
+                {...linkB, aspects: undefined},
               ]),
-              createLink: (id) =>
-                  id === 'sales-b' ? err(409, 'already exists') : ok({}),
               updateLink: err(500, 'backend error'),
             });
             const emitted: EmittedModel[] = [{
@@ -2751,12 +2750,12 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
-      'lookupEntryLinks keeps a link under any project number when the ' +
-          'scope\'s project number cannot be found',
+      'lookupEntryLinks keeps a link whose references spell its own ' +
+          'project when the scope\'s project number cannot be found',
       async () => {
         // Neither the scope nor the listing spells a number, and Resource
-        // Manager denies the lookup, so the filter cannot tell the scope's
-        // number from another project's.
+        // Manager denies the lookup. The link's references spell its own
+        // project, so push keeps it.
         const orphan = linkEntry(
             'sales-orders-to-supplier',
             ['sales.entities.orders', 'sales.entities.supplier'], '987654321');
@@ -2777,8 +2776,8 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
-      'lookupEntryLinks keeps a link under any project number when ' +
-          'Resource Manager throws',
+      'lookupEntryLinks keeps a link whose references spell its own ' +
+          'project when Resource Manager throws',
       async () => {
         const orphan = linkEntry(
             'sales-orders-to-supplier',
@@ -3108,18 +3107,95 @@ describe('deployKnowledgeCatalog: relationship entries and links', () => {
          expect(result.success).toBe(true);
          expect(result.deleted).toBe(1);
          expect(result.unlinked).toBe(3);
-         expect(result.linked).toBe(3);
-         // The orphaned links go first, then the links are written, and the
-         // orphaned entry goes last.
+         expect(result.linked).toBe(1);
+         expect(result.unchangedLinks).toBe(2);
+         // The orphaned links go first, and the orphaned entry goes last.
+         // The lookup returned STAR's links with the same ends, so push
+         // creates none of them. STAR_LINK is stored without its aspect, so
+         // it gets the one update.
          expect(callOrder).toEqual([
            ...[BACK_ID, ...dropped.map(l => l.name.split('/').pop())].map(
                id => `delLink:${id}`),
-           ...[STAR_SEMANTIC_LINK, ...STAR_REFERENCES].map(
-               id => `createLink:${id}`),
            'delEntry:sales/relationships/customer_orders',
          ]);
          expect(updateLink).toHaveBeenCalledTimes(1);
        });
+
+  // STAR_LINK as the lookup returns it after a push: its aspect is keyed with
+  // the types project `project`, holds `relationships`, and carries the
+  // fields Dataplex adds.
+  const storedLink = (project: string, relationships: string[]) => ({
+    ...STAR_LINK,
+    aspects: {
+      [`${project}.global.semantic-link`]: {
+        aspectType:
+            `projects/${project}/locations/global/aspectTypes/semantic-link`,
+        createTime: '2026-11-07T00:35:40Z',
+        updateTime: '2026-11-07T00:35:40Z',
+        aspectSource: {},
+        data: {relationships},
+      },
+    },
+  });
+  const [SOURCE_REF, TARGET_REF] =
+      references('orders_to_customer', 'orders', 'customer');
+  // `link` as stored in another project, 987654321, from that project's
+  // entry with the ID of the link's source. The lookup of the link's target
+  // returns it.
+  const inOtherProject = (link: any) => {
+    const other = structuredClone(link);
+    for (const r of [other, other.entryReferences[0]]) {
+      r.name = r.name.replace('projects/123456789/', 'projects/987654321/');
+    }
+    return other;
+  };
+  // Resource Manager does not give the scope's project number.
+  const NO_NUMBER = {project: () => err(403, 'Permission denied')};
+  // Each case pushes STAR again over the links `links` with the stubs `stubs`
+  // and expects creates of the link IDs `created` and updates of `updated`.
+  // STAR's other links count as unchanged.
+  for (const [name, links, created, updated, stubs] of [
+    ['an unchanged re-push sends no entry link write',
+     [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF,
+      TARGET_REF],
+     [], []],
+    ['an aspect keyed with the types project ID counts as unchanged',
+     [storedLink('dataplex-types', ['orders_to_customer']), SOURCE_REF,
+      TARGET_REF],
+     [], []],
+    ['a link whose aspect changed gets an update and no create',
+     [storedLink('655216118709', ['old_name']), SOURCE_REF, TARGET_REF], [],
+     [STAR_SEMANTIC_LINK]],
+    ['a link the lookup did not return is created',
+     [storedLink('655216118709', ['orders_to_customer']), SOURCE_REF],
+     [STAR_REFERENCES[1]], []],
+    ['with no project number, a link in another project that holds the ' +
+         'aspect does not count as unchanged',
+     [inOtherProject(storedLink('655216118709', ['orders_to_customer'])),
+      SOURCE_REF, TARGET_REF],
+     [STAR_SEMANTIC_LINK], [], NO_NUMBER],
+    ['with no project number, a link in another project whose aspect ' +
+         'differs gets no update',
+     [inOtherProject(storedLink('655216118709', ['old_name'])), SOURCE_REF,
+      TARGET_REF],
+     [STAR_SEMANTIC_LINK], [], NO_NUMBER],
+    ['with no project number, a link in another project does not hide the ' +
+         'project\'s own',
+     [inOtherProject(storedLink('655216118709', ['orders_to_customer'])),
+      storedLink('655216118709', ['old_name']), SOURCE_REF, TARGET_REF],
+     [], [STAR_SEMANTIC_LINK], NO_NUMBER],
+  ] as [string, object[], string[], string[], Stubs?][]) {
+    test(name, async () => {
+      const {createLink, updateLink, result} = await rePush(
+          {links: () => ok(links), createLink: () => ok({}), ...stubs});
+      const linked = created.length + updated.length;
+      expect(result).toMatchObject(
+          {success: true, linked, unchangedLinks: 3 - linked});
+      expect(createLink.mock.calls.map(c => c[3])).toEqual(created);
+      expect(updateLink.mock.calls.map(c => c[0].name!.split('/').pop()))
+          .toEqual(updated);
+    });
+  }
 
   // STAR with its relationship turned to run from customer to orders.
   const FLIPPED = [{

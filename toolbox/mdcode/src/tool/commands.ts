@@ -1589,10 +1589,14 @@ function reportCatalogResult(
                                        result.deleted === 1 ? 'y' : 'ies'}` :
                                    '';
   // The relationships of an ordered entity pair share one link, so the count
-  // is of links.
+  // is of links. Links push found unchanged got no request and are counted
+  // apart.
   const plural = result.linked === 1 ? '' : 's';
-  const linked =
-      result.linked ? `; wrote ${result.linked} entry link${plural}` : '';
+  const unchanged =
+      result.unchangedLinks ? ` (${result.unchangedLinks} unchanged)` : '';
+  const linked = result.linked || result.unchangedLinks ?
+      `; wrote ${result.linked} entry link${plural}${unchanged}` :
+      '';
   const unlinked = result.unlinked ?
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :
