@@ -27,7 +27,7 @@ import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
-import {catalogForm} from '../libts/semantic/pull_update';
+import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
@@ -1699,14 +1699,14 @@ async function pullSemanticModel(
   const pulled = result.models[0];
   const {files, warnings} = pulledModelFiles(layout, pulled);
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
-  const kept = filesHoldingCatalog(layout, source, pulled.name, files);
+  const updated = updatedFiles(layout, source, pulled.name, files);
   for (const [id, sidecar] of result.overviews ?? []) {
-    files.push({
+    updated.push({
       fileName: `${id}.overview.md`,
       content: formatOverviewSidecar(sidecar),
     });
   }
-  return writePulledFiles(layout, pulled.name, files, options, kept);
+  return writePulledFiles(layout, pulled.name, updated, options);
 }
 
 
@@ -1725,51 +1725,100 @@ function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
 }
 
 
-// The names of the files in `files` that pull keeps as they are. `files`
-// holds what pull built from the catalog for `model`. A local file is kept
-// when pull would write the same text for it had push written the local
-// files to the catalog (see pull_update.ts). The model file is compared on
-// its own, and each profile file beside the catalog's model file, which is
-// the model file pull leaves. Warns about the local files that do not load.
-function filesHoldingCatalog(
+// The model and profile files pull writes for `model`. `files` holds what
+// pull built from the catalog. A local file is changed only where its content
+// differs from the catalog's (see pull_update.ts), so one that holds the
+// catalog's content keeps its bytes. The model file is read on its own. Each
+// profile file is read on its own too, since pull builds each profile file
+// from that profile alone: beside the catalog's model file, which is the
+// model file pull leaves, or else beside the local model file, as when the
+// catalog's model no longer has an entity the profile file binds. Either way,
+// a changed profile file must hold the catalog's content beside the catalog's
+// model file. A file is written as pull built it when the local file does not
+// load or names another model, with a warning, when it is not valid UTF-8,
+// which push refuses, and when the changed local file would not hold what the
+// catalog holds.
+function updatedFiles(
     layout: SemanticModelLayout, source: SemanticModelSource, model: string,
-    files: readonly SerializedFile[]): Set<string> {
+    files: SerializedFile[]): SerializedFile[] {
   const doc = layout.modelDocuments().find(
       d => layout.modelPath(d.name) === layout.modelPath(model));
-  if (!doc) return new Set();
+  if (!doc) return files;
   const modelFile = `${model}.yaml`;
   // Pull's text for each file, for the model file `text` and the profile
-  // files `profiles` gives, or why they do not load.
-  const texts = (text: string, profiles: ProfileDocs) => {
+  // files `profiles` gives, or why they do not load or name another model.
+  const texts = (text: string, profiles: ProfileDocs):
+      Map<string, string>|{error: string} => {
     const form = catalogForm({name: doc.name, text}, profiles, source);
-    return 'error' in form ?
-        form :
-        new Map(pulledModelFiles(layout, form.model)
-                    .files.map(f => [f.fileName, f.content]));
+    if ('error' in form) return form;
+    if (form.model.name !== model) {
+      return {error: `it names model '${form.model.name}'`};
+    }
+    return new Map(pulledModelFiles(layout, form.model)
+                       .files.map(f => [f.fileName, f.content]));
   };
-  const kept = new Set<string>();
-  const own = texts(doc.text, () => []);
+  // `file` with its content in the local file at `localPath`, which holds
+  // `text`, when `base`, pull's text for that file, differs from the
+  // catalog's only where the local file changes. `holds` says whether a text
+  // in place of the local file holds what the catalog holds.
+  const update = (file: SerializedFile, localPath: string, text: string,
+                  base: string, holds: (text: string) => boolean) => {
+    if (checkUtf8(localPath, file.fileName, text)) return file;
+    if (base === file.content) return {...file, content: text};
+    const content = updatedText(text, base, file.content);
+    return holds(content) ? {...file, content} : file;
+  };
   const catalogModel = files.find(f => f.fileName === modelFile)!;
-  if (own instanceof Map) {
-    if (own.get(modelFile) === catalogModel.content) kept.add(modelFile);
-  } else {
+  const own = texts(doc.text, () => []);
+  const updated = files.map(file => {
+    if (file !== catalogModel || !(own instanceof Map)) return file;
+    return update(
+        file, layout.modelPath(doc.name), doc.text, own.get(modelFile)!,
+        text => {
+          const changed = texts(text, () => []);
+          return changed instanceof Map &&
+              changed.get(modelFile) === file.content;
+        });
+  });
+  if (!(own instanceof Map)) {
     console.warn(
         `Warning: local model file ${layout.modelPath(doc.name)} does not ` +
         `load, so pull writes it from the catalog: ${own.error}`);
   }
-  const profileFiles = files.filter(f => f !== catalogModel);
-  if (!profileFiles.length) return kept;
-  const beside = texts(catalogModel.content, profileDocsReader(layout));
-  if (beside instanceof Map) {
-    for (const f of profileFiles) {
-      if (beside.get(f.fileName) === f.content) kept.add(f.fileName);
-    }
-  } else {
+  if (files.length === 1) return updated;
+  let locals: ReturnType<ProfileDocs>;
+  try {
+    locals = profileDocsReader(layout)(doc.name);
+  } catch (err: any) {
+    // A profile file name the layout refuses.
     console.warn(
         `Warning: the local profile files of model '${model}' do not load, ` +
-        `so pull writes them from the catalog: ${beside.error}`);
+        `so pull writes them from the catalog: ${err.message}`);
+    return updated;
   }
-  return kept;
+  return updated.map(file => {
+    const local = locals.find(p => p.fileName === file.fileName);
+    if (!local) return file;
+    const beside = (text: string, profile = local) =>
+        texts(text, () => [profile]);
+    let base = beside(catalogModel.content);
+    if (!(base instanceof Map)) {
+      const besideLocal = beside(doc.text);
+      if (!(besideLocal instanceof Map)) {
+        console.warn(
+            `Warning: local profile file ${local.path} does not load, so ` +
+            `pull writes it from the catalog: ${base.error}`);
+        return file;
+      }
+      base = besideLocal;
+    }
+    return update(
+        file, local.path, local.text, base.get(file.fileName)!, text => {
+          const changed = beside(catalogModel.content, {...local, text});
+          return changed instanceof Map &&
+              changed.get(file.fileName) === file.content;
+        });
+  });
 }
 
 
@@ -1790,12 +1839,11 @@ function localProfileActions(
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
-// read. A local file named in `kept` already holds the catalog's content and
-// stays as it is. Then it names each local profile file and overview sidecar
-// that the pull did not write, or deletes it under --force-remove.
+// read. Then it names each local profile file and overview sidecar that the
+// pull did not write, or deletes it under --force-remove.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions, kept: ReadonlySet<string>): number {
+    options: PullOptions): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
   for (const {fileName, content} of files) {
@@ -1810,13 +1858,9 @@ function writePulledFiles(
     written.add(path.resolve(target.path));
     const before =
         fs.existsSync(target.path) ? fs.readFileSync(target.path) : undefined;
-    // A kept file that is not valid UTF-8 is one push refuses, so pull
-    // writes it.
-    const keep = kept.has(fileName) &&
-        !checkUtf8(target.path, fileName, before?.toString() ?? '');
-    const state = !before ? 'created' :
-        keep || before.equals(Buffer.from(content)) ? 'unchanged' :
-                                                      'updated';
+    const state = !before                   ? 'created' :
+        before.equals(Buffer.from(content)) ? 'unchanged' :
+                                              'updated';
     counts[state]++;
     if (state === 'unchanged') {
       console.log(`  unchanged ${target.path}`);

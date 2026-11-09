@@ -337,11 +337,12 @@ parentheses, so a push that changes no link prints
 
 `kcmd pull` is the inverse of push's Knowledge Catalog leg: it rebuilds the
 model file and profile files from the `semantic-*` entries and writes them to
-`catalog/EntryGroups/<entryGroupId>/`. A local model or profile file that
-already holds what the catalog holds stays as it is, comments and formatting
-included. Pull rebuilds every other file from the catalog, so its comments, key
-order and formatting are not kept. When a local file does not load, pull warns
-and writes it from the catalog. Use pull to recover a workspace from a catalog
+`catalog/EntryGroups/<entryGroupId>/`. Pull changes a local model or profile
+file only where the catalog differs from it: every other value keeps its text,
+comments, key order and formatting, and a changed value is written in pull's
+form. Pull writes a file whole when there is no local file, and when it cannot
+change only those values. When a local file does not load, pull warns and
+writes it from the catalog. Use pull to recover a workspace from a catalog
 someone else deployed, or to see what the catalog actually holds.
 
 ```bash

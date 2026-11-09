@@ -819,7 +819,11 @@ function isFull(value: unknown): value is object {
   return isObject(value) && entriesOf(value).length > 0;
 }
 
-function itemKey(value: unknown): string {
+/**
+ * What matches a list item with another: its `name`, or else its value, with
+ * each mapping's keys in any order.
+ */
+export function itemKey(value: unknown): string {
   return isRecord(value) && typeof value.name === 'string' ?
       `name:${value.name}` :
       canonical(value);

@@ -1166,12 +1166,13 @@ describe('the legacy profile forms', () => {
 });
 
 
-// A pull keeps each local model and profile file that already holds what the
-// catalog holds, byte for byte: its comments, key order and style, and the
+// A pull changes a local model or profile file only where the catalog
+// differs from it. The rest keeps its comments, key order and style, and the
 // forms pull would write differently, such as a string `ai_context`, the
 // order of entities and metrics, custom ai_context members and
-// `metrics_exclude`. It writes a file whose content differs, or that does not
-// exist, in full.
+// `metrics_exclude`. So a file that already holds what the catalog holds
+// stays byte for byte. A file that does not exist, or that pull cannot change
+// that way, is written in full.
 describe('a pull after a push', () => {
   const MODEL = `# Hand-written model.
 version: "0.2.0.dev0/google"
@@ -1246,9 +1247,6 @@ semantic_model:
       - { name: orders, expression: ${ansi('COUNT(Order.id)')} }
       - { name: customers, expression: ${ansi('COUNT(Customer.key)')} }
 `;
-  const ANCHOR =
-      'projects/test-project/locations/us/entryGroups/commerce_eg/entries/' +
-      'commerce';
 
   // Writes `files` into the scope's entry group directory, and pushes them.
   async function pushed(files: Record<string, string>) {
@@ -1292,46 +1290,165 @@ semantic_model:
          });
   }
 
-  test('writes in full a file whose content changed in the catalog, keeps ' +
-           'the others, and writes a file that does not exist',
-       async () => {
-         const {entries} = await pushed(
-             {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
-         entries.get(ANCHOR)!.entrySource!.description = 'Sales';
-         fs.rmSync(local('commerce.profile.prod.yaml'));
+  // `text` with each pair of `pairs` replaced, each first part found once.
+  const edited = (text: string, ...pairs: Array<[string, string]>) =>
+      pairs.reduce((t, [from, to]) => {
+        expect(t.split(from)).toHaveLength(2);
+        return t.replace(from, to);
+      }, text);
+  // MODEL and PROFILE with an entity, a field, a metric and the profile's
+  // entry for the entity added, each new item with a comment.
+  const LARGER = edited(
+      MODEL,
+      ['          - { name: key, label: Customer ID }   # flow style\n',
+       '          - { name: key, label: Customer ID }   # flow style\n' +
+           '          - { name: since }   # added\n'],
+      ['    relationships:\n',
+       '      - name: Item   # added\n        primary_key: [sku]\n' +
+           '        fields:\n          - { name: sku }\n' +
+           '    relationships:\n'],
+      ['      - { name: buyers, expression: COUNT(Order.buyer) }\n',
+       '      - { name: buyers, expression: COUNT(Order.buyer) }\n' +
+           '      - { name: items, expression: COUNT(Item.sku) }   # added\n']);
+  const LARGER_PROFILE = edited(
+      PROFILE,
+      ['    fields: [{ name: key, expression: c_key }]\n',
+       '    fields: [{ name: key, expression: c_key }, ' +
+           '{ name: since, expression: c_since }]\n' +
+           `  - name: Item   # added\n    source: ${TABLES}/item\n` +
+           '    primary_key: [sku]\n' +
+           '    fields: [{ name: sku, expression: i_sku }]\n']);
+  // MODEL and PROFILE after a pull of LARGER and LARGER_PROFILE. Each new item
+  // is written in pull's form, and goes after the item it follows in pull's
+  // order, where entities, metrics and relationships are sorted by name.
+  const ADDED = edited(
+      MODEL,
+      ['   # flow style\n', '   # flow style\n          - name: since\n'],
+      ['    relationships:\n',
+       '      - name: Item\n        primary_key:\n          - sku\n' +
+           '        fields:\n          - name: sku\n    relationships:\n'],
+      ['      - { name: customers, expression: COUNT(Customer.key) }\n',
+       '      - { name: customers, expression: COUNT(Customer.key) }\n' +
+           '      - name: items\n        entity: Item\n' +
+           '        expression: COUNT(Item.sku)\n']);
+  const ADDED_PROFILE = edited(
+      PROFILE,
+      ['{ name: key, expression: c_key }]\n',
+       '{ name: key, expression: c_key }, ' +
+           '{ name: since, expression: c_since }]\n' +
+           `  - name: Item\n    source: ${TABLES}/item\n` +
+           '    primary_key:\n      - sku\n' +
+           '    fields:\n      - name: sku\n        expression: i_sku\n']);
+  const BOTH = (model: string, profile = PROFILE) =>
+      ({'commerce.yaml': model, 'commerce.profile.prod.yaml': profile});
+  // A second profile file, and the files of a model with both profiles.
+  const staging = (profile: string) => edited(
+      profile, ['# Production bindings.', '# Staging bindings.'],
+      ['name: prod', 'name: staging']);
+  const ALL = (model: string, profile = PROFILE) => ({
+    ...BOTH(model, profile),
+    'commerce.profile.staging.yaml': staging(profile),
+  });
+  // A stale local profile file the catalog does not have. It does not load.
+  const STALE = {
+    'commerce.profile.dev.yaml':
+        'name: dev\nentities: []\nrelationships: []\nmetrics_exclude: [zz]\n',
+  };
 
-         expect(await pull()).toBe(0);
-         const model = fs.readFileSync(local('commerce.yaml'), 'utf8');
-         expect(model).toContain('description: Sales');
-         expect(model).not.toContain('# Hand-written model.');
-         const profile =
-             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
-         expect(profile).toContain('name: prod');
-         expect(profile).not.toContain('# Production bindings.');
+  // Each row pushes the catalog's files, writes the local ones in their
+  // place, pulls, and gives the files pull leaves. Only what the catalog
+  // changes is written, and the rest keeps its comments, key order and style.
+  for (const [what, catalog, locals, want] of [
+    [
+      'one value of a Google model file',
+      BOTH(edited(MODEL, ['Orders and customers', 'Sales'])),
+      BOTH(MODEL),
+      BOTH(edited(MODEL, ['Orders and customers', 'Sales'])),
+    ],
+    [
+      'one value of a vanilla model file',
+      {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
+      {'commerce.yaml': VANILLA},
+      {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
+    ],
+    [
+      'one value of a profile file',
+      BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+      BOTH(MODEL),
+      BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+    ],
+    [
+      'a string ai_context whose instructions changed',
+      BOTH(edited(MODEL, ['Answer in dollars.', 'Answer in euros.'])),
+      BOTH(MODEL),
+      BOTH(edited(
+          MODEL,
+          ['ai_context: Answer in dollars.',
+           'ai_context:\n      instructions: Answer in euros.'])),
+    ],
+    [
+      'an added entity, field, metric and profile entry',
+      BOTH(LARGER, LARGER_PROFILE),
+      BOTH(MODEL),
+      BOTH(ADDED, ADDED_PROFILE),
+    ],
+    [
+      'a removed entity, field, metric and profile entry, with their comments',
+      BOTH(MODEL),
+      BOTH(LARGER, LARGER_PROFILE),
+      BOTH(MODEL),
+    ],
+    // Each profile file is read on its own, so one that would not load beside
+    // another's local text still changes only what differs.
+    [
+      'a removed entity, field, metric and entry in two profile files',
+      ALL(MODEL),
+      ALL(LARGER, LARGER_PROFILE),
+      ALL(MODEL),
+    ],
+    [
+      'one value of a profile file beside a stale one that does not load',
+      BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+      {...BOTH(MODEL), ...STALE},
+      {
+        ...BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+        ...STALE,
+      },
+    ],
+  ] as const) {
+    test(`changes only ${what}`, async () => {
+      await pushed(catalog);
+      for (const [name, text] of Object.entries(locals)) {
+        fs.writeFileSync(local(name), text);
+      }
 
-         // The profile file pull wrote holds what the catalog holds.
-         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
-         entries.get(ANCHOR)!.entrySource!.description = 'Sales again';
-         expect(await pull()).toBe(0);
-         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
-             .toBe(PROFILE);
-       });
+      expect(await pull()).toBe(0);
+      expect(localFiles()).toEqual(Object.fromEntries(
+          Object.entries(want).map(([name, text]) => [local(name), text])));
+    });
+  }
 
   // A local model file push would refuse is written from the catalog. Its
   // profile file still holds the catalog's content beside the model file pull
-  // writes, so it stays.
-  for (const [why, text, warning] of [
+  // writes, so it stays, unless the layout refuses it beside the local model
+  // file.
+  for (const [why, text, warning, profile] of [
     ['does not load', Buffer.from(`${MODEL}    colour: red\n`),
      `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
-         'pull writes it from the catalog: '],
+         'pull writes it from the catalog: ',
+     PROFILE],
+    ['names another model',
+     Buffer.from(MODEL.replace('name: commerce', 'name: other')),
+     `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
+         "pull writes it from the catalog: it names model 'other'",
+     undefined],
     // The bad byte is in a comment, so the content is the catalog's.
     ['is not valid UTF-8',
      Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]),
                     Buffer.from(`\n${MODEL}`)]),
-     undefined],
+     undefined, PROFILE],
   ] as const) {
-    test(`writes the model file in full when it ${why}, and keeps the ` +
-             'profile file',
+    test(`writes the model file in full when it ${why}`,
          async () => {
            await pushed(
                {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
@@ -1346,18 +1463,32 @@ semantic_model:
            }
            expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
                .not.toContain('# Hand-written model.');
-           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
-               .toBe(PROFILE);
+           const pulledProfile =
+               fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+           if (profile) {
+             expect(pulledProfile).toBe(profile);
+           } else {
+             expect(pulledProfile).not.toContain('# Production bindings.');
+           }
          });
   }
 
   // A local profile file push would refuse is written from the catalog, and
-  // the model file stays.
-  for (const [why, profile] of [
+  // the model file stays. A file name the layout refuses stops pull from
+  // reading any profile file of the model.
+  const ONE = `Warning: local profile file ${
+      shown('commerce.profile.prod.yaml')} does not load, so pull writes it ` +
+      'from the catalog: ';
+  const ALL_FILES = "Warning: the local profile files of model 'commerce' " +
+      'do not load, so pull writes them from the catalog: ';
+  for (const [why, profile, warning] of [
     ['names another profile',
-     PROFILE.replace('name: prod', 'name: production')],
+     PROFILE.replace('name: prod', 'name: production'), ALL_FILES],
     ['excludes a metric the model does not declare',
-     PROFILE.replace('[orders, customers]', '[orders, customers, zz]')],
+     PROFILE.replace('[orders, customers]', '[orders, customers, zz]'),
+     `${ONE}profile 'prod': metric 'zz'`],
+    ['has a key a profile file does not take', `${PROFILE}colour: red\n`,
+     `${ONE}`],
   ] as const) {
     test(`keeps the model file and writes the profile file in full, with a ` +
              `warning, when the profile file ${why}`,
@@ -1368,14 +1499,47 @@ semantic_model:
            const warnSpy = console.warn as Mock<any>;
 
            expect(await pull()).toBe(0);
-           expect(messages(warnSpy)).toContain(
-               "Warning: the local profile files of model 'commerce' do not " +
-               'load, so pull writes them from the catalog: ');
+           expect(messages(warnSpy)).toContain(warning);
            expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(MODEL);
            expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
                .not.toContain('# Production bindings.');
          });
   }
+
+  test('writes a profile file whole when the changed file would not hold ' +
+           'the catalog\'s content',
+       async () => {
+         // As in the test below, the catalog adds metric `buyers` and excludes
+         // it from prod. The local profile file also binds an entity the
+         // catalog's model does not have, so pull reads it beside the local
+         // model file, where it excludes every metric just as the catalog's
+         // does. Its `metrics_exclude` would stay, and no longer exclude
+         // `buyers`.
+         await pushed({
+           'commerce.yaml': MODEL,
+           'commerce.profile.prod.yaml': PROFILE.replace(
+               '[orders, customers]', '[orders, customers, buyers]'),
+         });
+         fs.writeFileSync(local('commerce.yaml'), edited(
+             MODEL,
+             ['      - { name: buyers, expression: COUNT(Order.buyer) }\n', ''],
+             ['    relationships:\n',
+              '      - { name: Item, primary_key: [sku], ' +
+                  'fields: [{ name: sku }] }\n    relationships:\n']));
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), edited(
+             PROFILE,
+             ['relationships:\n',
+              `  - name: Item\n    source: ${TABLES}/item\n` +
+                  '    primary_key: [sku]\n' +
+                  '    fields: [{ name: sku, expression: i_sku }]\n' +
+                  'relationships:\n']));
+
+         expect(await pull()).toBe(0);
+         const profile =
+             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+         expect(profile).not.toContain('# Production bindings.');
+         expect(profile).toContain('metrics_exclude: "*"');
+       });
 
   test('writes a profile file that holds the catalog\'s content only beside ' +
            'the local model file',
@@ -1407,6 +1571,8 @@ describe('a pull', () => {
            'not read, and names or deletes stale ones',
        async () => {
          withStaleProfile();
+         // With no local model file, pull writes the one it builds.
+         fs.rmSync(local('commerce.yaml'));
          const staleSidecar = 'commerce/metrics/old.overview.md';
          fs.mkdirSync(path.dirname(local(staleSidecar)), {recursive: true});
          fs.writeFileSync(local(staleSidecar), 'Old.\n');
