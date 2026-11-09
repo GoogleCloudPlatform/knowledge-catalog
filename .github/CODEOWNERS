@@ -1,7 +1,5 @@
-# CODEOWNERS for OSI (0.2.0.dev0) and Google-extended OSI/G (0.2.0.dev0/google)
-# specification and schema files.
-
-/.github/CODEOWNERS @libei @dlychagin-gg @feixufeixu
+# Repository CODEOWNERS file ownership (KC team)
+/.github/CODEOWNERS @nikhilk
 
 # Normative Semantic Model specification (OSI & OSI/G) and OSI/G JSON Schema
 /toolbox/mdcode/docs/semantic-model/model_spec.md @libei @dlychagin-gg @feixufeixu
