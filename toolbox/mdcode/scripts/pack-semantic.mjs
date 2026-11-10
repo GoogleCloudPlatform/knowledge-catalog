@@ -84,11 +84,26 @@ try {
       path.join(stageDir, 'package-lock.json'),
       JSON.stringify({...lock, version: semanticVersion, packages: semanticLockPackages}, null, 2) + '\n');
 
-  const sbom = execFileSync(
+  const sbomRaw = execFileSync(
       'npm',
       ['sbom', '--sbom-format=spdx', '--package-lock-only'],
       {cwd: stageDir, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
-  fs.writeFileSync(sbomPath, sbom);
+  const sbomDoc = JSON.parse(sbomRaw);
+  const rootSpdxId = sbomDoc.documentDescribes?.[0];
+  sbomDoc.relationships ??= [];
+  for (const p of sbomDoc.packages ?? []) {
+    if (!p.licenseConcluded && p.licenseDeclared) {
+      p.licenseConcluded = p.licenseDeclared;
+    }
+    if (rootSpdxId && p.SPDXID && p.SPDXID !== rootSpdxId) {
+      sbomDoc.relationships.push({
+        spdxElementId: rootSpdxId,
+        relatedSpdxElement: p.SPDXID,
+        relationshipType: 'CONTAINS',
+      });
+    }
+  }
+  fs.writeFileSync(sbomPath, JSON.stringify(sbomDoc, null, 2) + '\n');
 } catch (err) {
   fs.rmSync(tarballPath, {force: true});
   fs.rmSync(sbomPath, {force: true});

@@ -162,6 +162,23 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
       expect(sbomNames.has(devDep)).toBe(false);
       expect(bundledNames.has(devDep)).toBe(false);
     }
+
+    const rootSpdxId = sbom.documentDescribes?.[0];
+    expect(typeof rootSpdxId).toBe('string');
+    const containsTargets = new Set(
+        (sbom.relationships ?? [])
+            .filter(
+                (r: {spdxElementId?: string; relationshipType?: string}) =>
+                    r.spdxElementId === rootSpdxId &&
+                    r.relationshipType === 'CONTAINS')
+            .map((r: {relatedSpdxElement?: string}) => r.relatedSpdxElement));
+    for (const p of sbom.packages ?? []) {
+      expect(Boolean(p.licenseConcluded)).toBe(true);
+      expect(p.licenseConcluded).not.toBe('NOASSERTION');
+      if (p.SPDXID !== rootSpdxId) {
+        expect(containsTargets.has(p.SPDXID)).toBe(true);
+      }
+    }
   });
 
   test('installs offline with empty cache and executes semantic CLI commands (n3 + WASM)', () => {
