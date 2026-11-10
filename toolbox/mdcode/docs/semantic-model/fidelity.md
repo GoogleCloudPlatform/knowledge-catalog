@@ -269,6 +269,39 @@ though push rejects such a field in the model file first. A
 metric with none, or one that aggregates such a field, is skipped with a
 warning.
 
+### What import translates to BigQuery
+
+`kcmd import --transpile` sees only the SQL text. So it translates only common
+SQL that gives the same value in BigQuery for ordinary data, whatever the
+column types are. It translates aggregates, CASE, COALESCE and other NULL
+handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
+basic casts, and a few string and date functions. Its warning about any other
+text names the first part it does not translate.
+
+BigQuery rejects a translated field when a column's BigQuery type is not the
+one the expression needs, such as a DATETIME column compared with the current
+time. Then edit that field's `BIGQUERY` entry.
+
+The BigQuery value can differ from the source's value in these cases:
+
+- A decimal, boolean or timestamp column joined into text takes BigQuery's
+  text format, such as '12.5' for 12.50.
+- A MySQL date column plus a number gives a date in BigQuery where MySQL gives
+  a number.
+- MySQL, SQL Server and PostgreSQL compare text by a collation. Text that
+  differs only in letter case, accents or trailing spaces can give another
+  value. PostgreSQL also ignores spaces and punctuation when it sorts text.
+- A Snowflake or Databricks division or average can differ after the sixth
+  decimal place.
+- On a Snowflake FLOAT or PostgreSQL double precision column, an average or a
+  Snowflake division can differ slightly from the source's. FLOOR or CEIL of it
+  can then differ by one at a whole number, and a comparison of it can give the
+  other result.
+
+Spanner's default time zone, America/Los_Angeles, is written into the date and
+time functions of a `SPANNER` text. Snowflake's default time zone is written
+into the current date and time functions of a `SNOWFLAKE` text.
+
 ## To Spanner
 
 A Spanner target keeps the queryable **structure** and drops the descriptive
