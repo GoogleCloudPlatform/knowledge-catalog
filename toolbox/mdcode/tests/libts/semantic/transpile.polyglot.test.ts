@@ -381,7 +381,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SPANNER', "d + INTERVAL '''1''' DAY", {error: 'kcmd does not translate a triple quoted string literal'}],
     ['POSTGRES', "2 * INTERVAL '1 day'", {error: 'kcmd does not translate INTERVAL'}],
     ['MYSQL', "'2024-01-01' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a string'}],
-    ['MYSQL', '20240101 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a number'}],
+    ['MYSQL', '-20240101 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a number'}],
     ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
     ['MYSQL', 'd - 1 - INTERVAL 1 DAY', {error: 'kcmd does not translate - of a difference'}],
     ['MYSQL', 'COALESCE(d - 1, d) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of an expression'}],

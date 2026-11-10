@@ -1232,6 +1232,7 @@ function dateValue(name: string, node: any): unknown[]|string {
 
 // What `node`, a source value, is, for a message.
 function valueName(node: any): string {
+  if (numberText(node) !== undefined) return 'a number';
   const kind = kindOf(node) ?? '';
   const value = node?.[kind];
   const type = kind === 'literal' && value.literal_type.replaceAll('_', ' ');
