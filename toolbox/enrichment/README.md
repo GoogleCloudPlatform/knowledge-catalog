@@ -164,5 +164,5 @@ Copy over the individual markdown files from [here](https://github.com/GoogleClo
 
 **Clean up**
 ```bash
-bq rm -r ${DEMO_CLOUD_PROJECT}:demo-dataset
+bq rm -r ${DEMO_CLOUD_PROJECT}:demo_ecommerce
 ```
