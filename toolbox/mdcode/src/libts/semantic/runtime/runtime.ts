@@ -308,7 +308,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
     // inheritance does not change.
-    const chosen = resolveStore(authored, profile);
+    const chosen = resolveStore(authored, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

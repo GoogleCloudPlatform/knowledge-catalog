@@ -16,7 +16,7 @@ import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
-import {alloyDbTargets, ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {alloyDbTargets, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, tablesOutsideTarget} from './deployment_target';
 import {GraphElement} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
@@ -2124,7 +2124,6 @@ export function deploymentTableErrors(
     document: string, model: SemanticModel,
     deployment: ResolvedDeployment): string[] {
   let sourceOf = (e: Entity): string|undefined => e.authoredSource;
-  let bindings = 'the model file';
   if (deployment.profile !== DEFAULT_PROFILE) {
     const profile = model.profiles?.find(p => p.name === deployment.profile);
     // `model.profiles` lacks a profile file that does not load, which push
@@ -2132,18 +2131,8 @@ export function deploymentTableErrors(
     if (!profile) return [];
     const bound = new Map(profile.entities.map(pe => [pe.name, pe.source]));
     sourceOf = e => bound.get(e.name);
-    bindings = `profile '${profile.name}'`;
   }
-  const {database, target, outside} = targetDatabase(deployment);
-  const errors: string[] = [];
-  for (const e of model.entities ?? []) {
-    const source = sourceOf(e)?.trim();
-    if (!source || databaseOf(source) === database) continue;
-    errors.push(
-        `[${document}] deployment '${deployment.name}' targets ${target}, ` +
-        `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
-  }
-  return errors;
+  return tablesOutsideTarget(document, model, deployment, sourceOf);
 }
 
 // The error for a Spanner `deployment` on the model file's own bindings when
@@ -2161,20 +2150,6 @@ export function spannerMetricsErrors(
     `metrics, which a Spanner graph cannot hold; name a profile with ` +
     `metrics_exclude: "*".`,
   ];
-}
-
-// The database the tables of a deployment target must be in, as databaseOf
-// gives it, and how an error names the target and a table outside it.
-function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
-  if (engine === 'bigquery') {
-    return {database: 'bigquery', target: 'a BigQuery graph',
-            outside: 'which is not a BigQuery or BigLake table'};
-  }
-  const [system, name] = engine === 'spanner' ?
-      ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
-      ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
-  return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
-          outside: 'which is not a table in that database'};
 }
 
 // What localChecks reads. `loaded` is the load of `docs` with the dialects in

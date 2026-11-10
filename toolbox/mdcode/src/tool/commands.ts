@@ -1358,10 +1358,8 @@ async function printStore(
   }
   if (refused.length) return printErrors(...refused);
   for (const {store, storeError} of opened) {
-    if (!store) {
-      console.error(`Error: ${storeError}`);
-      return 1;
-    }
+    // A store error may hold several of push's errors, one to a line.
+    if (!store) return printErrors(...String(storeError).split('\n'));
     console.log(storeLine(store));
   }
   return 0;

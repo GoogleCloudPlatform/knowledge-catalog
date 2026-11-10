@@ -31,8 +31,8 @@
 // matches neither destination type is collected as `malformed` (rejected by the
 // validator and named in errors) rather than silently skipped.
 
-import {DeploymentSpec, SemanticModel} from './ir';
-import {AROUND_WHITESPACE, asResourceName, asResourceUri, resourceUriFix} from './loader';
+import {DeploymentSpec, Entity, SemanticModel} from './ir';
+import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, resourceUriFix} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -412,4 +412,42 @@ export function alloyDbTargets(model: SemanticModel):
     {targets: AlloyDbTarget[]; malformed: string[]} {
   const {alloyDb, malformed} = googleDeploymentTargets(model);
   return {targets: alloyDb, malformed};
+}
+
+
+// The database the tables of a deployment target must be in, as databaseOf
+// gives it, and how an error names the target and a table outside it.
+function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
+  if (engine === 'bigquery') {
+    return {database: 'bigquery', target: 'a BigQuery graph',
+            outside: 'which is not a BigQuery or BigLake table'};
+  }
+  const [system, name] = engine === 'spanner' ?
+      ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
+      ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
+  return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
+          outside: 'which is not a table in that database'};
+}
+
+
+// Push's error for each entity of `model`, in `document`, whose source as
+// `sourceOf` gives it is a table outside the database `deployment` deploys
+// to. The deployment's profile, or the model file for `default`, binds the
+// sources.
+export function tablesOutsideTarget(
+    document: string, model: SemanticModel, deployment: ResolvedDeployment,
+    sourceOf: (e: Entity) => string | undefined): string[] {
+  const bindings = deployment.profile === DEFAULT_PROFILE ?
+      'the model file' :
+      `profile '${deployment.profile}'`;
+  const {database, target, outside} = targetDatabase(deployment);
+  const errors: string[] = [];
+  for (const e of model.entities ?? []) {
+    const source = sourceOf(e)?.trim();
+    if (!source || databaseOf(source) === database) continue;
+    errors.push(
+        `[${document}] deployment '${deployment.name}' targets ${target}, ` +
+        `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
+  }
+  return errors;
 }
