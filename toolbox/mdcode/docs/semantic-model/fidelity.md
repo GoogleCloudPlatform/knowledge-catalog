@@ -341,17 +341,20 @@ section describes. It changes a local model or profile file only where its
 content differs from the catalog's: pull compares the file it would write for
 the local file with the one it writes for the catalog, so a difference that is
 only one of the normal forms below changes nothing. Each value the catalog
-holds as the file says keeps its text, comments, key order and formatting, a
-value that changed is written in pull's form, and a file that holds what the
-catalog holds stays byte for byte. Pull writes a file whole, with none of its
+holds as the file says keeps its text, comments, key order and formatting, and
+a file that holds what the catalog holds stays byte for byte. A changed string
+keeps its quoting or block style, and other changed values are written in
+pull's form. When the catalog reorders a list whose order counts, such as an
+entity's fields, each item that moves is written in pull's form too. Pull
+writes a file whole, with none of its
 comments, key order or formatting, when there is no local file, when the
 local file does not load or is not valid UTF-8, and when changing only those
 values would not give what the catalog holds.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 Pull reads the second-generation types. It rebuilds the model file, profile
-files and overview sidecars from the metadata, and writes each metric's entity
-as `entity:`, declared or derived. See
+files and overview sidecars from the metadata. A model file it writes whole
+states each metric's entity as `entity:`, declared or derived. See
 [Reference](reference.md#the-second-generation-types). A model an older
 `kcmd` pushed with the first-generation types is left out with a warning.
 

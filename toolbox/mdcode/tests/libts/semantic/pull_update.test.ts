@@ -121,10 +121,58 @@ metrics:
         .toBe(local.replace('Old', 'New'));
   });
 
-  test('replaces a list whose items do not match one to one', () => {
-    // The local list holds `a` twice, and pull's form of it holds it once.
-    const local = 'synonyms: [a, a, b]  # kept\n';
-    expect(updatedText(local, 'synonyms: [a, b]\n', 'synonyms: [a, c]\n'))
-        .toBe('synonyms: [a, c]  # kept\n');
-  });
+  // A list item with no `name` is matched by the key that names an item of
+  // its list, so a changed value keeps the item's comment.
+  for (const [what, local, base, pulled, want] of [
+    [
+      'a dialect',
+      'dialects:\n  - dialect: BIGQUERY   # BigQuery only\n' +
+          '    expression: LOWER(email)\n',
+      'dialects:\n  - {dialect: BIGQUERY, expression: LOWER(email)}\n',
+      'dialects:\n  - {dialect: BIGQUERY, expression: UPPER(email)}\n',
+      'dialects:\n  - dialect: BIGQUERY   # BigQuery only\n' +
+          '    expression: UPPER(email)\n',
+    ],
+    [
+      'an affected concept',
+      'affects:\n  - concept: orders   # the order\n    operation: create\n',
+      'affects:\n  - {concept: orders, operation: create}\n',
+      'affects:\n  - {concept: orders, operation: modify}\n',
+      'affects:\n  - concept: orders   # the order\n    operation: modify\n',
+    ],
+    [
+      'a GOOGLE block pull writes last',
+      'custom_extensions:\n  - vendor_name: GOOGLE   # bindings\n' +
+          '    data: \'{"a": 1}\'\n  - vendor_name: DBT\n    data: \'{}\'\n',
+      'custom_extensions:\n  - {vendor_name: DBT, data: \'{}\'}\n' +
+          '  - {vendor_name: GOOGLE, data: \'{"a": 1}\'}\n',
+      'custom_extensions:\n  - {vendor_name: DBT, data: \'{}\'}\n' +
+          '  - {vendor_name: GOOGLE, data: \'{"a": 2}\'}\n',
+      'custom_extensions:\n  - vendor_name: GOOGLE   # bindings\n' +
+          '    data: \'{"a": 2}\'\n  - vendor_name: DBT\n    data: \'{}\'\n',
+    ],
+  ] as const) {
+    test(`keeps the comment of ${what} whose value changes`, () => {
+      expect(updatedText(local, base, pulled)).toBe(want);
+    });
+  }
+
+  // When the items of a list do not match one to one across the three
+  // values, no item can be matched with certainty, so the list is pulled's.
+  for (const [what, local, base, pulled, want] of [
+    ['the local list repeats an item', 'x: [a, a, b]  # kept\n', 'x: [a, b]\n',
+     'x: [a, c]\n', 'x: [a, c]  # kept\n'],
+    ['pull\'s form of the local list repeats an item', 'x: [a]  # kept\n',
+     'x: [a, a]\n', 'x: [a, a, b]\n', 'x: [a, a, b]  # kept\n'],
+    ['pulled repeats an item', 'x: [a]\n', 'x: [a]\n', 'x: [a, a]\n',
+     'x: [a, a]\n'],
+    ['a local item is not in pull\'s form', 'x: [a, z]\n', 'x: [a, b]\n',
+     'x: [a, c]\n', 'x: [a, c]\n'],
+    ['an item of pull\'s form is not local', 'x: [a, b]\n', 'x: [a, b, c]\n',
+     'x: [a, c]\n', 'x: [a, c]\n'],
+  ] as const) {
+    test(`replaces a list when ${what}`, () => {
+      expect(updatedText(local, base, pulled)).toBe(want);
+    });
+  }
 });

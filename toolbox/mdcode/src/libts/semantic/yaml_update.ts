@@ -62,7 +62,7 @@ export function linkNodes(
 /**
  * Returns `text`, which `doc` parses, changed to hold `value`. An object or
  * array keeps the node `links` maps it to, and any other value keeps the node
- * under the same key, or the list item with the same `name` or value. A kept
+ * under the same key, or the list item with the same `itemKey`. A kept
  * node whose value stays keeps its text and the comments and blank lines
  * around it. A changed scalar keeps its quoting, and a removed item takes its
  * comments and the blank lines above it. A flow collection over several lines
@@ -344,7 +344,7 @@ function patchItems(
 /**
  * For each of `entries`, the index of the item of `node` it keeps, or -1. A
  * mapping's entry keeps the pair with its key. A list's entry keeps the item
- * `links` maps it to, or else a free item with the same `name` or value, and
+ * `links` maps it to, or else a free item with the same `itemKey`, and
  * the kept items stay in their order.
  */
 function matchItems(
@@ -820,13 +820,16 @@ function isFull(value: unknown): value is object {
 }
 
 /**
- * What matches a list item with another: its `name`, or else its value, with
- * each mapping's keys in any order.
+ * What matches a list item with another: its `name`, or else the key that
+ * names an item of its list (`dialect`, `concept` or `vendor_name`), or else
+ * its value, with each mapping's keys in any order.
  */
 export function itemKey(value: unknown): string {
-  return isRecord(value) && typeof value.name === 'string' ?
-      `name:${value.name}` :
-      canonical(value);
+  const key = isRecord(value) &&
+      ['name', 'dialect', 'concept', 'vendor_name'].find(
+          k => typeof value[k] === 'string');
+  return key ? `${key}:${(value as Record<string, unknown>)[key]}` :
+               canonical(value);
 }
 
 /** `value` as JSON text with each mapping's keys sorted. */

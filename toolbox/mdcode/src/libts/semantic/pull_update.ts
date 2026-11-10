@@ -64,11 +64,11 @@ export function catalogForm(
   }
   // The emitter drops a name the model does not declare, so a profile naming
   // one would read as the catalog's. Push refuses it. Push checks a profile
-  // without the model's actions, which are out of scope for the preview (see
-  // namedProfileErrors), so this check leaves them out too.
+  // without the model's actions and its own, which are out of scope for the
+  // preview (see namedProfileErrors), so this check leaves them out too.
   const logical = {...pushed.model, actions: []};
   for (const profile of logical.profiles ?? []) {
-    const [problem] = profileProblems(logical, profile);
+    const [problem] = profileProblems(logical, {...profile, actions: []});
     if (problem) return {error: problem};
   }
   const {entries} = generateCatalogResources(pushed.model, scope);
@@ -147,10 +147,10 @@ function mergedEntries<K>(
   const shared = (keys: K[]) => keys.filter(k => b.has(k) && p.has(k));
   const sameOrder =
       isDeepStrictEqual(shared(keysOf(base)), shared(keysOf(pulled)));
-  const order = sameOrder ?
-      keysOf(local) :
-      [...keysOf(pulled).filter(k => l.has(k) && b.has(k)),
-       ...keysOf(local).filter(k => !b.has(k) || !p.has(k))];
+  // Two forms of a mapping give its keys in one order, so only a list's
+  // entries, which match one to one, can come in another order.
+  const order =
+      sameOrder ? keysOf(local) : keysOf(pulled).filter(k => b.has(k));
   const keys = order.filter(k => !b.has(k) || p.has(k));
   pulled.forEach(([k, v], i) => {
     if (l.has(k) || b.has(k) && isDeepStrictEqual(b.get(k), v)) return;

@@ -1268,11 +1268,33 @@ semantic_model:
       - name: CloseBooks
         executor: {sql: {statements: ["UPDATE ledger SET closed = TRUE"]}}
 `;
+  // Push checks a profile without its own actions too, so a GOOGLE block
+  // profile that binds an action the vanilla model cannot declare counts as
+  // the catalog's.
+  const BLOCK_PROFILE = JSON.stringify({profiles: [{
+    name: 'prod',
+    entities: [
+      {name: 'Order', source: `${TABLES}/orders`, primary_key: ['id'],
+       fields: [{name: 'id', expression: 'o_id'},
+                {name: 'buyer', expression: 'o_buyer'}]},
+      {name: 'Customer', source: `${TABLES}/customer`, primary_key: ['key'],
+       fields: [{name: 'key', expression: 'c_key'}]},
+    ],
+    relationships:
+        [{name: 'placed_by', from_columns: ['buyer'], to_columns: ['key']}],
+    actions: [{name: 'Refund', executor: null}],
+  }]});
+  const WITH_BLOCK_ACTION = VANILLA.replace(
+      '    ai_context: Answer in dollars.\n',
+      '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
+          `      - vendor_name: GOOGLE\n        data: '${BLOCK_PROFILE}'\n`);
   for (const [flavor, files] of [
     ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla', {'commerce.yaml': VANILLA}],
     ['Google-flavor with a sql action',
      {'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE}],
+    ['vanilla with a GOOGLE block profile that binds an action',
+     {'commerce.yaml': WITH_BLOCK_ACTION}],
   ] as const) {
     test(`that changes nothing keeps the ${flavor} files byte for byte`,
          async () => {
@@ -1354,6 +1376,12 @@ semantic_model:
     'commerce.profile.dev.yaml':
         'name: dev\nentities: []\nrelationships: []\nmetrics_exclude: [zz]\n',
   };
+  // Stale local profile files the layout refuses: one with no profile name in
+  // its file name, and one that does not parse.
+  const REFUSED = {
+    'commerce.profile.yaml': 'name: x\n',
+    'commerce.profile.dev.yaml': 'entities: [\n',
+  };
 
   // Each row pushes the catalog's files, writes the local ones in their
   // place, pulls, and gives the files pull leaves. Only what the catalog
@@ -1415,6 +1443,15 @@ semantic_model:
         ...STALE,
       },
     ],
+    [
+      'one value of a profile file beside stale ones the layout refuses',
+      BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+      {...BOTH(MODEL), ...REFUSED},
+      {
+        ...BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])),
+        ...REFUSED,
+      },
+    ],
   ] as const) {
     test(`changes only ${what}`, async () => {
       await pushed(catalog);
@@ -1430,23 +1467,20 @@ semantic_model:
 
   // A local model file push would refuse is written from the catalog. Its
   // profile file still holds the catalog's content beside the model file pull
-  // writes, so it stays, unless the layout refuses it beside the local model
-  // file.
-  for (const [why, text, warning, profile] of [
+  // writes, so it stays.
+  for (const [why, text, warning] of [
     ['does not load', Buffer.from(`${MODEL}    colour: red\n`),
      `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
-         'pull writes it from the catalog: ',
-     PROFILE],
+         'pull writes it from the catalog: '],
     ['names another model',
      Buffer.from(MODEL.replace('name: commerce', 'name: other')),
-     `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
-         "pull writes it from the catalog: it names model 'other'",
-     undefined],
+     `Warning: local model file ${shown('commerce.yaml')} names model ` +
+         "'other', so pull writes it from the catalog."],
     // The bad byte is in a comment, so the content is the catalog's.
     ['is not valid UTF-8',
      Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]),
                     Buffer.from(`\n${MODEL}`)]),
-     undefined, PROFILE],
+     undefined],
   ] as const) {
     test(`writes the model file in full when it ${why}`,
          async () => {
@@ -1463,27 +1497,19 @@ semantic_model:
            }
            expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
                .not.toContain('# Hand-written model.');
-           const pulledProfile =
-               fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
-           if (profile) {
-             expect(pulledProfile).toBe(profile);
-           } else {
-             expect(pulledProfile).not.toContain('# Production bindings.');
-           }
+           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+               .toBe(PROFILE);
          });
   }
 
-  // A local profile file push would refuse is written from the catalog, and
-  // the model file stays. A file name the layout refuses stops pull from
-  // reading any profile file of the model.
+  // A local profile file push or the layout would refuse is written from the
+  // catalog, and the model file stays.
   const ONE = `Warning: local profile file ${
       shown('commerce.profile.prod.yaml')} does not load, so pull writes it ` +
       'from the catalog: ';
-  const ALL_FILES = "Warning: the local profile files of model 'commerce' " +
-      'do not load, so pull writes them from the catalog: ';
   for (const [why, profile, warning] of [
     ['names another profile',
-     PROFILE.replace('name: prod', 'name: production'), ALL_FILES],
+     PROFILE.replace('name: prod', 'name: production'), ONE],
     ['excludes a metric the model does not declare',
      PROFILE.replace('[orders, customers]', '[orders, customers, zz]'),
      `${ONE}profile 'prod': metric 'zz'`],
@@ -1539,6 +1565,10 @@ semantic_model:
              fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
          expect(profile).not.toContain('# Production bindings.');
          expect(profile).toContain('metrics_exclude: "*"');
+         expect(messages(console.warn as Mock<any>)).toContain(
+             'Warning: pull cannot change only the values that differ in ' +
+             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
+             'from the catalog.');
        });
 
   test('writes a profile file that holds the catalog\'s content only beside ' +
