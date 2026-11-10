@@ -290,7 +290,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "COALESCE(a, 0) # the customer's", {sql: "COALESCE(a, 0) /* the customer's */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
     ['MYSQL', 'SUM(a)--1 /* a--b */#c', {sql: 'SUM(a) - -1 /* a--b */ /* c */'}],
-    ['MYSQL', "CONCAT('é', a) # a's", {sql: "CONCAT('é', a) /* a's */"}],
+    ['MYSQL', "CONCAT('😀', a) # a's", {sql: "CONCAT('😀', a) /* a's */"}],
     ['MYSQL', "CONCAT('a#\nb', s) # note", {sql: "CONCAT('a#\\nb', s) /* note */"}],
     ['MYSQL', 'a /* # x\n# y */ + 1 # z', {sql: 'a /* # x\n# y */ + 1 /* z */'}],
     ['MYSQL', 'b /* s3://b/*.csv, s3://c/*.csv */ + 1', {sql: 'b /* s3://b/ *.csv, s3://c/ *.csv */ + 1'}],
