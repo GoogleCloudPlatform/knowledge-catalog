@@ -169,6 +169,8 @@ export function generateGraphDdl(
     return false;
   });
 
+  const entityByName = new Map(entities.map(e => [e.name, e]));
+
   // The ancestors carried by a table-emitting entity. Two uses. First, measure
   // placement: an engine's measure may be allowed only on a LEAF type -- one
   // that no *table-emitting* entity extends (see the BigQuery engine).
@@ -190,16 +192,17 @@ export function generateGraphDdl(
           `no graph element`);
       continue;
     }
-    // An abstract supertype survives only as the LABEL its descendants carry,
-    // and that label is written without OPTIONS, so its own description and AI
-    // context reach no element. Warn, as renderNodeTable does for a concrete
-    // supertype, whenever the engine would have written a clause for it.
-    const entity = entities.find(e => e.name === name)!;
+    // An abstract supertype survives only as a LABEL on its subtypes, and only
+    // a table's DEFAULT LABEL may carry OPTIONS, so its own description and AI
+    // context reach no element. Warn whenever the engine would have written a
+    // clause for it.
+    const entity = entityByName.get(name)!;
     if (engine.elementOptions(entity.description, entity.aiContext)) {
       warnings.push(
           `entity '${name}' is an abstract supertype in a class hierarchy; ` +
-          `its metadata is dropped from the shared '${name}' label (${
-              engine.name} forbids OPTIONS on a label bound by multiple tables)`);
+          `its metadata is dropped (an abstract supertype is only a LABEL ` +
+          `on its subtypes, and ${engine.name} accepts OPTIONS only on a ` +
+          `table's DEFAULT LABEL)`);
     }
   }
 
@@ -229,7 +232,6 @@ export function generateGraphDdl(
   // Metrics are model-level; the engine places each on a node table (or skips
   // it). The result is keyed by entity name; entries on a skipped entity simply
   // never render.
-  const entityByName = new Map(entities.map(e => [e.name, e]));
   // The SQL `sql` gives, or, when a field on the way has none, what a warning
   // says it reads: each field on `through`, then those `sql` went through.
   const readOf = (entity: Entity, sql: FieldSql, through: string[]) =>

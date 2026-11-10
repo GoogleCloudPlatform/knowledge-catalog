@@ -12,13 +12,13 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {SpannerClient} from '../gcp/spanner';
 
-import {elementDescription, fieldDescription} from './bigquery';
+import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
-import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
+import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
@@ -506,8 +506,9 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
   const problems: string[] = [];
   const check =
       (kind: string, name: string, description: string|undefined,
-       synonyms: string[] = [], entity?: string) => {
-        const what = `${kind} '${entity ? `${entity}.` : ''}${name}'`;
+       synonyms: string[] = [], extensions: Array<[string, string]> = [],
+       owner?: string) => {
+        const what = `${kind} '${owner ? `${owner}.` : ''}${name}'`;
         if (description && description.length > MAX_BIGQUERY_DESCRIPTION) {
           problems.push(
               `the description kcmd writes for ${what} is ${
@@ -543,12 +544,21 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
                 `BigQuery treats as one; remove one.`);
           }
         }
+        for (const [key, value] of extensions) {
+          if (value.length <= MAX_BIGQUERY_EXTENSION_VALUE) continue;
+          problems.push(
+              `the ${key} kcmd writes for ${what}${
+                  key === 'examples' ? ', as a JSON array,' : ''} is ${
+                  value.length} characters long; an extension value of a ` +
+              `label or property holds at most ${
+                  MAX_BIGQUERY_EXTENSION_VALUE}.`);
+        }
       };
   const element =
       (kind: string, x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
           check(
               kind, x.name, elementDescription(x.description),
-              x.aiContext?.synonyms);
+              x.aiContext?.synonyms, aiExtensions(x.aiContext));
   const tables =
       resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
   const extended = new Set(tables.flatMap(e => e.extends ?? []));
@@ -557,10 +567,22 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
       check(
-          'field', f.name, fieldDescription(f), f.aiContext?.synonyms, e.name);
+          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
+          aiExtensions(f.aiContext), e.name);
     }
   }
-  for (const r of model.relationships ?? []) element('relationship', r);
+  for (const r of model.relationships ?? []) {
+    element('relationship', r);
+    for (const f of r.association?.fields ?? []) {
+      if (isFieldBound(f) &&
+          expressionForDialect(f, 'BIGQUERY') === undefined) {
+        continue;
+      }
+      check(
+          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
+          aiExtensions(f.aiContext), r.name);
+    }
+  }
   for (const m of model.metrics ?? []) element('metric', m);
   return problems.map(p => `targets BigQuery, where ${p}`);
 }

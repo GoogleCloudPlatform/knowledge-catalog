@@ -536,8 +536,10 @@ export function fieldDescription(field: Field): string|undefined {
 // The `(key, value)` pairs for BigQuery's `extensions` option from an
 // element's AI context: trimmed `instructions` and JSON-serialized `examples`.
 // Whitespace-only instructions, an empty `examples` list and custom
-// `ai_context` members emit nothing.
-function aiExtensions(ai?: AiContext): Array<[string, string]> {
+// `ai_context` members emit nothing. Each `examples` item is kept verbatim so
+// `JSON.parse` of the extension matches the list Knowledge Catalog stores in
+// its `overview` aspect.
+export function aiExtensions(ai?: AiContext): Array<[string, string]> {
   if (!ai) return [];
   const out: Array<[string, string]> = [];
   const instructions = ai.instructions?.trim();

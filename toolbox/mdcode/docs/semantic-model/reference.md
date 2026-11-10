@@ -434,11 +434,13 @@ The boundaries:
   fails the push when the graph deploys.
 - **A shared supertype label carries no OPTIONS and no measures.** A supertype's
   label is bound by every subclass table, and BigQuery forbids a label carried by
-  more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
-  a supertype's own `description` and `ai_context` are dropped from its label (with a
-  warning). For the same reason push rejects a metric that belongs to an
-  abstract entity or to one that another entity extends. Attach metrics to a
-  leaf class instead. Subclass and leaf labels are unaffected.
+  more than one element table from carrying an `OPTIONS` clause or a `MEASURE`
+  (and accepts `OPTIONS` only on a table's `DEFAULT LABEL`, never on the
+  secondary `LABEL` an abstract supertype produces). So a supertype's own
+  `description` and `ai_context` are dropped from its label (with a warning).
+  For the same reason push rejects a metric that belongs to an abstract entity
+  or to one that another entity extends. Attach metrics to a leaf class instead.
+  Subclass and leaf labels are unaffected.
 - **Each inherited property has one definition under the shared label.** For an
   abstract supertype, the subtype supplies that definition — it binds the
   inherited field to its own column, as `name` is bound above, and that binding is
@@ -751,9 +753,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   like a field of another entity, ignoring case. BigQuery limits the options
   kcmd writes on each label and property, too. The description holds at most
   1,024 characters, counting the field label and the time-dimension line kcmd
-  adds to it. An element holds at most eight
-  synonyms of one to 300 characters each. No two of them may match ignoring
-  case, and none may match the element's own name.
+  adds to it. Each `extensions` value (`instructions`, and `examples` serialized
+  as a JSON array) holds at most 1,024 characters. An element holds at most
+  eight synonyms of one to 300 characters each. No two of them may match
+  ignoring case, and none may match the element's own name.
   A deployment that names a profile is held to the measure rule under that
   profile, with the keys it states, except for the metrics it leaves
   unavailable. On Spanner, that profile must leave every metric unavailable.

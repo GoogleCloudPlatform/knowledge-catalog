@@ -1043,7 +1043,8 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
               {
                 name: 'status',
                 expression: 'status',
-                aiContext: {examples: ['open', 'closed']},
+                // `examples` items are kept verbatim, whitespace included.
+                aiContext: {examples: ['open', 'closed', '  ']},
               },
             ],
           }],
@@ -1061,7 +1062,8 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
         expect(ddl).toContain('      id,\n');
         expect(ddl).not.toContain('id OPTIONS');
         expect(ddl).toContain(
-            '      status OPTIONS(extensions=[("examples", "[\\"open\\",\\"closed\\"]")]),\n');
+            '      status OPTIONS(extensions=[("examples", ' +
+            '"[\\"open\\",\\"closed\\",\\"  \\"]")]),\n');
         expect(ddl).toContain(
             '      MEASURE(COUNT(id)) AS order_count ' +
             'OPTIONS(extensions=[("instructions", "Count distinct orders.")])\n');
@@ -1486,8 +1488,9 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
       () => {
         const dropped =
             `entity 'Party' is an abstract supertype in a class hierarchy; ` +
-            `its metadata is dropped from the shared 'Party' label (BigQuery ` +
-            `forbids OPTIONS on a label bound by multiple tables)`;
+            `its metadata is dropped (an abstract supertype is only a LABEL ` +
+            `on its subtypes, and BigQuery accepts OPTIONS only on a ` +
+            `table's DEFAULT LABEL)`;
         // Only instructions and examples, with no description or synonyms: the
         // label still has metadata to lose, so the author is told.
         const model = partyModel();
