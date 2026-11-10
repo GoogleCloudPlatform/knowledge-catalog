@@ -282,6 +282,10 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: 'COALESCE(ordered_at, CURRENT_TIMESTAMP()) /* when the order was placed */'}],
     ['MYSQL', "COALESCE(a, 0) # the customer's", {sql: "COALESCE(a, 0) /* the customer's */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
+    ['MYSQL', 'SUM(a)--1 /* a--b */#c', {sql: 'SUM(a) - -1 /* a--b */ /* c */'}],
+    ['MYSQL', "CONCAT('é', a) # a's", {sql: "CONCAT('é', a) /* a's */"}],
+    ['MYSQL', "CONCAT('a#\nb', s) # note", {sql: "CONCAT('a#\\nb', s) /* note */"}],
+    ['MYSQL', 'a /* # x\n# y */ + 1 # z', {sql: 'a /* # x\n# y */ + 1 /* z */'}],
     ['MYSQL', "IF(s = '#', `a#b`, c /* # */) # note", {sql: "IF(s = '#', `a#b`, c /* # */) /* note */"}],
     // Constructs off the list.
     ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd does not translate TO_CHAR'}],

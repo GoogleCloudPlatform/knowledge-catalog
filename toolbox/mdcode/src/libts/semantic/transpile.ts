@@ -32,7 +32,7 @@
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
-import {loadedSqlEngine, loadSqlEngine, mysqlComments, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
+import {loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -444,7 +444,7 @@ function transpileWith(
   try {
     // A text already in the target dialect needs no translation.
     if (read === write && !spanner) return {id: r.id, sql: r.expression};
-    const source = read === 'mysql' ? mysqlComments(r.expression) : r.expression;
+    const source = read === 'mysql' ? mysqlForEngine(r.expression) : r.expression;
     // A comment that starts the text keeps the engine from translating the
     // functions in it, so the engine reads the text after it.
     const {text, comments} = sqlComments(engine, source, read);
