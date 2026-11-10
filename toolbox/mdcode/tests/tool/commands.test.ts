@@ -8,6 +8,7 @@ import * as path from 'node:path';
 
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import {OverviewSidecar, SemanticModelLayout} from '../../src/libts/layouts/semantic-model';
 import * as bqLeg from '../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
@@ -1936,6 +1937,37 @@ describe('a pull', () => {
                `writes it: ${error}`);
          });
   }
+
+  // Reading a table's SQL dialect calls Spanner or Knowledge Catalog, so pull
+  // leaves the checks that need one to push.
+  test('reads no table\'s SQL dialect', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const [entity] = SECOND_GEN.entities;
+    const [prod] = SECOND_GEN.profiles!;
+    pulled({
+      ...SECOND_GEN,
+      entities: [{
+        ...entity,
+        dataSource: 'spanner.googleapis.com/projects/test-project/instances/' +
+            'i/databases/db/tables/customer',
+      }],
+      profiles: [{
+        ...prod,
+        entities: [{
+          ...prod.entities[0],
+          source: 'cloudsql.googleapis.com/projects/test-project/locations/' +
+              'us-central1/instances/i/databases/shop/tables/customer',
+        }],
+      }],
+    });
+
+    expect(await pull()).toBe(0);
+    expect(messages(console.warn)).toBe('');
+    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
+    expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
+  });
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();

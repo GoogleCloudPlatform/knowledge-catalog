@@ -460,14 +460,11 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 }
 
 // The dialects sourceDialects reads for the model documents `docs` and their
-// profile files, for every load the command makes. Gives `report` each source
-// whose dialect cannot be read, and returns null. By default `report` prints
-// it.
+// profile files, for every load the command makes. Prints each source whose
+// dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
-    profileDocs: ProfileDocs,
-    report = (e: string) => console.error(`Error: ${e}`)):
-    Promise<DialectLoad|null> {
+    profileDocs: ProfileDocs): Promise<DialectLoad|null> {
   const texts = docs.map(d => d.text);
   for (const doc of docs) {
     try {
@@ -478,7 +475,7 @@ async function dialectLoad(
   }
   const {dialects, databases, errors} = await readDialects(ctx, texts);
   if (errors.length) {
-    for (const e of errors) report(e);
+    for (const e of errors) console.error(`Error: ${e}`);
     return null;
   }
   return {sourceDialects: dialects, sourceDatabases: databases};
@@ -1894,8 +1891,9 @@ async function pullSemanticModel(
 
 // Push's first error for the model file `doc` and the profile files
 // `profiles`, or undefined when push accepts them. Like push, it loads the SQL
-// parser and reads each source's dialect, then runs push's checks that call no
-// service. It reads the overview sidecars on disk, as push does.
+// parser and runs push's checks that call no service. It reads no table's SQL
+// dialect, since that calls a service, so only push runs the checks that need
+// one. It reads the overview sidecars on disk, as push does.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
@@ -1904,11 +1902,8 @@ async function pushRefusal(
   if (parserError) return parserError;
   const docs = [doc];
   const profileDocs = () => profiles;
-  const unread: string[] = [];
-  const load = await dialectLoad(ctx, docs, profileDocs, e => unread.push(e));
-  if (!load) return unread[0];
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load: {}}, true);
   return 'errors' in checked ? checked.errors[0]?.error : undefined;
 }
 

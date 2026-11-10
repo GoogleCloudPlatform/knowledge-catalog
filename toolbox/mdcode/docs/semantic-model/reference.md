@@ -85,9 +85,10 @@ It changes a local file only where the catalog differs from it, so the rest
 keeps its comments, key order and formatting, and writes a file whole when it
 cannot. An overview sidecar that push would read into the overview the catalog
 holds keeps its bytes, whatever its line endings. When push would refuse the
-model pull writes, pull warns and gives push's first error. When the model
-entry's `kcmd-push-state` label says the last push stopped partway, it writes
-nothing.
+model pull writes, pull warns and gives push's first error. Pull leaves out
+push's checks that need a table's SQL dialect, so only push reports those. When
+the model entry's `kcmd-push-state` label says the last push stopped partway,
+it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
