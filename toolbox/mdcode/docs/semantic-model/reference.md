@@ -940,10 +940,11 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   its dialect instead, and a missing entry stops the push even with
   `--skip-source-check`. That flag skips the source check and its location
   rule. Each error from the check offers the flag and says what it skips. The
-  flag gets no deployment past a missing table. A BigQuery deployment still
-  probes each table it reads before anything is written, as the next check
-  says. A Spanner deployment's graph DDL fails on a missing table after
-  Knowledge Catalog is written. `kcmd profiles` does not run the source check.
+  flag gets no BigQuery or Spanner deployment past a missing table. A BigQuery
+  deployment still probes each table it reads before anything is written, as
+  the next check says. A Spanner deployment's graph DDL fails on a missing
+  table after Knowledge Catalog is written. `kcmd profiles` does not run the
+  source check.
   *(live — needs the reads listed under [Permissions](#permissions))*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
