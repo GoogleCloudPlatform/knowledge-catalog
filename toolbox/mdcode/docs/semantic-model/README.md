@@ -173,10 +173,8 @@ relationship. A `semantic-link` joins each pair of related entities, and two
 Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 3 entry links.
 ```
 
-A many-to-many relationship gets no entry yet, and push warns about each one
-before it writes to Knowledge Catalog. `kcmd push --validate-only` gives the
-same warnings. Push rejects a relationship from an entity to itself, and
-relationships in both directions between two entities.
+Push rejects a relationship from an entity to itself, and relationships in
+both directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that

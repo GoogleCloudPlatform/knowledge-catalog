@@ -32,8 +32,9 @@ top-level `version` (see [Version handling](#1-status-and-baseline)):
   strip the `GOOGLE` extension blocks and it is a plain Ossie document.
 - **`0.2.0.dev0/google`** — the **extended profile**. The same additions are
   first-class native keys (`entities`, `deployments`, `extends`,
-  `abstract`); the `custom_extensions` carrier is not accepted, because there is
-  nothing left for it to carry. This profile is readable, but not a vanilla-Ossie
+  `abstract`). A `GOOGLE` `custom_extensions` block is not accepted, because
+  there is nothing left for it to carry. Another vendor's block is carried as
+  in vanilla. This profile is readable, but not a vanilla-Ossie
   document — an Ossie-only reader knows neither its version nor its native keys.
 
 For a model that avoids the `/google`-only constructs, the two are the same model
@@ -108,7 +109,7 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
     constraints: [ … ]         # optional; /google only (§5)
     description: "…"           # optional
     ai_context: { … }          # optional (§2.4)
-    custom_extensions: [ … ]   # vanilla only (§6); rejected under /google
+    custom_extensions: [ … ]   # optional (§6); a GOOGLE block is vanilla only
     deployments: [ … ]         # /google only (§5, §7); vanilla carries it in a GOOGLE block
 ```
 
@@ -120,10 +121,9 @@ tell two objects of the same name apart.
 
 Objects are **closed**: an unknown sibling key inside a validated object is a
 **hard error**, not silently dropped (agreed with Dmitri). This is what makes the
-version gate bite — a native key under vanilla, or a `custom_extensions` block
-under `/google`, is an unknown key for that version and is rejected
-([§6](#6-the-extension-mechanism)). Setting both `entities` and `datasets` is
-likewise an error ([§5](#5-extensions)).
+version gate bite: a native key under vanilla is an unknown key for that version
+and is rejected ([§6](#6-the-extension-mechanism)). Setting both `entities` and
+`datasets` is likewise an error ([§5](#5-extensions)).
 
 The remaining subsections define each object. Names throughout are **logical
 business vocabulary** — `order_id`, `placed_by` — never physical column names; the
@@ -350,7 +350,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | field `expression` (column binding) | required (`dialects` object) | optional; bare-string sugar in `/google` and profiles | model before binding; each named profile binds or excludes it · [§2.5](#25-expressions), [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
 | `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same | [§2.4](#24-ai_context) |
-| `custom_extensions` (`vendor_name`, `data`) | the extension carrier | rejected | `/google` uses native keys; nothing to carry · [§6](#6-the-extension-mechanism) |
+| `custom_extensions` (`vendor_name`, `data`) | the extension carrier | same for other vendors; a `GOOGLE` block is rejected | another vendor's block is carried verbatim; `/google` writes `kcmd`'s additions as native keys · [§6](#6-the-extension-mechanism) |
 | `deployments` | — | added | OSI omits deployment; vanilla carries it in `custom_extensions` · [§5](#5-extensions), [§7.2](#72-deployments-and-deployment-targets) |
 | binding profiles | — | added | one model, many stores · [§7.3](#73-binding-profiles) |
 | multiple models per document | a list (many) | exactly one | entry group = model's identity · [§4.1](#41-narrowings-stricter-than-ossie) |
@@ -426,8 +426,9 @@ Each rule and its reason:
 
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
-  gate, this is how a native key under vanilla — or a `custom_extensions` block
-  under `/google` — is caught ([§6](#6-the-extension-mechanism)).
+  gate, this is how a native key under vanilla is caught. A `GOOGLE`
+  `custom_extensions` block is rejected under `/google`, and on a field under
+  vanilla ([§6](#6-the-extension-mechanism)).
 
 - **Duplicate names are rejected.** A dataset, field, relationship, or metric name
   repeated within its scope is a hard load error; the generated element would be
@@ -675,9 +676,12 @@ custom_extensions:
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
 and a metric. `data` is opaque to Ossie. `kcmd` reads a `GOOGLE` block's payload
 into the model when it parses the document, and carries any other vendor's block
-verbatim. `vendor_name` matches `GOOGLE` in any letter case, so `Google` and
-`google` name the same vendor. A model file that pull rebuilds from the catalog
-metadata writes the vendor name as `GOOGLE`.
+verbatim. A `GOOGLE` block MUST NOT appear on a field, because `kcmd` defines no
+field-level extension. Another vendor's block MAY appear on a field. One object
+MAY carry more than one `GOOGLE` block. `kcmd` merges their keys, and rejects a
+key that two of them set. `vendor_name` matches `GOOGLE` in any letter case, so
+`Google` and `google` name the same vendor. A model file that pull rebuilds from
+the catalog metadata writes the vendor name as `GOOGLE`.
 An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
 not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
 a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
@@ -693,9 +697,11 @@ is rejected with a message naming the `GOOGLE` `custom_extensions` block or
 information is written as first-class keys — `entities`, `deployments`,
 `extends`, `abstract` — and sibling `<model>.profile.<name>.yaml` files, read
 directly, with no `data` string to encode. There is
-therefore nothing left for the carrier to carry, and a `custom_extensions` block is
-**not accepted** under `/google` (also an unknown key). This is the profile `kcmd`'s
-own tools emit: readable, but no longer a vanilla-Ossie document.
+therefore nothing left for a `GOOGLE` block to carry, and one is **not accepted**
+under `/google`. Another vendor's block is accepted on the model, a dataset, a
+field, a relationship and a metric, as under vanilla, and carried verbatim. This
+is the profile `kcmd`'s own tools emit: readable, but no longer a vanilla-Ossie
+document.
 
 **Converting between the two** is the `version` plus a mechanical fold between
 vanilla `GOOGLE` blocks and `/google` native keys or profile files:

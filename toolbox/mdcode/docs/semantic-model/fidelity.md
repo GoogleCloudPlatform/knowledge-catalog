@@ -34,7 +34,6 @@ agree on every structural row and differ only where a Spanner target has no
 | Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | — dropped                                                            |
 | Metric                                                         | `semantic-metric` entry         | ✓ (type⁵)                                      | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `semantic-relationship` entry¹⁵ | ✓⁶                                             | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
-| Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | `semantic-entity.extends`       | ✓                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
@@ -170,9 +169,8 @@ provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 Every push publishes the model file as written to Knowledge Catalog: every
-entity, metric, and relationship the document declares, apart from a
-many-to-many association, which has no entry yet. A `pull` rebuilds the model
-and profile files from that metadata alone, and changes a local file only
+entity, metric, and relationship the document declares. A `pull` rebuilds the
+model and profile files from that metadata alone, and changes a local file only
 where it differs (see [What pull recovers](#what-pull-recovers)).
 
 A logical model still produces complete entries (footnote 10).
@@ -218,11 +216,7 @@ that first pass is byte-for-byte stable.
 
 `affects` stores only what the author wrote, which is why it survives a partial
 pull intact. Whether a `concept` is an entity or an edge is not recorded, so
-nothing about it has to be re-resolved — and nothing can go stale. That matters
-most for a many-to-many relationship, which never reaches the catalog at all: a
-pull recovers each relationship from its own entry, and a many-to-many
-relationship has none, so a concept naming an M:N edge would look unresolvable
-on a model that is perfectly well-formed. It comes back untouched instead.
+nothing about it has to be re-resolved — and nothing can go stale.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the rule and any `instructions` in a

@@ -648,9 +648,9 @@ pushed a first generation, with dotted entity and metric ids
 over that entry group deletes those entries and links. Pull rebuilds no model
 pushed with the first-generation types, and warns about it instead.
 
-Each relationship other than a many-to-many association has an entry of its
-own. Entry ids are `<model>`, `<model>/entities/<entity>`,
-`<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
+Each relationship has an entry of its own. Entry ids are `<model>`,
+`<model>/entities/<entity>`, `<model>/metrics/<metric>` and
+`<model>/relationships/<relationship>`.
 
 A `semantic-link` joins each ordered pair of related entities. Built-in
 `reference` links run from each relationship's entry to the entries of its
@@ -706,8 +706,11 @@ broken — and links to the definition it enforces:
 Before these checks even run, the document must **load**, and the loader is strict:
 `version` is required and must be `0.2.0.dev0` (vanilla Ossie) or
 `0.2.0.dev0/google` (the extended profile); every object is closed, so an unknown
-key — including a native key under vanilla, or a `custom_extensions` block under
-`/google` — is rejected; names must be unique within their scope; every
+key, including a native key under vanilla, is rejected; a `GOOGLE`
+`custom_extensions` block is rejected under `/google` and on a field under
+vanilla, while another vendor's block is accepted on every object in both
+flavors; the `GOOGLE` blocks on one object are merged, and a key that two of
+them set is rejected; names must be unique within their scope; every
 `extends` must name an entity defined in the model; every dialect entry must use
 one of the supported SQL dialects ([model spec §2.5](model_spec.md#25-expressions));
 a plain-string `expression` is allowed in a model file
