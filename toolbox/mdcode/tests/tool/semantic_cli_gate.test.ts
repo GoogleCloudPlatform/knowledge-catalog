@@ -20,6 +20,7 @@ const UNSUPPORTED_SEMANTIC_SCOPE_ERROR =
     'Error: catalog.yaml names a semantic-model scope, which this version of kcmd does not support.';
 
 let tmpDir: string;
+let fakeBinDir: string;
 
 beforeAll(() => {
   execFileSync('npm', ['run', 'build:cli'], {cwd: ROOT, stdio: 'pipe'});
@@ -27,6 +28,12 @@ beforeAll(() => {
     throw new Error(`Expected built CLI at ${CLI_JS}`);
   }
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-gated-cli-'));
+  fakeBinDir = path.join(tmpDir, 'fake-bin');
+  fs.mkdirSync(fakeBinDir, {recursive: true});
+  const gcloudStub = path.join(fakeBinDir, 'gcloud');
+  fs.writeFileSync(
+      gcloudStub, '#!/bin/sh\necho "no credentials in test" >&2\nexit 1\n',
+      {mode: 0o755});
 }, 30000);
 
 afterAll(() => {
@@ -41,7 +48,11 @@ function runGated(args: string[], workDir = tmpDir): {
   const proc = Bun.spawnSync({
     cmd: ['node', CLI_JS, ...args],
     cwd: workDir,
-    env: {...process.env, CLOUDSDK_CONFIG: tmpDir},
+    env: {
+      ...process.env,
+      CLOUDSDK_CONFIG: tmpDir,
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    },
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -172,7 +183,7 @@ describe('gated kcmd CLI (--define __KCMD_ENABLE_SEMANTIC__=false)', () => {
       expect(mcpPathRes.code).toBe(1);
       expect(mcpPathRes.stderr).toContain(UNSUPPORTED_SEMANTIC_SCOPE_ERROR);
       expect(mcpPathRes.stdout + mcpPathRes.stderr).not.toMatch(/private/i);
-    });
+    }, 30000);
   }
 
   test('permits non-semantic workspace scopes through assertScopeSupported', () => {
@@ -190,5 +201,5 @@ describe('gated kcmd CLI (--define __KCMD_ENABLE_SEMANTIC__=false)', () => {
           cmd === 'mcp' ? 'Error starting MCP server:' :
                           "Manifest error: layout 'unknown-layout'");
     }
-  });
+  }, 30000);
 });
