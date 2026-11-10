@@ -89,8 +89,8 @@ export interface SemanticModel {
   // Set when a profile is applied; absent otherwise.
   excludedMetrics?: string[];
   // Set when kcmd import checks what it writes for a file another product
-  // wrote, so that a message naming an import command names one that reads
-  // that file. Absent otherwise.
+  // wrote, and does not write over that file, so that a message naming an
+  // import command names one that reads that file. Absent otherwise.
   thirdPartyImport?: boolean;
 }
 
