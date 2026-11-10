@@ -308,7 +308,7 @@ function placeMetric(
       const key = nodeKey(entity)[0];
       read = {
         sql: isSimpleIdentifier(key) ? key : physicalColumn(key),
-        column: true
+        column: key.replace(/^`(.*)`$/, '$1')
       };
     } else {
       // A field the node table leaves out declares no property, so neither a
@@ -360,13 +360,13 @@ function placeMetric(
 // local to the table, with each field it names as `<entity>.<field>` read
 // through that field's own SQL (see MetricPlacementInput.localSql). When the
 // operand is a field of `entity`, written as `<entity>.<field>` or bare, `sql`
-// is that field's SQL. `column` marks SQL that is one column of the table: a
-// column no field names, written as `<entity>.<column>` or bare, or the column
-// a field reads whole.
+// is that field's SQL. `column` is the column's name without quotes when the
+// SQL is one column of the table: a column no field names, written as
+// `<entity>.<column>` or bare, or the column a field reads whole.
 //
 // `skip` is set instead when the operand reads a field the node table leaves
 // out, and says which.
-type OperandRead = {sql: string; column: boolean}|{skip: string};
+type OperandRead = {sql: string; column?: string}|{skip: string};
 function readOperand(
     entity: Entity, operand: string,
     input: MetricPlacementInput): OperandRead {
@@ -384,12 +384,13 @@ function readOperand(
       own ? entity.fields.find(f => f.name === column.name) : undefined;
   if (field) {
     const read = input.renderedFieldSql(entity, field);
-    return 'sql' in read ? {sql: read.sql, column: !!loneColumn(read.sql)} :
+    return 'sql' in read ? {sql: read.sql, column: loneColumn(read.sql)} :
                            {skip: `aggregates ${read.reads}`};
   }
   const read = input.localSql(entity, operand);
-  return 'sql' in read ? {sql: read.sql, column: own} :
-                         {skip: `reads ${read.reads}`};
+  return 'sql' in read ?
+      {sql: read.sql, column: own ? column.name : undefined} :
+      {skip: `reads ${read.reads}`};
 }
 
 // Ensures the operand `read` is exposed as a node property and returns its
@@ -408,8 +409,7 @@ function readOperand(
 function exposeOperand(
     lowering: MeasureLowering, read: Exclude<OperandRead, {skip: string}>,
     metricName: string): string {
-  const {sql} = read;
-  const column = read.column ? loneColumn(sql) : undefined;
+  const {sql, column} = read;
   const existing =
       (column === undefined ? undefined :
                               lowering.byColumn.get(column.toLowerCase())) ??
@@ -419,7 +419,7 @@ function exposeOperand(
   const isFree = (name: string) => !lowering.taken.has(name.toLowerCase()) &&
       !lowering.graphNames.has(name.toLowerCase());
   let name: string;
-  if (read.column && isSimpleIdentifier(sql) && isFree(sql)) {
+  if (column !== undefined && isSimpleIdentifier(sql) && isFree(sql)) {
     // A column not already declared: expose it under its own name.
     name = sql;
     lowering.derivedProperties.push(quoteIfReserved(name));
@@ -429,7 +429,7 @@ function exposeOperand(
         n => isFree(n) && !lowering.columns.has(n.toLowerCase()));
     // Only a column is quoted: a keyword such as TRUE stays a keyword.
     lowering.derivedProperties.push(
-        `${read.column ? quoteIfReserved(sql) : sql} AS ${name}`);
+        `${column !== undefined ? quoteIfReserved(sql) : sql} AS ${name}`);
   }
   lowering.taken.add(name.toLowerCase());
   lowering.graphNames.add(name.toLowerCase());
