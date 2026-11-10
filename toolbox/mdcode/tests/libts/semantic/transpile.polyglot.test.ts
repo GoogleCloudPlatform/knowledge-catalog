@@ -249,6 +249,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'd + INTERVAL 1 HOUR + INTERVAL 1 DAY', {sql: "DATE_ADD(d + INTERVAL '1' HOUR, INTERVAL '1' DAY)"}],
     ['MYSQL', 'MAX(d) + INTERVAL 30 DAY - INTERVAL 1 DAY', {sql: "DATE_SUB(DATE_ADD(MAX(d), INTERVAL '30' DAY), INTERVAL '1' DAY)"}],
     ['SNOWFLAKE', "DATE_TRUNC('month', d) - INTERVAL '1 day'", {sql: 'DATE_SUB(DATE_TRUNC(d, MONTH), INTERVAL 1 DAY)'}],
+    ['DATABRICKS', 'INTERVAL 2 HOUR + INTERVAL 1 DAY', {sql: "INTERVAL '2' HOUR + INTERVAL '1' DAY"}],
     ['MYSQL', 'DATE_SUB(NOW(), INTERVAL 2 DAY)', {sql: "DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL '2' DAY)"}],
     ['DATABRICKS', 'date_add(d, 1)', {sql: 'DATE_ADD(CAST(CAST(d AS DATETIME) AS DATE), INTERVAL 1 DAY)'}],
     ['SQLSERVER', 'DATEADD(month, 1, CAST(d AS DATE))', {sql: 'DATE_ADD(CAST(d AS DATE), INTERVAL 1 MONTH)'}],

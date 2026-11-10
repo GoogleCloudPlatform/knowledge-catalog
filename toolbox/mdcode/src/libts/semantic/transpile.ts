@@ -1471,10 +1471,11 @@ function repairNode(node: any, read: string): unknown {
     return SNOWFLAKE_TYPES[node.name];
   }
   // A value plus or minus an INTERVAL of days, from a dialect in DATE_DAYS. A
-  // sum may name the INTERVAL first.
+  // sum may name the INTERVAL first. A sum of two intervals is an interval.
   const sum = DATE_DAYS.has(read) ? node.add ?? node.sub : undefined;
   const days = (n: any) => String(n?.interval?.unit?.unit).toLowerCase() === 'day';
-  const operands = !sum ? undefined : days(sum.right) ? [sum.left, sum.right] :
+  const operands = !sum || (sum.left?.interval && sum.right?.interval) ? undefined :
+      days(sum.right) ? [sum.left, sum.right] :
       node.add && days(sum.left) ? [sum.right, sum.left] : undefined;
   if (operands) {
     const call = sqlExpressionTree(node.add ? 'DATE_ADD(x, y)' : 'DATE_SUB(x, y)', 'BIGQUERY');
