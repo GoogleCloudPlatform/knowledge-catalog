@@ -215,3 +215,96 @@ metrics:
     });
   }
 });
+
+// A JSON `data` string, such as a GOOGLE block's, is changed like the YAML
+// around it: each value that stays keeps its text, and the block keeps its
+// layout. Pull writes `data` as compact JSON.
+describe('updatedText in a JSON data string', () => {
+  const DATA = {
+    deployments: [{name: 'default', target: 'g/main'}],
+    profiles: [{
+      name: 'prod',
+      entities: [
+        {name: 'Order', source: 't/orders'},
+        {name: 'Customer', source: 't/customer'},
+      ],
+    }],
+  };
+  // `data` as a hand-written block over several lines, and as pull writes it.
+  const block = (text: string) => `custom_extensions:
+  - vendor_name: GOOGLE   # bindings
+    data: |
+${text.replace(/^/gm, '      ')}
+`;
+  const LOCAL = block(JSON.stringify(DATA, null, 2));
+  const pulled = (data: unknown) => `custom_extensions:
+  - {vendor_name: GOOGLE, data: '${JSON.stringify(data)}'}
+`;
+  const BASE = pulled(DATA);
+  // DATA with `edit` applied to a copy.
+  const changed = (edit: (d: any) => void) => {
+    const d = structuredClone(DATA);
+    edit(d);
+    return d;
+  };
+
+  // Each change leaves the block as the changed data written by hand in the
+  // same layout.
+  for (const [what, data] of [
+    [
+      'changes only a changed value',
+      changed(d => d.profiles[0].entities[0].source = 't/orders_v2'),
+    ],
+    [
+      'adds an item after the one it follows, in the block\'s layout',
+      changed(d => d.profiles[0].entities.splice(
+                  1, 0, {name: 'Item', source: 't/item'})),
+    ],
+    [
+      'drops an item the catalog no longer has, with its comma',
+      changed(d => d.profiles[0].entities.pop()),
+    ],
+    [
+      'adds an item before the first one',
+      changed(d => d.profiles[0].entities.unshift(
+                  {name: 'Item', source: 't/item'})),
+    ],
+    [
+      'drops the first item, with its comma',
+      changed(d => d.profiles[0].entities.shift()),
+    ],
+    [
+      'replaces the last item',
+      changed(
+          d => d.profiles[0].entities[1] = {name: 'Item', source: 't/item'}),
+    ],
+    [
+      'writes a list again when every item goes',
+      changed(d => d.profiles[0].entities = [{name: 'Item', source: 't/item'}]),
+    ],
+    [
+      'adds a key after the one it follows',
+      changed(d => d.profiles[0].metrics_exclude = ['revenue']),
+    ],
+  ] as const) {
+    test(what, () => {
+      expect(updatedText(LOCAL, BASE, pulled(data)))
+          .toBe(block(JSON.stringify(data, null, 2)));
+    });
+  }
+
+  test('keeps a one-line JSON string on one line', () => {
+    const local = `x: '{"a": 1, "b": [1, 2]}'  # kept\n`;
+    expect(updatedText(
+               local, `x: '{"a":1,"b":[1,2]}'\n`, `x: '{"a":2,"b":[1,2,3]}'\n`))
+        .toBe(`x: '{"a": 2, "b": [1, 2, 3]}'  # kept\n`);
+  });
+
+  test('writes a list again when the catalog changes its order', () => {
+    const local = 'x: \'{"fields": [{"name": "a"}, {"name": "b"}]}\'\n';
+    expect(updatedText(
+               local, 'x: \'{"fields":[{"name":"a"},{"name":"b"}]}\'\n',
+               'x: \'{"fields":[{"name":"b"},{"name":"a"}]}\'\n'))
+        .toBe('x: \'{"fields": [{"name": "b"}, {"name": "a"}]}\'\n');
+  });
+});

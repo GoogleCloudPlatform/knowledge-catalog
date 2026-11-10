@@ -10,7 +10,8 @@
 // local files through push's emitter and pull's reader. The text pull builds
 // for that model is the local file in pull's normal form. What differs between
 // it and the text pull builds from the catalog is what the catalog changed, and
-// `updatedText` makes only those changes to the local file.
+// `updatedText` makes only those changes to the local file, inside the JSON
+// `data` of a `custom_extensions` block too.
 
 import {isDeepStrictEqual} from 'node:util';
 import * as yaml from 'yaml';
@@ -95,12 +96,145 @@ export function updatedText(
       text, document, merged(value, parse(base), parse(pulled)), links);
 }
 
+// The JSON object or list `value` holds when it is a string, or undefined.
+function jsonIn(value: unknown): object|undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// `text`, a JSON object or list, changed to hold `value`. Each part whose
+// value stays keeps its text. A changed scalar is written in place. A removed
+// key or item goes with its comma, and a new one goes after the entry it
+// follows in `value`, with its container's separator and indentation. A
+// container whose entries cannot be matched one to one, that changes order or
+// that loses every entry is written again, as is a value that changes shape.
+function updatedJson(text: string, value: unknown): string {
+  const doc = yaml.parseDocument(text);
+  const edits: Array<[number, number, string]> = [];
+  // The separators the text writes between a key and its value, and between
+  // two entries on one line.
+  const colon = /"\s*:\s*/.exec(text)?.[0].slice(1) ?? ': ';
+  const comma = /,[ \t]*(?=\S)/.exec(text)?.[0] ?? ', ';
+  const flat = (v: unknown): string => Array.isArray(v) ?
+      `[${v.map(flat).join(comma)}]` :
+      isRecord(v) ?
+      `{${Object.entries(v).map(([k, x]) => JSON.stringify(k) + colon + flat(x))
+              .join(comma)}}` :
+      JSON.stringify(v);
+  const rangeOf = (node: yaml.Node) => node.range!;
+  const indentAt = (at: number) => {
+    const start = text.lastIndexOf('\n', at - 1) + 1;
+    return {column: at - start, indent: /^[ \t]*/.exec(text.slice(start))![0]};
+  };
+  const spansLines = (node: yaml.Node) =>
+      text.slice(rangeOf(node)[0], rangeOf(node)[1]).includes('\n');
+  // `v` written at column `col`, over lines indented by `step` for each level
+  // when `lines` is set, or else on one line.
+  const json = (v: unknown, col: number, step: number, lines: boolean) =>
+      lines && typeof v === 'object' && v !== null ?
+      JSON.stringify(v, null, step).replace(/\n/g, `\n${' '.repeat(col)}`) :
+      flat(v);
+  // `node` written again to hold `v`: over lines indented from its line's
+  // indentation, as its entries were, when it spans lines.
+  const write = (node: yaml.Node, v: unknown) => {
+    const [from, to] = rangeOf(node);
+    const indent = indentAt(from).indent.length;
+    const items = yaml.isCollection(node) ? node.items : [];
+    const first = yaml.isPair(items[0]) ? items[0].key : items[0];
+    const step = yaml.isNode(first) ?
+        Math.max(indentAt(rangeOf(first)[0]).column - indent, 1) :
+        2;
+    edits.push([from, to, json(v, indent, step, spansLines(node))]);
+  };
+  const edit = (node: yaml.Node, v: unknown): void => {
+    if (isDeepStrictEqual(node.toJS(doc), v)) return;
+    const isMap = yaml.isMap(node) && isRecord(v);
+    if (!isMap && !(yaml.isSeq(node) && Array.isArray(v))) {
+      return write(node, v);
+    }
+    // Each entry of the node, with its key, where its text starts and ends,
+    // and its value's node.
+    const items = (node as yaml.YAMLMap|yaml.YAMLSeq).items.map(item => {
+      const n = (isMap ? (item as yaml.Pair).value : item) as yaml.Node;
+      return {
+        key: isMap ? String(((item as yaml.Pair).key as yaml.Scalar).value) :
+                     itemKey(n.toJS(doc)),
+        from: rangeOf(isMap ? (item as yaml.Pair).key as yaml.Node : n)[0],
+        to: rangeOf(n)[1],
+        node: n,
+      };
+    });
+    const entries: Array<[string, unknown]> = isMap ?
+        Object.entries(v) :
+        (v as unknown[]).map(x => [itemKey(x), x]);
+    const keys = entries.map(([k]) => k);
+    const kept = items.filter(i => keys.includes(i.key));
+    const unique = (ks: string[]) => new Set(ks).size === ks.length;
+    if (!kept.length || !unique(keys) || !unique(items.map(i => i.key)) ||
+        !isDeepStrictEqual(kept.map(i => i.key),
+                           keys.filter(k => kept.some(i => i.key === k)))) {
+      return write(node, v);
+    }
+    const lines = spansLines(node);
+    const {column: col} = indentAt(items[0].from);
+    const step = lines ?
+        Math.max(col - indentAt(rangeOf(node)[0]).indent.length, 1) :
+        2;
+    const sep = items.length > 1 ? text.slice(items[0].to, items[1].from) :
+        lines                    ? `,\n${' '.repeat(col)}` :
+                                   comma;
+    // Each run of removed entries goes with the commas around it.
+    for (let a = 0; a < items.length; a++) {
+      if (keys.includes(items[a].key)) continue;
+      let b = a;
+      while (b + 1 < items.length && !keys.includes(items[b + 1].key)) b++;
+      const next = items[b + 1];
+      edits.push(next ? [items[a].from, next.from, ''] :
+                        [items[a - 1].to, items[b].to, '']);
+      a = b;
+    }
+    // Each kept entry changes in place, and each new one goes after the kept
+    // entry it follows, or before the first entry.
+    let after: (typeof items)[number]|undefined;
+    for (const [k, x] of entries) {
+      const item = items.find(i => i.key === k);
+      if (item) {
+        edit(item.node, x);
+        after = item;
+        continue;
+      }
+      const entry =
+          (isMap ? JSON.stringify(k) + colon : '') + json(x, col, step, lines);
+      edits.push(after ? [after.to, after.to, sep + entry] :
+                         [items[0].from, items[0].from, entry + sep]);
+    }
+  };
+  edit(doc.contents as yaml.Node, value);
+  // Edits apply from the end of the text. Of two that start at one place, the
+  // longer one applies first, and of two insertions, the later one.
+  return edits.map((e, i) => ({e, i}))
+      .sort((x, y) => y.e[0] - x.e[0] || y.e[1] - x.e[1] || y.i - x.i)
+      .reduce((out, {e: [from, to, s]}) =>
+                  out.slice(0, from) + s + out.slice(to), text);
+}
+
 // `local` changed by what changes from `base` to `pulled`, three values at the
 // same place in the local file, in pull's form of it, and in pull's form of
 // the catalog's file. A value the two forms agree on is the local one, as
 // written. A value of another shape in the local file is replaced whole.
 function merged(local: unknown, base: unknown, pulled: unknown): unknown {
   if (isDeepStrictEqual(base, pulled)) return local;
+  // A string holding a JSON object or list, such as the `data` of a GOOGLE
+  // block, which holds a vanilla model's deployments and profiles.
+  const [l, b, p] = [local, base, pulled].map(jsonIn);
+  if (l !== undefined && b !== undefined && p !== undefined) {
+    return updatedJson(local as string, merged(l, b, p));
+  }
   if (isRecord(local) && isRecord(base) && isRecord(pulled)) {
     const entries = mergedEntries(
         Object.entries(local), Object.entries(base), Object.entries(pulled),

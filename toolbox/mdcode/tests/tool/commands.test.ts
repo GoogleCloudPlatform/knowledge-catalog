@@ -1273,7 +1273,7 @@ semantic_model:
   // Push checks a profile without its own actions too, so a GOOGLE block
   // profile that binds an action the vanilla model cannot declare counts as
   // the catalog's.
-  const BLOCK_PROFILE = JSON.stringify({profiles: [{
+  const BLOCK_DATA = {profiles: [{
     name: 'prod',
     entities: [
       {name: 'Order', source: `${TABLES}/orders`, primary_key: ['id'],
@@ -1284,12 +1284,18 @@ semantic_model:
     ],
     relationships:
         [{name: 'placed_by', from_columns: ['buyer'], to_columns: ['key']}],
-    actions: [{name: 'Refund', executor: null}],
-  }]});
-  const WITH_BLOCK_ACTION = VANILLA.replace(
+  }]};
+  // `model` with a GOOGLE block holding `data`, written by hand over several
+  // lines with a comment on its `vendor_name` line.
+  const withBlock = (data: object, model = VANILLA) => model.replace(
       '    ai_context: Answer in dollars.\n',
       '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
-          `      - vendor_name: GOOGLE\n        data: '${BLOCK_PROFILE}'\n`);
+          '      - vendor_name: GOOGLE   # bindings\n        data: |\n' +
+          JSON.stringify(data, null, 2).replace(/^/gm, '          ') + '\n');
+  const WITH_BLOCK_ACTION = withBlock({profiles: [{
+    ...BLOCK_DATA.profiles[0],
+    actions: [{name: 'Refund', executor: null}],
+  }]});
   for (const [flavor, files] of [
     ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla', {'commerce.yaml': VANILLA}],
@@ -1365,6 +1371,31 @@ semantic_model:
            '    fields:\n      - name: sku\n        expression: i_sku\n']);
   const BOTH = (model: string, profile = PROFILE) =>
       ({'commerce.yaml': model, 'commerce.profile.prod.yaml': profile});
+  // BLOCK_DATA with `edit` applied to a copy.
+  const blockData = (edit: (d: typeof BLOCK_DATA) => void) => {
+    const d = structuredClone(BLOCK_DATA);
+    edit(d);
+    return d;
+  };
+  // VANILLA with a dataset added, written by hand and in pull's form, and
+  // BLOCK_DATA with its binding.
+  const withItem = (dataset: string) => edited(
+      VANILLA,
+      ['    relationships:\n',
+       `      - name: Item\n        source: ${TABLES}/item\n${dataset}` +
+           '    relationships:\n']);
+  const VANILLA_ITEM = withItem(
+      `        primary_key: [sku]\n        fields:\n` +
+      `          - { name: sku, expression: ${ansi('i_sku')} }\n`);
+  const PULLED_ITEM = withItem(
+      '        primary_key:\n          - sku\n        fields:\n' +
+      '          - name: sku\n            expression:\n' +
+      '              dialects:\n                - dialect: ANSI_SQL\n' +
+      '                  expression: i_sku\n');
+  const ITEM_DATA = blockData(d => d.profiles[0].entities.push({
+    name: 'Item', source: `${TABLES}/item`, primary_key: ['sku'],
+    fields: [{name: 'sku', expression: 'i_sku'}],
+  }));
   // A second profile file, and the files of a model with both profiles.
   const staging = (profile: string) => edited(
       profile, ['# Production bindings.', '# Staging bindings.'],
@@ -1400,6 +1431,30 @@ semantic_model:
       {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
       {'commerce.yaml': VANILLA},
       {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
+    ],
+    // A vanilla model's profiles sit in the JSON `data` of its GOOGLE block,
+    // which keeps its layout.
+    [
+      'one profile source in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(blockData(
+           d => d.profiles[0].entities[0].source = `${TABLES}/orders_v2`))},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      {'commerce.yaml': withBlock(blockData(
+           d => d.profiles[0].entities[0].source = `${TABLES}/orders_v2`))},
+    ],
+    [
+      'an added dataset and its binding in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      // The new dataset is written in pull's form, and its binding in the
+      // block's layout.
+      {'commerce.yaml': withBlock(ITEM_DATA, PULLED_ITEM)},
+    ],
+    [
+      'a removed dataset and its binding in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
     ],
     [
       'one value of a profile file',
