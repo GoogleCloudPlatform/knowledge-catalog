@@ -4,7 +4,7 @@
 
 import {expect} from 'bun:test';
 
-import {bqGraph, bqTable, Case, has, modelFile, pushed, ReportStep, Scope, scenarios, SPANNER, spannerGraph} from './harness';
+import {bqGraph, bqTable, Case, has, modelFile, pushed, ReportStep, Scope, scenarios, spannerGraph} from './harness';
 
 const graph = (name: string, profile?: string) =>
     ({name, target: bqGraph(`commerce_${name}`, 'prod'), profile});
@@ -40,15 +40,14 @@ const SHARED = {...MODEL, deployments: [graph('prod')], code: 1,
 
 scenarios('kcmd profiles reports what push rejects', [
   {
-    // Deployment qa deploys the model file's Spanner tables, which fails
-    // since the model declares a metric, but push stops at prod first.
+    // Deployment qa's profile names an action the model lacks too, but push
+    // stops at prod first.
     name: "prints a deployment's error under the profile it names, only for the first deployment that fails",
-    deployments: [
-      graph('prod', 'prod'), {name: 'qa', target: spannerGraph('commerce')},
-    ],
-    entities: entities(e => `${SPANNER}/tables/${e}`),
-    metrics: [{name: 'customers', expression: 'COUNT(customer.c_id)'}],
-    profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}},
+    deployments: [graph('prod', 'prod'), graph('qa', 'qa')],
+    profiles: {
+      prod: {...PROD, actions: UNKNOWN_ACTION},
+      qa: {...PROD, actions: UNKNOWN_ACTION},
+    },
     rejects: [has("action 'nothing' is not in the logical model")],
     report: {flags: {profile: 'prod'}, code: 1, rejects: {prod: [pushed()]}},
   },

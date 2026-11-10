@@ -548,8 +548,9 @@ differs from BigQuery Graph in five ways:
   available. The
   BigQuery-only rule that a metric must resolve to a single entity therefore does
   not apply to a Spanner target (see [Validation](#validation)).
-  Push refuses a Spanner deployment that names no profile in a model with
-  metrics; name a profile with `metrics_exclude: "*"`.
+  Every push refuses a Spanner deployment that names no profile in a model
+  with metrics, whether or not it deploys that deployment; name a profile with
+  `metrics_exclude: "*"`.
 - **No per-element `OPTIONS`.** `description` and `ai_context` are not emitted
   into the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
@@ -834,9 +835,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   A field the model file binds to one of its tables then needs SQL in that
   dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
   sources are in that database. Spanner creates no property graph in a
-  PostgreSQL-dialect database, so push refuses a Spanner deployment there
-  before anything is written. *(live — needs `spanner.databases.get` on the
-  database)*
+  PostgreSQL-dialect database, so every push refuses a Spanner deployment
+  there before anything is written, whether or not it deploys that deployment.
+  *(live — needs `spanner.databases.get` on the database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a

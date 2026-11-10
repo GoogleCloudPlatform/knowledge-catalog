@@ -2235,24 +2235,26 @@ export async function localChecks(
               document, d.profile,
               ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
-  // Spanner creates no property graph in a PostgreSQL-dialect database, so a
-  // selected Spanner deployment there is refused by the dialect already read.
-  const dialectErrors = models.flatMap(
-      ({document}) => (selectedByDoc.get(document) ?? []).flatMap(d => {
+  // A Spanner graph holds no metric, and Spanner creates no property graph in
+  // a PostgreSQL-dialect database, which the dialect already read shows. Both
+  // apply to every Spanner deployment, whether or not this push selects it.
+  const spannerErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(d => {
         if (d.engine !== 'spanner') return [];
         const {project, instance, database} = d.coordinates;
         const key = `spanner.googleapis.com/projects/${project}/instances/${
             instance}/databases/${database}`;
-        if (load.sourceDialects?.get(key) !== 'POSTGRES') return [];
         return ofProfile(
-            document, d.profile,
-            `[${document}] deployment '${d.name}': database ${project}/${
-                instance}/${database} has the PostgreSQL dialect, and ` +
-                `Spanner creates no property graph in a PostgreSQL-dialect ` +
-                `database. Remove the deployment; push still publishes the ` +
-                `model to Knowledge Catalog.`);
+            document, d.profile, ...spannerMetricsErrors(document, model, d),
+            ...load.sourceDialects?.get(key) !== 'POSTGRES' ? [] : [
+              `[${document}] deployment '${d.name}': database ${project}/${
+                  instance}/${database} has the PostgreSQL dialect, and ` +
+                  `Spanner creates no property graph in a PostgreSQL-dialect ` +
+                  `database. Remove the deployment; push still publishes the ` +
+                  `model to Knowledge Catalog.`,
+            ]);
       }));
-  if (dialectErrors.length) return stop(dialectErrors);
+  if (spannerErrors.length) return stop(spannerErrors);
 
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
@@ -2280,8 +2282,6 @@ async function deploymentPlan(
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
-  const spanner = spannerMetricsErrors(document, model, deployment);
-  if (spanner.length) return fail(...spanner);
   let applied = model;
   // The profile's warnings, which print only once every check below passes.
   const warnings: string[] = [];

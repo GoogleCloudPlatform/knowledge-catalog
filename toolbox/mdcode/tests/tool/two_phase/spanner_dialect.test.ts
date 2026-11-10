@@ -62,13 +62,19 @@ scenarios('a Spanner database', [
     }],
   },
   {
-    name: 'with the PostgreSQL dialect refuses a Spanner deployment before the catalog preflight, in push and in kcmd profiles, and a push without it publishes',
+    name: 'with the PostgreSQL dialect refuses a Spanner deployment before the catalog preflight, in push, also under --no-deployment, and in kcmd profiles, and a push without it publishes',
     entities: [ON_SPANNER],
     deployments: [{name: 'd', target: spannerGraph('g')}],
     services: POSTGRESQL,
     code: 1, nothingWritten: true, events: [], errors: [err(REFUSAL)],
     report: {code: 1, rejects: {'no profiles': [REFUSAL]}},
-    then: [{deployments: [], code: 0, events: ['preflight', 'apply']}],
+    then: [
+      {
+        flags: {deployment: false}, code: 1, nothingWritten: true,
+        errors: [err(REFUSAL)],
+      },
+      {deployments: [], code: 0, events: ['preflight', 'apply']},
+    ],
   },
   {
     name: "with the PostgreSQL dialect judges a Spanner deployment's profile in that dialect, so a POSTGRES metric on a field the profile excludes gets only the profile's error",
