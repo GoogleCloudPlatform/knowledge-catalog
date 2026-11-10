@@ -1738,7 +1738,7 @@ function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
 // is written as pull built it, with a warning, when the local file does not
 // load or names another model, and when the changed local file would not hold
 // what the catalog holds. One that is not valid UTF-8, which push refuses, is
-// written that way too.
+// written that way too, with a warning.
 function updatedFiles(
     layout: SemanticModelLayout, source: SemanticModelSource, model: string,
     files: SerializedFile[]): SerializedFile[] {
@@ -1765,11 +1765,19 @@ function updatedFiles(
   // catalog's only where the local file changes. `read` gives pull's text for
   // each file with a text in place of the local file, and the changed text
   // is kept only when pull's text for the file is then the catalog's.
+  // `fromCatalog` says whether `base` was read beside the catalog's model
+  // file. Only then does a `base` that is the catalog's text keep the local
+  // file without that check.
   const update = (
       file: SerializedFile, localPath: string, text: string, base: string,
-      read: (text: string) => ReturnType<typeof texts>) => {
-    if (checkUtf8(localPath, file.fileName, text)) return file;
-    if (base === file.content) return {...file, content: text};
+      read: (text: string) => ReturnType<typeof texts>, fromCatalog = true) => {
+    if (checkUtf8(localPath, file.fileName, text)) {
+      console.warn(
+          `Warning: ${localPath} is not valid UTF-8, so pull writes it from ` +
+          'the catalog.');
+      return file;
+    }
+    if (base === file.content && fromCatalog) return {...file, content: text};
     const content = updatedText(text, base, file.content);
     const changed = read(content);
     if (changed instanceof Map && changed.get(file.fileName) === file.content) {
@@ -1816,14 +1824,18 @@ function updatedFiles(
     const beside = (text: string, profile = local) =>
         texts(text, () => [profile]);
     let base = beside(catalogModel.content);
+    const fromCatalog = base instanceof Map;
     if (!(base instanceof Map)) {
       const besideLocal = beside(doc.text);
-      if (!(besideLocal instanceof Map)) return whole(why(base));
+      // A vanilla local model file gives no profile file.
+      if (!(besideLocal instanceof Map) || !besideLocal.has(file.fileName)) {
+        return whole(why(base));
+      }
       base = besideLocal;
     }
     return update(
         file, local.path, local.text, base.get(file.fileName)!,
-        text => beside(catalogModel.content, {...local, text}));
+        text => beside(catalogModel.content, {...local, text}), fromCatalog);
   });
 }
 

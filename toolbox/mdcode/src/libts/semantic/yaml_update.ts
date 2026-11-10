@@ -62,8 +62,8 @@ export function linkNodes(
 /**
  * Returns `text`, which `doc` parses, changed to hold `value`. An object or
  * array keeps the node `links` maps it to, and any other value keeps the node
- * under the same key, or the list item with the same `itemKey`. A kept
- * node whose value stays keeps its text and the comments and blank lines
+ * under the same key, or the list item with the same key (see `itemKeys`). A
+ * kept node whose value stays keeps its text and the comments and blank lines
  * around it. A changed scalar keeps its quoting, and a removed item takes its
  * comments and the blank lines above it. A flow collection over several lines
  * that changes is written again in block style. A value that would be written
@@ -344,8 +344,8 @@ function patchItems(
 /**
  * For each of `entries`, the index of the item of `node` it keeps, or -1. A
  * mapping's entry keeps the pair with its key. A list's entry keeps the item
- * `links` maps it to, or else a free item with the same `itemKey`, and
- * the kept items stay in their order.
+ * `links` maps it to, or else a free item with the same key (see `itemKeys`),
+ * and the kept items stay in their order.
  */
 function matchItems(
     u: Update, entries: Array<[string|number, unknown]>,
@@ -358,13 +358,14 @@ function matchItems(
     const linked = isObject(v) ? u.links.get(v) : undefined;
     return linked ? items.indexOf(linked) : -2;
   });
-  const free = items.flatMap((n, j) => at.includes(j) ?
-      [] :
-      [{j, key: itemKey(u.copies.get(n) ?? (n as yaml.Node).toJS(u.doc))}]);
+  const js = items.map(n => u.copies.get(n) ?? (n as yaml.Node).toJS(u.doc));
+  const free =
+      itemKeys(js).flatMap((key, j) => at.includes(j) ? [] : [{j, key}]);
+  const keys = itemKeys(entries.map(([, v]) => v));
   let last = -1;
   return at.map((j, i) => {
     if (j === -2) {
-      const f = free.findIndex(f => f.key === itemKey(entries[i][1]));
+      const f = free.findIndex(f => f.key === keys[i]);
       j = f < 0 ? -1 : free.splice(f, 1)[0].j;
     }
     if (j >= 0 && j < last) return -1;
@@ -822,14 +823,27 @@ function isFull(value: unknown): value is object {
 /**
  * What matches a list item with another: its `name`, or else the key that
  * names an item of its list (`dialect`, `concept` or `vendor_name`), or else
- * its value, with each mapping's keys in any order.
+ * its value, with each mapping's keys in any order. With `byValue`, its value.
  */
-export function itemKey(value: unknown): string {
-  const key = isRecord(value) &&
+export function itemKey(value: unknown, byValue = false): string {
+  const key = !byValue && isRecord(value) &&
       ['name', 'dialect', 'concept', 'vendor_name'].find(
           k => typeof value[k] === 'string');
   return key ? `${key}:${(value as Record<string, unknown>)[key]}` :
                canonical(value);
+}
+
+/**
+ * The itemKey of each of `items`, or else its value when another of `items`
+ * has the same key or `repeated` holds that key.
+ */
+export function itemKeys(items: unknown[], repeated = new Set<string>()):
+    string[] {
+  const keys = items.map(v => itemKey(v));
+  return keys.map(
+      (k, i) => repeated.has(k) || keys.indexOf(k) !== keys.lastIndexOf(k) ?
+          itemKey(items[i], true) :
+          k);
 }
 
 /** `value` as JSON text with each mapping's keys sorted. */

@@ -22,7 +22,7 @@ import {isRecord, loadSemanticModels, SemanticModelError} from './loader';
 import {loadProfileFile, plainCopy, ProfileFiles, profileProblems} from './resolve_profiles';
 import {withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
-import {itemKey, linkNodes, parseForUpdate, updateText} from './yaml_update';
+import {itemKey, itemKeys, linkNodes, parseForUpdate, updateText} from './yaml_update';
 
 /** The entry group the catalog form is built for. */
 export interface CatalogScope {
@@ -108,8 +108,15 @@ function merged(local: unknown, base: unknown, pulled: unknown): unknown {
     return Object.fromEntries(entries!);
   }
   if (Array.isArray(local) && Array.isArray(base) && Array.isArray(pulled)) {
-    const keyed = (items: unknown[]) =>
-        items.map(v => [itemKey(v), v] as const);
+    // A key two items of one of the lists share matches by value in all three.
+    const repeated = new Set([local, base, pulled].flatMap(items => {
+      const keys = items.map(v => itemKey(v));
+      return keys.filter((k, i) => keys.indexOf(k) !== i);
+    }));
+    const keyed = (items: unknown[]) => {
+      const keys = itemKeys(items, repeated);
+      return items.map((v, i) => [keys[i], v] as const);
+    };
     const entries =
         mergedEntries(keyed(local), keyed(base), keyed(pulled), true);
     return entries ? entries.map(([, v]) => v) : pulled;

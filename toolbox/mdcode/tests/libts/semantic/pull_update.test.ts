@@ -157,6 +157,43 @@ metrics:
     });
   }
 
+  // Two blocks of one vendor share `vendor_name`, so each matches by its
+  // value. The comment of a block the catalog drops goes with it, and a block
+  // the catalog changes is written again rather than take another's comment.
+  const ACME = 'x:\n  - vendor_name: ACME   # first block\n' +
+      '    data: \'{"a":1}\'\n  - vendor_name: ACME   # second block\n' +
+      '    data: \'{"b":2}\'\n';
+  const ACME_BASE = 'x:\n  - {vendor_name: ACME, data: \'{"a":1}\'}\n' +
+      '  - {vendor_name: ACME, data: \'{"b":2}\'}\n';
+  for (const [what, pulled, want] of [
+    ['drops the first of two blocks of one vendor',
+     'x:\n  - {vendor_name: ACME, data: \'{"b":2}\'}\n',
+     'x:\n  - vendor_name: ACME   # second block\n    data: \'{"b":2}\'\n'],
+    ['drops the first of two blocks of one vendor and changes the second',
+     'x:\n  - {vendor_name: ACME, data: \'{"b":3}\'}\n',
+     'x:\n  - vendor_name: ACME\n    data: \'{"b":3}\'\n'],
+  ] as const) {
+    test(what, () => {
+      expect(updatedText(ACME, ACME_BASE, pulled)).toBe(want);
+    });
+  }
+
+  test('changes a block and adds another of its vendor without moving its ' +
+           'comment',
+       () => {
+         // Either new block could be the changed one, so neither takes the
+         // local block's comment.
+         expect(updatedText(
+                    'x:\n  - vendor_name: ACME   # only block\n' +
+                        '    data: \'{"a":1}\'\n',
+                    'x:\n  - {vendor_name: ACME, data: \'{"a":1}\'}\n',
+                    'x:\n  - {vendor_name: ACME, data: \'{"a":2}\'}\n' +
+                        '  - {vendor_name: ACME, data: \'{"b":1}\'}\n'))
+             .toBe(
+                 'x:\n  - vendor_name: ACME\n    data: \'{"a":2}\'\n' +
+                 '  - vendor_name: ACME\n    data: \'{"b":1}\'\n');
+       });
+
   // When the items of a list do not match one to one across the three
   // values, no item can be matched with certainty, so the list is pulled's.
   for (const [what, local, base, pulled, want] of [
@@ -166,6 +203,8 @@ metrics:
      'x: [a, a]\n', 'x: [a, a, b]\n', 'x: [a, a, b]  # kept\n'],
     ['pulled repeats an item', 'x: [a]\n', 'x: [a]\n', 'x: [a, a]\n',
      'x: [a, a]\n'],
+    ['pulled repeats an item and adds one', 'x: [a]\n', 'x: [a]\n',
+     'x: [a, a, b]\n', 'x: [a, a, b]\n'],
     ['a local item is not in pull\'s form', 'x: [a, z]\n', 'x: [a, b]\n',
      'x: [a, c]\n', 'x: [a, c]\n'],
     ['an item of pull\'s form is not local', 'x: [a, b]\n', 'x: [a, b, c]\n',

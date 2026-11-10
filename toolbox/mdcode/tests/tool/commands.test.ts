@@ -1480,7 +1480,8 @@ semantic_model:
     ['is not valid UTF-8',
      Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]),
                     Buffer.from(`\n${MODEL}`)]),
-     undefined],
+     `Warning: ${shown('commerce.yaml')} is not valid UTF-8, so pull writes ` +
+         'it from the catalog.'],
   ] as const) {
     test(`writes the model file in full when it ${why}`,
          async () => {
@@ -1515,6 +1516,9 @@ semantic_model:
      `${ONE}profile 'prod': metric 'zz'`],
     ['has a key a profile file does not take', `${PROFILE}colour: red\n`,
      `${ONE}`],
+    ['declares no name', PROFILE.replace('name: prod\n', ''),
+     `${ONE}Profile file 'commerce.profile.prod.yaml' declares no name; ` +
+         "add 'name: prod'."],
   ] as const) {
     test(`keeps the model file and writes the profile file in full, with a ` +
              `warning, when the profile file ${why}`,
@@ -1531,6 +1535,59 @@ semantic_model:
                .not.toContain('# Production bindings.');
          });
   }
+
+  test('warns and writes a profile file beside a vanilla model file from the ' +
+           'catalog',
+       async () => {
+         // A vanilla model keeps its profiles in its GOOGLE block, so read
+         // beside the local model file, the profile file has no text. Push
+         // refuses this workspace.
+         await pushed(BOTH(MODEL));
+         const item = `  - name: Item\n    source: ${TABLES}/item\n` +
+             '    primary_key: [sku]\n';
+         fs.writeFileSync(local('commerce.yaml'), edited(VANILLA, [
+           '    relationships:\n',
+           `    ${item.replace(/\n  /g, '\n      ')}        fields:\n` +
+               `          - { name: sku, expression: ${ansi('i_sku')} }\n` +
+               '    relationships:\n',
+         ]));
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), edited(PROFILE, [
+           'relationships:\n',
+           `${item}    fields: [{ name: sku, expression: i_sku }]\n` +
+               'relationships:\n',
+         ]));
+
+         expect(await pull()).toBe(0);
+         expect(messages(console.warn as Mock<any>)).toContain(ONE);
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .not.toContain('# Production bindings.');
+       });
+
+  test('writes a profile file whole when its content is the catalog\'s ' +
+           'only beside the local model file',
+       async () => {
+         // The catalog renames the only metric and excludes it. Beside the
+         // local model file the local profile excludes every metric too, but
+         // it names a metric the catalog's model does not have.
+         const only = (metric: string) => MODEL.replace(
+             /    metrics:\n[\s\S]*$/,
+             '    metrics:\n' +
+                 `      - { name: ${metric}, expression: COUNT(Order.id) }\n`);
+         const excluding = (metric: string) =>
+             PROFILE.replace('[orders, customers]', `[${metric}]`);
+         await pushed(BOTH(only('revenue'), excluding('revenue')));
+         fs.writeFileSync(local('commerce.yaml'), only('orders'));
+         fs.writeFileSync(
+             local('commerce.profile.prod.yaml'), excluding('orders'));
+
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .toContain('metrics_exclude: "*"');
+         expect(messages(console.warn as Mock<any>)).toContain(
+             'Warning: pull cannot change only the values that differ in ' +
+             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
+             'from the catalog.');
+       });
 
   test('writes a profile file whole when the changed file would not hold ' +
            'the catalog\'s content',
