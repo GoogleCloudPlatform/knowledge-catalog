@@ -87,6 +87,7 @@ export const MAX_ENTRY_DESCRIPTION = 2000;
 
 // BigQuery's limits on the OPTIONS of a graph label or property.
 export const MAX_BIGQUERY_DESCRIPTION = 1024;
+export const MAX_BIGQUERY_EXTENSION_VALUE = 1024;
 export const MAX_BIGQUERY_SYNONYM_COUNT = 8;
 export const MAX_BIGQUERY_SYNONYM_LENGTH = 300;
 

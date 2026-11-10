@@ -224,7 +224,7 @@ NODE TABLES (
 `);
          expect(warnings).toEqual([
            `entity 'orders' is a supertype in a class hierarchy; its ` +
-               `description/synonyms are dropped from the shared 'orders' ` +
+               `metadata is dropped from the shared 'orders' ` +
                `label (Marked forbids OPTIONS on a label bound by multiple ` +
                `tables)`,
            `entity 'gift_orders' remaps inherited property 'customer_id' to ` +

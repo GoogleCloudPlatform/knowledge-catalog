@@ -13,7 +13,8 @@
 //   2. Measures. Which metrics become properties (BigQuery lowers each to a
 //      `MEASURE(...)`; Spanner Graph has none).
 //   3. Element metadata. The per-element `OPTIONS` clause carrying
-//      descriptions and synonyms (BigQuery has one; Spanner has none).
+//      descriptions, synonyms, and AI context extensions (BigQuery has one;
+//      Spanner has none).
 //   4. SQL text. Which SQL a field binds to: the engine's own dialect entry
 //      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one. A field
 //      that names a sibling field reads that sibling's SQL in its place (see
@@ -168,6 +169,8 @@ export function generateGraphDdl(
     return false;
   });
 
+  const entityByName = new Map(entities.map(e => [e.name, e]));
+
   // The ancestors carried by a table-emitting entity. Two uses. First, measure
   // placement: an engine's measure may be allowed only on a LEAF type -- one
   // that no *table-emitting* entity extends (see the BigQuery engine).
@@ -187,6 +190,19 @@ export function generateGraphDdl(
           `abstract entity '${name}' is not a supertype of any concrete ` +
           `entity; it has no table and no descendant to label, so it produces ` +
           `no graph element`);
+      continue;
+    }
+    // An abstract supertype survives only as a LABEL on its subtypes, and only
+    // a table's DEFAULT LABEL may carry OPTIONS, so its own description and AI
+    // context reach no element. Warn whenever the engine would have written a
+    // clause for it.
+    const entity = entityByName.get(name)!;
+    if (engine.elementOptions(entity.description, entity.aiContext)) {
+      warnings.push(
+          `entity '${name}' is an abstract supertype in a class hierarchy; ` +
+          `its metadata is dropped (an abstract supertype is only a LABEL ` +
+          `on its subtypes, and ${engine.name} accepts OPTIONS only on a ` +
+          `table's DEFAULT LABEL)`);
     }
   }
 
@@ -216,7 +232,6 @@ export function generateGraphDdl(
   // Metrics are model-level; the engine places each on a node table (or skips
   // it). The result is keyed by entity name; entries on a skipped entity simply
   // never render.
-  const entityByName = new Map(entities.map(e => [e.name, e]));
   // The SQL `sql` gives, or, when a field on the way has none, what a warning
   // says it reads: each field on `through`, then those `sql` went through.
   const readOf = (entity: Entity, sql: FieldSql, through: string[]) =>
@@ -353,7 +368,7 @@ function renderNodeTable(
   // warned and dropped in favor of the supertype's, keeping the DDL valid. The
   // warning distinguishes a STRUCTURAL remap (a different column/expression --
   // the property is genuinely rebound) from a METADATA-only refinement (same
-  // column, different description/synonyms) so it states precisely what the
+  // column, different OPTIONS metadata) so it states precisely what the
   // subclass loses, rather than mislabeling an added description as a redefined
   // column.
   const renderOwn = (f: Field): string => {
@@ -371,7 +386,7 @@ function renderNodeTable(
           `remapping is dropped`);
     } else {
       warnings.push(
-          `entity '${entity.name}' overrides the description/synonyms of ` +
+          `entity '${entity.name}' overrides the metadata of ` +
           `inherited property '${
               f.name}'; under a shared label every binding ` +
           `must declare it identically, so the supertype's metadata is used ` +
@@ -426,20 +441,19 @@ function renderNodeTable(
                 nodeKey(entity), engine, warnings, `entity '${entity.name}'`)
                 .join(', ')})`),
   ];
-  // Element-table description and synonyms attach to the node's DEFAULT LABEL
-  // -- UNLESS this entity is a supertype whose label is shared by subclass
-  // tables. BigQuery forbids a label that carries an OPTIONS clause from being
-  // bound to more than one element table (verified live -- "the label ... is
-  // defined with OPTIONS clause in one of the element tables and cannot be
-  // bound to another element table"), so a shared supertype label must be
-  // options-free; its description/synonyms are dropped (with a warning). The
-  // rule is BigQuery's, but it applies to any engine whose elementOptions
-  // returns a clause.
+  // Element-table metadata attaches to the node's DEFAULT LABEL unless this
+  // entity is a supertype whose label is shared by subclass tables. BigQuery
+  // forbids a label with an OPTIONS clause from being bound to more than one
+  // element table ("the label ... is defined with OPTIONS clause in one of the
+  // element tables and cannot be bound to another element table"), so a shared
+  // supertype label is written without OPTIONS and its metadata is dropped with
+  // a warning. The rule is BigQuery's, and applies to any engine whose
+  // elementOptions returns a clause.
   let labelOpts = engine.elementOptions(entity.description, entity.aiContext);
   if (isSupertype && labelOpts) {
     warnings.push(
         `entity '${entity.name}' is a supertype in a class hierarchy; its ` +
-        `description/synonyms are dropped from the shared '${entity.name}' ` +
+        `metadata is dropped from the shared '${entity.name}' ` +
         `label (${
             engine.name} forbids OPTIONS on a label bound by multiple tables)`);
     labelOpts = undefined;
@@ -729,7 +743,7 @@ function renderEdgeTable(
             quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
 
-  // Edge description and synonyms attach to the DEFAULT LABEL: after the
+  // Edge metadata attaches to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before the properties clause (grammar:
   // element_table_definition).
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
@@ -789,7 +803,7 @@ function renderAssociationEdge(
                 refColumns(rel.destination)})`),
   ];
 
-  // Edge description and synonyms attach to the DEFAULT LABEL: after the
+  // Edge metadata attaches to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
   // element_table_definition).
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);

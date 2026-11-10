@@ -3324,27 +3324,36 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const LONG = (what: string, n = 1025) => IN(
         `the description kcmd writes for ${what} is ${n} characters long; ` +
         "a label or property's description holds at most 1024.");
-    // 1001 characters and an instruction, or 1012 and an example, give 1025.
-    const instructed = {
-      description: x(1001),
-      aiContext: {instructions: 'Exclude test accounts.'},
-    };
     const timeField = {dimension: {isTime: true}, description: x(1000)};
     test.each<[string, (m: SemanticModel) => void, string[]]>([
-      ['past 1024 characters with what kcmd adds', m => {
-        Object.assign(m.entities[0], instructed);
+      ['past 1024 characters, counting what kcmd adds to a field', m => {
+        m.entities[0].description = x(1025);
         Object.assign(
             m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
-        Object.assign(
-            m.relationships[0],
-            {description: x(1012), aiContext: {examples: ['a']}});
-        Object.assign(m.metrics![0], instructed);
+        m.relationships[0].description = x(1025);
+        m.metrics![0].description = x(1025);
       }, [
         "entity 'customer'", "field 'purchase.amount'",
         "relationship 'placed_by'", "metric 'revenue'",
       ].map(what => LONG(what))],
-      ['of 1001 characters with no instruction', m => {
-        m.entities[0].description = x(1001);
+      ['at 1024 characters alongside instructions and examples', m => {
+        Object.assign(m.entities[0], {
+          description: x(1024),
+          aiContext: {instructions: 'Exclude test accounts.', examples: ['a']},
+        });
+        Object.assign(m.entities[1].fields[1], {
+          label: 'Amount',
+          description: x(1016),
+          aiContext: {instructions: 'Net of tax.', examples: ['100.00']},
+        });
+        Object.assign(m.relationships[0], {
+          description: x(1024),
+          aiContext: {instructions: 'Join key.', examples: ['placed by']},
+        });
+        Object.assign(m.metrics![0], {
+          description: x(1024),
+          aiContext: {instructions: 'Completed only.', examples: ['revenue?']},
+        });
       }, []],
       ['of a field with a label and a time role', m => {
         Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});
@@ -3386,6 +3395,78 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       ].map(p => IN(p)));
     });
 
+    const LONG_EXT = (key: 'instructions'|'examples', what: string, n = 1025) =>
+        IN(`the ${key} kcmd writes for ${what}${
+               key === 'examples' ? ', as a JSON array,' : ''} is ${
+               n} characters long; an extension value of a label or property ` +
+           'holds at most 1024.');
+    const ELEMENTS = [
+      "entity 'customer'", "field 'purchase.amount'",
+      "relationship 'placed_by'", "metric 'revenue'",
+    ];
+    const setAiOnEveryKind =
+        (m: SemanticModel, aiContext: Entity['aiContext']) => {
+          m.entities[0].aiContext = aiContext;
+          m.entities[1].fields[1].aiContext = aiContext;
+          m.relationships[0].aiContext = aiContext;
+          m.metrics![0].aiContext = aiContext;
+        };
+    test.each<[string, Entity['aiContext'], string[]]>([
+      ['of instructions past 1024 characters', {instructions: x(1025)},
+       ELEMENTS.map(what => LONG_EXT('instructions', what))],
+      // Two 510-character items serialize to `["...","..."]`, 1,027 characters.
+      ['of examples past 1024 characters as a JSON array',
+       {examples: [x(510), x(510)]},
+       ELEMENTS.map(what => LONG_EXT('examples', what, 1027))],
+      ['of examples at 1024 characters as a JSON array', {examples: [x(1020)]},
+       []],
+      ['of padded instructions that fit within 1024 characters after trimming',
+       {instructions: `  ${x(1024)}\n`}, []],
+    ])('an extension value %s', (_, aiContext, errors) =>
+        expect(errorsAfter(m => setAiOnEveryKind(m, aiContext)))
+            .toEqual(errors));
+
+    test("checks the description, synonyms and extensions of a many-to-many edge's fields", () => {
+      expect(errorsAfter(m => {
+        m.relationships[0].association = {
+          dataSource: 'p.d.customer_purchases',
+          keys: ['id'],
+          sourceColumns: ['p_id'],
+          destinationColumns: ['c_id'],
+          fields: [
+            {
+              name: 'tier',
+              expression: 'tier',
+              label: 'Tier',
+              description: x(1019),
+              aiContext: {
+                synonyms: ['Tier', ...synonyms(8)],
+                instructions: x(1025),
+                examples: [x(1023)],
+              },
+            },
+            // An unbound association field renders as a bare column with its
+            // OPTIONS, while a vendor-only field is omitted from the edge.
+            {name: 'role', description: x(1025)},
+            {
+              name: 'sf',
+              dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
+              aiContext: {instructions: x(1025), synonyms: synonyms(9)},
+            },
+          ],
+        };
+      })).toEqual([
+        LONG("field 'placed_by.tier'"),
+        IN("field 'placed_by.tier' has 9 synonyms; a label or property holds " +
+           'at most 8.'),
+        IN("field 'placed_by.tier' has the synonym 'Tier', which BigQuery " +
+           "treats as the field's own name; remove it."),
+        LONG_EXT('instructions', "field 'placed_by.tier'"),
+        LONG_EXT('examples', "field 'placed_by.tier'", 1027),
+        LONG("field 'placed_by.role'"),
+      ]);
+    });
+
     // An abstract entity has no node table, a label another entity extends
     // carries no OPTIONS, and a field with no BigQuery text is left out.
     test('passes values at the limits and elements the graph writes no OPTIONS for', () => {
@@ -3395,12 +3476,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         m.metrics![0].aiContext = {synonyms: [x(300)]};
         m.entities.push({
           name: 'party', abstract: true, dataSource: '', keys: [], fields: [],
-          description: x(2000),
+          description: x(2000), aiContext: {instructions: x(1025)},
         }, {...m.entities[0], name: 'vip', extends: ['customer']});
         m.entities[0].description = x(2000);
+        m.entities[0].aiContext = {instructions: x(1025)};
         m.entities[1].fields.push({
           name: 'sf', dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
-          aiContext: {synonyms: synonyms(9)},
+          aiContext: {synonyms: synonyms(9), instructions: x(1025)},
         });
       })).toEqual([]);
     });

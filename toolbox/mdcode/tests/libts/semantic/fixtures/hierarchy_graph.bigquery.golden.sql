@@ -79,4 +79,4 @@ EDGE TABLES (
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
--- entity 'Person' is a supertype in a class hierarchy; its description/synonyms are dropped from the shared 'Person' label (BigQuery forbids OPTIONS on a label bound by multiple tables)
+-- entity 'Person' is a supertype in a class hierarchy; its metadata is dropped from the shared 'Person' label (BigQuery forbids OPTIONS on a label bound by multiple tables)

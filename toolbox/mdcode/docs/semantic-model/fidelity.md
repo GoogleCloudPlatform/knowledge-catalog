@@ -40,8 +40,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | `description` (entity / metric / field / relationship)         | entry description / `schema`    | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | `semantic-*` aspect / `schema`  | ✓                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
-| `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
-| `ai_context.examples`                                          | `overview` aspect               | ✓                                              | into `OPTIONS(description)` (`Examples:` line)                       | — dropped                                                            |
+| `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | `OPTIONS(extensions=[("instructions", ...)])`                        | — dropped                                                            |
+| `ai_context.examples`                                          | `overview` aspect               | ✓                                              | `OPTIONS(extensions=[("examples", ...)])`                            | — dropped                                                            |
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
 | Model-level `ai_context.synonyms` / `examples`                 | `semantic-model` / `overview`   | ✓                                              | — dropped                                                            | — dropped                                                            |
 | `deployments` (`name`, `target`, `profile`)                    | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
@@ -246,12 +246,14 @@ to it. The structure becomes the node tables, edge tables, and measures; the
 descriptive metadata is written into each element's `OPTIONS(...)` in the graph
 (visible with `--print`).
 
-BigQuery's graph `OPTIONS` give an element a `description` string and a `synonyms`
-array. `synonyms` is the only part with a dedicated option, so it carries across
-structurally, as its own array. The rest — `description`, `instructions`,
-`examples`, and a field's `label` — share the single `description` string, so
-they are combined into it (examples as an `Examples: …` line). Their content is
-preserved; their separate structure is not.
+BigQuery's graph `OPTIONS` give an element a `description` string, a `synonyms`
+array, and an `extensions` array of `(key, value)` string pairs. `synonyms`
+carries across structurally as `synonyms=[...]`. `ai_context.instructions` and
+`ai_context.examples` carry across in `extensions=[...]` as
+`("instructions", "...")` and `("examples", "[...]")`, with `examples`
+serialized as a JSON array string. Custom `ai_context` members stay out of the
+DDL. A field's `label` and temporal-dimension marker have no dedicated option,
+so they still combine with the field's `description` in `OPTIONS(description)`.
 
 The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
