@@ -316,7 +316,7 @@ becomes one part of that graph:
 | Model element | BigQuery construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
-| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key, or by its first unique key when it has none. A measure reads only one of the rows whose key is NULL, and `COUNT(*)` skips them, so a unique key used this way should hold no NULLs. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. |
+| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | `MEASURE` on a node table | must resolve to a single entity and read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; BigQuery's built-in scalar SQL may combine them, as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a user-defined function may not (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
@@ -741,10 +741,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   expression, inherited fields included, since the model file has no
   `fields_exclude`. An AlloyDB deployment reads only
   the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
-  deployment deploys no metric. A BigQuery deployment turns each metric into a
-  measure, so each metric must read every field inside `SUM`, `AVG`, `COUNT`,
-  `MIN` or `MAX`, each over one operand, and the entity it belongs to needs a
-  primary key or a unique key. Scalar SQL may combine the aggregates, as in
+  deployment deploys no metric. On a BigQuery deployment, every concrete entity
+  must have a `primary_key`, every relationship's `to_columns` must name
+  exactly its target's `primary_key` columns, in any order (not a `unique_keys`
+  entry, and no extra columns), and each metric becomes a measure, so it must
+  read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one
+  operand. Scalar SQL may combine the aggregates, as in
   `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around them
   must be a BigQuery built-in function whose name has no dot, or one with the
   `SAFE.` prefix. The measure rule skips a metric that has only a vendor text.
@@ -757,9 +759,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   as a JSON array) holds at most 1,024 characters. An element holds at most
   eight synonyms of one to 300 characters each. No two of them may match
   ignoring case, and none may match the element's own name.
-  A deployment that names a profile is held to the measure rule under that
-  profile, with the keys it states, except for the metrics it leaves
-  unavailable. On Spanner, that profile must leave every metric unavailable.
+  A deployment that names a profile is held to the BigQuery `primary_key`,
+  join-key and measure rules under that profile, with the keys and joins it
+  states, except for the metrics it leaves unavailable. On Spanner, that
+  profile must leave every metric unavailable.
   *(static)*
 * **A third-party table is written as its entry name, and takes the dialect
   its entry records.** A table outside Google Cloud is written as the entry

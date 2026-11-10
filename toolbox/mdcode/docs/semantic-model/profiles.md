@@ -153,8 +153,8 @@ leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
 | a field's column or computation (its `expression`), for a field the entity declares or inherits | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile (`fields_exclude`) | the graph shape (`from`/`to`) and the cardinality a relationship's join columns imply |
-| an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them | |
-| a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself | |
+| an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them, and a profile a BigQuery deployment uses must give every concrete entity a `primary_key` | |
+| a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself, and which on a BigQuery deployment must join on exactly the target's `primary_key` columns | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
 | whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source`; `deployments` and deployment targets |
 
@@ -535,7 +535,10 @@ and profile. The two bindings answer different parts of the same model:
 - Every named profile must state each relationship's join columns itself. The
   model file's join columns are the inline binding's, and do not stand in for a
   named profile's. In every binding, `to_columns` must contain every column of
-  a primary or unique key of the target, a superset counting.
+  a primary or unique key of the target, a superset counting. On a BigQuery
+  graph deployment, every concrete entity needs a `primary_key`, and
+  `to_columns` must name exactly its columns, in any order: a unique key or a
+  superset of the primary key is rejected there.
 - A named profile states its own `primary_key` for an entity whose primary key
   the model file states, and its own `unique_keys` for one whose unique keys it
   states. Key shapes may differ between profiles.
@@ -610,7 +613,10 @@ writes nothing.
   fails when any binding of a relationship has `to_columns` that cover no key of
   the target. Where the model file states a primary key or unique keys for an
   entity, the push also fails when a named profile does not state its own.
-  Profiles are not compared with each other.
+  Profiles are not compared with each other. A BigQuery deployment also fails
+  when the binding it uses leaves a concrete entity without a `primary_key`,
+  or joins a relationship on `to_columns` that do not name exactly the
+  target's `primary_key` columns.
 - **Unrestated column** — the push fails when a named profile neither restates
   nor excludes a field whose expression reads a column. The error names the
   field, the profile and the column.

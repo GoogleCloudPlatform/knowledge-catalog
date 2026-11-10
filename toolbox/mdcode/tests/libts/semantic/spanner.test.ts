@@ -815,10 +815,10 @@ describe('key and join columns, on both engines', () => {
 });
 
 
-// A relationship may join on a unique key, so an entity with no primary key is
-// keyed by its first unique key, on both engines, wherever the graph reads its
-// key.
-describe('a node with no primary key, on both engines', () => {
+// On Spanner, a relationship may join on a unique key, and an entity with no
+// primary key is keyed by its first unique key wherever the graph reads its
+// key. (BigQuery keys node tables by primary_key alone; see bigquery.test.ts.)
+describe('a node with no primary key, on Spanner', () => {
   // customers states no primary key. Its first unique key is customer_code;
   // its second is email.
   const customers = (more: Partial<Entity> = {}) => entity(
@@ -853,24 +853,22 @@ describe('a node with no primary key, on both engines', () => {
         },
       },
     ]});
-    for (const [engine, generate] of ENGINES) {
-      const {ddl, warnings} = generate(model);
-      expect(keyLines(ddl), engine).toEqual([
-        'KEY(order_id)',
-        'KEY(customer_code)',
-        'KEY(order_id)',
-        'SOURCE KEY(order_id) REFERENCES orders(order_id)',
-        'DESTINATION KEY(cust_code) REFERENCES customers(customer_code)',
-        'KEY(gift_id)',
-        'SOURCE KEY(order_id) REFERENCES orders(order_id)',
-        'DESTINATION KEY(customer_code) REFERENCES customers(customer_code)',
-      ]);
-      expect(ddl, engine).not.toContain('AS drafts');
-      expect(warnings, engine).toEqual([
-        `entity 'drafts': empty KEY (no primary key); node table skipped, ` +
-            `as a graph node requires a KEY`,
-      ]);
-    }
+    const {ddl, warnings} = generateSpannerPropertyGraph(model);
+    expect(keyLines(ddl)).toEqual([
+      'KEY(order_id)',
+      'KEY(customer_code)',
+      'KEY(order_id)',
+      'SOURCE KEY(order_id) REFERENCES orders(order_id)',
+      'DESTINATION KEY(cust_code) REFERENCES customers(customer_code)',
+      'KEY(gift_id)',
+      'SOURCE KEY(order_id) REFERENCES orders(order_id)',
+      'DESTINATION KEY(customer_code) REFERENCES customers(customer_code)',
+    ]);
+    expect(ddl).not.toContain('AS drafts');
+    expect(warnings).toEqual([
+      `entity 'drafts': empty KEY (no primary key); node table skipped, ` +
+          `as a graph node requires a KEY`,
+    ]);
   });
 
   test('an edge from it uses its unique key', () => {
@@ -879,40 +877,29 @@ describe('a node with no primary key, on both engines', () => {
       source: {entity: 'customers', columns: ['region_fk']},
       destination: {entity: 'regions', columns: ['region_id']},
     }]});
-    for (const [engine, generate] of ENGINES) {
-      const {ddl, warnings} = generate(model);
-      expect(keyLines(ddl), engine).toEqual([
-        'KEY(customer_code)',
-        'KEY(region_id)',
-        'KEY(customer_code)',
-        'SOURCE KEY(customer_code) REFERENCES customers(customer_code)',
-        'DESTINATION KEY(region_fk) REFERENCES regions(region_id)',
-      ]);
-      expect(warnings, engine).toEqual([]);
-    }
+    const {ddl, warnings} = generateSpannerPropertyGraph(model);
+    expect(keyLines(ddl)).toEqual([
+      'KEY(customer_code)',
+      'KEY(region_id)',
+      'KEY(customer_code)',
+      'SOURCE KEY(customer_code) REFERENCES customers(customer_code)',
+      'DESTINATION KEY(region_fk) REFERENCES regions(region_id)',
+    ]);
+    expect(warnings).toEqual([]);
   });
 
-  test('COUNT(*) anchored to it counts over that key', () => {
+  test('a metric anchored to it is dropped as on any Spanner node', () => {
     const model = modelOf('shop', [customers()], {metrics: [
       {name: 'customer_count', entity: 'customers', expression: 'COUNT(*)'},
     ]});
-    for (const [engine, generate] of ENGINES) {
-      const {ddl, warnings} = generate(model);
-      expect(ddl, engine).toContain('KEY(customer_code)');
-      if (engine === 'BigQuery') {
-        expect(ddl, engine).toContain(
-            '      name,\n      customer_code,\n' +
-            '      MEASURE(COUNT(customer_code)) AS customer_count\n');
-        expect(warnings, engine).toEqual([]);
-      } else {
-        // Spanner Graph has no MEASURE, so only the node is keyed by it.
-        expect(ddl, engine).not.toContain('MEASURE');
-        expect(warnings, engine).toEqual([
-          `metric 'customer_count' is not emitted: Spanner Graph has no ` +
-              `MEASURE, so model-level metrics have no home in it`,
-        ]);
-      }
-    }
+    const {ddl, warnings} = generateSpannerPropertyGraph(model);
+    expect(ddl).toContain('KEY(customer_code)');
+    // Spanner Graph has no MEASURE, so only the node is keyed by it.
+    expect(ddl).not.toContain('MEASURE');
+    expect(warnings).toEqual([
+      `metric 'customer_count' is not emitted: Spanner Graph has no ` +
+          `MEASURE, so model-level metrics have no home in it`,
+    ]);
   });
 });
 

@@ -297,6 +297,9 @@ Keys are **logical grain**, not a binding — they are the entity's identity, so
 they come across even though the model has no physical binding. They also tell
 you which columns an edge's `to_columns` must reference when you add join columns
 to the model; see [binding](#4-going-from-ontology-to-a-running-graph-binding).
+A BigQuery Graph deploy needs a `primary_key` on every concrete class,
+including one the import left without one, and each edge's `to_columns` must
+name exactly its target's `primary_key` columns, not a unique key.
 
 ### Class hierarchies (`rdfs:subClassOf`)
 
@@ -385,8 +388,8 @@ $ kcmd push                  # publishes the logical model to Knowledge Catalog
 A relationship with no join columns still publishes, with its entry and its
 links, so the whole logical model reaches the catalog.
 
-A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
-and they belong in different places:
+A **BigQuery or Spanner Graph** deploy needs three things the import leaves
+open, and they belong in different places:
 
 1. **The join columns on each edge — in the model.** The import gives every
    relationship its endpoints (`from`/`to`) but no join columns; join columns
@@ -454,6 +457,17 @@ and they belong in different places:
        from_columns: [o_custkey]
        to_columns: [c_custkey]
    ```
+
+3. **On BigQuery, a primary key on every class — in the model or the profile.**
+   A BigQuery graph node is keyed by its entity's `primary_key`, so every
+   concrete class needs one there (Spanner falls back to the first
+   `unique_keys` entry when `primary_key` is omitted). The import leaves a
+   class without one when it has no usable `owl:hasKey` and several or
+   composite inverse-functional properties (see
+   [Keys](#keys-owlhaskey-owlinversefunctionalproperty)). Declare its
+   `primary_key` in the model, or in each profile a BigQuery deployment uses.
+   Each edge's `to_columns` on BigQuery must name exactly that key's columns:
+   a BigQuery deploy rejects a join on a unique key such as `[c_email]`.
 
 With the deployment in the model and the sibling profile file in place, a single
 push publishes the model and deploys the graph:

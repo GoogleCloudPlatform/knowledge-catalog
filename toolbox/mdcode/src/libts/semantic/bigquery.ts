@@ -4,7 +4,8 @@
 // The shared GoogleSQL generator (./graph_ddl) writes the graph structure: node
 // tables, edge tables, labels, properties, and key and join columns. This
 // module supplies its BigQuery engine: qualified names, measures, the
-// per-element OPTIONS clause, and the SQL text a field binds to.
+// per-element OPTIONS clause, the SQL text a field binds to, and primary-key
+// node keys.
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
@@ -20,7 +21,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -64,7 +65,14 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
         aiExtensions(field.aiContext)),
     dialect: 'BIGQUERY',
     fieldExpression,
+    nodeKey,
   };
+}
+
+// A BigQuery node table is keyed by its entity's primary key alone. Empty when
+// the entity states none, and then it gets no node table.
+function nodeKey(entity: Pick<Entity, 'keys'>): string[] {
+  return entity.keys ?? [];
 }
 
 // Places each metric on the single entity its aggregates reference, lowering
@@ -290,10 +298,9 @@ function placeMetric(
   // Resolve each aggregate's operand to an exposed property. It is read as
   // written, qualifiers kept, so readOperand can tell the entity's fields from
   // its columns. COUNT(*) has no operand column, so it counts the first column
-  // of the node's key instead: the primary key, else the first unique key
-  // (nodeKey). measureAggregates gives a `*` operand for COUNT(*) alone. Every
-  // operand is read before any is exposed, so a metric skipped here leaves no
-  // property behind.
+  // of the node's primary key instead (nodeKey). measureAggregates gives a `*`
+  // operand for COUNT(*) alone. Every operand is read before any is exposed,
+  // so a metric skipped here leaves no property behind.
   const reads: Array<Exclude<OperandRead, {skip: string}>> = [];
   for (const agg of shape.aggregates) {
     const operand = requalified(agg.operand, stand, entityName);

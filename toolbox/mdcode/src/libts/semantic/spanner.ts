@@ -2,7 +2,8 @@
 //
 // The shared GoogleSQL generator (./graph_ddl) writes the graph structure. This
 // module supplies its Spanner engine: bare table and graph names, no measures,
-// no per-element OPTIONS, and a field's SPANNER text, else its ANSI_SQL text.
+// no per-element OPTIONS, a field's SPANNER text (else its ANSI_SQL text), and
+// primary-or-first-unique node keys.
 //
 // See:
 // https://docs.cloud.google.com/spanner/docs/reference/standard-sql/graph-schema-statements
@@ -10,7 +11,7 @@
 
 import {spannerTable} from './binding';
 import {generateGraphDdl, GenerateResult, GraphEngine} from './graph_ddl';
-import {expressionForDialect, Field, Metric, SemanticModel} from './ir';
+import {Entity, expressionForDialect, Field, Metric, SemanticModel} from './ir';
 import {sqlWithoutComments} from './sql_expr_utils';
 import {quoteIdentifier} from './sql_identifiers';
 
@@ -47,7 +48,16 @@ function spannerEngine(opts: GenerateOptions): GraphEngine {
     fieldOptions: () => undefined,
     dialect: 'SPANNER',
     fieldExpression,
+    nodeKey,
   };
+}
+
+// The key an entity's node is keyed by: its primary key, else its first
+// non-empty unique key. Empty when the entity states neither, and then it gets
+// no node table.
+function nodeKey(entity: Pick<Entity, 'keys'|'uniqueKeys'>): string[] {
+  if (entity.keys?.length) return entity.keys;
+  return entity.uniqueKeys?.find(k => k.length > 0) ?? [];
 }
 
 // Warns that each metric is dropped, since Spanner Graph has no MEASURE.

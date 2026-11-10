@@ -231,7 +231,11 @@ name datasets declared in the same model. `to_columns` MUST contain every column
 of a primary or unique key of the `to` dataset; a superset of a key counts.
 An edge is N:1 or 1:1 only when its join columns cover a key, so join columns
 that cover no key are rejected on every push, a catalog-only push included.
-Each binding of the relationship may cover a different key. A relationship MUST
+Each binding of the relationship may cover a different key. A binding that a
+BigQuery graph deploys is narrower: its `to_columns` MUST name exactly the
+`primary_key` columns of the `to` dataset, in any order, and not a unique key
+or a superset of the primary key
+([§4.1](#41-narrowings-stricter-than-ossie)). A relationship MUST
 join two different datasets, and two datasets MUST NOT have relationships in
 both directions.
 
@@ -333,7 +337,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `entities` (alias for `datasets`) | — | added (alias) | readability; sugar, `/google` only · [§5](#5-extensions) |
 | field `name`, `label`, `dimension` (`is_time`) | defined | same | [§2.1.1](#211-field) |
 | `datatype` + vocabulary | closed enum | same (identical set) | [§2.1.1](#211-field) |
-| `primary_key`, `unique_keys` | defined | same | [§2.1](#21-dataset-entity) |
+| `primary_key`, `unique_keys` | defined | same; BigQuery graph stricter | a BigQuery graph node is keyed by `primary_key`, and an edge joins on it · [§2.1](#21-dataset-entity), [§4.1](#41-narrowings-stricter-than-ossie) |
 | `extends` | — | added | class inheritance; `/google` only · [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
@@ -402,6 +406,19 @@ Each rule and its reason:
   target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.
 
+- **A BigQuery graph-bound concrete dataset MUST declare a `primary_key`.** For
+  a BigQuery target, every non-abstract dataset MUST have a `primary_key` under
+  the binding the deployment uses: the model file's own, or the named profile's.
+  *Why:* a BigQuery graph node table is keyed by the dataset's `primary_key`,
+  and `unique_keys` do not stand in for it. Models with no BigQuery deployment
+  (Spanner, AlloyDB, or catalog-only) need none.
+
+- **A BigQuery graph-bound relationship MUST join on its target's primary key.**
+  For a BigQuery target, a non-M:N relationship's `to_columns` MUST name
+  exactly the `primary_key` columns of the `to` dataset, in any order: not a
+  unique key, and not a superset of the primary key. *Why:* the edge references
+  its destination node, which on BigQuery is keyed by that `primary_key`.
+
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
   gate, this is how a native key under vanilla — or a `custom_extensions` block
@@ -443,7 +460,10 @@ still declare a `source` — the corresponding narrowing in
 relationship join column is not an error: the field is unbound, and each named
 profile binds it or names it in `fields_exclude`. A relationship with no join
 columns is a logical edge. A graph deployment that uses the model's own bindings
-needs every field of a concrete leaf dataset bound.
+needs every field of a concrete leaf dataset bound. A BigQuery graph
+deployment also needs a `primary_key` on every non-abstract dataset, and each
+relationship's `to_columns` to name exactly its target's `primary_key` columns,
+under the binding it uses ([§4.1](#41-narrowings-stricter-than-ossie)).
 
 - **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
   dataset bound for a graph MUST still declare one.

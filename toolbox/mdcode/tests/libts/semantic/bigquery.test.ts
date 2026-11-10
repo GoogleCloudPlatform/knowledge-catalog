@@ -2567,3 +2567,78 @@ describe('a metric operand that names a field', () => {
         `this binding; skipped (nothing to emit as a MEASURE)`);
   });
 });
+
+
+// A BigQuery node table is keyed by its entity's primary_key alone. When a
+// caller invokes generatePropertyGraph directly on an entity with only
+// unique_keys, it gets no node table, and any edge or measure on it is skipped.
+describe('a node with only unique_keys is skipped on BigQuery', () => {
+  const skippedNode = (name: string) =>
+      `entity '${name}': empty KEY (no primary key); node table skipped, ` +
+      `as a graph node requires a KEY`;
+
+  test('skips an entity with only unique_keys, omits its edges and measures, ' +
+           'and throws when it is the only entity',
+       () => {
+         const customers = {
+           name: 'customers',
+           dataSource: 'p.d.customers',
+           keys: [] as string[],
+           uniqueKeys: [['customer_code'], ['email']],
+           fields: [{name: 'name', expression: 'name'}],
+         };
+         const orders = {
+           name: 'orders',
+           dataSource: 'p.d.orders',
+           keys: ['order_id'],
+           fields: [{name: 'amount', expression: 'amount'}],
+         };
+
+         expect(() => generatePropertyGraph({
+                  name: 'shop',
+                  entities: [customers],
+                  relationships: [],
+                  metrics: [],
+                }, GEN_OPTS))
+             .toThrow(new Error(
+                 'cannot generate a property graph: every entity was skipped ' +
+                 'because it has no primary key (a graph node requires a ' +
+                 `KEY); a graph requires at least one NODE TABLE\n${
+                     skippedNode('customers')}`));
+
+         const {ddl, warnings} = generatePropertyGraph({
+           name: 'shop',
+           entities: [orders, customers],
+           relationships: [
+             {
+               name: 'placed_by',
+               source: {entity: 'orders', columns: ['cust_code']},
+               destination: {entity: 'customers', columns: ['customer_code']},
+             },
+             {
+               name: 'lives_in',
+               source: {entity: 'customers', columns: ['order_fk']},
+               destination: {entity: 'orders', columns: ['order_id']},
+             },
+           ],
+           metrics: [{
+             name: 'customer_count',
+             entity: 'customers',
+             expression: 'COUNT(*)',
+           }],
+         }, GEN_OPTS);
+         expect(ddl).toContain('`p.d.orders` AS orders\n    KEY(order_id)');
+         expect(ddl).not.toContain('AS customers');
+         expect(ddl).not.toContain('EDGE TABLES');
+         expect(ddl).not.toContain('MEASURE');
+         expect(warnings).toEqual([
+           skippedNode('customers'),
+           `metric 'customer_count' targets entity 'customers', which has ` +
+               `no KEY and was skipped; metric dropped`,
+           `relationship 'placed_by': references skipped entity 'customers'; ` +
+               `edge omitted`,
+           `relationship 'lives_in': references skipped entity 'customers'; ` +
+               `edge omitted`,
+         ]);
+       });
+});
