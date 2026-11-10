@@ -1315,8 +1315,8 @@ async function repairDocument(
  * In both runs, every other concrete entity and every other field of one is
  * bound, so the runs differ only in the one left unbound. An abstract entity
  * and its fields take no binding in either run. The checks read the repaired
- * model and the input's profile files. A model that does not load gets no
- * such remedy.
+ * model and the input's profile files. A model that does not load cannot be
+ * checked, and gets every remedy only when it has no deployments.
  */
 async function offerUnbinding(
     doc: ImportDocument, opts: ImportSemanticModelOptions,
@@ -1333,6 +1333,7 @@ async function offerUnbinding(
                   .models;
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
+    if (!asRecords(doc.model.deployments).length) doc.unbinding.forEach(offer);
     return;
   }
   const name = doc.model.name;

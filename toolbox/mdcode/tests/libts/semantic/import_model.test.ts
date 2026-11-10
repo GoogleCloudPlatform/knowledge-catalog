@@ -331,12 +331,16 @@ describe('conversion, strict mode, and translation', () => {
                    .errors).not.toContain(needed);
       });
 
-  // Push's checks need a model that loads.
-  test('offers no remedy that leaves a field unbound when the repaired model does not load', async () => {
+  // Push's checks need a model that loads. One that does not load keeps the
+  // remedy only when it has no deployments.
+  test.each([
+    ['without deployments', '', ", or remove 'expression' to leave the field unbound."],
+    ['with a deployment', `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`, '.'],
+  ])('offers to leave a field unbound in a model that does not load only %s', async (_, deployments, end) => {
     const input = googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
-                             extra: `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n    colour: red\n`});
-    expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true})).errors)
-        .toContain("field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one.");
+                             extra: `${deployments}    colour: red\n`});
+    expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true})).errors).toContain(
+        `field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one${end}`);
   });
 
   test(
