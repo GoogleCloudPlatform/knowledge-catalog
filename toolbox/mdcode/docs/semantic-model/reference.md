@@ -745,8 +745,8 @@ warning, and `--force-remove` deletes it.
 ## Validation
 
 `push` and `--validate-only` run the same checks, apart from the Knowledge
-Catalog checks on the entry group, which only a push without `--validate-only`
-runs. [push](#push) says when each check runs.
+Catalog checks on the entry group and the custom types, which only a push
+without `--validate-only` runs. [push](#push) says when each check runs.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:
