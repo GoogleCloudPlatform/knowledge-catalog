@@ -31,7 +31,7 @@ import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_convert
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, inheritanceErrorOf, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -460,11 +460,14 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 }
 
 // The dialects sourceDialects reads for the model documents `docs` and their
-// profile files, for every load the command makes. Prints each source whose
-// dialect cannot be read and returns null.
+// profile files, for every load the command makes. Gives `report` each source
+// whose dialect cannot be read, and returns null. By default `report` prints
+// it.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
-    profileDocs: ProfileDocs): Promise<DialectLoad|null> {
+    profileDocs: ProfileDocs,
+    report = (e: string) => console.error(`Error: ${e}`)):
+    Promise<DialectLoad|null> {
   const texts = docs.map(d => d.text);
   for (const doc of docs) {
     try {
@@ -475,7 +478,7 @@ async function dialectLoad(
   }
   const {dialects, databases, errors} = await readDialects(ctx, texts);
   if (errors.length) {
-    for (const e of errors) console.error(`Error: ${e}`);
+    for (const e of errors) report(e);
     return null;
   }
   return {sourceDialects: dialects, sourceDatabases: databases};
@@ -1875,26 +1878,54 @@ async function pullSemanticModel(
           formatOverviewSidecar(sidecar),
     });
   }
+  const code = writePulledFiles(layout, pulled.name, updated, options, removed);
   const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
-  const problem = modelFile && loadProblem(pulled.name, modelFile.content);
-  if (problem) {
+  const refusal = modelFile && await pushRefusal(
+      ctx, layout, source, {name: pulled.name, text: modelFile.content},
+      pulledProfileDocs(layout, pulled, updated));
+  if (refusal) {
     console.warn(
-        `Warning: ${layout.modelPath(pulled.name)} does not load as pull ` +
-        `writes it: ${problem} Push rejects it until this is fixed.`);
+        `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
+        `writes it: ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}`);
   }
-  return writePulledFiles(layout, pulled.name, updated, options, removed);
+  return code;
 }
 
 
-// Why the model file `text` of model `name` does not load, as push loads it,
-// or undefined when it loads. A model whose `extends` do not resolve does not
-// load either, since push skips every check that needs the resolved model.
-function loadProblem(name: string, text: string): string|undefined {
-  const loaded = loadSemanticModels([{name, text}], {bindingOptional: true});
-  const problem = loaded.error ??
-      loaded.models.map(m => inheritanceErrorOf(m.model)).find(e => e);
-  if (problem === undefined) return undefined;
-  return /[.!?]$/.test(problem) ? problem : `${problem}.`;
+// Push's first error for the model file `doc` and the profile files
+// `profiles`, or undefined when push accepts them. Like push, it loads the SQL
+// parser and reads each source's dialect, then runs push's checks that call no
+// service. It reads the overview sidecars on disk, as push does.
+async function pushRefusal(
+    ctx: context.ApiContext, layout: SemanticModelLayout,
+    source: SemanticModelSource, doc: {name: string; text: string},
+    profiles: ReturnType<ProfileDocs>): Promise<string|undefined> {
+  const parserError = await sqlParserError();
+  if (parserError) return parserError;
+  const docs = [doc];
+  const profileDocs = () => profiles;
+  const unread: string[] = [];
+  const load = await dialectLoad(ctx, docs, profileDocs, e => unread.push(e));
+  if (!load) return unread[0];
+  const checked = await checkBeforeWrites(
+      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+  return 'errors' in checked ? checked.errors[0]?.error : undefined;
+}
+
+
+// The profile files among `files` that pull writes for `pulled`, as push
+// reads them.
+function pulledProfileDocs(
+    layout: SemanticModelLayout, pulled: SemanticModel,
+    files: SerializedFile[]): ReturnType<ProfileDocs> {
+  return (pulled.profiles ?? []).flatMap(({name}) => {
+    const fileName = `${pulled.name}.profile.${name}.yaml`;
+    const file = files.find(f => f.fileName === fileName);
+    const target = pulledFileTarget(layout, pulled.name, fileName, false);
+    return file && target ?
+        [{name, text: file.content, path: target.path, fileName}] :
+        [];
+  });
 }
 
 

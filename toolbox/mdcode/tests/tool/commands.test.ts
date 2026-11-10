@@ -1069,13 +1069,22 @@ describe('a push of overview sidecars', () => {
 });
 
 
-// A model pulled from the catalog, with an entity and profile prod.
+// A model pulled from the catalog, with an entity and profile prod, which push
+// accepts.
 const SECOND_GEN: SemanticModel = {
   name: 'commerce',
   relationships: [],
   metrics: [],
   profiles: [{
-    name: 'prod', entities: [], relationships: [], metricsExclude: '*'}],
+    name: 'prod',
+    entities: [{
+      name: 'Customer',
+      source: 'bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer',
+      fields: [{name: 'id', expression: 'c_id'}],
+    }],
+    relationships: [],
+    metricsExclude: '*',
+  }],
   entities: [{
     name: 'Customer', dataSource: '', keys: [], fields: [{name: 'id'}],
   }],
@@ -1890,22 +1899,35 @@ describe('a pull', () => {
        });
 
   // Another writer may delete an entry the model needs, such as an entity
-  // another one extends.
-  test('warns when the model file it writes does not load', async () => {
-    fs.writeFileSync(
-        path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\n');
-    pulled({
-      ...SECOND_GEN,
-      entities: [{...SECOND_GEN.entities[0], extends: ['Named']}],
-    });
+  // another one extends or a metric reads. Pull still writes the model file,
+  // and warns with push's first error.
+  for (const [what, model, error] of [
+    ['an entity another extends',
+     {...SECOND_GEN, entities: [{...SECOND_GEN.entities[0], extends: ['Named']}]},
+     "model 'commerce' (commerce): entity 'Customer' extends unknown entity " +
+         "'Named'; it is not defined in the model. Checks that need the " +
+         'resolved model are skipped until this is fixed.'],
+    ['an entity a metric reads',
+     {...SECOND_GEN, metrics: [{name: 'm', expression: 'COUNT(Gone.id)'}]},
+     "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
+         "'Gone', which is not a declared entity in model 'commerce'; write " +
+         "'entity.field' starting with a declared entity."],
+  ] as Array<[string, SemanticModel, string]>) {
+    test(`warns when push refuses the model file it writes without ${what}`,
+         async () => {
+           fs.writeFileSync(
+               path.join(dir, 'catalog.yaml'),
+               'scope: semantic-model.test-project.us.commerce_eg\n');
+           pulled(model);
 
-    expect(await pull()).toBe(0);
-    expect(messages(console.warn)).toBe(
-        `Warning: ${shown('commerce.yaml')} does not load as pull writes it: ` +
-        "entity 'Customer' extends unknown entity 'Named'; it is not defined " +
-        'in the model. Push rejects it until this is fixed.');
-  });
+           expect(await pull()).toBe(0);
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+               .toBe(serializedFiles(model)['commerce.yaml']);
+           expect(messages(console.warn)).toBe(
+               `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
+               `writes it: ${error}`);
+         });
+  }
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
