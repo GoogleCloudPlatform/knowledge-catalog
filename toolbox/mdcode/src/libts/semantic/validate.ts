@@ -2251,9 +2251,9 @@ export async function localChecks(
 
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
-  // is checked as a model that deploys nowhere. A selected deployment's own
-  // checks run only after these pass, so these give every error and every
-  // warning about SQL kcmd cannot read.
+  // is checked as a model that deploys nowhere. Each deployment's own checks
+  // run only after these pass, so these give every error and every warning
+  // about SQL kcmd cannot read.
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])),
@@ -2328,16 +2328,23 @@ export async function localChecks(
       }));
   if (spannerErrors.length) return stop(spannerErrors);
 
+  // Every deployment gets the checks of a selected one, whether or not this
+  // push selects it. An unselected deployment's profile warnings print above.
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
-    for (const deployment of selectedByDoc.get(base.document) ?? []) {
+    const chosen = selectedByDoc.get(base.document) ?? [];
+    const others = (everyByDoc.get(base.document) ?? [])
+                       .filter(d => !chosen.some(c => c.name === d.name));
+    for (const deployment of [...chosen, ...others]) {
+      const isChosen = chosen.includes(deployment);
       const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, load, warn);
+          base, profileDocs(base.document), deployment, load,
+          isChosen ? warn : () => {});
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
       }
-      plans.push(plan);
+      if (isChosen) plans.push(plan);
     }
   }
   return {plans};

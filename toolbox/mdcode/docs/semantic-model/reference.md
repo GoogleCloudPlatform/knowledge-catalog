@@ -35,8 +35,8 @@ Knowledge Catalog.
 
 | Flag | Effect |
 |------|--------|
-| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still publishes the model to Knowledge Catalog first. |
-| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. Push refuses it with `--deployment`, in either order. |
+| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
+| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
@@ -50,7 +50,8 @@ Push runs in two phases:
    deploys: its BigQuery dataset or Spanner database, its BigQuery source
    tables, a dry run of its BigQuery graph DDL, the Spanner graph check, and
    each action statement, which BigQuery dry-runs and Spanner plans. It also
-   prints each graph's warnings, such as a metric the graph leaves out.
+   prints the warnings of each graph this push deploys, such as a metric the
+   graph leaves out.
    Knowledge Catalog receives every profile, so this phase prints the load
    warnings of each profile, whether or not a selected deployment applies it,
    each prefixed with `profile '<name>':`. Spanner cannot dry-run a property
