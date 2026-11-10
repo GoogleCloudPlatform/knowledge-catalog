@@ -1025,7 +1025,15 @@ describe('a push of overview sidecars', () => {
          };
          write('commerce.overview.md',
                '---\ncontentType: MARKDOWN\n---\n# Commerce\n');
+         // A sidecar with no frontmatter is stored with LF line endings too.
+         write('commerce/entities/Customer.overview.md',
+               'A buyer.\r\nOn Windows.\r\n');
          const {entries, create, list} = fakeCatalog();
+         const overview = (id: string) =>
+             entries
+                 .get('projects/test-project/locations/us/entryGroups/' +
+                      `commerce_eg/entries/${id}`)!
+                 .aspects!['dataplex-types.global.overview'].data;
          const pushes = [
            {options: {}, model: withoutDeployments(ROUND_TRIP_MODEL)},
            {options: {deployment: false}, model: ROUND_TRIP_MODEL},
@@ -1033,11 +1041,10 @@ describe('a push of overview sidecars', () => {
          for (const {options, model} of pushes) {
            write('commerce.yaml', model);
            expect(await push(options)).toBe(0);
-           expect(entries
-                      .get('projects/test-project/locations/us/entryGroups/' +
-                           'commerce_eg/entries/commerce')!
-                      .aspects!['dataplex-types.global.overview'].data)
+           expect(overview('commerce'))
                .toEqual({content: '# Commerce', contentType: 'MARKDOWN'});
+           expect(overview('commerce/entities/Customer'))
+               .toEqual({content: 'A buyer.\nOn Windows.'});
          }
 
          write('commerce/metrics/revenue.overview.md',
@@ -1318,7 +1325,7 @@ semantic_model:
      {'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla with a GOOGLE block profile that binds an action',
      {'commerce.yaml': WITH_BLOCK_ACTION}],
-    // Push stores a sidecar's text without its line endings and trailing
+    // Push stores a sidecar's text with LF line endings and without trailing
     // blank lines, so a sidecar that reads as the catalog's overview keeps its
     // bytes.
     ['Google-flavor and overview sidecar', {
@@ -1329,6 +1336,7 @@ semantic_model:
           '---\r\ncontentType: MARKDOWN\r\n---\r\n# Customer\r\n\r\nOn Windows.\r\n',
       'commerce/entities/Order.overview.md':
           '---\ncontentType: MARKDOWN\n---\nNo final newline.',
+      'commerce/metrics/orders.overview.md': 'No frontmatter.\r\nOn Windows.\r\n',
     }],
   ] as const) {
     test(`that changes nothing keeps the ${flavor} files byte for byte`,

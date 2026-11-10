@@ -541,7 +541,13 @@ export function parseOverviewSidecar(
   if (links !== undefined && !(Array.isArray(links) && links.every(isLink))) {
     throw fail('links is a list of entries, each a url and an optional title.');
   }
-  return {content: split.body.trim() || undefined, contentType, links};
+  // splitFrontmatter joins the lines after frontmatter with LF, so a sidecar
+  // with no frontmatter is read with LF line endings too.
+  return {
+    content: split.body.replace(/\r\n/g, '\n').trim() || undefined,
+    contentType,
+    links,
+  };
 }
 
 // Whether the overviews `a` and `b` hold the same content, contentType and
