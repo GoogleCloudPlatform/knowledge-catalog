@@ -151,9 +151,9 @@ field's datatype, description, label and AI context straight out of the model.
 `source` above is an `Integer` because `Account.accountId` is one, so a caller
 passes an account id and the write binds it as an integer. Change the field
 later and every parameter projected from it follows, because there's no second
-copy to keep in step. A `concept` is read the way `affects` reads one, so it can
-name a relationship as well as an entity. A relationship declares no fields of
-its own, so the field you project from belongs to an entity.
+copy to keep in step. A relationship declares no fields of its own, so a
+projected parameter's `concept` names an entity. A parameter projected from a
+relationship is refused.
 
 The pair can be written two ways, and they load to the same parameter:
 

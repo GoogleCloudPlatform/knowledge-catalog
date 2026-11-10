@@ -218,7 +218,7 @@ that first pass is byte-for-byte stable.
 
 `affects` stores only what the author wrote, which is why it survives a partial
 pull intact. Whether a `concept` is an entity or an edge is not recorded, so
-nothing about it has to be re-resolved — and nothing can go stale.
+nothing about it has to be re-resolved, and nothing can go stale.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the rule and any `instructions` in a
@@ -299,8 +299,9 @@ The BigQuery value can differ from the source's value in these cases:
 Spanner's default time zone, America/Los_Angeles, is written into the date and
 time functions of a `SPANNER` text. A Spanner database created with another
 `default_time_zone` reads those functions in its own time zone, so the
-translated text can give other dates and hours than the database does. Edit the
-`BIGQUERY` entries of such a database's fields by hand to name its time zone.
+translated text can give other dates and hours than the database does. For such
+a database, edit the translated `BIGQUERY` entries of the fields and metrics
+that read it by hand, so that they name its time zone.
 Snowflake's default time zone is written into the current date and time
 functions of a `SNOWFLAKE` text.
 
@@ -376,8 +377,9 @@ not prune the model to a deployment's profile first.
 - A Google-flavor model that names its entities under `datasets:` comes back
   with `entities:`.
 - A description comes back without the spaces and line breaks at its start and
-  end, since push stores it trimmed. A `description: |` block comes back as
-  `|-`.
+  end, since push stores it trimmed. A `description: |` block of more than one
+  line comes back as `|-`, and a one-line block as a plain string. An action
+  parameter's own description is stored as written and comes back unchanged.
 - `ai_context` comes back in the object form, and its custom members come
   back sorted by name. A number in a custom member comes back in its JSON form,
   since that is how the catalog stores it. `1.0` comes back as `1`, and `2.50`

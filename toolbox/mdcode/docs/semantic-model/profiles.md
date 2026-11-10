@@ -254,8 +254,8 @@ logical model below binds nothing inline, so the operational profile binds
 `availableCredit` and excludes `lifetimeValue`, and the analytical profile does
 the reverse. A metric that reaches an excluded field has to be named in the
 profile's `metrics_exclude`. When the source table a profile binds is missing or
-inaccessible, validation fails and names it. When a BigQuery deployment that the
-push deploys uses the profile, push's validation phase dry-runs the graph DDL,
+inaccessible, validation fails and names it. When the push deploys a BigQuery
+deployment that uses the profile, its validation phase dry-runs the graph DDL,
 so a mistyped column name fails the push before anything is written.
 
 ## File layout
@@ -636,10 +636,9 @@ writes nothing.
   `default` is unbound when it declares one. `kcmd profiles` prints it under
   the `default` binding.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
-  dry run; a table that is missing or inaccessible fails and names it. A
-  mistyped column is caught by the dry run of the graph DDL, which push's
-  validation phase runs for each BigQuery deployment the push deploys, before
-  anything is written.
+  dry run; a table that is missing or inaccessible fails and names it. Push's
+  validation phase also dry-runs the graph DDL of each BigQuery deployment it
+  deploys, so a mistyped column fails before anything is written.
 - **Rejected DML** — where a deployment targets Spanner or BigQuery, every
   statement in an action's `sql` executor is planned against that store without
   running it, and a store that refuses one fails the push and quotes back why.
@@ -668,11 +667,11 @@ writes nothing.
 native key for it; there `deployments` and `profiles` ride in a `GOOGLE`
 `custom_extensions` block instead. The two are the same declarations written two
 ways, chosen by the document's `version` (see [model
-spec](model_spec.md#1-status-and-baseline)). A vanilla model binds every source,
-field expression and join column inline, so the layout on this page, a logical
-model with its bindings in profiles, needs the Google flavor. [A complete
-vanilla model](model_spec.md#appendix-a-complete-vanilla-model) shows the
-vanilla form.
+spec](model_spec.md#1-status-and-baseline)). This page keeps the bindings in
+profile files and leaves the model file logical. That layout needs the Google
+flavor, because a vanilla model binds every source, field expression and join
+column inline. [A complete vanilla
+model](model_spec.md#appendix-a-complete-vanilla-model) shows the vanilla form.
 
 **Bare-string and per-dialect expressions.** A profile field's `expression` can
 take any form a model field expression can: a bare column name (`expression: c_name`),

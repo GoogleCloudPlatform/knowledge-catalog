@@ -174,9 +174,9 @@ keeps that spelling in a Google-flavor file, and `kcmd pull` writes the
 canonical one.
 
 `Date`, `Time`, `DateTime`, and `DateTimeTz` are the temporal subset (they default
-`dimension.is_time`). A value outside this set is not authorable directly; a type
-`kcmd` cannot express natively is represented as `Opaque` plus a `custom_extensions`
-block that carries the real type.
+`dimension.is_time`). A value outside this set is not authorable.
+`datatype: Opaque` means the same as no `datatype`, and pull returns such a field
+with none.
 
 A field's `expression` is its binding; a field with no `expression` is **unbound**
 (no column under this binding). There is no separate `unbound` flag — absence is
@@ -246,11 +246,9 @@ requires them (see [§4](#4-narrowings-and-relaxations)). Like `source` and a fi
 `expression`, join columns are a binding: a profile may supply or override them,
 and a named profile states them itself ([§7](#7-the-binding-layer)).
 
-> **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
-> has **no YAML syntax** in `0.2.0.dev0`, and the loader rejects an
-> `association` key on a relationship as an unknown key. The construct is
-> reserved for a future format extension. Direct-FK relationships (1:1, 1:N) are
-> the authorable forms.
+> **Many-to-many is not authorable.** A bridge-table (M:N) relationship has
+> **no YAML syntax** in `0.2.0.dev0` and may be added in a later version of
+> the format. Direct-FK relationships (N:1 and 1:1) are the authorable forms.
 
 ### 2.3. Metric
 
@@ -343,7 +341,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
-| relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
+| relationship M:N | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and reads fields only inside aggregates · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | stricter; adds names | accepts 9 SQL dialects and rejects non-SQL dialects · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
@@ -547,10 +545,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
   relationship the same model declares; the two are named the same way, because
   the model already records which one a name is. `operation` is drawn from one
   closed vocabulary, `create` / `modify` / `delete`, whatever the concept is.
-  `fields` MUST name fields of the concept, so an entry on a relationship, which
-  declares no fields of its own, names none. `fields` MUST NOT accompany a
-  `delete`, which takes the whole instance. A repeated concept-and-operation
-  pair is a **hard load error**. Accepted only under
+  `fields` MUST name fields of the concept. A relationship declares no fields of
+  its own, so an entry on a relationship names no `fields`. `fields` MUST NOT
+  accompany a `delete`, which takes the whole instance. A repeated
+  concept-and-operation pair is a **hard load error**. Accepted only under
   `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor,
   so `affects` is the author's declaration and nothing verifies it against what
   the executor does. See [Modeling write operations](actions.md).
@@ -655,14 +653,15 @@ reads the document ([§6](#6-the-extension-mechanism)).
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
 
 One construct is reserved rather than added. `0.2.0.dev0` has **no authorable
-M:N `association` syntax**. The construct is under consideration for a future
+M:N relationship syntax**. The construct is under consideration for a future
 version and is not part of the format today.
 
 ## 6. The extension mechanism
 
 The `version` selects **one** of two mutually exclusive extension surfaces (agreed
-with Dmitri). A document uses the carrier *or* the native keys, never both — which
-surface applies is a property of the version, not a per-key choice.
+with Dmitri). A document writes `kcmd`'s extensions in `GOOGLE`
+`custom_extensions` blocks *or* as native keys, never both. Which surface applies
+is a property of the version, not a per-key choice.
 
 **Vanilla `0.2.0.dev0` — the `custom_extensions` carrier.** Under vanilla Ossie
 every `kcmd` extension rides in Ossie's own `custom_extensions` field. An entry is:
@@ -869,9 +868,9 @@ The full merge behavior and worked examples are in
   `entities` spelling) are simply unavailable there — a model that needs them
   uses `0.2.0.dev0/google`.
 
-- **Reserved constructs.** `association` (M:N) is reserved. It is under
-  consideration for a future version and cannot be authored today, so a document
-  MUST NOT rely on it in `0.2.0.dev0`.
+- **Reserved constructs.** A many-to-many (M:N) relationship is reserved. It is
+  under consideration for a future version and cannot be authored today, so a
+  document MUST NOT rely on it in `0.2.0.dev0`.
 
 ## Appendix: annotated example
 
@@ -937,14 +936,15 @@ relationships:
 
 ## Appendix: a complete vanilla model
 
-The logical model of the annotated example, written in vanilla `0.2.0.dev0` as
-one file. A vanilla model binds every `source`, field `expression` and join
-column inline, as Ossie requires. Those inline bindings are the `default`
-profile. Here they bind the BigQuery tables, so the `analytical` deployment
-names no profile. The `GOOGLE` block on the model carries both deployments and
-the `operational` profile, which binds Spanner tables and excludes every
-metric. Its `data` is a JSON string. A field in a block profile may take a bare
-column name as its `expression`, as in a profile file.
+This appendix writes the annotated example's model in vanilla `0.2.0.dev0`, as
+one file, and adds a Spanner deployment. A vanilla model binds every `source`,
+field `expression` and join column inline, as Ossie requires. Those inline
+bindings are the `default` profile. Here they bind the BigQuery tables, so the
+`analytical` deployment names no profile. The `GOOGLE` block on the model
+carries the `analytical` and `operational` deployments and the `operational`
+profile, which binds Spanner tables and excludes every metric. Its `data` is a
+JSON string. A field in a profile in the `GOOGLE` block may take a bare column
+name as its `expression`, as in a profile file.
 
 ```yaml
 # catalog/EntryGroups/sales/sales.yaml
@@ -1018,6 +1018,5 @@ semantic_model:
               "metrics_exclude": "*"}]}
 ```
 
-A logical model that leaves its bindings to profiles has no vanilla form, since
-vanilla requires the inline bindings. The layout of the annotated example above,
-a logical model file and a profile file beside it, needs `0.2.0.dev0/google`.
+The annotated example keeps its bindings in a profile file, so it needs
+`0.2.0.dev0/google`.
