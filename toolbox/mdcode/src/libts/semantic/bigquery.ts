@@ -424,9 +424,10 @@ function readOperand(
 // Ensures the operand `read` is exposed as a node property and returns its
 // property name. A column that a field reads whole under its own name is that
 // field's property (see newLowering). Other SQL reuses a property derived for
-// an earlier operand with the same SQL; a column no field names is exposed
-// under its own name; any other SQL gets a synthesized, unique name derived
-// from the metric.
+// an earlier operand with the same SQL. A column is exposed under its own name
+// when no field, metric or other property in the graph has that name. Any
+// other SQL gets a synthesized, unique name derived from the metric, which no
+// column the table is known to have takes either.
 //
 // The SQL is a field's own SQL when the operand names a field, never the
 // field's name: `amount_usd AS amount` gives `SUM(amount_usd)`, since

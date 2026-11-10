@@ -2390,7 +2390,7 @@ describe('a metric operand that names a field', () => {
   });
 
   // b/581838371: the purchase table keeps its old `amount` and `customer_id`
-  // columns beside `amount_usd` and `cust_ref`, the last a join column.
+  // columns beside `amount_usd` and `cust_ref`, and joins on `customer_id`.
   test('aggregates the SQL of a field that renames a join column', () => {
     const model = purchaseWith(
         [
@@ -2409,7 +2409,7 @@ describe('a metric operand that names a field', () => {
     });
     model.relationships.push({
       name: 'placed_by',
-      source: {entity: 'purchase', columns: ['cust_ref']},
+      source: {entity: 'purchase', columns: ['customer_id']},
       destination: {entity: 'customer', columns: ['id']},
     });
     const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
@@ -2421,7 +2421,7 @@ describe('a metric operand that names a field', () => {
         '      MEASURE(SUM(amount_usd)) AS total_amount,\n' +
         '      MEASURE(COUNT(DISTINCT cust_ref)) AS buyers\n');
     expect(ddl).toContain(
-        '    DESTINATION KEY(cust_ref) REFERENCES customer(id)\n');
+        '    DESTINATION KEY(customer_id) REFERENCES customer(id)\n');
     expect(warnings).toEqual([]);
   });
 

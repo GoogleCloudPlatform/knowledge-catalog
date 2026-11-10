@@ -552,9 +552,9 @@ type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
 // The SQL `field` of `owner` renders from on `engine`. The text is the
 // engine's (fieldExpression), and a field may name a sibling field in it as
 // `<owner>.<field>`. Each sibling it names is replaced with that sibling's
-// own SQL for the engine, in parentheses unless that SQL is a lone column, and
-// every other column loses the owner's qualifier; the rest of the text stays
-// as written. Both engines' SQL is read as BigQuery's.
+// own SQL for the engine, in parentheses unless that SQL is a lone column,
+// TRUE, FALSE or NULL, or already in parentheses, and every other column
+// loses the owner's qualifier; the rest of the text stays as written. Both engines' SQL is read as BigQuery's.
 // Throws when the field names itself, directly or through its siblings, since
 // no SQL can render it; push validation rejects such a model first
 // (validateExpressionReferences).
