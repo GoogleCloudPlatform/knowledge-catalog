@@ -1049,6 +1049,7 @@ function article(noun: string): string {
 // MySQL and SQL Server read a date beside a number as a number or a count of
 // days, and every source reads a string beside a number as a number. A date
 // column is not visible, so a MySQL date column plus a number is translated.
+// A sum or difference of intervals is an interval and is translated as written.
 // A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, and the repairs
 // write DATE_ADD, which keeps the type of a DATE, a DATETIME and a TIMESTAMP.
 // Those dialects read a string or a number beside the interval as a date, and
@@ -1065,15 +1066,17 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const op = OPERATORS[kind];
   const added = kind !== 'mul' && sides.find(s => s?.interval)?.interval;
   if (added) {
+    const untranslated = sides.find(s => s?.interval && !interval(s.interval));
+    if (untranslated) return `INTERVAL ${intervalText(untranslated.interval)}`;
+    if (sides.every(isInterval)) return sides.map(s => s.interval ? s.interval.this : s);
     const unit = interval(added);
-    if (!unit) return `INTERVAL ${intervalText(added)}`;
     if (unit === 'day' && DATE_DAYS.has(read)) {
       const other = sides.find(s => !s?.interval);
       const b = bare(other);
       const sum = (s: any): boolean => returned(s).some(sum) ||
           [bare(s)?.add, bare(s)?.sub].some(v => v && !v.left?.interval && !v.right?.interval);
       const number = numberText(other) !== undefined || (read === 'mysql' && sum(other));
-      if (!other || number || (b?.literal && b.literal.literal_type !== 'date')) {
+      if (number || (b?.literal && b.literal.literal_type !== 'date')) {
         return `${op} of ${valueName(b)}`;
       }
       return [other, added.this];
@@ -1082,7 +1085,7 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
       return `${op} INTERVAL ${intervalText(added)}, which gives a DATE in some ` +
           'databases and a timestamp in others';
     }
-    if (read === 'databricks' && unit !== 'day' && sides.some(s => !s?.interval)) {
+    if (read === 'databricks' && unit !== 'day') {
       return `${op} INTERVAL ${intervalText(added)}, which gives a TIMESTAMP for a DATE ` +
           'in Databricks and a DATETIME in BigQuery';
     }
@@ -1310,6 +1313,14 @@ function isNumber(node: any): boolean {
   return numberText(b) !== undefined || !!(b?.sum ?? b?.count ?? b?.avg);
 }
 
+// Whether `node`, a source value, is an INTERVAL: an interval, or a sum or
+// difference of two.
+function isInterval(node: any): boolean {
+  const b = bare(node);
+  const sum = b?.add ?? b?.sub;
+  return !!b?.interval || (!!sum && isInterval(sum.left) && isInterval(sum.right));
+}
+
 // Whether `node`, a source value, is a DATE: CURRENT_DATE, CURDATE, a DATE
 // literal, or a CAST or TRY_CAST to DATE.
 function isDate(node: any): boolean {
@@ -1498,10 +1509,11 @@ function repairNode(node: any, read: string): unknown {
     return SNOWFLAKE_TYPES[node.name];
   }
   // A value plus or minus an INTERVAL of days, from a dialect in DATE_DAYS. A
-  // sum may name the INTERVAL first. A sum of two intervals is an interval.
+  // sum may name the INTERVAL first. A sum or difference of intervals is an
+  // interval.
   const sum = DATE_DAYS.has(read) ? node.add ?? node.sub : undefined;
   const days = (n: any) => String(n?.interval?.unit?.unit).toLowerCase() === 'day';
-  const operands = !sum || (sum.left?.interval && sum.right?.interval) ? undefined :
+  const operands = !sum || (isInterval(sum.left) && isInterval(sum.right)) ? undefined :
       days(sum.right) ? [sum.left, sum.right] :
       node.add && days(sum.left) ? [sum.right, sum.left] : undefined;
   if (operands) {
