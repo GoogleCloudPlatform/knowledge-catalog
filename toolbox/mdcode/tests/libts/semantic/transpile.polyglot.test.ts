@@ -378,6 +378,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', "2 * INTERVAL '1 day'", {error: 'kcmd does not translate INTERVAL'}],
     ['MYSQL', "'2024-01-01' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a string'}],
     ['MYSQL', '20240101 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a number'}],
+    ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
     ['DATABRICKS', 'd + INTERVAL 1 DAY + INTERVAL 2 HOUR', {error: 'kcmd does not translate + INTERVAL 2 HOUR, which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'}],
     ['ANSI_SQL', `"d" + INTERVAL '1' DAY`, {error: 'kcmd does not translate + INTERVAL 1 DAY, which gives a DATE in some databases and a timestamp in others'}],
     ['POSTGRES', 'a AS b', {error: 'kcmd does not translate a text it cannot read as one expression'}],

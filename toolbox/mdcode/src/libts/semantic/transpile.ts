@@ -1050,8 +1050,10 @@ function article(noun: string): string {
 // A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, and the repairs
 // write DATE_ADD, which keeps the type of a DATE, a DATETIME and a TIMESTAMP.
 // Those dialects read a string or a number beside the interval as a date, and
-// BigQuery rejects it or reads another way, so import refuses one. The sum is
-// a timestamp in PostgreSQL, so an ANSI_SQL text with one is not translated.
+// BigQuery rejects it or reads another way, so import refuses one. MySQL reads
+// a sum or difference without an INTERVAL as a number, so import refuses that
+// beside the interval as well. The sum is a timestamp in PostgreSQL, so an
+// ANSI_SQL text with one is not translated.
 // A Databricks DATE plus an INTERVAL of hours or minutes is a TIMESTAMP, where
 // BigQuery gives a DATETIME, so import translates that sum only from the other
 // dialects. SPANNER arithmetic is BigQuery's.
@@ -1064,9 +1066,11 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     if (!unit) return `INTERVAL ${intervalText(added)}`;
     if (unit === 'day' && DATE_DAYS.has(read)) {
       const other = sides.find(s => !s?.interval);
-      const literal = bare(other)?.literal;
-      if (!other || numberText(other) !== undefined || (literal && literal.literal_type !== 'date')) {
-        return `${op} of ${valueName(bare(other))}`;
+      const b = bare(other);
+      const number = numberText(other) !== undefined || (read === 'mysql' &&
+          [b?.add, b?.sub].some(v => v && !v.left?.interval && !v.right?.interval));
+      if (!other || number || (b?.literal && b.literal.literal_type !== 'date')) {
+        return `${op} of ${valueName(b)}`;
       }
       return [other, added.this];
     }
