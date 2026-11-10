@@ -10,7 +10,7 @@
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
-import {SpannerClient} from '../gcp/spanner';
+import {SpannerClient, SpannerType} from '../gcp/spanner';
 
 import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {boundTable} from './binding';
@@ -2584,6 +2584,215 @@ function probeableRef(dataSource: string|undefined): string|null {
     return null;
   }
   return trimmed;
+}
+
+
+// The schema objects of a Spanner database's default schema whose name
+// matches @graph ignoring case, other than property graphs: each row gives the
+// kind of object and its name. A graph cannot share a name with any of them.
+const SPANNER_NAMES_SQL = `SELECT kind, name FROM (
+  SELECT IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind, TABLE_NAME AS name
+    FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ''
+  UNION ALL SELECT 'index', INDEX_NAME FROM INFORMATION_SCHEMA.INDEXES
+    WHERE TABLE_SCHEMA = '' AND INDEX_TYPE != 'PRIMARY_KEY'
+  UNION ALL SELECT 'sequence', NAME FROM INFORMATION_SCHEMA.SEQUENCES
+    WHERE SCHEMA = ''
+  UNION ALL SELECT 'change stream', CHANGE_STREAM_NAME
+    FROM INFORMATION_SCHEMA.CHANGE_STREAMS WHERE CHANGE_STREAM_SCHEMA = ''
+  UNION ALL SELECT 'schema', SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA
+    WHERE SCHEMA_NAME NOT IN ('', 'INFORMATION_SCHEMA', 'SPANNER_SYS')
+) WHERE LOWER(name) = LOWER(@graph)`;
+
+// The key columns of each primary key and unique index on the tables whose
+// lower-case names @tables lists: each row gives the table's schema, its name,
+// the index's name and one column.
+const SPANNER_UNIQUE_KEYS_SQL = `SELECT i.TABLE_SCHEMA, i.TABLE_NAME,
+    i.INDEX_NAME, c.COLUMN_NAME
+  FROM INFORMATION_SCHEMA.INDEXES AS i
+  JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS c
+    ON c.TABLE_CATALOG = i.TABLE_CATALOG AND c.TABLE_SCHEMA = i.TABLE_SCHEMA
+    AND c.TABLE_NAME = i.TABLE_NAME AND c.INDEX_NAME = i.INDEX_NAME
+    AND c.INDEX_TYPE = i.INDEX_TYPE
+  WHERE i.IS_UNIQUE AND c.ORDINAL_POSITION IS NOT NULL
+    AND LOWER(i.TABLE_NAME) IN UNNEST(@tables)`;
+
+// A Spanner type as Spanner writes it, such as `INT64` or `ARRAY<STRING>`.
+function spannerTypeName(type: SpannerType|undefined): string {
+  if (!type) return 'an unknown type';
+  return type.code === 'ARRAY' ?
+      `ARRAY<${spannerTypeName(type.arrayElementType)}>` :
+      type.code;
+}
+
+// A column or name as Spanner stores it, without its backticks, in lower case,
+// since Spanner compares names ignoring case.
+const storedName = (name: string) => name.replace(/^`|`$/g, '').toLowerCase();
+
+// The live check of the graph that `model` deploys to `target`, before any
+// write. It reads the database's schema, and plans a query of what each node
+// and edge table of the graph reads, so Spanner reports a column the table
+// lacks and SQL it cannot run. It finds a graph named like another schema
+// object, a key that no primary key or unique index of its table backs, and a
+// property that two tables give different types. It changes nothing. `at`
+// names the deployment. Returns one message per problem.
+export async function validateSpannerGraph(
+    at: string, model: SemanticModel, target: SpannerGraphTarget,
+    spanner: SpannerClient): Promise<string[]> {
+  let elements: GraphElement[];
+  try {
+    ({elements} =
+         generateSpannerPropertyGraph(model, {graphName: target.graphName}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return [];
+  }
+  const database =
+      `spanner/${target.project}/${target.instance}/${target.database}`;
+  // Each table of the target database the graph reads, which push has
+  // checked are all its tables.
+  const tables = elements.filter(e => databaseOf(e.dataSource) === database);
+  const name = `${target.project}/${target.instance}/${target.database}`;
+  const opened = await spanner.createSession(
+      target.project, target.instance, target.database);
+  const session = opened.result?.name;
+  if (!session) {
+    return [
+      `${at}: could not open a session on Spanner database ${name} to ` +
+      `check the graph before anything is written: ${
+          storeMessage(opened.message, opened.status)}`,
+    ];
+  }
+  const unreadable = (res: {message?: string; status: number}) =>
+      `${at}: could not read the schema of Spanner database ${name} to ` +
+      `check the graph before anything is written: ${
+          storeMessage(res.message, res.status)}`;
+  const label = (e: GraphElement) => e.kind === 'node' ?
+      `the node table of entity '${e.name}'` :
+      `the edge table of relationship '${e.name}'`;
+  const errors: string[] = [];
+  try {
+    const named = await spanner.executeQuery(session, SPANNER_NAMES_SQL, {
+      params: {graph: target.graphName},
+      paramTypes: {graph: {code: 'STRING'}},
+    });
+    if (named.status !== 200) return [unreadable(named)];
+    for (const [kind, found] of named.result?.rows ?? []) {
+      errors.push(
+          `${at}: Spanner database ${name} already has ${
+              kind === 'index' ? 'an' : 'a'} ${kind} named '${found}', and ` +
+          `a graph cannot share its name with another object of its ` +
+          `database, compared ignoring case; rename the graph in the target.`);
+    }
+
+    // The table each element reads, as its schema and name in lower case.
+    const tableOf = (e: GraphElement) => {
+      const parts = boundTable(e.dataSource, [], '', t => t).split('.');
+      return {
+        written: parts.join('.'),
+        key: parts.length > 1 ? `${storedName(parts[0])}.${
+                                    storedName(parts[parts.length - 1])}` :
+                                `.${storedName(parts[0])}`,
+        name: storedName(parts[parts.length - 1]),
+      };
+    };
+    const keys = await spanner.executeQuery(session, SPANNER_UNIQUE_KEYS_SQL, {
+      params: {tables: [...new Set(tables.map(e => tableOf(e).name))]},
+      paramTypes: {tables: {code: 'ARRAY', arrayElementType: {code: 'STRING'}}},
+    });
+    if (keys.status !== 200) return [unreadable(keys)];
+    // The columns of each unique index, by table and index.
+    const unique = new Map<string, Map<string, Set<string>>>();
+    for (const [schema, table, index, column] of keys.result?.rows ?? []) {
+      const key = `${storedName(String(schema))}.${storedName(String(table))}`;
+      const indexes = unique.get(key) ?? new Map<string, Set<string>>();
+      const columns = indexes.get(String(index)) ?? new Set<string>();
+      indexes.set(String(index), columns.add(storedName(String(column))));
+      unique.set(key, indexes);
+    }
+    // An edge of a foreign key has the key of its source's node table, so
+    // each table and key is reported once.
+    const keyChecked = new Set<string>();
+    for (const e of tables) {
+      const table = tableOf(e);
+      const indexes = unique.get(table.key);
+      const columns = e.key.map(storedName);
+      const checked = `${table.key}\u0000${columns.join('\u0000')}`;
+      if (!indexes || keyChecked.has(checked)) continue;
+      keyChecked.add(checked);
+      const backed = [...indexes.values()].some(
+          index => [...index].every(c => columns.includes(c)));
+      if (backed) continue;
+      const written = `(${e.key.join(', ')})`;
+      errors.push(
+          `${at}: ${label(e)} is keyed by ${written}, but neither the ` +
+          `primary key of table ${table.written} nor a unique index on it ` +
+          `is made of those columns, so Spanner cannot prove the key ` +
+          `unique. Key it by columns that hold the table's primary key, or ` +
+          `create a unique index on ${written}.`);
+    }
+
+    // The type Spanner gives each property, by its name in lower case.
+    const typed = new Map<string, Array<{where: string; type: SpannerType}>>();
+    const plan = async (
+        what: string, table: string, read: string[], properties = 0) => {
+      // The table gets an alias the query does not name, since a name that
+      // matches the table's own reads as its row and not as a column, as
+      // `order` does in table `Order`.
+      const list = [...new Set(read)].join(', ');
+      const sql = `SELECT ${list} FROM ${table} AS ${
+          unusedName(list, 'kcmd_table')}`;
+      const res = await spanner.executeQuery(session, sql, {plan: true});
+      if (res.status !== 200) {
+        errors.push(
+            `${at}: Spanner cannot read ${what} from table ${table}: ${
+                storeMessage(res.message, res.status)} kcmd asked Spanner ` +
+            `to plan: ${sql}`);
+        return undefined;
+      }
+      return res.result?.metadata?.rowType?.fields?.slice(0, properties);
+    };
+    for (const e of tables) {
+      const texts = e.properties.map(p => p.text);
+      const fields = await plan(
+          label(e), e.table, [...texts, ...e.key, ...e.endpointColumns],
+          new Set(texts).size);
+      e.properties.forEach((p, i) => {
+        const type = fields?.[i]?.type;
+        if (!type) return;
+        const key = p.name.toLowerCase();
+        typed.set(key, [...typed.get(key) ?? [], {where: label(e), type}]);
+      });
+      // The columns an edge's REFERENCES clauses read in a node's table,
+      // unless that node's own query reads them.
+      for (const {entity, columns} of e.references) {
+        const node = tables.find(n => n.kind === 'node' && n.name === entity);
+        if (!node || columns.every(c => node.key.includes(c))) continue;
+        await plan(
+            `the columns relationship '${e.name}' references in entity '${
+                entity}'`,
+            node.table, columns);
+      }
+    }
+    for (const [key, found] of typed) {
+      if (new Set(found.map(f => JSON.stringify(f.type))).size < 2) continue;
+      const property = elements.flatMap(e => e.properties)
+                           .find(p => p.name.toLowerCase() === key)!.name;
+      errors.push(
+          `${at}: property '${property}' has ${
+              listed(found.map(
+                  f => `type ${spannerTypeName(f.type)} in ${f.where}`))}, ` +
+          `but a Spanner graph gives a property one type. Cast the ` +
+          `expressions to one type, or rename the fields.`);
+    }
+    return errors;
+  } finally {
+    // A leaked session expires on its own, so a failed delete is not reported.
+    try {
+      await spanner.deleteSession(session);
+    } catch {
+      // Nothing to report.
+    }
+  }
 }
 
 

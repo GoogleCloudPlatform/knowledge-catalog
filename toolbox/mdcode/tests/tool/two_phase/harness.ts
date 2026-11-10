@@ -181,6 +181,11 @@ const SERVICES = {
   getInstance: [SpannerClient.prototype, 'getInstance',
                 ok({...REGIONAL_INSTANCE, edition: 'ENTERPRISE'})],
   getInstanceConfig: [SpannerClient.prototype, 'getInstanceConfig', ok(NAM3_CONFIG)],
+  // The Spanner graph check opens a session and reads the database. A query
+  // finds no row, and a plan gives no row type.
+  createSession: [SpannerClient.prototype, 'createSession', ok({name: 'session'})],
+  executeQuery: [SpannerClient.prototype, 'executeQuery', ok({})],
+  deleteSession: [SpannerClient.prototype, 'deleteSession', ok({})],
   getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
   getHiveCatalog:
       [BigLakeClient.prototype, 'getHiveCatalog', ok(REGIONAL_CATALOG)],

@@ -32,7 +32,7 @@ export function stubSpannerDialect() {
 }
 
 // Makes push find each graph's dataset or database, and pass each BigQuery dry
-// run.
+// run and each Spanner graph check.
 export function passGraphChecks(): void {
   const ok = (result: object) => ({status: 200, result}) as any;
   spyOn(bigquery.BigQueryClient.prototype, 'getDataset')
@@ -40,6 +40,14 @@ export function passGraphChecks(): void {
   spyOn(bigquery.BigQueryClient.prototype, 'query').mockResolvedValue(ok({}));
   spyOn(spanner.SpannerClient.prototype, 'getDatabase')
       .mockResolvedValue(ok({databaseDialect: 'GOOGLE_STANDARD_SQL'}));
+  // The Spanner graph check: a query finds no row, and a plan gives no row
+  // type.
+  spyOn(spanner.SpannerClient.prototype, 'createSession')
+      .mockResolvedValue(ok({name: 'session'}));
+  spyOn(spanner.SpannerClient.prototype, 'executeQuery')
+      .mockResolvedValue(ok({}));
+  spyOn(spanner.SpannerClient.prototype, 'deleteSession')
+      .mockResolvedValue(ok({}));
 }
 
 // Makes push's source check find a Knowledge Catalog entry for every table, with
