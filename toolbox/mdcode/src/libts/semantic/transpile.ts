@@ -1069,7 +1069,10 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     return sides.map(s => s.interval ? s.interval.this : s);
   }
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
-  const date = (s: any) => isDate(s) || CURRENT.has(String(bare(s)?.function?.name).toUpperCase());
+  // A sum or difference with an INTERVAL is a date or a time, which the repairs
+  // write as DATE_ADD or DATE_SUB.
+  const date = (s: any) => isDate(s) || CURRENT.has(String(bare(s)?.function?.name).toUpperCase()) ||
+      [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval));
   if (CONVERTING.has(read) && sides.some(date)) return `${op} of a date`;
   if ((kind === 'mul' && !CONVERTING.has(read)) || read === 'spanner') return sides;
   return sides.some(isNumber) ? sides :
