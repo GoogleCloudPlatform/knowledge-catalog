@@ -135,7 +135,8 @@ BigQuery runs each query in one location, so push also refuses a profile whose
 BigQuery and BigLake tables share no location. A BigLake table can be queried in
 any replica region of its catalog. A `US` catalog with replicas in `us-central1`
 and `us-east1` therefore joins datasets in either region. It cannot join a
-dataset in the `US` multi-region. `--skip-source-check` skips this check. A
+dataset in the `US` multi-region. `--skip-source-check` skips this check, but
+a BigQuery deployment still checks the location of each table it reads. A
 profile moves an entity between stores by swapping its source and, when the
 two stores shape the data differently, the column each field reads.
 

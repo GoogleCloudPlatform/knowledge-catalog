@@ -416,11 +416,9 @@ function readDialects(ctx: context.ApiContext, texts: string[]) {
 // `models` names a table with a Knowledge Catalog entry (see
 // sourceEntryErrors), and gives one message for each binding whose table has
 // none, and one for each profile whose BigQuery and BigLake tables share no
-// location. A message offers --skip-source-check only for tables that no
-// graph in `plans` reads. With --skip-source-check, says so and checks
-// nothing.
+// location. With --skip-source-check, says so and checks nothing.
 async function sourceCheckErrors(
-    models: LoadedModel[], plans: DeploymentPlan[], ctx: context.ApiContext,
+    models: LoadedModel[], ctx: context.ApiContext,
     options: PushOptions): Promise<string[]> {
   if (options.skipSourceCheck) {
     console.log('Skipping the source check (--skip-source-check).');
@@ -432,10 +430,8 @@ async function sourceCheckErrors(
     biglake: new BigLakeClient(ctx),
     spanner: new SpannerClient(ctx),
   };
-  const graphs = plans.filter(p => p.deployment.engine !== 'alloydb')
-                     .map(p => p.model.model);
-  return (await Promise.all(models.map(
-              ({model}) => sourceEntryErrors(model, readers, graphs))))
+  return (await Promise.all(
+              models.map(({model}) => sourceEntryErrors(model, readers))))
       .flat();
 }
 
@@ -896,7 +892,7 @@ async function pushInTwoPhases(
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
   const {plans, kcModels, leftOut, overviews} = checked;
-  const sourceErrors = await sourceCheckErrors(kcModels, plans, ctx, options);
+  const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
   const kcOptions = catalogDeployOptions(options, source, overviews);
   const preflight =

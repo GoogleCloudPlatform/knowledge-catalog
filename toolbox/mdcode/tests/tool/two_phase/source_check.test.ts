@@ -9,7 +9,7 @@ import {expect} from 'bun:test';
 import {entryDenied, NAM3_INSTANCE, NOT_FOUND, spannerDenied} from '../../libts/gcp/location_responses';
 import {cloudSqlEntry} from '../../libts/mocks';
 
-import {boundAt, bqTable, CUSTOMER, err, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
+import {boundAt, bqTable, CUSTOMER, err, has, PushRun, REAL, scenarios, SPANNER_CUSTOMER} from './harness';
 
 const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
     'us-central1/instances/shop/databases/sales/tables/customer';
@@ -72,17 +72,22 @@ scenarios('push checks every source before it writes', [
     ],
   },
   {
-    name: 'a missing table a deployment of the push reads gets advice that names no flag, as it does under --no-deployment only with one; creating the table clears it',
+    name: 'a missing table offers --skip-source-check even when a deployment reads it; with the flag, the deployment\'s own table check stops the push, and creating the table clears both',
     deployments: ['g'],
     services: {getTable: NOT_FOUND},
     code: 1,
     errors: [err(`entity 'Customer' in profile 'default': source '${bqTable('customer')}' ` +
                  "names a table that does not exist: reading table 'test-project.d.customer' " +
-                 'found nothing (HTTP 404). Create the table or fix the source.')],
+                 'found nothing (HTTP 404). Create the table or fix the source. ' +
+                 '--skip-source-check skips this lookup, but a deployment that reads the ' +
+                 'table still checks the table itself.')],
     nothingWritten: true,
     then: [
-      {flags: {deployment: false}, code: 1,
-       errors: [has('Create the table or fix the source, or pass --skip-source-check.')]},
+      // The deployment's dry run of the table answers 404, as BigQuery does.
+      {flags: {skipSourceCheck: true},
+       services: {sources: REAL.sources, query: {status: 404, message: 'Not found: Table test-project:d.customer'}},
+       code: 1, errors: [has("references BigQuery table 'test-project.d.customer', which does not exist")],
+       nothingWritten: true},
       {services: {getTable: undefined}, code: 0, events: ['preflight', 'apply', 'deploy g']},
     ],
   },

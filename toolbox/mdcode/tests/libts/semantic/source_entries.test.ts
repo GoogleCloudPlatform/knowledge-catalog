@@ -129,36 +129,42 @@ const model = (entities: Entity[], profiles: ProfileSpec[] = []) =>
     ({name: 'commerce', entities, profiles});
 const inline = (source: string) => model([entity('orders', source)]);
 
-// The message for a source with no entry the check could read.
+// What each message about `source` says --skip-source-check skips. No
+// deployment checks an AlloyDB table.
+const skips = (source: string) => ' --skip-source-check skips this lookup' +
+    (source.startsWith('alloydb.') ? '.' :
+         ', but a deployment that reads the table still checks the table itself.');
+// The message for a source with no entry the check could read. getTable has
+// found a BigQuery table.
 const notFound = (entity: string, profile: string, source: string, hint = '') =>
     `entity '${entity}' in profile '${profile}': source '${source}' names no ` +
     `table Knowledge Catalog knows about. The table may not exist, or you may ` +
-    `not be allowed to read its catalog entry.${hint} Create the table or fix ` +
-    `the source, or pass --skip-source-check.`;
+    `not be allowed to read its catalog entry.${hint} ${
+        source.startsWith('bigquery.') ? 'Fix the access or the source.' :
+                                         'Create the table or fix the source.'}${skips(source)}`;
 // The start of the messages for an inline source of `entity`.
 const at = (source: string, entity = 'orders') =>
     `entity '${entity}' in profile 'default': source '${source}'`;
 // The message for an inline source whose check failed for another reason.
 const couldNotCheck = (source: string, detail: string) =>
-    `${at(source)} could not be checked; try again, or pass ` +
-    `--skip-source-check: ${detail}`;
+    `${at(source)} could not be checked; try again: ${detail}${skips(source)}`;
 // The message for an inline source whose location read `what` answered 404,
-// so the `kind` it names, such as `a table`, does not exist.
-const missing = (source: string, kind: string, what: string, entity?: string, hint = '') =>
-    `${at(source, entity)} names ${kind} that does not exist: ${what} found ` +
-    `nothing (HTTP 404).${hint} Create the table or fix the source, or pass ` +
-    `--skip-source-check.`;
+// so `missed`, such as `table`, does not exist.
+const missing = (source: string, missed: string, what: string, entity?: string, hint = '') =>
+    `${at(source, entity)} names ${/^[aeiou]/i.test(missed) ? 'an' : 'a'} ${missed} that ` +
+    `does not exist: ${what} found nothing (HTTP 404).${hint} Create the ${missed} or ` +
+    `fix the source.${skips(source)}`;
 // The message for an inline source whose location read `what` answered 400
 // with `message`.
 const failed = (source: string, what: string, message: string, hint = '') =>
     `${at(source)} could not be checked: ${what} failed (HTTP 400: ${message}).` +
-    `${hint} Fix the source, or pass --skip-source-check.`;
+    `${hint} Fix the source.${skips(source)}`;
 // The message for an inline source whose location read `what` answered 403
 // with `message`.
 const refused = (source: string, what: string, message: string, hint = '') =>
     `${at(source)} could not be checked: ${what} was refused (HTTP 403). ` +
     `${message}${hint} The source's catalog entry was not looked up. Fix the ` +
-    `access or the source, or pass --skip-source-check.`;
+    `access or the source.${skips(source)}`;
 const ALLOYDB_HINT = ' A new AlloyDB cluster can take hours to appear in the ' +
     'catalog after Dataplex integration is turned on.';
 const CONFIG_HINT = ' Reading it needs the permission ' +
@@ -262,15 +268,15 @@ describe('sourceEntryErrors', () => {
                              Record<string, ApiResult<any>>?]> = [
     // A missing table or dataset, catalog or instance answers 404.
     ['a missing table', BIGQUERY, `getTable ${P} kcmd_demo orders`, NOT_FOUND,
-     missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`)],
+     missing(BIGQUERY, 'table', `reading table '${P}.kcmd_demo.orders'`)],
     ['a missing catalog', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, NOT_FOUND,
-     missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`),
+     missing(BIGLAKE, 'catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`),
      {[`getHiveCatalog ${P} kcmd-src-biglake-57138`]: INVALID_HYPHEN_ID}],
     ['a missing Hive catalog', HIVE_MISSING, 'getHiveCatalog sqlgen-testing no_such_catalog', NOT_FOUND,
-     missing(HIVE_MISSING, 'a Hive catalog', "reading the region of Hive catalog 'no_such_catalog'"),
+     missing(HIVE_MISSING, 'Hive catalog', "reading the region of Hive catalog 'no_such_catalog'"),
      {'getCatalog sqlgen-testing no_such_catalog': NOT_FOUND}],
     ['a missing instance', SPANNER, `getInstance ${P} kcmd-src-reg`, NOT_FOUND,
-     missing(SPANNER, 'an instance', `reading instance 'kcmd-src-reg'`)],
+     missing(SPANNER, 'instance', `reading instance 'kcmd-src-reg'`)],
     // Spanner answers 403 for an instance or config the caller may not read.
     ['a refused instance read', SPANNER, `getInstance ${P} kcmd-src-reg`,
      INSTANCE_DENIED,
@@ -288,10 +294,10 @@ describe('sourceEntryErrors', () => {
     ['a catalog read that answers 503', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, UNAVAILABLE,
      couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed (HTTP 503: unavailable).")],
     ['a catalog read that throws', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, new Error('socket hang up'),
-     couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed: socket hang up")],
+     couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed: socket hang up.")],
     ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
-     couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
+     couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up.')],
     ['an invalid table ID', BIGQUERY_INVALID, `getTable ${P} kcmd_demo orders!x`,
      INVALID_TABLE_ID,
      failed(BIGQUERY_INVALID, `reading table '${P}.kcmd_demo.orders!x'`, INVALID_TABLE_ID.message)],
@@ -373,7 +379,7 @@ describe('sourceEntryErrors', () => {
     const entry = lookup('biglake', 'us', BIGLAKE_US);
     const {readers, calls} = fakeReaders([entry]);
     const m = model([entity('orders', BIGLAKE_US_AS_HIVE)], [profile('iceberg', [['orders', BIGLAKE_US]])]);
-    expect(await sourceEntryErrors(m, readers)).toEqual([missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog',
+    expect(await sourceEntryErrors(m, readers)).toEqual([missing(BIGLAKE_US_AS_HIVE, 'Hive catalog',
         "reading the region of Hive catalog 'snowflake'", undefined, ICEBERG_FORM)]);
     expect(calls.sort()).toEqual(
         ['getCatalog looker-private-demo snowflake', 'getHiveCatalog looker-private-demo snowflake', entry]);
@@ -412,7 +418,8 @@ describe('sourceEntryErrors', () => {
       `profile '${name}' of model 'commerce' binds tables that share no ` +
       `BigQuery location: ${locations}. BigQuery runs each query in one ` +
       `location, so no query can join them. Bind them to tables that share a ` +
-      `location, or pass --skip-source-check.`;
+      `location. --skip-source-check skips this check, but a deployment that ` +
+      `reads these tables still checks their locations itself.`;
   // Every table below has its entry.
   const ENTRIES = [
     lookup('bigquery', 'us', BIGQUERY),
@@ -445,7 +452,7 @@ describe('sourceEntryErrors', () => {
     // The table writes `US` and the federated catalog's replica `US`.
     ['a US dataset and a federated US catalog', [BIGQUERY, BIGLAKE_US], [], []],
     ['a table whose location read failed, which only its own message names', [BQ_CENTRAL, BQ_EU], [],
-     [missing(BQ_EU, 'a table', `reading table '${P}.eu_ds.customers'`, 'customers')],
+     [missing(BQ_EU, 'table', `reading table '${P}.eu_ds.customers'`, 'customers')],
      {[`getTable ${P} eu_ds customers`]: NOT_FOUND}],
   ];
   for (const [label, [orders, customers], profiles, messages, override] of LOCATIONS) {
@@ -455,30 +462,6 @@ describe('sourceEntryErrors', () => {
           .toEqual(messages);
     });
   }
-
-  // A deployment reads its tables again before it writes, so skipping the
-  // check does not get a push past a table a deployed model reads.
-  test('a message offers --skip-source-check only for tables no deployed model reads, and an existing table clears it', async () => {
-    const {readers} = fakeReaders([], {[`getTable ${P} kcmd_demo orders`]: NOT_FOUND});
-    expect(await sourceEntryErrors(inline(BIGQUERY), readers, [inline(BIGQUERY)])).toEqual([
-      `${at(BIGQUERY)} names a table that does not exist: reading table ` +
-      `'${P}.kcmd_demo.orders' found nothing (HTTP 404). Create the table or ` +
-      `fix the source.`,
-    ]);
-    expect(await sourceEntryErrors(inline(BIGQUERY), readers, [inline(BQ_CENTRAL)])).toEqual([
-      missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`),
-    ]);
-    const {readers: found} = fakeReaders([lookup('bigquery', 'us', BIGQUERY)]);
-    expect(await sourceEntryErrors(inline(BIGQUERY), found, [inline(BIGQUERY)])).toEqual([]);
-    const m = model([entity('orders', BQ_CENTRAL), entity('customers', BQ_EU)]);
-    expect(await sourceEntryErrors(m, fakeReaders(ENTRIES).readers, [model([entity('orders', BQ_EU)])]))
-        .toEqual([
-          "profile 'default' of model 'commerce' binds tables that share no BigQuery " +
-          "location: us-central1 ('orders'), europe-west1 ('customers'). BigQuery runs " +
-          'each query in one location, so no query can join them. Bind them to ' +
-          'tables that share a location.',
-        ]);
-  });
 
   test('the GCP clients provide the reads', () => {
     // Compile-time check: each client fits its reader.
