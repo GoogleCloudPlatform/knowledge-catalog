@@ -1783,23 +1783,44 @@ ${metricBlock}`).models[0];
       }
     });
 
-    test('rejects a metric that reads another metric, qualified or not, and accepts it over that metric\'s fields', () => {
-      const withAverage = (expression: string) => loaded(model({
-        entities: [orders()],
+    // [the metric's name, its expression, the message]. Metric 'revenue' is
+    // anchored on orders. 'amount' is a metric on orders and a field of
+    // customer.
+    const at = (name: string) => `metric '${name}' in model 'm' (doc)`;
+    test.each([
+      ['avg_order', 'revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, and a ` +
+       'metric over other metrics is not supported in this version; write the expression ' +
+       "over the fields that 'revenue' reads."],
+      ['avg_order', 'orders.revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, ` +
+       'and a metric over other metrics is not supported in this version; write the ' +
+       "expression over the fields that 'revenue' reads."],
+      // A metric that reads its own name reads a column or a missing field.
+      ['total', 'SUM(total)', `${at('total')}: 'total' must be written as 'entity.field'; a ` +
+       'metric reads fields, never columns.'],
+      ['total', 'SUM(orders.total)', `${at('total')}: expression references 'orders.total', ` +
+       "but entity 'orders' has no field 'total'; metric expressions must reference declared " +
+       'fields, not physical columns.'],
+      // A metric's name on another entity, under an unknown qualifier, or
+      // shared with a field is no read of that metric.
+      ['avg_order', 'SUM(orders.net_amount) / SUM(customer.revenue)', `${at('avg_order')}: ` +
+       "expression references 'customer.revenue', but entity 'customer' has no field " +
+       "'revenue'; metric expressions must reference declared fields, not physical columns."],
+      ['avg_order', 'ordrs.revenue / COUNT(*)', `${at('avg_order')}: 'ordrs.revenue' has ` +
+       "qualifier 'ordrs', which is not a declared entity in model 'm'; write 'entity.field' " +
+       'starting with a declared entity.'],
+      ['avg_order', 'SUM(amount) / COUNT(*)', `${at('avg_order')}: 'amount' must be written as ` +
+       "'entity.field'; a metric reads fields, never columns."],
+      ['avg_order', 'SUM(orders.net_amount) / COUNT(*)', undefined],
+    ])('a metric %s over %s gets the message for what it reads', (name, expression, message) => {
+      const m = model({
+        entities: [orders(), customer()],
         metrics: [
           {name: 'revenue', expression: 'SUM(orders.net_amount)', entity: 'orders'},
-          {name: 'avg_order', expression, entity: 'orders', authoredEntity: 'orders'},
+          {name: 'amount', expression: 'SUM(orders.net_amount)', entity: 'orders'},
+          {name, expression, entity: 'orders', authoredEntity: 'orders'},
         ],
-      }));
-      for (const expression of ['revenue / COUNT(*)', 'orders.revenue / COUNT(*)']) {
-        expect(validatePushRequirements([withAverage(expression)])).toEqual([
-          "metric 'avg_order' in model 'm' (doc): 'revenue' is a metric, and a metric over " +
-          'other metrics is not supported in this version; write the expression over the ' +
-          "fields that 'revenue' reads.",
-        ]);
-      }
-      expect(validatePushRequirements([withAverage('SUM(orders.net_amount) / COUNT(*)')]))
-          .toEqual([]);
+      });
+      expect(validatePushRequirements([loaded(m)])).toEqual(message ? [message] : []);
     });
 
     test('rejects a dotted reference whose qualifier is not a declared entity or differs in case without emitting Rule 1', () => {

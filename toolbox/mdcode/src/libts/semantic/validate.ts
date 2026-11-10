@@ -1853,15 +1853,23 @@ export function validateExpressionReferences(
           impliedDialect));
     }
 
-    const metricNames = new Set((model.metrics ?? []).map(m => m.name));
+    const entityOfMetric =
+        new Map((model.metrics ?? []).map(m => [m.name, m.entity]));
+    const fieldNames =
+        new Set([...fieldsByEntity.values()].flatMap(fields => [...fields]));
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
-      // Whether `name`, read where a field belongs, names a metric of the
-      // model. A metric cannot read another metric, so each such metric gets
-      // one message, with no advice on how to name a field.
+      // Whether `name`, read where a field belongs, names another metric of
+      // the model: qualified with `on`, that metric's entity, or unqualified
+      // and no field's name. A metric cannot read another metric, so each
+      // such metric gets one message, with no advice on how to name a field.
       const metricsRead = new Set<string>();
-      const readsMetric = (name: string) => {
-        if (!metricNames.has(name)) return false;
+      const readsMetric = (name: string, on?: string) => {
+        if (name === metric.name || !entityOfMetric.has(name)) return false;
+        if (on === undefined ? fieldNames.has(name) :
+                               entityOfMetric.get(name) !== on) {
+          return false;
+        }
         if (!metricsRead.has(name)) {
           metricsRead.add(name);
           errors.push(
@@ -1940,7 +1948,7 @@ export function validateExpressionReferences(
         for (const entityName of reached) {
           const knownFields = fieldsByEntity.get(entityName)!;
           for (const ref of fieldsReadOn(allColumns, entityName)) {
-            if (!knownFields.has(ref) && !readsMetric(ref)) {
+            if (!knownFields.has(ref) && !readsMetric(ref, entityName)) {
               errors.push(
                   `metric '${metric.name}' in model '${model.name}' (${
                       document}): expression references '${entityName}.${
@@ -1963,8 +1971,8 @@ export function validateExpressionReferences(
             col.name;
         if (seenUnqualified.has(token)) continue;
         seenUnqualified.add(token);
-        if (readsMetric(col.name)) continue;
         if (col.qualifier === undefined) {
+          if (readsMetric(col.name)) continue;
           errors.push(
               `metric '${metric.name}' in model '${model.name}' (${
                   document}): '${token}' must be written as ` +
