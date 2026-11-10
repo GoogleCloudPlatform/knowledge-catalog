@@ -199,11 +199,11 @@ kcmd profiles
 ```
 
 Reports each binding profile the model declares: the deployment targets that use
-it, the source each concrete entity binds to, and what the profile cannot answer or
-cannot run. Under each profile it then prints every error push would give for
-it, after a `push rejects:` heading, and the profile's load warnings. The
-inline `default` binding is checked
-too. Beside declared profiles it is listed only when push would reject it.
+it, the source each concrete entity binds to, and what the profile cannot answer
+or cannot run. Under each profile it then prints every error push would give
+for it, after a `push rejects:` heading. A profile with no such error also gets
+its load warnings. The inline `default` binding is checked too. Beside declared
+profiles it is listed only when push would reject it.
 Some errors fail every push of the scope, such as a
 second model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles. A Cloud SQL or third-party
