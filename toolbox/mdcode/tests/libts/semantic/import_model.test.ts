@@ -230,6 +230,8 @@ describe('conversion, strict mode, and translation', () => {
     expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
   });
 
+  const MDX_ONLY = '{dialects: [{dialect: MDX, expression: x}]}';
+  const GRAPH_DEPLOYMENT = `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g}]\n`;
   // [what the input holds, the input, the flavor, the error under --input
   // first-party, which says what the input needs]. Without --input
   // first-party, import repairs the input itself, and the file it writes
@@ -240,7 +242,26 @@ describe('conversion, strict mode, and translation', () => {
     ['an unsupported dialect',
      googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: order_id}, {dialect: MDX, expression: x}]}'}),
      'google', "field 'orders.order_id': remove the entry for unsupported dialect 'MDX'."],
-    ['a field with no supported dialect', googleDoc({fieldExpr: '{dialects: [{dialect: MDX, expression: x}]}'}),
+    ['a field with no supported dialect', googleDoc({fieldExpr: MDX_ONLY}), 'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
+     "remove 'expression' to leave the field unbound."],
+    // An AlloyDB deployment accepts an unbound field that no metric reads.
+    ['a field with no supported dialect under an AlloyDB deployment',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
+                extra: `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
+     'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
+     "remove 'expression' to leave the field unbound."],
+    // A graph needs every field of a concrete leaf entity bound, and an entity
+    // that another extends is no leaf.
+    ['a field with no supported dialect under a graph deployment',
+     googleDoc({fieldExpr: MDX_ONLY, extra: GRAPH_DEPLOYMENT}), 'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
+    ['a field with no supported dialect that an extending entity binds, under a graph deployment',
+     googleDoc({fieldExpr: MDX_ONLY,
+                extra: `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
+                    `        fields: [{name: order_id, expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}}]\n` +
+                    GRAPH_DEPLOYMENT}),
      'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
      "remove 'expression' to leave the field unbound."],
@@ -255,12 +276,11 @@ describe('conversion, strict mode, and translation', () => {
      "'source' to leave the entity unbound."],
     // A deployment on the model file's own bindings needs every entity bound.
     ['a query-valued source with a deployment on the model file\'s bindings',
-     googleDoc({source: '"SELECT * FROM sales.orders"',
-                extra: `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g}]\n`}),
+     googleDoc({source: '"SELECT * FROM sales.orders"', extra: GRAPH_DEPLOYMENT}),
      'google', "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
     // A vanilla file requires 'expression' and 'source'.
     ['a vanilla field with no supported dialect',
-     ossieDoc({fieldExpr: '{dialects: [{dialect: MDX, expression: x}]}'}), 'google',
+     ossieDoc({fieldExpr: MDX_ONLY}), 'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla query-valued source', ossieDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
      "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],

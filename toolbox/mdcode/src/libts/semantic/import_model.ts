@@ -11,12 +11,12 @@ import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, d
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
-import {declaredProfiles, DEFAULT_PROFILE, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
-import {localChecks, pruningLines, withProfileFiles} from './validate';
+import {localChecks, pruningLines, validateDeployments, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -124,6 +124,22 @@ interface TableEntry {
   parts: string[];
 }
 
+/**
+ * A strict-mode error about an entity or field that the author may also fix by
+ * leaving it unbound.
+ */
+interface Unbinding {
+  /** The error's index in `ImportDocument.errors`. */
+  at: number;
+  /** The remedy that leaves the entity or field unbound. */
+  clause: string;
+  entity: string;
+  /** The field, for an error about a field. */
+  field?: string;
+  /** The source the input gave the entity, for an error about an entity. */
+  source?: string;
+}
+
 /** Mutable representation of a semantic model document during import. */
 interface ImportDocument {
   /**
@@ -175,6 +191,8 @@ interface ImportDocument {
   warnings: string[];
   /** Collected validation or strict-mode errors. */
   errors: string[];
+  /** The errors that `offerUnbinding` may add a remedy to. */
+  unbinding: Unbinding[];
   /** Appends `msg` to `errors` in strict mode or `warnings` otherwise. */
   warnOrError: (msg: string) => void;
   /**
@@ -498,6 +516,7 @@ function parseImportDocument(
     modified: false,
     warnings,
     errors,
+    unbinding: [],
     warnOrError: (msg: string) => (strict ? errors : warnings).push(msg),
     repair: (done: string, needed: string) =>
         strict ? errors.push(needed) : warnings.push(done),
@@ -969,23 +988,24 @@ function truncateDescription(
 }
 
 /**
- * Whether a strict-mode message may offer to leave an entity or field
- * unbound: true for a Google input none of whose deployments uses the model
- * file's own bindings. A vanilla file requires 'source' and 'expression'. A
- * deployment on the model file's own bindings needs every entity bound, and a
- * graph deployment needs every field bound too.
+ * Records that the strict-mode error just reported may also offer `clause`,
+ * which leaves `u.entity` or `u.field` unbound. `offerUnbinding` decides
+ * whether it does. A vanilla file requires 'source' and 'expression', so only a
+ * Google input may leave an entity or field unbound.
  */
-function mayLeaveUnbound(doc: ImportDocument): boolean {
-  return doc.inputVersion === GOOGLE_VERSION &&
-      !asRecords(doc.model.deployments)
-           .some(d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE);
+function mayUnbind(
+    doc: ImportDocument, clause: string,
+    u: Pick<Unbinding, 'entity'|'field'|'source'>): void {
+  if (doc.strict && doc.inputVersion === GOOGLE_VERSION) {
+    doc.unbinding.push({at: doc.errors.length - 1, clause, ...u});
+  }
 }
 
 /**
  * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
  * with a warning in the Google version (or recording an error in the vanilla
- * version) if no supported SQL dialect remains. In strict mode, the error
- * offers to leave the field unbound only when `mayLeaveUnbound`.
+ * version) if no supported SQL dialect remains. In strict mode, `mayUnbind`
+ * records that the error may also offer to leave the field unbound.
  */
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument): void {
@@ -1004,10 +1024,10 @@ function repairField(
           `${fLabel}: no supported SQL dialect remains; removed ` +
               `'expression' and left the field unbound.`,
           `${fLabel}: 'expression' has no entry in a supported SQL ` +
-              `dialect; add one${
-                  mayLeaveUnbound(doc) ?
-                      `, or remove 'expression' to leave the field unbound` :
-                      ''}.`);
+              `dialect; add one.`);
+      mayUnbind(
+          doc, `or remove 'expression' to leave the field unbound`,
+          {entity: dsName, field: f.name});
     }
   }
 }
@@ -1050,10 +1070,10 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
                 `${word} is now unbound.`,
-            `${dsLabel}: source '${trimmed}' is a query; name a table${
-                mayLeaveUnbound(doc) ?
-                    `, or remove 'source' to leave the ${word} unbound` :
-                    ''}.`);
+            `${dsLabel}: source '${trimmed}' is a query; name a table.`);
+        mayUnbind(
+            doc, `or remove 'source' to leave the ${word} unbound`,
+            {entity: ds.name, source: trimmed});
         delete ds.source;
         doc.modified = true;
       }
@@ -1289,6 +1309,52 @@ async function repairDocument(
     }
   }
   return load;
+}
+
+/**
+ * Adds its remedy to each error of `doc.unbinding` when push's deployment
+ * checks refuse nothing more with that entity or field unbound than with it
+ * bound. In both runs, every other entity and field of `doc.unbinding` is
+ * bound, as it is once the author adds an expression or names a table for it.
+ * The checks read the repaired model, so a model that does not load gets no
+ * such remedy.
+ */
+function offerUnbinding(doc: ImportDocument, load: DialectLoad): void {
+  if (!doc.unbinding.length) return;
+  let model: SemanticModel;
+  try {
+    [model] = fromDocument(
+                  plainCopy(doc.root),
+                  {bindingOptional: true, warnUnacceptedSource: true})
+                  .models;
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return;
+  }
+  // What push refuses with every entity and field of `doc.unbinding` bound
+  // except `unbound`. A field's stand-in expression reads no column, and an
+  // entity's stand-in source is the one the input gave it.
+  const refused = (unbound?: Unbinding) => {
+    const m = structuredClone(model);
+    for (const u of doc.unbinding) {
+      if (u === unbound) continue;
+      const e = m.entities?.find(e => e.name === u.entity);
+      const f = e?.fields?.find(f => f.name === u.field);
+      if (f) {
+        f.expression = 'NULL';
+        f.dialects = [{dialect: 'ANSI_SQL', expression: 'NULL'}];
+      } else if (e && u.source !== undefined) {
+        e.dataSource = u.source;
+      }
+    }
+    return validateDeployments(m, doc.model.name, load);
+  };
+  const bound = new Set(refused());
+  for (const u of doc.unbinding) {
+    if (refused(u).every(problem => bound.has(problem))) {
+      doc.errors[u.at] = `${doc.errors[u.at].slice(0, -1)}, ${u.clause}.`;
+    }
+  }
 }
 
 /**
@@ -2073,6 +2139,7 @@ export async function importSemanticModelYaml(
     };
   }
   const load = await repairDocument(doc, opts);
+  offerUnbinding(doc, load);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
