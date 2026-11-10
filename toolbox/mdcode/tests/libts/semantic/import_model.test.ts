@@ -2140,9 +2140,9 @@ semantic_model:
      [['sales.profile.PROD.yaml', 'name: PROD\n'], ['sales.profile.prod.yaml', 'name: prod\n']],
      "Profile files 'sales.profile.PROD.yaml' and 'sales.profile.prod.yaml' name the same " +
      'profile; profile names are unique ignoring case.'],
-    ['a key a profile may not set', [['sales.profile.prod.yaml', 'name: prod\nbogus: 1\n']],
-     "[sales.profile.prod.yaml] profile 'prod' sets 'bogus', which a profile may not set; a " +
-     'profile carries only physical bindings, and the logical model owns everything else'],
+    ['an unknown key in a profile', [['sales.profile.prod.yaml', 'name: prod\nbogus: 1\n']],
+     "[sales.profile.prod.yaml] profile 'prod': unknown key 'bogus'; it takes 'name', " +
+     "'entities', 'relationships', 'metrics_exclude' and 'actions'"],
     ['a file rule after a profile that does not load',
      [['sales.profile.a.yaml', 'name: a\nbogus: 1\n'], ['sales.profile.b.yaml', 'name: c\n']],
      "Profile file 'sales.profile.b.yaml' declares name 'c', which does not match filename suffix 'b'."],

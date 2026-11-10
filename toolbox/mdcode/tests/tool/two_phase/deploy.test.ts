@@ -106,9 +106,8 @@ scenarios('push writes nothing when a check fails', [
     deployments: [{name: 'g', profile: 'p'}],
     profiles: {p: {...boundTo('p'), actions: [{name: 'refund', bogus: 1}]}},
     errors: [err(
-        "[commerce.profile.p.yaml] profile 'p': action 'refund' sets " +
-        "'bogus', which a profile may not set; a profile carries only " +
-        'physical bindings, and the logical model owns everything else')],
+        "[commerce.profile.p.yaml] profile 'p': action 'refund': unknown " +
+        "key 'bogus'; it takes 'name' and 'executor'")],
     called: {preflight: 0},
     then: [{
       profiles: {p: boundTo('p')},

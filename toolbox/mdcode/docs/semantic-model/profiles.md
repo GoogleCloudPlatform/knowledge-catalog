@@ -603,6 +603,8 @@ writes nothing.
   the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
+- **Unknown key** — a key that neither a profile nor the model file takes at
+  that level is rejected, and the error lists the keys the profile takes there.
 - **Incomplete profile** — a push checks every named profile of each model it
   deploys or publishes, whichever deployment it deploys: each profile file, and
   each profile a vanilla model carries in its `GOOGLE` block. A profile that

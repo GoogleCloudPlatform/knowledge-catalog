@@ -1018,15 +1018,37 @@ actions:
     }]);
   });
 
+  // [where, the profile, the key written, the key the message lists]
+  test.each([
+    ['the profile', 'name: prod\nmetric_exclude: "*"\n', 'metric_exclude', 'metrics_exclude',
+     "profile 'prod': unknown key 'metric_exclude'; it takes 'name', 'entities', " +
+     "'relationships', 'metrics_exclude' and 'actions'"],
+    ['an entity', 'name: prod\nentities:\n  - {name: orders, sourc: x}\n', 'sourc', 'source',
+     "profile 'prod': entity 'orders': unknown key 'sourc'; it takes 'name', 'source', " +
+     "'primary_key', 'unique_keys', 'fields' and 'fields_exclude'"],
+    ['a field', 'name: prod\nentities:\n  - {name: orders, fields: [{name: a, expresion: x}]}\n',
+     'expresion', 'expression',
+     "profile 'prod': entity 'orders': field 'a': unknown key 'expresion'; it takes 'name' " +
+     "and 'expression'"],
+    ['a relationship', 'name: prod\nrelationships:\n  - {name: r, from_columns: [a], to_column: [b]}\n',
+     'to_column', 'to_columns',
+     "profile 'prod': relationship 'r': unknown key 'to_column'; it takes 'name', " +
+     "'from_columns' and 'to_columns'"],
+  ])('a key no model file takes on %s is unknown, and the key the message lists loads',
+     (_, text, written, listed, message) => {
+       expect(() => loadProfileFile(text, 'prod')).toThrow(message);
+       expect(() => loadProfileFile(text.replace(written, listed), 'prod')).not.toThrow();
+     });
+
   test('metrics_exclude "*" reads back as "*"', () => {
     expect(loadProfileFile('name: prod\nmetrics_exclude: "*"\n', 'prod').metricsExclude)
         .toBe('*');
   });
 
   test('a logical key, "*" in a list, a wrong name, datasets and the old wrapper are rejected', () => {
-    for (const key of ['description', 'datatype']) {
-      expect(() => loadProfileFile(
-                 `name: prod\nentities:\n  - {name: orders, ${key}: x}\n`, 'prod'))
+    for (const entity of ['{name: orders, description: x}',
+                          '{name: orders, fields: [{name: a, datatype: x}]}']) {
+      expect(() => loadProfileFile(`name: prod\nentities:\n  - ${entity}\n`, 'prod'))
           .toThrow(/which a profile may not set/);
     }
     expect(() => loadProfileFile('name: prod\nmetrics_exclude: ["*"]\n', 'prod'))
@@ -1594,7 +1616,7 @@ describe('profile overlay edges', () => {
 
   test('deployment_target at the top of a profile file is rejected', () => {
     expect(() => loadProfileFile('name: prod\ndeployment_target: x\n', 'prod'))
-        .toThrow(/which a profile may not set/);
+        .toThrow(/unknown key 'deployment_target'/);
   });
 
   test(

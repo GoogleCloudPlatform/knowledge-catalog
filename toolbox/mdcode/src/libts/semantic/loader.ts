@@ -3042,6 +3042,12 @@ function keysAt(schema: z.ZodType, path: readonly PropertyKey[]): string[] {
       .filter(k => !UNLISTED_KEYS.has(object.shape[k]));
 }
 
+// The keys a Google-flavor model file takes on the object at `path` below its
+// model, such as ['datasets', 0, 'fields', 0] for a field.
+export function modelFileKeysAt(path: readonly PropertyKey[]): string[] {
+  return keysAt(makeDocumentSchema(true, true), ['semantic_model', 0, ...path]);
+}
+
 // Where `path` points in `input.doc`: the innermost named object, as messages
 // name it, and the key below it, such as "'data' of entry 1 of
 // 'custom_extensions'". `spelled` gives a key as the author wrote it: a

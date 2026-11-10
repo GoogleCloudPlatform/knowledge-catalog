@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
@@ -42,9 +42,10 @@ import {YAML_OPTIONS} from './yaml_options';
 // combined single-file form).
 export const DEFAULT_PROFILE = 'default';
 
-// Keys a profile may carry at each level. Everything else is a logical
-// declaration the model owns; setting it in a profile is rejected so swapping a
-// profile can move data but never change what the model means.
+// Keys a profile may carry at each level. A key the model file takes at the
+// same level is a logical declaration the model owns; setting it in a profile
+// is rejected so swapping a profile can move data but never change what the
+// model means. Any other key is unknown.
 export const PROFILE_FILE_KEYS = new Set([
   'name', 'entities', 'relationships', 'metrics_exclude', 'actions',
 ]);
@@ -1150,7 +1151,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
         `under 'entities'`);
   }
   // The profile's own name is checked against the file name below.
-  requireKeys(doc, PROFILE_FILE_KEYS, where, false);
+  requireKeys(doc, PROFILE_FILE_KEYS, where, [], false);
   if (doc.name !== profileName) {
     throw new SemanticModelError(
         `${where} declares name '${doc.name ?? ''}', which does not match ` +
@@ -1162,7 +1163,9 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
                   .map(e => profileEntity(e, where)),
     relationships:
         listOf(doc.relationships, `${where} 'relationships'`).map(r => {
-          requireKeys(r, PROFILE_RELATIONSHIP_KEYS, `${where}: relationship`);
+          requireKeys(
+              r, PROFILE_RELATIONSHIP_KEYS, `${where}: relationship`,
+              ['relationships', 0]);
           const at = `${where}: relationship '${r.name}'`;
           // An empty list is rejected as a load rejects one, so an empty side
           // here can only mean a side the profile leaves out.
@@ -1195,7 +1198,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
     // Actions are out of preview scope and gain no new checks, so when a
     // profile lists an action twice, the last entry wins.
     spec.actions = listOf(doc.actions, `${where} 'actions'`).map(a => {
-      requireKeys(a, PROFILE_ACTION_KEYS, `${where}: action`);
+      requireKeys(a, PROFILE_ACTION_KEYS, `${where}: action`, ['actions', 0]);
       if (a.executor === undefined) return {name: a.name};
       return {
         name: a.name,
@@ -1213,7 +1216,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
 }
 
 function profileEntity(e: any, where: string): ProfileEntityBinding {
-  requireKeys(e, PROFILE_ENTITY_KEYS, `${where}: entity`);
+  requireKeys(e, PROFILE_ENTITY_KEYS, `${where}: entity`, ['datasets', 0]);
   const at = `${where}: entity '${e.name}'`;
   const binding: ProfileEntityBinding = {name: e.name};
   if (e.source !== undefined) {
@@ -1231,7 +1234,8 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
   }
   if (e.fields !== undefined) {
     binding.fields = listOf(e.fields, `${at} 'fields'`).map(f => {
-      requireKeys(f, PROFILE_FIELD_KEYS, `${at}: field`);
+      requireKeys(
+          f, PROFILE_FIELD_KEYS, `${at}: field`, ['datasets', 0, 'fields', 0]);
       const fat = `${at}: field '${f.name}'`;
       return f.expression === undefined ?
           {name: f.name} :
@@ -1250,21 +1254,25 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
 }
 
 // Checks that `obj` is a mapping carrying only `allowed` keys and, unless
-// `named` is false, a string `name`.
+// `named` is false, a string `name`. `level` is the path of the same level in
+// a model file, below its model (see modelFileKeysAt).
 function requireKeys(
-    obj: any, allowed: Set<string>, where: string, named = true): void {
+    obj: any, allowed: Set<string>, where: string,
+    level: readonly PropertyKey[], named = true): void {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     throw new SemanticModelError(`${where} is not a mapping`);
   }
   if (named && typeof obj.name !== 'string') {
     throw new SemanticModelError(`${where} has no 'name'`);
   }
+  const at = named && obj.name !== undefined ? `${where} '${obj.name}'` : where;
   for (const k of Object.keys(obj)) {
-    if (!allowed.has(k)) {
-      throw new SemanticModelError(notAllowed(
-          named && obj.name !== undefined ? `${where} '${obj.name}'` : where,
-          k));
-    }
+    if (allowed.has(k)) continue;
+    throw new SemanticModelError(
+        modelFileKeysAt(level).includes(k) ?
+            notAllowed(at, k) :
+            `${at}: unknown key '${k}'; it takes ${
+                listed([...allowed].map(a => `'${a}'`))}`);
   }
 }
 
