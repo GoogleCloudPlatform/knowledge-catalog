@@ -1783,6 +1783,25 @@ ${metricBlock}`).models[0];
       }
     });
 
+    test('rejects a metric that reads another metric, qualified or not, and accepts it over that metric\'s fields', () => {
+      const withAverage = (expression: string) => loaded(model({
+        entities: [orders()],
+        metrics: [
+          {name: 'revenue', expression: 'SUM(orders.net_amount)', entity: 'orders'},
+          {name: 'avg_order', expression, entity: 'orders', authoredEntity: 'orders'},
+        ],
+      }));
+      for (const expression of ['revenue / COUNT(*)', 'orders.revenue / COUNT(*)']) {
+        expect(validatePushRequirements([withAverage(expression)])).toEqual([
+          "metric 'avg_order' in model 'm' (doc): 'revenue' is a metric, and a metric over " +
+          'other metrics is not supported in this version; write the expression over the ' +
+          "fields that 'revenue' reads.",
+        ]);
+      }
+      expect(validatePushRequirements([withAverage('SUM(orders.net_amount) / COUNT(*)')]))
+          .toEqual([]);
+    });
+
     test('rejects a dotted reference whose qualifier is not a declared entity or differs in case without emitting Rule 1', () => {
       for (const [expr, qual] of [
              ['shipping_address.city', 'shipping_address'],

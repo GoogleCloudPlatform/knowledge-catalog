@@ -1853,8 +1853,25 @@ export function validateExpressionReferences(
           impliedDialect));
     }
 
+    const metricNames = new Set((model.metrics ?? []).map(m => m.name));
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
+      // Whether `name`, read where a field belongs, names a metric of the
+      // model. A metric cannot read another metric, so each such metric gets
+      // one message, with no advice on how to name a field.
+      const metricsRead = new Set<string>();
+      const readsMetric = (name: string) => {
+        if (!metricNames.has(name)) return false;
+        if (!metricsRead.has(name)) {
+          metricsRead.add(name);
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}): '${name}' is a metric, and a metric over ` +
+              `other metrics is not supported in this version; write the ` +
+              `expression over the fields that '${name}' reads.`);
+        }
+        return true;
+      };
       const sources = expressionSources(metric);
       // A text with no SQL has nothing to read, so it gets no warning.
       const readable =
@@ -1923,7 +1940,7 @@ export function validateExpressionReferences(
         for (const entityName of reached) {
           const knownFields = fieldsByEntity.get(entityName)!;
           for (const ref of fieldsReadOn(allColumns, entityName)) {
-            if (!knownFields.has(ref)) {
+            if (!knownFields.has(ref) && !readsMetric(ref)) {
               errors.push(
                   `metric '${metric.name}' in model '${model.name}' (${
                       document}): expression references '${entityName}.${
@@ -1946,6 +1963,7 @@ export function validateExpressionReferences(
             col.name;
         if (seenUnqualified.has(token)) continue;
         seenUnqualified.add(token);
+        if (readsMetric(col.name)) continue;
         if (col.qualifier === undefined) {
           errors.push(
               `metric '${metric.name}' in model '${model.name}' (${
