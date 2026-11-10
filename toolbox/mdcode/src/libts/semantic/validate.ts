@@ -341,7 +341,7 @@ function measurePlacementErrors(
           `'BIGQUERY' or 'ANSI_SQL' expression${
               importTranspiles(metric, 'BIGQUERY', model) ?
                   `, or add one with '${
-                      importCommand('--transpile', model.version)}'` :
+                      importCommand('--transpile', model)}'` :
                   ''}.`);
       continue;
     }

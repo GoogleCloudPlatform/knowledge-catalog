@@ -49,6 +49,9 @@ export interface LoadOptions {
   // when it is not the document's own. kcmd import uses the word of the
   // flavor it writes.
   messageFlavor?: FormatVersion;
+  // Set when kcmd import checks what it writes for a file another product
+  // wrote. The load sets SemanticModel.thirdPartyImport on each model.
+  thirdPartyImport?: boolean;
 }
 
 export interface LoadResult {
@@ -2325,6 +2328,7 @@ function convertModel(
   // (e.g. a pull) can return the model in that same flavor.
   const model: SemanticModel =
       {name: m.name, version, entities, relationships, metrics};
+  if (opts.thirdPartyImport) model.thirdPartyImport = true;
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
   if (deployments.length) model.deployments = deployments;
@@ -3983,7 +3987,10 @@ export function parseSource(
     // a model file's bare names.
     const viaImport = importVersion ?
         `\nOr run '${
-            importCommand('--source-prefix <prefix>', importVersion)}' to ` +
+            importCommand('--source-prefix <prefix>', {
+              version: importVersion,
+              thirdPartyImport: opts.thirdPartyImport,
+            })}' to ` +
             `complete each bare table name from the database or Knowledge ` +
             `Catalog entry group that <prefix> names.` :
         '';

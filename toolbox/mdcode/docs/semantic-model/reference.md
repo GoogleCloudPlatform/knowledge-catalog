@@ -90,11 +90,13 @@ kcmd import <file> --flavor <ossie|google>
 Imports a semantic model file into the flavor `--flavor` names. Import changes
 a value only when that flavor rejects it. When the file's own flavor rejects
 the value too, the change is a repair. A file another product wrote is
-repaired, and each repair is reported as a warning. Renaming a dialect such as
-`GOOGLE_SQL` or `bigquery` is a repair. In a vanilla file written as vanilla,
-recasing a datatype such as `integer` is a repair, and so is writing a string
-`expression` as an `ANSI_SQL` entry under `dialects`. The other changes convert
-the file between flavors and are not reported. A conversion moves each value
+repaired, and each repair is reported as a warning. Under
+`--input first-party`, each repair is an error that says what the file needs.
+Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a
+vanilla file written as vanilla, recasing a datatype such as `integer` is a
+repair, and so is writing a string `expression` as an `ANSI_SQL` entry under
+`dialects`. The other changes convert the file between flavors and are not
+reported. A conversion moves each value
 the two flavors place differently, such as a dataset's `extends`, between its
 own key and a `GOOGLE` block, as written. A conversion to vanilla drops an
 empty `extends`, `deployments` or relationship `description` instead of writing
@@ -121,7 +123,9 @@ their warnings as warnings in either mode. They include push's warnings about th
 Catalog entries, about the fields each deployment leaves out and about each
 graph. Import leaves out push's notes. A profile file that does not parse is
 always an error. Under `--input first-party`, a message from these checks names
-the input file that holds what it reports. The checks that read a service stay
+the input file that holds what it reports. Without it, a message that suggests
+a `kcmd import` command leaves out `--input first-party`, so the command
+imports the same input. The checks that read a service stay
 with push, such as whether each source names a table Knowledge Catalog knows
 about. For its checks, import reads only each table's dialect, as push does: a
 Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner

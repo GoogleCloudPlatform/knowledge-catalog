@@ -1404,15 +1404,20 @@ export function fieldsOnTables(model: SemanticModel, withUnread = false):
   });
 }
 
-// The import command, ending in `flags`, that keeps a model file of `version`
+// The import command, ending in `flags`, that keeps the model file of `model`
 // in its own flavor: `--flavor google` for a Google model, `--flavor ossie` for
 // a vanilla one, and both flavors when no model is known. Push reads only files
-// written for kcmd, so `--input first-party` fits each of them.
-export function importCommand(flags: string, version?: string): string {
-  const flavor = version === GOOGLE_VERSION ? 'google' :
-      version === OSSIE_VERSION             ? 'ossie' :
-                                              '<ossie|google>';
-  return `kcmd import <file> --input first-party --flavor ${flavor} ${flags}`;
+// written for kcmd, so the command takes `--input first-party`. A third-party
+// import names the command for the file it imports instead, which reads that
+// file as another product's.
+export function importCommand(
+    flags: string,
+    model?: Pick<SemanticModel, 'version'|'thirdPartyImport'>): string {
+  const flavor = model?.version === GOOGLE_VERSION ? 'google' :
+      model?.version === OSSIE_VERSION             ? 'ossie' :
+                                                     '<ossie|google>';
+  const input = model?.thirdPartyImport ? '' : ' --input first-party';
+  return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
@@ -1429,10 +1434,11 @@ export function importTranspiles(
 // `model`, or ''.
 export function importHint(
     f: Parameters<typeof textsFor>[0], dialect: string,
-    model: Pick<SemanticModel, 'entities'|'version'>): string {
+    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>):
+    string {
   if (!importTranspiles(f, dialect, model)) return '';
   return `; give it one, or add one with '${
-      importCommand('--transpile', model.version)}'`;
+      importCommand('--transpile', model)}'`;
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -1853,7 +1859,7 @@ export function validateProfileCompleteness(
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
           const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
               ` add one with '${
-                  importCommand('--transpile', baseModel.version)}',` :
+                  importCommand('--transpile', baseModel)}',` :
               '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +

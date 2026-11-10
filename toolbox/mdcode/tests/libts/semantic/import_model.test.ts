@@ -196,17 +196,6 @@ describe('conversion, strict mode, and translation', () => {
       {}, 'blank'
     ],
     [
-      'dialect alias in strict mode',
-      googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'),
-      {strict: true},
-      `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`
-    ],
-    [
-      'vanilla datatype in another casing in strict mode',
-      ossieDoc({extra: '            datatype: integer\n'}), {strict: true},
-      `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
-    ],
-    [
       'vanilla datatype in another casing converted to Google in strict mode',
       ossieDoc({extra: '            datatype: integer\n'}), {flavor: 'google' as const, strict: true},
       `Semantic model load error: field 'orders.order_id': datatype 'integer' is not valid in a '0.2.0.dev0' document; expected exactly one of String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque.`
@@ -233,16 +222,6 @@ describe('conversion, strict mode, and translation', () => {
       {strict: true, sourcePrefix: `${ALLOYDB_DB}/schemas/Sales`},
       `entity 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
     ],
-    [
-      'lowercase Opaque in strict mode',
-      ossieDoc({extra: '            datatype: opaque\n'}), {strict: true},
-      `field 'orders.order_id': removed datatype 'opaque'.`
-    ],
-    [
-      'a vanilla string expression in strict mode',
-      ossieDoc({fieldExpr: '"order_id"'}), {strict: true},
-      `field 'orders.order_id': wrote the string expression as an 'ANSI_SQL' dialects entry.`
-    ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
 
@@ -250,6 +229,51 @@ describe('conversion, strict mode, and translation', () => {
     expect(res.files).toEqual([]);
     expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
   });
+
+  // [what the input holds, the input, the flavor, the error under --input
+  // first-party, which says what the input needs]. Without --input
+  // first-party, import makes that change, and the file it writes draws no
+  // such error.
+  test.each([
+    ['a dialect alias', googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'), 'google',
+     "field 'orders.order_id': write dialect 'GOOGLE_SQL' as 'BIGQUERY'."],
+    ['an unsupported dialect',
+     googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: order_id}, {dialect: MDX, expression: x}]}'}),
+     'google', "field 'orders.order_id': remove the entry for unsupported dialect 'MDX'."],
+    ['a field with no supported dialect', googleDoc({fieldExpr: '{dialects: [{dialect: MDX, expression: x}]}'}),
+     'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
+     "remove 'expression' to leave the field unbound."],
+    ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
+     "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
+    ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
+     "field 'orders.order_id': remove datatype 'opaque'."],
+    ['a vanilla string expression', ossieDoc({fieldExpr: '"order_id"'}), 'ossie',
+     "field 'orders.order_id': write the string expression as an 'ANSI_SQL' dialects entry."],
+    ['a query-valued source', googleDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
+     "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table, or remove " +
+     "'source' to leave the entity unbound."],
+    ['an unanchored metric',
+     googleDoc({extra: joined('oc', "    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id) + COUNT(customers.order_id)'}\n")}),
+     'google',
+     "metric 'm': its expression reaches multiple entities (orders, customers); set 'entity' on " +
+     'the metric, or scope its expression to one entity.'],
+    ['a second model', `${googleDoc()}  - name: other\n    entities:\n      - name: x\n        source: ${BQ_TABLE}\n`,
+     'google',
+     "Move extra model 'other' from 'semantic_model' into its own file; the format allows one " +
+     'model per document.'],
+    ['a vanilla relationship description', ossieDoc({extra: joined('oc', '        description: d\n')}), 'ossie',
+     "relationship 'oc': move 'description' into a GOOGLE custom_extensions block for '0.2.0.dev0'."],
+  ] as Array<[string, string, 'ossie'|'google', string]>)(
+      'refuses %s under --input first-party with what the input needs',
+      async (_, input, flavor, needed) => {
+        const strict = await importSemanticModelYaml(input, {flavor, strict: true});
+        expect(strict.files).toEqual([]);
+        expect(strict.errors).toContain(needed);
+        const repaired = await importSemanticModelYaml(input, {flavor});
+        expect((await importSemanticModelYaml(repaired.files[0].content, {flavor, strict: true}))
+                   .errors).not.toContain(needed);
+      });
 
   test(
       'returns a Google-flavor model unchanged as a third-party file, and runs transpileModel in strict mode when requested',
@@ -709,6 +733,22 @@ describe('profile checks', () => {
         expect(res.errors).toEqual(errors);
         expect(res.warnings).toEqual(warnings);
       });
+
+  // --input first-party refuses the datatype this input needs repaired, so
+  // the hint names the command that imports it as another product's file.
+  test('a third-party import hints at the command that imports the same file, which adds the text', async () => {
+    const input = ossieDoc({
+      fieldExpr: '{dialects: [{dialect: SNOWFLAKE, expression: order_id}]}',
+      extra: '            datatype: integer\n',
+    });
+    expect((await importSemanticModelYaml(input, {flavor: 'ossie'})).warnings).toContain(
+        "field 'orders.order_id' in model 'retail' (retail) has no expression for BIGQUERY or " +
+        "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one, " +
+        "or add one with 'kcmd import <file> --flavor ossie --transpile'.");
+    const followed = await importSemanticModelYaml(input, {flavor: 'ossie', transpile: true});
+    expect(followed.ok).toBe(true);
+    expect(followed.warnings.join('\n')).not.toContain('has no expression');
+  });
 
   // Push's lookup, reading each Cloud SQL or third-party entry as `entry` and
   // each Spanner database's dialect as `spanner`. Without them, each read gets
@@ -1386,7 +1426,8 @@ describe('sources', () => {
   });
 
   const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
-  // [what, the input, the report, the line import writes]
+  // [what, the input, the report, the line import writes]. In strict mode the
+  // report says what the input needs.
   test.each([
     ['a source', googleDoc({source: `" ${BQ_TABLE}"`}),
      `entity 'orders': removed the whitespace around source '${BQ_TABLE}'.`,
@@ -1401,7 +1442,7 @@ describe('sources', () => {
        expect(res.warnings).toEqual([report]);
        expect(res.files[0].content).toContain(written);
        expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true}))
-                  .errors).toEqual([report]);
+                  .errors).toEqual([report.replace(': removed ', ': remove ')]);
      });
 
   test(
@@ -1693,7 +1734,8 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
       extra: joined('oc', `        ${line.replace('%s', 'd'.repeat(2005))}\n`),
     }), {strict});
 
-    expect([...res.warnings, ...res.errors]).toEqual([
+    expect([...res.warnings, ...res.errors]).toEqual([strict ?
+      "relationship 'oc': 'description' has 2005 characters; shorten it to 2000 or fewer." :
       `relationship 'oc': truncated 'description' from 2005 to 2000 characters.`,
     ]);
     expect(res.files.map(f => loadModels(f.content).models[0].relationships[0].description))
