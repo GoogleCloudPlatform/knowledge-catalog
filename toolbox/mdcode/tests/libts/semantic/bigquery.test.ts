@@ -2515,6 +2515,31 @@ describe('a metric operand that names a field', () => {
     expect(warnings).toEqual([]);
   });
 
+  // A measure that named a column of the table would be ambiguous: "Name
+  // total_input is ambiguous because it exists as both a column and a graph
+  // property".
+  test('a synthesized operand property takes no name of a column the table is known to have', () => {
+    const net: Field = {name: 'net', expression: 'gross - fee'};
+    const total: Metric = {name: 'total', expression: 'SUM(purchase.net)'};
+    // A field reads the column.
+    const read = generatePropertyGraph(
+        purchaseWith([net, {name: 'raw', expression: 'total_input'}], [total]),
+        GEN_OPTS);
+    expect(read.ddl).toContain(
+        '      total_input AS raw,\n' +
+        '      gross - fee AS total_input_2,\n' +
+        '      MEASURE(SUM(total_input_2)) AS total\n');
+    expect(read.warnings).toEqual([]);
+    // The key names the column.
+    const model = purchaseWith([net], [total]);
+    model.entities[0].keys = ['purchase_id', 'total_input'];
+    const keyed = generatePropertyGraph(model, GEN_OPTS);
+    expect(keyed.ddl).toContain(
+        '      gross - fee AS total_input_2,\n' +
+        '      MEASURE(SUM(total_input_2)) AS total\n');
+    expect(keyed.warnings).toEqual([]);
+  });
+
   test('a measure over a field bound to TRUE, FALSE or NULL aggregates that value', () => {
     for (const value of ['TRUE', 'FALSE', 'NULL']) {
       const {ddl, warnings} = generatePropertyGraph(

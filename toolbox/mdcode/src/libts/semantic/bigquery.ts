@@ -22,7 +22,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -111,6 +111,10 @@ interface MeasureLowering {
   // Each column a field reads whole under its own name, lowercased -> that
   // field. These are the only fields a measure names (see newLowering).
   byColumn: ReadonlyMap<string, string>;
+  // The columns the table is known to have, lowercased: its key columns and
+  // those the fields' SQL reads. A synthesized property name takes none of
+  // them, since a measure that named it would also name the column.
+  columns: ReadonlySet<string>;
   operandToName: Map<string, string>;  // an operand's SQL on the node -> the
                                        // property exposing it
 }
@@ -132,11 +136,18 @@ function newLowering(
     graphNames: Set<string>): MeasureLowering {
   const taken = new Set<string>();
   const byColumn = new Map<string, string>();
+  const columns = new Set(
+      nodeKey(entity).map(k => k.replace(/^`(.*)`$/, '$1').toLowerCase()));
   for (const f of entity.fields) {
     taken.add(f.name.toLowerCase());
     const read = input.renderedFieldSql(entity, f);
-    const column =
-        'sql' in read ? loneColumn(read.sql)?.toLowerCase() : undefined;
+    if (!('sql' in read)) continue;
+    // The SQL is local to the table, so `a.b` reads the column `a`.
+    const sql = quoteColumnIfReserved(read.sql);
+    for (const c of columnReferences(sql, 'BIGQUERY') ?? []) {
+      columns.add((c.qualifier ?? c.name).toLowerCase());
+    }
+    const column = loneColumn(read.sql)?.toLowerCase();
     if (column === f.name.toLowerCase() && !byColumn.has(column)) {
       byColumn.set(column, f.name);
     }
@@ -147,6 +158,7 @@ function newLowering(
     taken,
     graphNames,
     byColumn,
+    columns,
     operandToName: new Map()
   };
 }
@@ -412,7 +424,9 @@ function exposeOperand(
     name = sql;
     lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
-    name = uniqueName(`${metricName}_input`, isFree);
+    name = uniqueName(
+        `${metricName}_input`,
+        n => isFree(n) && !lowering.columns.has(n.toLowerCase()));
     // Only a column is quoted: a keyword such as TRUE stays a keyword.
     lowering.derivedProperties.push(
         `${read.column ? quoteIfReserved(sql) : sql} AS ${name}`);
