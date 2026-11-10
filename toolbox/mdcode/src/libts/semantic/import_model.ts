@@ -2008,7 +2008,9 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load,
+          // A profile's warnings come from a second load of the model file,
+          // which names the same import command as the first.
+          load: {...load, thirdPartyImport},
         },
         warn);
     // Push prints each error once.

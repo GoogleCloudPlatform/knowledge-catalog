@@ -746,9 +746,7 @@ warning, and `--force-remove` deletes it.
 
 `push` and `--validate-only` run the same checks, apart from the Knowledge
 Catalog checks on the entry group, which only a push without `--validate-only`
-runs. [push](#push) says when each check runs. A load warning about a field or
-metric of the model file does not print beside an error about it, and prints
-once the error is fixed.
+runs. [push](#push) says when each check runs.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:

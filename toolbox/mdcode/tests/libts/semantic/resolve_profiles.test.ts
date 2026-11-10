@@ -3831,9 +3831,8 @@ describe('applyProfile options', () => {
   });
 
   test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
-    // A Spanner table runs the Spanner-only text. On a BigQuery table, the
-    // profile check reports it, so it gives no warning. Both read a
-    // double-quoted ANSI_SQL token as text.
+    // A Spanner table runs the Spanner-only text, and a BigQuery table cannot.
+    // Both read a double-quoted ANSI_SQL token as text.
     const quoted = base();
     quoted.metrics!.push(
         {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
@@ -3848,14 +3847,16 @@ describe('applyProfile options', () => {
         `as '<entity>.<field>'`);
     const onBigQuery: string[] = [];
     applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
-    expect(onBigQuery).toEqual([]);
+    expect(onBigQuery.join('\n')).toContain(
+        "field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect");
     // A warning the model gave already is the model's, not the profile's.
     const withOwn = base();
-    withOwn.metrics!.push({name: 'legacy', entity: 'orders',
-                           dialects: [{dialect: 'SPANNER', expression: 'SUM(orders.id)'}]});
+    withOwn.entities[0].fields.push(
+        {name: 'legacy', dialects: [{dialect: 'SPANNER', expression: 'x'}]} as any);
     const own: string[] = [];
     applyProfile(withOwn, rebind(BQ('orders2')), {warnings: own});
-    expect(own).toEqual([]);
+    expect(own.join('\n')).toContain("field 'orders.amount'");
+    expect(own.join('\n')).not.toContain("field 'orders.legacy'");
   });
 
   test('a metric the profile excludes gives no warning under it', () => {
@@ -4823,8 +4824,7 @@ entities:
 `;
     expect(fromApply(replacesAll)).toEqual([]);
     // An ANSI_SQL field left as the model file binds it runs on every table,
-    // and the profile check reports a profile text with no BIGQUERY or
-    // ANSI_SQL entry, so neither warns.
+    // and a profile text with no BIGQUERY or ANSI_SQL entry warns, prefixed.
     const keepsOne = `name: prod
 entities:
   - name: orders
@@ -4836,7 +4836,12 @@ entities:
           dialects:
             - {dialect: SPANNER, expression: t}
 `;
-    expect(fromApply(keepsOne)).toEqual([]);
+    expect(fromApply(keepsOne)).toEqual([
+      '[sales] field \'orders.total\': no \'BIGQUERY\' or \'ANSI_SQL\' ' +
+          'dialect, so a BIGQUERY table cannot run its \'SPANNER\' expression' +
+          '; give it one, or add one with \'kcmd import <file> --input ' +
+          'first-party --flavor google --transpile\'',
+    ]);
     // A field the profile excludes takes its warning with it.
     const excludes = `name: prod
 entities:

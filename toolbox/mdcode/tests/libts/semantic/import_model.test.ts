@@ -312,11 +312,12 @@ describe('conversion, strict mode, and translation', () => {
 
         expect(offRes.ok).toBe(true);
         expect(offRes.files[0].content).toBe(raw);
-        // Without translation, the BigQuery table's double-quoted ANSI_SQL
-        // metric warns, push cannot read the metric, and push's check reports
-        // the vendor field.
+        // Without translation, the BigQuery table's vendor field and its
+        // double-quoted ANSI_SQL metric each warn, and push cannot read the
+        // metric.
         expect(offRes.warnings.map(w => w.split(/:| in /)[0])).toEqual([
-          "metric 'total_orders'", "metric 'total_orders'", "field 'orders.order_id'",
+          "field 'orders.order_id'", "metric 'total_orders'", "metric 'total_orders'",
+          "field 'orders.order_id'",
         ]);
         // On a Spanner table whose dialect no lookup read, the vendor field
         // warns and the metric's double-quoted names do not.
@@ -755,7 +756,9 @@ describe('profile checks', () => {
      ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
       "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one, or " +
       "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
-     []],
+     ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot " +
+      "run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor google --transpile'"]],
     ['warns about a model field with no text for a MySQL table read from its name',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'), MYSQL('orders')), [],
      [], ["field 'orders.amount': no 'MYSQL' or 'ANSI_SQL' dialect, so the MYSQL table of " +

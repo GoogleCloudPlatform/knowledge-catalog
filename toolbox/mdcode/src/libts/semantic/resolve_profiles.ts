@@ -441,17 +441,19 @@ export function loadProfileFile(
 }
 
 // The source dialects a command looked up before it loads
-// (LoadOptions.sourceDialects). `sourceDatabases` holds the database each
-// third-party table's entry names, by entry name, for the one-database rule.
-// With `readWithoutDialect`, push's checks of which fields and entities the
-// expressions of a model file or a profile read parse an ANSI_SQL text as
-// generic SQL when no lookup read its tables' dialect, and leave out each name
-// whose reading depends on the dialect (see columnsWithoutDialect). Without
-// it, they skip such a text.
-export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&{
-  sourceDatabases?: ReadonlyMap<string, string>;
-  readWithoutDialect?: boolean;
-};
+// (LoadOptions.sourceDialects), and whether kcmd import checks a file another
+// product wrote (LoadOptions.thirdPartyImport). `sourceDatabases` holds the
+// database each third-party table's entry names, by entry name, for the
+// one-database rule. With `readWithoutDialect`, push's checks of which fields
+// and entities the expressions of a model file or a profile read parse an
+// ANSI_SQL text as generic SQL when no lookup read its tables' dialect, and
+// leave out each name whose reading depends on the dialect (see
+// columnsWithoutDialect). Without it, they skip such a text.
+export type DialectLoad =
+    Pick<LoadOptions, 'sourceDialects'|'thirdPartyImport'>&{
+      sourceDatabases?: ReadonlyMap<string, string>;
+      readWithoutDialect?: boolean;
+    };
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {

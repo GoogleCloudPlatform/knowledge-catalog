@@ -3091,8 +3091,12 @@ semantic_model:
 `);
     const kcSpy = spyOn(kc, 'preflightKnowledgeCatalog');
     expect(await push({validateOnly: true})).toBe(1);
-    // The error says what to fix, so the metric's warning waits for it.
-    expect(prints(console.warn)).toEqual([]);
+    expect(prints(console.warn)).toEqual([
+      "Warning: [commerce] metric 'positive_spend': no 'BIGQUERY' or " +
+      "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' " +
+      "expression; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor google --transpile'",
+    ]);
     expect(prints(console.error).join('\n')).toContain(
         "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
         "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +

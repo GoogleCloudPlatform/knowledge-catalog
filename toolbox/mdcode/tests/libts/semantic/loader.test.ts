@@ -98,7 +98,9 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(models[0].metrics[0].importedDialect).toBe('SNOWFLAKE');
     expect(warnings).toContain(
         "metric 'mx': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY " +
-        "table cannot run its 'SNOWFLAKE' expression");
+        "table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
+        "one with 'kcmd import <file> --input first-party --flavor ossie " +
+        "--transpile'");
   });
 
   test('an explicit dialect option overrides the default preference', () => {
@@ -197,7 +199,8 @@ describe('expression warnings judge each expression on the table that runs it', 
   const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run ` +
-      `its '${dialect}' expression`);
+      `its '${dialect}' expression; give it one, or add one with 'kcmd ` +
+      `import <file> --input first-party --flavor google --transpile'`);
   const readsX = (database: string, token = 'x') =>
       `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
   // The double-quote warning on a table of `dialect`, in `database`, about
@@ -1175,7 +1178,9 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
 
     expect(warnings).toContain(
         "field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' " +
-        "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression");
+        "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression" +
+        "; give it one, or add one with 'kcmd import <file> --input " +
+        "first-party --flavor ossie --transpile'");
   });
 
   test('lineitem_databricks_ext.yaml: unique_keys and custom_extensions', () => {

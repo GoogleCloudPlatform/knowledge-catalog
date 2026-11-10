@@ -191,22 +191,49 @@ describe('kcmd import', () => {
     ['in place in the workspace', path.join(GROUP, 'retail.yaml'), undefined, DESCRIBED, 'first-party'],
     ['over the file --out names', 'retail.yaml', 'retail.yaml', DESCRIBED, 'first-party'],
     // A first-party import of this file stops at the field the translator
-    // refuses.
+    // refuses. The metric draws the hint from the load too.
     ['in place, writing no GOOGLE block,', path.join(GROUP, 'retail.yaml'), undefined,
      '          - name: custom_val\n            expression: {dialects: [{dialect: SNOWFLAKE, ' +
-         "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n",
+         "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n    metrics:\n" +
+         "      - {name: n, expression: {dialects: [{dialect: SNOWFLAKE, expression: 'COUNT(orders.order_id)'}]}}\n",
      undefined],
   ])('a third-party import %s hints at a command that reads the written file', async (_, input, out, rest, mode) => {
     workspace();
     write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') + rest);
     expect(await importModel(input, {flavor: 'ossie', out})).toBe(0);
-    expect(warnings).toContainEqual(expect.stringContaining(`add one with 'kcmd import <file>${
-        mode ? ' --input first-party' : ''} --flavor ossie --transpile'`));
+    // The load warns about each text import can translate, and every warning
+    // that names a command names the same one as push's check.
+    const hint = (firstParty: unknown) => `add one with 'kcmd import <file>${
+        firstParty ? ' --input first-party' : ''} --flavor ossie --transpile'`;
+    const translated = ["field 'orders.order_id'", ...rest.includes('metrics:') ? ["metric 'n'"] : []];
+    for (const name of translated) {
+      expect(warnings).toContain(`Warning: ${name}: no 'BIGQUERY' or 'ANSI_SQL' dialect, so a ` +
+          `BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or ${hint(mode)}`);
+    }
+    for (const w of warnings.filter(w => w.includes('kcmd import'))) expect(w).toContain(hint(mode));
+    expect(warnings.join('\n')).not.toContain(hint(!mode));
     warnings = [];
     expect(await importModel(input, {flavor: 'ossie', input: mode, transpile: true, out}))
         .toBe(0);
     expect(errors).toEqual([]);
+    for (const name of translated) expect(warnings.join('\n')).not.toContain(`${name}: no 'BIGQUERY'`);
     expect(warnings.join('\n')).not.toContain("field 'orders.order_id' in model");
+  });
+
+  // A profile that passes its checks prints its load warnings, which name the
+  // same command as the model file's.
+  test('a third-party import of a Google model and its profile file names one command', async () => {
+    write('in/retail.yaml', model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"')
+        .replace('datasets:', 'entities:') +
+        "          - name: flag\n            expression: {dialects: [{dialect: SNOWFLAKE, expression: 'IFF(TRUE, 1, 0)'}]}\n");
+    write('in/retail.profile.prod.yaml',
+          `name: prod\nentities:\n  - name: orders\n    source: ${PREFIX}/tables/orders_prod\n` +
+          '    primary_key: [order_id]\n    fields:\n      - name: order_id\n' +
+          '        expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}\n');
+    expect(await importModel('in/retail.yaml', {flavor: 'google', out: 'out'})).toBe(0);
+    expect(warnings).toContainEqual(
+        expect.stringContaining("add one with 'kcmd import <file> --flavor google --transpile'"));
+    expect(warnings.join('\n')).not.toContain('--input first-party');
   });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');

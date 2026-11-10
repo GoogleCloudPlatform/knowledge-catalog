@@ -38,7 +38,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, uncoveredWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1132,40 +1132,26 @@ async function pushInTwoPhases(
   return 0;
 }
 
-// What checkBeforeWrites returns.
-type CheckedPush = {
-  plans: DeploymentPlan[]; kcModels: LoadedModel[]; leftOut: string[];
-  overviews?: Map<string, OverviewSidecar>;
-}|{errors: LocalCheckError[]};
-
 // The local checks of a two-phase push, which call no service: it stops at
 // the first check that fails, and returns each selected deployment's plan, the
 // models the catalog receives, the overview sidecars it writes and what
-// pruning leaves out, or the errors that stop it. It prints each warning once
-// when the checks end, less those an error makes redundant (see
-// uncoveredWarnings). With `quiet`, for the `kcmd profiles` report, it prints
-// no warning.
+// pruning leaves out, or the errors that stop it. With
+// `quiet`, for the `kcmd profiles` report, it prints no warning.
 async function checkBeforeWrites(
-    options: PushOptions, scope: TwoPhaseScope,
-    quiet = false): Promise<CheckedPush> {
-  const warnings: string[] = [];
-  const checked = await runLocalChecks(options, scope, w => warnings.push(w));
-  if (!quiet) {
-    const errors = 'errors' in checked ? checked.errors.map(e => e.error) : [];
-    for (const w of uncoveredWarnings([...new Set(warnings)], errors)) {
-      console.warn(`Warning: ${w}`);
-    }
-  }
-  return checked;
-}
-
-// The checks checkBeforeWrites runs, giving each warning to `warn`.
-async function runLocalChecks(
-    options: PushOptions, scope: TwoPhaseScope,
-    warn: (w: string) => void): Promise<CheckedPush> {
+    options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
+  plans: DeploymentPlan[]; kcModels: LoadedModel[]; leftOut: string[];
+  overviews?: Map<string, OverviewSidecar>;
+}|{errors: LocalCheckError[]}> {
   const {layout, source, docs, profileDocs, load} = scope;
   const stop = (errors: LocalCheckError[]) => ({errors});
   const fail = (...errors: string[]) => stop(errors.map(error => ({error})));
+  // Prints each warning once.
+  const printed = new Set<string>();
+  const warn = (w: string) => {
+    if (quiet || printed.has(w)) return;
+    printed.add(w);
+    console.warn(`Warning: ${w}`);
+  };
 
   let selected: string[]|undefined;
   try {
@@ -2566,9 +2552,7 @@ export async function importModel(
       return !!target && path.resolve(target) === path.resolve(file);
     },
   });
-  for (const w of uncoveredWarnings(result.warnings, result.errors)) {
-    console.warn(`Warning: ${w}`);
-  }
+  for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
 
   // Every target is found before anything is written, so a file that has
