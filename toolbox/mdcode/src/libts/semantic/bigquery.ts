@@ -22,7 +22,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {columnReferences, measureAggregates, measureEntities, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -338,19 +338,12 @@ function placeMetric(
   lowering.taken.add(metric.name);
 
   // The measure is the expression as written with each aggregate rewritten
-  // over its operand's property. measureAggregates leaves no column, and so no
+  // over its operand's property. measureAggregates leaves no field, and so no
   // qualifier, outside the aggregates.
-  const chars = Array.from(written);
-  let body = '';
-  let after = 0;
-  shape.aggregates.forEach((agg, i) => {
-    const propName = exposeOperand(lowering, reads[i], metric.name);
-    body += chars.slice(after, agg.start).join('') +
-        `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${
-                quoteIfReserved(propName)})`;
-    after = agg.end;
-  });
-  body += chars.slice(after).join('');
+  const body = replacedAggregates(
+      written, shape.aggregates,
+      (agg, i) => `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${
+          quoteIfReserved(exposeOperand(lowering, reads[i], metric.name))})`);
 
   const opts = optionsClause(
       elementDescription(metric.description, metric.aiContext),

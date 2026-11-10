@@ -568,6 +568,9 @@ describe('measureAggregates', () => {
        'it reads field \'amount\' outside an aggregate'],
       ['CASE WHEN o.flag THEN SUM(o.a) END',
        'it reads field \'flag\' outside an aggregate'],
+      // A user-defined function named like an aggregate is not one.
+      ['`p.ds.max`(o.amount) + SUM(o.tax)',
+       'it reads field \'amount\' outside an aggregate'],
       ...['SUM(o.a) + SAFE.SUM(o.b)', 'SUM(o.a) + SAFE.SUM(1)'].map(
           (text): [string, string] => [
             text,
@@ -581,6 +584,11 @@ describe('measureAggregates', () => {
         ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
         ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
         ['SUM(o.a) / ds.f(1)', 'ds.f'],
+        // BigQuery reads `ml` and `net` here as datasets, and `safe` as a
+        // project.
+        ['ml.score(SUM(o.amount))', 'ml.score'],
+        ['net.score(SUM(o.amount))', 'net.score'],
+        ['safe.ds.f(SUM(o.amount))', 'safe.ds.f'],
       ].map(([text, udf]): [string, string] => [
         text,
         `it calls user-defined function '${udf}' outside an aggregate, ` +

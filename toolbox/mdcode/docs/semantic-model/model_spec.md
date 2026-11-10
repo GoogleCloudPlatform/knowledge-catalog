@@ -387,10 +387,11 @@ Each rule and its reason:
   `COUNT(*)` on a keyed node also passes. Arithmetic, `CASE`, `IF`,
   `SAFE_DIVIDE` and other scalar functions, and literals, may combine the
   aggregates, as in `SUM(orders.amount) / COUNT(orders.order_id)`. A function
-  around the aggregates MUST be a BigQuery built-in function; a user-defined
-  function may appear only inside an aggregate's operand. No aggregate may hold
-  another, and the metric may hold no window or subquery. A metric that breaks
-  this cannot become a `MEASURE`, and the push is rejected (see
+  around the aggregates MUST be a BigQuery built-in function whose name has no
+  dot, or one with the `SAFE.` prefix; a user-defined function may appear only
+  inside an aggregate's operand. No aggregate may hold another, and the metric
+  may hold no window or subquery. A metric that breaks this cannot become a
+  `MEASURE`, and the push is rejected (see
   [Validation](reference.md#validation)). *Why:* BigQuery allows only these five
   aggregates in a measure, and a measure aggregates the rows of one node table,
   so a field outside an aggregate has no single value. BigQuery accepts a

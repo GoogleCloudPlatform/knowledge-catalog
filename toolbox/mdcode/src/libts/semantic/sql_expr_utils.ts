@@ -359,6 +359,20 @@ export interface MeasureAggregate {
   distinct: boolean;
 }
 
+// `expression` with each of `aggregates` replaced by what `by` gives for it.
+export function replacedAggregates(
+    expression: string, aggregates: MeasureAggregate[],
+    by: (agg: MeasureAggregate, i: number) => string): string {
+  const chars = Array.from(expression);
+  let text = '';
+  let after = 0;
+  aggregates.forEach((agg, i) => {
+    text += chars.slice(after, agg.start).join('') + by(agg, i);
+    after = agg.end;
+  });
+  return text + chars.slice(after).join('');
+}
+
 // The aggregates of `expression`, read in `dialect`, in the order written,
 // when it can be a BigQuery measure; else why it cannot, as a clause such as
 // `it reads field 'amount' outside an aggregate`. It can be one when it holds
@@ -408,15 +422,9 @@ export function measureAggregates(expression: string, dialect: string):
   if (aggregates.length !== calls.length) {
     return {problem: 'the SQL parser cannot tell where each aggregate is'};
   }
-  // The columns read outside the aggregates: those of the text with each
+  // The fields read outside the aggregates: those of the text with each
   // aggregate replaced by a literal.
-  let rest = '';
-  let after = 0;
-  for (const {start, end} of aggregates) {
-    rest += `${chars.slice(after, start).join('')} 0 `;
-    after = end;
-  }
-  rest += chars.slice(after).join('');
+  const rest = replacedAggregates(expression, aggregates, () => ' 0 ');
   const outside = sqlColumns(rest, dialect);
   if (!outside) {
     return {problem: 'the SQL parser cannot read it as one expression'};
@@ -440,18 +448,12 @@ export function measureAggregates(expression: string, dialect: string):
   return {aggregates};
 }
 
-// The namespaces of BigQuery's own functions, as in `SAFE.SAFE_DIVIDE` or
-// `NET.HOST`. A call whose name has a dot and starts with any other names a
-// user-defined function.
-const BUILT_IN_NAMESPACES = [
-  'SAFE', 'NET', 'KEYS', 'AEAD', 'HLL_COUNT', 'KLL_QUANTILES', 'ML', 'AI', 'OBJ'
-];
-
 // The first user-defined function the parser's tree `node` calls, by its
 // dotted name, such as `ds.f`, or undefined when it calls none: a call whose
-// name has a dot and does not start with one of BUILT_IN_NAMESPACES. The
-// parser reads `` `p.ds.f`(…) `` as a function of that name, and `ds.f(…)` or
-// `p.ds.f(…)` as a method call on a column.
+// name has a dot, other than `SAFE.` before one name, as in `SAFE.LOG10`.
+// BigQuery reads `ml.f` or `net.f` as the function of a dataset with that
+// name. The parser reads `` `p.ds.f`(…) `` as a function of that name, and
+// `ds.f(…)` or `p.ds.f(…)` as a method call on a column.
 function userDefinedFunction(node: unknown): string|undefined {
   if (node === null || typeof node !== 'object') return undefined;
   for (const [kind, value] of Object.entries(node)) {
@@ -461,7 +463,7 @@ function userDefinedFunction(node: unknown): string|undefined {
         '';
     const parts = name.split('.');
     if (parts.length > 1 &&
-        !BUILT_IN_NAMESPACES.includes(parts[0].toUpperCase())) {
+        !(parts.length === 2 && parts[0].toUpperCase() === 'SAFE')) {
       return name;
     }
     const inner = userDefinedFunction(value);
@@ -520,11 +522,10 @@ function aggregateProblem(kind: string, call: any): string|undefined {
   return undefined;
 }
 
-// The aggregate calls in the parser's tree `node`, outermost first, each as
-// its node kind and the call, and whether a window or a subquery sits outside
-// them. A call of the name of one of SUPPORTED_AGGREGATES that the parser
-// reads as a plain function, such as `MIN(a, b)` or `SAFE.SUM(a)`, counts as
-// one.
+// The outermost aggregate calls in the parser's tree `node`, each as its node
+// kind and the call, and whether a window or a subquery sits outside them. A
+// call of the name of one of SUPPORTED_AGGREGATES that the parser reads as a
+// plain function, such as `MIN(a, b)` or `SAFE.SUM(a)`, counts as one.
 function aggregateCalls(node: unknown):
     {calls: Array<[string, any]>; windowOrSubquery: boolean} {
   const found = {calls: [] as Array<[string, any]>, windowOrSubquery: false};
@@ -539,7 +540,7 @@ function aggregateCalls(node: unknown):
           isAggregateCall(kind, value) ||
           (kind === 'function' &&
            SUPPORTED_AGGREGATES.includes(
-               String(value.name).split('.').pop()!.toUpperCase()))) {
+               String(value.name).toUpperCase().replace(/^SAFE\./, '')))) {
         found.calls.push([kind, value]);
       } else {
         visit(value);

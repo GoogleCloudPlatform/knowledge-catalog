@@ -742,9 +742,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `MIN` or `MAX`, each over one operand, and the entity it belongs to needs a
   primary key or a unique key. Scalar SQL may combine the aggregates, as in
   `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around them
-  must be a BigQuery built-in function, not a user-defined one. The measure
-  rule skips a metric that has only a vendor text. A
-  BigQuery or Spanner graph cannot hold an entity and a relationship whose
+  must be a BigQuery built-in function whose name has no dot, or one with the
+  `SAFE.` prefix. The measure rule skips a metric that has only a vendor text.
+  A BigQuery or Spanner graph cannot hold an entity and a relationship whose
   names match ignoring case. A BigQuery graph also cannot hold a metric named
   like a field of another entity, ignoring case. BigQuery limits the options
   kcmd writes on each label and property, too. The description holds at most
