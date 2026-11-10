@@ -1021,6 +1021,8 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
+  // The overview sidecars to check, by entry id, in place of those on disk.
+  overviews?: Map<string, OverviewSidecar>;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
@@ -1182,8 +1184,8 @@ async function checkBeforeWrites(
     }
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
-  let overviews: Map<string, OverviewSidecar>|undefined;
-  if (docs.length === 1) {
+  let overviews = scope.overviews;
+  if (docs.length === 1 && !overviews) {
     try {
       for (const {path: sidecar} of layout.overviewSidecarPaths()) {
         const error = checkUtf8(
@@ -1877,9 +1879,16 @@ async function pullSemanticModel(
   }
   const code = writePulledFiles(layout, pulled.name, updated, options, removed);
   const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
+  // Under --dry-run the sidecars on disk are not the ones pull writes, so the
+  // check reads the catalog's.
+  const overviews = options.dryRun ?
+      new Map([...result.overviews ?? []].filter(
+          ([id]) => pulledFileTarget(
+              layout, pulled.name, `${id}.overview.md`, true))) :
+      undefined;
   const refusal = modelFile && await pushRefusal(
       ctx, layout, source, {name: pulled.name, text: modelFile.content},
-      pulledProfileDocs(layout, pulled, updated));
+      pulledProfileDocs(layout, pulled, updated), overviews);
   if (refusal) {
     console.warn(
         `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
@@ -1893,17 +1902,19 @@ async function pullSemanticModel(
 // `profiles`, or undefined when push accepts them. Like push, it loads the SQL
 // parser and runs push's checks that call no service. It reads no table's SQL
 // dialect, since that calls a service, so only push runs the checks that need
-// one. It reads the overview sidecars on disk, as push does.
+// one. It reads the overview sidecars on disk, as push does, unless given
+// `overviews`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
-    profiles: ReturnType<ProfileDocs>): Promise<string|undefined> {
+    profiles: ReturnType<ProfileDocs>,
+    overviews?: Map<string, OverviewSidecar>): Promise<string|undefined> {
   const parserError = await sqlParserError();
   if (parserError) return parserError;
   const docs = [doc];
   const profileDocs = () => profiles;
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load: {}}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load: {}, overviews}, true);
   return 'errors' in checked ? checked.errors[0]?.error : undefined;
 }
 

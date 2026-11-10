@@ -1971,7 +1971,11 @@ describe('a pull', () => {
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
-    pulled();
+    // Push rejects this sidecar, which the catalog's overview replaces, so it
+    // draws no warning.
+    const sidecar = '---\nfoo: bar\n---\nOld.\n';
+    fs.writeFileSync(local('commerce.overview.md'), sidecar);
+    pulled(SECOND_GEN, new Map([['commerce', {content: 'New.\n'}]]));
 
     expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
     expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
@@ -1979,6 +1983,9 @@ describe('a pull', () => {
     expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
         .toBe('name: prod\n');
     expect(fs.existsSync(local('commerce.profile.dev.yaml'))).toBe(true);
+    expect(fs.readFileSync(local('commerce.overview.md'), 'utf8'))
+        .toBe(sidecar);
+    expect(messages(console.warn)).not.toContain('push refuses');
   });
 
   test('profile files are written and deleted through the layout', async () => {
