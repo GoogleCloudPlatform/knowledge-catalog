@@ -1052,7 +1052,9 @@ function article(noun: string): string {
 // Those dialects read a string or a number beside the interval as a date, and
 // BigQuery rejects it or reads another way, so import refuses one. The sum is
 // a timestamp in PostgreSQL, so an ANSI_SQL text with one is not translated.
-// SPANNER arithmetic is BigQuery's.
+// A Databricks DATE plus an INTERVAL of hours or minutes is a TIMESTAMP, where
+// BigQuery gives a DATETIME, so import translates that sum only from the other
+// dialects. SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
@@ -1071,6 +1073,10 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     if (unit === 'day' && read === 'generic') {
       return `${op} INTERVAL ${intervalText(added)}, which gives a DATE in some ` +
           'databases and a timestamp in others';
+    }
+    if (read === 'databricks' && unit !== 'day' && sides.some(s => !s?.interval)) {
+      return `${op} INTERVAL ${intervalText(added)}, which gives a TIMESTAMP for a DATE ` +
+          'in Databricks and a DATETIME in BigQuery';
     }
     return sides.map(s => s.interval ? s.interval.this : s);
   }
