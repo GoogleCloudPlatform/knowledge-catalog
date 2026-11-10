@@ -668,6 +668,11 @@ const TRUNC_PARTS: Record<string, string> = {...PARTS, week: 'ISOWEEK'};
 // kcmd cannot see a column's type, so it adds them only to a DATE it can see.
 const MONTH_PARTS = new Set(['month', 'quarter', 'year']);
 
+// The dialects that add an INTERVAL of days to a DATE as a DATE, where
+// BigQuery's + gives a DATETIME. The repairs write DATE_ADD or DATE_SUB, which
+// keep the type of a DATE, a DATETIME and a TIMESTAMP alike.
+const DATE_DAYS = new Set(['mysql', 'snowflake', 'databricks']);
+
 // The functions that give the current date or time.
 const CURRENT = new Set(['CURRENT_DATE', 'CURDATE', 'CURRENT_TIMESTAMP', 'NOW', 'GETDATE']);
 
@@ -1042,14 +1047,26 @@ function article(noun: string): string {
 // MySQL and SQL Server read a date beside a number as a number or a count of
 // days, and every source reads a string beside a number as a number. A date
 // column is not visible, so a MySQL date column plus a number is translated.
+// A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, so import checks the
+// value as a date function's argument, and the repairs write DATE_ADD. It is a
+// timestamp in PostgreSQL, so an ANSI_SQL text with one is not translated.
 // SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
   const added = kind !== 'mul' && sides.find(s => s?.interval)?.interval;
   if (added) {
-    return interval(added) ? sides.map(s => s.interval ? s.interval.this : s) :
-                             `INTERVAL ${intervalText(added)}`;
+    const unit = interval(added);
+    if (!unit) return `INTERVAL ${intervalText(added)}`;
+    if (unit === 'day' && DATE_DAYS.has(read)) {
+      const values = dateValue(op, sides.find(s => !s?.interval));
+      return typeof values === 'string' ? values : [...values, added.this];
+    }
+    if (unit === 'day' && read === 'generic') {
+      return `${op} INTERVAL ${intervalText(added)}, which gives a DATE in some ` +
+          'databases and a timestamp in others';
+    }
+    return sides.map(s => s.interval ? s.interval.this : s);
   }
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   const date = (s: any) => isDate(s) || CURRENT.has(String(bare(s)?.function?.name).toUpperCase());
@@ -1353,9 +1370,9 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 // of another without parentheses. BigQuery rejects each of these, and the
 // engine reports success.
 // It keeps TRIM(s), a decimal number such as 0.29, Snowflake's current date and
-// time, and Snowflake's division and average, which give another value in
-// BigQuery. So the adapter reads the engine's BigQuery output back and
-// rewrites them.
+// time, Snowflake's division and average, and a value plus an INTERVAL of days
+// from DATE_DAYS, which give another value or type in BigQuery. So the adapter
+// reads the engine's BigQuery output back and rewrites them.
 
 // The types BigQuery has for Snowflake's TIMESTAMP_NTZ, a wall-clock time.
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
@@ -1443,6 +1460,16 @@ function repairNode(node: any, read: string): unknown {
   }
   if (node.data_type === 'custom' && SNOWFLAKE_TYPES[node.name]) {
     return SNOWFLAKE_TYPES[node.name];
+  }
+  // A value plus or minus an INTERVAL of days, from a dialect in DATE_DAYS. A
+  // sum may name the INTERVAL first.
+  const sum = DATE_DAYS.has(read) ? node.add ?? node.sub : undefined;
+  const days = (n: any) => String(n?.interval?.unit?.unit).toLowerCase() === 'day';
+  const operands = !sum ? undefined : days(sum.right) ? [sum.left, sum.right] :
+      node.add && days(sum.left) ? [sum.right, sum.left] : undefined;
+  if (operands) {
+    const call = sqlExpressionTree(node.add ? 'DATE_ADD(x, y)' : 'DATE_SUB(x, y)', 'BIGQUERY');
+    return {function: {...call.function, args: operands}};
   }
   // BigQuery's TRIM(s) removes every kind of whitespace, and the sources' TRIM
   // only spaces.
