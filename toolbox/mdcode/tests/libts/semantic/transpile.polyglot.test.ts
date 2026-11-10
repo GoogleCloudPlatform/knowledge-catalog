@@ -208,6 +208,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['BIGQUERY', 'EXTRACT(HOUR FROM t)', {sql: 'EXTRACT(HOUR FROM t)'}],
     ['MYSQL', 'SUM(a)--1 -- note', {sql: 'SUM(a) - -1 /* note */'}],
     ['MYSQL', "IF(a--1 > 0, '--x', '#')", {sql: "IF(a - -1 > 0, '--x', '#')"}],
+    ['MYSQL', "IF(a--1 > 0, 'x\n--y', 'z')", {sql: "IF(a - -1 > 0, 'x\\n--y', 'z')"}],
     ['MYSQL', 'a = b IS NULL', {sql: '(a = b) IS NULL'}],
     ['POSTGRES', "a = b IS NOT NULL OR s NOT LIKE 'a%' = flag", {sql: "(a = b) IS NOT NULL OR (s NOT LIKE 'a%') = flag"}],
     ['DATABRICKS', 'a < b IS NULL', {sql: '(a < b) IS NULL'}],
@@ -278,6 +279,10 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
     ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
     ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
+    ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: 'COALESCE(ordered_at, CURRENT_TIMESTAMP()) /* when the order was placed */'}],
+    ['MYSQL', "COALESCE(a, 0) # the customer's", {sql: "COALESCE(a, 0) /* the customer's */"}],
+    ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
+    ['MYSQL', "IF(s = '#', `a#b`, c /* # */) # note", {sql: "IF(s = '#', `a#b`, c /* # */) /* note */"}],
     // Constructs off the list.
     ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd does not translate TO_CHAR'}],
     ['SNOWFLAKE', 'MEDIAN(x)', {error: 'kcmd does not translate MEDIAN'}],

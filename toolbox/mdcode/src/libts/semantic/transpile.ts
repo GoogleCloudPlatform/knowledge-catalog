@@ -32,7 +32,7 @@
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
-import {loadedSqlEngine, loadSqlEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
+import {loadedSqlEngine, loadSqlEngine, mysqlComments, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -444,7 +444,7 @@ function transpileWith(
   try {
     // A text already in the target dialect needs no translation.
     if (read === write && !spanner) return {id: r.id, sql: r.expression};
-    const source = read === 'mysql' ? mysqlDashes(engine, r.expression) : r.expression;
+    const source = read === 'mysql' ? mysqlComments(r.expression) : r.expression;
     // A comment that starts the text keeps the engine from translating the
     // functions in it, so the engine reads the text after it.
     const {text, comments} = sqlComments(engine, source, read);
@@ -491,43 +491,6 @@ function engineTranslation(
     return {error: `expected a single expression but got ${res.sql.length} statements`};
   return write === 'bigquery' ? repairForBigQuery(engine, res.sql[0], read) :
                                 {sql: res.sql[0]};
-}
-
-// `sql`, a MySQL text, with a space before and between two dashes that start
-// no comment. MySQL starts a -- comment only before whitespace or the end of the
-// text, so it reads `3--1` as 3 - -1, where the engine reads a comment to the
-// end of the line. The gaps between the engine's tokens hold the comments. The
-// rest of the line can hold strings and more dashes, so the engine reads the
-// text again after each change.
-function mysqlDashes(engine: PolyglotEngine, sql: string): string {
-  for (;;) {
-    const chars = [...sql];
-    const tokens = engine.tokenize(sql, 'mysql').tokens ?? [];
-    const gaps = [0, ...tokens.flatMap(t => [t.span.start, t.span.end]), chars.length];
-    const spaces: number[] = [];
-    for (let g = 0; g < gaps.length; g += 2) {
-      const lineEnd = (i: number) => {
-        const n = chars.indexOf('\n', i);
-        return n < 0 || n > gaps[g + 1] ? gaps[g + 1] : n;
-      };
-      for (let i = gaps[g]; i < gaps[g + 1]; i++) {
-        const two = chars[i] + (chars[i + 1] ?? '');
-        if (two === '/*') {
-          i += 2;
-          while (i < gaps[g + 1] && chars[i] + chars[i + 1] !== '*/') i++;
-          i++;
-        } else if (chars[i] === '#' || (two === '--' && /^\s?$/.test(chars[i + 2] ?? ''))) {
-          i = lineEnd(i);
-        } else if (two === '--') {
-          spaces.push(i, i + 1);
-          i = lineEnd(i);
-        }
-      }
-    }
-    if (!spaces.length) return sql;
-    for (const i of spaces.reverse()) chars.splice(i, 0, ' ');
-    sql = chars.join('');
-  }
 }
 
 // The text after the comments that start `sql`, in the engine's dialect

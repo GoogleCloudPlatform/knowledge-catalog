@@ -300,6 +300,12 @@ describe('columnReferences', () => {
     expect(columnReferences('SUM(dbo.fn_tax(orders.amount))', 'SQLSERVER'))
         .toEqual([{qualifier: 'orders', name: 'amount'}]);
   });
+
+  test('reads MySQL comments as MySQL does', () => {
+    // MySQL starts a comment at #, and reads a--b as a - -b.
+    expect(columnReferences("IF(s = '#', a--b, c) # c's", 'MYSQL'))
+        .toEqual([{name: 's'}, {name: 'a'}, {name: 'b'}, {name: 'c'}]);
+  });
 });
 
 describe('columnsForSource', () => {

@@ -22,8 +22,10 @@ export interface PolyglotEngine {
   // from `parse` or an expression from `sqlExpressionTree`.
   generate(ast: unknown[], dialect: string):
       {success: boolean; sql?: string[]; error?: string};
+  // On failure, `errorStart` is where the text the engine cannot read starts,
+  // in Unicode code points, as in a token's `span`.
   tokenize(sql: string, dialect: string):
-      {success: boolean; tokens?: SqlToken[]; error?: string};
+      {success: boolean; tokens?: SqlToken[]; error?: string; errorStart?: number};
 }
 
 // A token the engine reads, as the engine returns it. `token_type` is the
@@ -150,7 +152,8 @@ export function soleColumn(expression: string, dialect: string): SqlColumn|
 // The engine's tree of `expression` read as one expression in `dialect`, or
 // undefined when it cannot be read so or is empty. A text that starts with a
 // keyword, such as `Order.amount`, is read again inside parentheses on lines
-// of their own, so a trailing `--` comment stays inside.
+// of their own, so a trailing `--` comment stays inside. A MySQL text is read
+// with its comments as MySQL reads them, as mysqlComments writes it.
 export function sqlExpressionTree(expression: string, dialect: string): any {
   if (!loadedEngine) {
     throw new Error(
@@ -158,9 +161,91 @@ export function sqlExpressionTree(expression: string, dialect: string): any {
   }
   if (!expression.trim()) return undefined;
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  const ast: any = oneExpression(engineDialect, `SELECT ${expression}`) ??
-      oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
+  const text = engineDialect === 'mysql' ? mysqlComments(expression) : expression;
+  const ast: any = oneExpression(engineDialect, `SELECT ${text}`) ??
+      oneExpression(engineDialect, `SELECT (\n${text}\n)`, 'paren');
   return ast?.select.expressions[0];
+}
+
+// `sql`, a MySQL text, with each comment written so that the engine reads it
+// as MySQL does. Throws when the engine is not loaded.
+export function mysqlComments(sql: string): string {
+  return mysqlCommentsAt(sql).text;
+}
+
+// `sql`, a MySQL text, as mysqlComments writes it, and for each code point of
+// that text the index in `sql` of the code point it comes from. MySQL starts a
+// -- comment only before whitespace or the end of the text, so it reads `3--1`
+// as 3 - -1, where the engine reads a comment to the end of the line. Each of
+// those two dashes gets a space before it. MySQL also starts a comment at a #
+// outside a string or a quoted name, where the engine reads the # as a token
+// of its own or as part of a name. That # becomes ` --`, with a space after it
+// unless whitespace follows. Each change can turn the rest of the line into
+// code or into a comment, so the first one goes first and the engine reads the
+// text again after it. A quote in a # comment ends the engine's tokens, so the
+// engine then reads the text before that quote.
+function mysqlCommentsAt(sql: string): {text: string; from: number[]} {
+  if (!loadedEngine) {
+    throw new Error(
+        'the SQL parser is not loaded; call loadSqlEngine() first');
+  }
+  const chars = [...sql];
+  const from = chars.map((_, i) => i);
+  for (;;) {
+    const text = chars.join('');
+    let res = loadedEngine.tokenize(text, 'mysql');
+    let read = chars.length;
+    if (!res.success && res.errorStart !== undefined) {
+      read = res.errorStart;
+      res = loadedEngine.tokenize(chars.slice(0, read).join(''), 'mysql');
+    }
+    const fix =
+        res.success ? mysqlMisreadComment(chars, res.tokens ?? [], read) : undefined;
+    if (!fix) return {text, from};
+    // Each part takes the place of one code point.
+    const written = fix.parts.flatMap(
+        (part, k) => [...part].map(c => ({c, at: from[fix.at + k]})));
+    chars.splice(fix.at, fix.parts.length, ...written.map(w => w.c));
+    from.splice(fix.at, fix.parts.length, ...written.map(w => w.at));
+  }
+}
+
+// The first comment marker in `chars` before `read` that the engine reads
+// another way than MySQL, given the engine's `tokens` of that text, and the
+// parts written in place of its code points. Undefined when there is none.
+// The gaps between the tokens hold the engine's comments.
+function mysqlMisreadComment(chars: string[], tokens: SqlToken[], read: number):
+    {at: number; parts: string[]}|undefined {
+  const quoted = (type: string) =>
+      type.endsWith('STRING') || type === 'QUOTED_IDENTIFIER' || type === 'HINT';
+  // Whether `chars[i]` is whitespace or past the end, as MySQL needs after
+  // the dashes of a -- comment.
+  const spaced = (i: number) => (chars[i] ?? '').trim() === '';
+  let start = 0;
+  for (const t of [...tokens, undefined]) {
+    const end = t?.span.start ?? read;
+    for (let i = start; i < end; i++) {
+      const two = chars[i] + (chars[i + 1] ?? '');
+      if (two === '/*') {
+        i += 2;
+        while (i < end && chars[i] + chars[i + 1] !== '*/') i++;
+        i++;
+      } else if (two === '--' && !spaced(i + 2)) {
+        return {at: i, parts: [' -', ' -']};
+      } else if (two === '--') {
+        const n = chars.indexOf('\n', i);
+        i = n < 0 || n > end ? end : n;
+      }
+    }
+    if (!t) return undefined;
+    const hash = chars.slice(t.span.start, t.span.end).indexOf('#');
+    if (hash >= 0 && !quoted(t.token_type)) {
+      const at = t.span.start + hash;
+      return {at, parts: [spaced(at + 1) ? ' --' : ' -- ']};
+    }
+    start = t.span.end;
+  }
+  return undefined;
 }
 
 // The parsed statement when `sql` is a `SELECT` of exactly one expression and
@@ -404,15 +489,25 @@ function isNamePath(node: unknown): boolean {
 }
 
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
-// tokenize it. Throws when the engine is not loaded.
+// tokenize it. A MySQL text is read with its comments as MySQL reads them, and
+// each span still counts from the start of `expression`. Throws when the
+// engine is not loaded.
 export function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  const res = loadedEngine.tokenize(expression, engineDialect);
-  return res.success ? res.tokens ?? [] : undefined;
+  if (engineDialect !== 'mysql') {
+    const res = loadedEngine.tokenize(expression, engineDialect);
+    return res.success ? res.tokens ?? [] : undefined;
+  }
+  const {text, from} = mysqlCommentsAt(expression);
+  const res = loadedEngine.tokenize(text, engineDialect);
+  return res.success ? (res.tokens ?? []).map(t => ({
+    ...t,
+    span: {...t.span, start: from[t.span.start], end: from[t.span.end - 1] + 1},
+  })) : undefined;
 }
 
 // Whether `expression` holds no SQL in `dialect`: it is empty, only whitespace
