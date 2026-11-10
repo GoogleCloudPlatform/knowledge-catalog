@@ -609,7 +609,8 @@ entities:
     const depends = (profile: string, field: string) =>
         `Error: [commerce.profile.${profile}.yaml] profile '${profile}': ` +
         `field 'orders.${field}' depends on 'orders.tax', which this profile ` +
-        `excludes; exclude 'orders.${field}' too, or rebind it`;
+        `excludes; add '${field}' to the 'fields_exclude' of entity 'orders', ` +
+        `or rebind it`;
 
     expect(await push({validateOnly: true})).toBe(1);
     expect(messages(errorSpy).split('\n'))

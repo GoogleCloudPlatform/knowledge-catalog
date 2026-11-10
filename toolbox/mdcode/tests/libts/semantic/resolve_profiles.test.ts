@@ -2730,8 +2730,15 @@ semantic_model:
     });
     expect(errors).toEqual([
       "profile 'prod': field 'vip.net' depends on 'vip.discount', which this profile " +
-          "excludes; exclude 'vip.net' too, or rebind it",
+          "excludes; add 'net' to the 'fields_exclude' of entity 'vip', or rebind it",
     ]);
+    // The name the message gives, in the list it names, clears it.
+    expect(validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [keyedById('customer', BQ('c'), column('gross'), column('discount')),
+                 {...keyedById('vip', BQ('v'), column('gross')), fieldsExclude: ['discount', 'net']}],
+      relationships: [],
+    })).toEqual([]);
   });
 
   // leaf extends root directly and through mid. Inheritance gives leaf the
@@ -2768,7 +2775,8 @@ semantic_model:
       expect(validateProfileCompleteness(model('root.r_id + 1', 'mid.a + 1'), prod))
           .toEqual([
             "profile 'prod': field 'leaf.b' depends on 'leaf.a', which this " +
-                "profile excludes; exclude 'leaf.b' too, or rebind it",
+                "profile excludes; add 'b' to the 'fields_exclude' of entity 'leaf', or " +
+                'rebind it',
           ]);
     });
 

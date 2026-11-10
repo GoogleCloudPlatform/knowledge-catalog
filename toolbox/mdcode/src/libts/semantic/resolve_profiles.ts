@@ -1891,9 +1891,11 @@ export function validateProfileCompleteness(
     }
   }
   for (const [field, reached] of dangling) {
+    const [entity, name] = field.split('.');
     errors.push(
         `${at}: field '${field}' depends on '${reached}', which this ` +
-        `profile excludes; exclude '${field}' too, or rebind it`);
+        `profile excludes; add '${name}' to the 'fields_exclude' of entity ` +
+        `'${entity}', or rebind it`);
   }
   const why = (target: string) => excluded.has(target) ?
       'which this profile excludes' :
