@@ -2425,6 +2425,38 @@ describe('a metric operand that names a field', () => {
     expect(warnings).toEqual([]);
   });
 
+  // BigQuery ignores case in a property name, so a column property `AMOUNT`
+  // beside `amount` is rejected: "Duplicate graph property name amount".
+  test('does not expose a column whose name differs from a field\'s only in case', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [
+              {name: 'amount', expression: 'amount_usd'},
+              {name: 'fee', expression: 'AMOUNT'},
+            ],
+            [{name: 'total_fee', expression: 'SUM(purchase.fee)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      AMOUNT AS fee,\n' +
+        '      AMOUNT AS total_fee_input,\n' +
+        '      MEASURE(SUM(total_fee_input)) AS total_fee\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('does not expose a column whose name differs from a metric\'s only in case', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [{name: 'x', expression: 'Total'}],
+            [{name: 'total', expression: 'SUM(purchase.x)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      Total AS x,\n' +
+        '      Total AS total_input,\n' +
+        '      MEASURE(SUM(total_input)) AS total\n');
+    expect(warnings).toEqual([]);
+  });
+
   test('a measure over a field bound to TRUE, FALSE or NULL aggregates that value', () => {
     for (const value of ['TRUE', 'FALSE', 'NULL']) {
       const {ddl, warnings} = generatePropertyGraph(
