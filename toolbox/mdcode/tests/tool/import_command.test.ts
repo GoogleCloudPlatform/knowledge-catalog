@@ -601,6 +601,18 @@ describe('kcmd import', () => {
     expect(filesIn('out')).toEqual([]);
   });
 
+  test('a strict import says why it left a field untranslated, beside the error about it', async () => {
+    write('retail.yaml', model().replace('dialect: BIGQUERY, expression: order_id',
+                                         'dialect: SNOWFLAKE, expression: "GREATEST(a, b)"'));
+    expect(await importModel('retail.yaml', {
+      flavor: 'google', input: 'first-party', transpile: true, out: 'out',
+    })).toBe(1);
+    expect(warnings).toContain(
+        "Warning: field 'orders.order_id': could not transpile 'SNOWFLAKE' -> " +
+        "'BIGQUERY' (kcmd does not translate GREATEST); left untranslated");
+    expect(errors.join('\n')).toContain("Error: field 'orders.order_id' in model 'retail'");
+  });
+
   test('a bare source without --source-prefix is written as it is, with the engine\'s warning', async () => {
     write('retail.yaml', model('orders'));
     const result = await engine.importSemanticModelYaml(model('orders'), {flavor: 'ossie'});
