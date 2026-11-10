@@ -58,8 +58,9 @@ agree on every structural row and differ only where a Spanner target has no
    its entity's `sql-expressions` aspect, and its dimension role and `is_time`
    in the `schema` aspect, and `pull` rebuilds both from there.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
-   is rejected. It must also reduce to one supported aggregate over one
-   operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
+   is rejected. It must also read every field inside `SUM`, `AVG`, `COUNT`,
+   `MIN` or `MAX`, each over one operand, and scalar SQL may combine them, as
+   in `SUM(orders.amount) / COUNT(orders.order_id)`. Otherwise the push is
    rejected.
 5. **Metric type.** A metric's data type round-trips as a field's does (see
    footnote 2): an untyped or `Opaque` metric comes back untyped.

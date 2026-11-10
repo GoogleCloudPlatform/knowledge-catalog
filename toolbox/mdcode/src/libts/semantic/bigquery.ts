@@ -8,20 +8,21 @@
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
-// A metric therefore lands on whichever single table its aggregate columns
-// reference; a metric whose aggregate genuinely spans multiple tables cannot be
+// A metric therefore lands on whichever single table its aggregates' fields
+// belong to; a metric whose aggregates span multiple tables cannot be
 // expressed as one MEASURE and is skipped (reported in `warnings`).
 //
 // A measure can only aggregate an EXPOSED PROPERTY of its node (not a raw
-// column or an inline expression), so each metric is lowered into a derived
-// operand property plus a MEASURE over it (see placeMetric / exposeOperand).
+// column or an inline expression), so each aggregate's operand is lowered into
+// a derived property, and the metric into one MEASURE over those properties
+// (see placeMetric / exposeOperand).
 //
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {columnReferences, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, unusedName, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -65,8 +66,8 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
   };
 }
 
-// Places each metric on the single entity its aggregate references, lowering
-// it to a MEASURE over an exposed property (see placeMetric).
+// Places each metric on the single entity its aggregates reference, lowering
+// it to a MEASURE over exposed properties (see placeMetric).
 function placeMetrics(
     metrics: Metric[], input: MetricPlacementInput,
     warnings: string[]): Map<string, string[]> {
@@ -164,10 +165,10 @@ function loneColumn(sql: string): string|undefined {
   return column && column.qualifier === undefined ? column.name : undefined;
 }
 
-// Assigns a metric to the node table of the single entity its aggregate
-// references, lowering it to a MEASURE over an exposed property. Records a
-// warning (and skips) when it references zero/multiple entities or is not a
-// single supported aggregate over one operand.
+// Assigns a metric to the node table of the single entity its aggregates
+// reference, lowering it to a MEASURE over exposed properties. Records a
+// warning (and skips) when it references zero/multiple entities or cannot be
+// a measure (see measureAggregates).
 function placeMetric(
     metric: Metric, input: MetricPlacementInput,
     metricNames: ReadonlySet<string>,
@@ -265,24 +266,19 @@ function placeMetric(
     return;
   }
 
-  const body = withoutQualifier(expression, entityName);
-
-  // A graph measure must be one supported aggregate wrapping a single operand;
-  // anything else (a non-aggregate, or a compound of aggregates like a ratio)
-  // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
-  // The SQL parser finds the aggregate and its operand with the entity's
-  // qualifier renamed to a name it does not reserve, since it cannot read one
-  // it reserves, as in `SUM(Date.days)`.
+  // A graph measure applies supported aggregates, each over one operand, and
+  // reads every field inside one of them (see measureAggregates); anything
+  // else cannot be a MEASURE. Flag it, with the reason push gives, rather than
+  // emit DDL BigQuery rejects. The SQL parser finds the aggregates and their
+  // operands with the entity's qualifier renamed to a name it does not
+  // reserve, since it cannot read one it reserves, as in `SUM(Date.days)`.
   const stand = unusedName(expression, 'kcmd_entity');
-  const agg = singleAggregate(
-      requalified(expression, entityName, stand), 'BIGQUERY');
-  if (!agg) {
-    warnings.push(
-        `metric '${metric.name}' expression '${
-            body}' is not a single supported aggregate ` +
-        `(${
-            SUPPORTED_AGGREGATES.join(
-                ', ')}) over one operand; skipped (cannot be a single MEASURE)`);
+  const written = requalified(expression, entityName, stand);
+  const shape = measureAggregates(written, 'BIGQUERY');
+  if ('problem' in shape) {
+    warnings.push(`metric '${metric.name}' expression '${
+        withoutQualifier(expression, entityName)}' cannot be a measure: ${
+        shape.problem}; skipped`);
     return;
   }
 
@@ -290,34 +286,39 @@ function placeMetric(
       newLowering(entity, input, metricNames);
   loweringByEntity.set(entityName, lowering);
 
-  // Resolve the aggregate's operand to an exposed property. It is read as
+  // Resolve each aggregate's operand to an exposed property. It is read as
   // written, qualifiers kept, so readOperand can tell the entity's fields from
   // its columns. COUNT(*) has no operand column, so it counts the first column
   // of the node's key instead: the primary key, else the first unique key
-  // (nodeKey). singleAggregate gives a `*` operand for COUNT(*) alone.
-  const operand = requalified(agg.operand, stand, entityName);
-  let read: OperandRead;
-  if (operand === '*') {
-    // A key names a column, never a field, so a field of the same name does
-    // not stand in for it. A simple name is quoted, if reserved, where it is
-    // exposed (exposeOperand).
-    const key = nodeKey(entity)[0];
-    read = {
-      sql: isSimpleIdentifier(key) ? key : physicalColumn(key),
-      column: true
-    };
-  } else {
-    // A field the node table leaves out declares no property, so neither a
-    // measure over it nor a property derived from SQL that names it can read
-    // it.
-    read = readOperand(entity, operand, input);
-  }
-
-  if ('skip' in read) {
-    warnings.push(
-        `metric '${metric.name}' ${read.skip}; skipped (nothing to emit as a ` +
-        `MEASURE)`);
-    return;
+  // (nodeKey). measureAggregates gives a `*` operand for COUNT(*) alone. Every
+  // operand is read before any is exposed, so a metric skipped here leaves no
+  // property behind.
+  const reads: Array<Exclude<OperandRead, {skip: string}>> = [];
+  for (const agg of shape.aggregates) {
+    const operand = requalified(agg.operand, stand, entityName);
+    let read: OperandRead;
+    if (operand === '*') {
+      // A key names a column, never a field, so a field of the same name does
+      // not stand in for it. A simple name is quoted, if reserved, where it is
+      // exposed (exposeOperand).
+      const key = nodeKey(entity)[0];
+      read = {
+        sql: isSimpleIdentifier(key) ? key : physicalColumn(key),
+        column: true
+      };
+    } else {
+      // A field the node table leaves out declares no property, so neither a
+      // measure over it nor a property derived from SQL that names it can
+      // read it.
+      read = readOperand(entity, operand, input);
+    }
+    if ('skip' in read) {
+      warnings.push(
+          `metric '${metric.name}' ${read.skip}; skipped (nothing to emit as ` +
+          `a MEASURE)`);
+      return;
+    }
+    reads.push(read);
   }
 
   // The measure is itself exposed as a node property named `metric.name`, so it
@@ -336,14 +337,18 @@ function placeMetric(
   }
   lowering.taken.add(metric.name);
 
-  const propName = exposeOperand(lowering, read, metric.name);
-  const aggregate =
-      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
+  // The measure is the expression as written with each aggregate rewritten
+  // over its operand's property. measureAggregates leaves no field, and so no
+  // qualifier, outside the aggregates.
+  const body = replacedAggregates(
+      written, shape.aggregates,
+      (agg, i) => `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${
+          quoteIfReserved(exposeOperand(lowering, reads[i], metric.name))})`);
 
   const opts = optionsClause(
       elementDescription(metric.description, metric.aiContext),
       metric.aiContext?.synonyms);
-  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
+  const measure = `MEASURE(${body}) AS ${quoteIfReserved(metric.name)}`;
   lowering.measures.push(opts ? `${measure} ${opts}` : measure);
 }
 

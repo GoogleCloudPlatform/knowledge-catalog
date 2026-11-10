@@ -6,8 +6,8 @@
 // (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
 // entity references across dialects for the loader, validator, profile checks,
 // pull reader, and transpiler. The graph generators read them with the parser
-// too: `measureEntities` places a measure, `singleAggregate` finds its
-// aggregate, `withoutQualifier` makes an expression table-local,
+// too: `measureEntities` places a measure, `measureAggregates` finds its
+// aggregates, `withoutQualifier` makes an expression table-local,
 // `qualifiedColumns` finds the sibling fields it names and
 // `withSiblingsSpliced` puts their SQL in their place, and `requalified` moves
 // an inherited expression onto the entity inheriting it.
@@ -320,29 +320,17 @@ export function singleAggregate(expression: string, dialect: string):
   const node = unwrapped(sqlExpressionTree(expression, dialect));
   const kind = node && Object.keys(node).length === 1 ? Object.keys(node)[0] :
                                                         undefined;
-  if (!kind || !SUPPORTED_AGGREGATES.includes(kind.toUpperCase())) {
-    return undefined;
-  }
-  const call = node[kind];
-  const star = kind === 'count' && call.star === true && !call.this;
-  const operand = unwrapped(call.this);
-  if (!star &&
-      (!operand || operand.star || operand.tuple ||
-       nestsAggregateOrSubquery(operand))) {
-    return undefined;
-  }
-  // The parser keeps the call's name in `name` or `original_name`.
-  const known = new Set(['this', 'star', 'distinct', 'name', 'original_name']);
-  if (!Object.entries(call).every(
-          ([key, v]) => known.has(key) || v === null || v === undefined ||
-              v === false || (Array.isArray(v) && v.length === 0))) {
+  if (!kind || !isAggregateCall(kind, node[kind]) ||
+      aggregateProblem(kind, node[kind])) {
     return undefined;
   }
   // The call as written: its name, `(`, DISTINCT or ALL if written, the
   // operand and `)`, inside any parentheses around the whole call.
   const tokens = unparenthesized(sqlTokens(expression, dialect) ?? []);
-  if (tokens.length < 4 || tokens[1].token_type !== 'L_PAREN' ||
-      tokens[tokens.length - 1].token_type !== 'R_PAREN') {
+  if (tokens.length < 4 ||
+      !SUPPORTED_AGGREGATES.includes(tokens[0].text.toUpperCase()) ||
+      tokens[1].token_type !== 'L_PAREN' ||
+      closingParen(tokens, 1) !== tokens.length - 1) {
     return undefined;
   }
   let inner = tokens.slice(2, -1);
@@ -356,15 +344,221 @@ export function singleAggregate(expression: string, dialect: string):
     fn: tokens[0].text,
     operand: chars.slice(inner[0].span.start, inner[inner.length - 1].span.end)
                  .join(''),
-    distinct: call.distinct === true,
+    distinct: node[kind].distinct === true,
   };
 }
 
-// Whether `expression`, read in `dialect`, is a single aggregate (see
-// singleAggregate), the form a BigQuery measure takes.
-export function isSingleAggregate(expression: string, dialect: string):
-    boolean {
-  return singleAggregate(expression, dialect) !== undefined;
+// An aggregate a BigQuery measure applies, as measureAggregates gives it:
+// where the call is written in the expression, from its name to its `)`, in
+// code points with the end exclusive, and the call as singleAggregate reads it.
+export interface MeasureAggregate {
+  start: number;
+  end: number;
+  fn: string;
+  operand: string;
+  distinct: boolean;
+}
+
+// `expression` with each of `aggregates` replaced by what `by` gives for it.
+export function replacedAggregates(
+    expression: string, aggregates: MeasureAggregate[],
+    by: (agg: MeasureAggregate, i: number) => string): string {
+  const chars = Array.from(expression);
+  let text = '';
+  let after = 0;
+  aggregates.forEach((agg, i) => {
+    text += chars.slice(after, agg.start).join('') + by(agg, i);
+    after = agg.end;
+  });
+  return text + chars.slice(after).join('');
+}
+
+// The aggregates of `expression`, read in `dialect`, in the order written,
+// when it can be a BigQuery measure; else why it cannot, as a clause such as
+// `it reads field 'amount' outside an aggregate`. It can be one when it holds
+// an aggregate; each aggregate it holds is one singleAggregate reads; no window
+// or subquery sits outside them; every field it reads sits inside one; and it
+// calls no user-defined function outside them. Arithmetic, CASE, IF and
+// BigQuery's other built-in scalar functions, and literals, may surround the
+// aggregates, as in `SUM(o.amount) / COUNT(o.id)`. The push checks and the
+// BigQuery generator both read a measure so.
+export function measureAggregates(expression: string, dialect: string):
+    {aggregates: MeasureAggregate[]}|{problem: string} {
+  const tree = sqlExpressionTree(expression, dialect);
+  const tokens = sqlTokens(expression, dialect);
+  if (!tree || !tokens || tokens.some(t => t.token_type === 'SEMICOLON')) {
+    return {problem: 'the SQL parser cannot read it as one expression'};
+  }
+  const {calls, windowOrSubquery} = aggregateCalls(tree);
+  if (windowOrSubquery) return {problem: 'it uses a window or a subquery'};
+  if (!calls.length) {
+    return {
+      problem: `it holds no aggregate (${SUPPORTED_AGGREGATES.join(', ')})`
+    };
+  }
+  for (const [kind, call] of calls) {
+    const problem = aggregateProblem(kind, call);
+    if (problem) return {problem};
+  }
+  // Where each call is written: the first call, from the left, that
+  // singleAggregate reads, then the next one after it. A function in a
+  // namespace, such as `ds.SUM`, is not one of the aggregates.
+  const chars = Array.from(expression);
+  const aggregates: MeasureAggregate[] = [];
+  for (let i = 0; i + 1 < tokens.length; i++) {
+    if (tokens[i + 1].token_type !== 'L_PAREN' ||
+        tokens[i - 1]?.token_type === 'DOT') {
+      continue;
+    }
+    const close = closingParen(tokens, i + 1);
+    if (close < 0) break;
+    const {start} = tokens[i].span;
+    const {end} = tokens[close].span;
+    const agg = singleAggregate(chars.slice(start, end).join(''), dialect);
+    if (!agg) continue;
+    aggregates.push({start, end, ...agg});
+    i = close;
+  }
+  if (aggregates.length !== calls.length) {
+    return {problem: 'the SQL parser cannot tell where each aggregate is'};
+  }
+  // The fields read outside the aggregates: those of the text with each
+  // aggregate replaced by a literal.
+  const rest = replacedAggregates(expression, aggregates, () => ' 0 ');
+  const outside = sqlColumns(rest, dialect);
+  if (!outside) {
+    return {problem: 'the SQL parser cannot read it as one expression'};
+  }
+  if (outside.length) {
+    return {
+      problem: `it reads field '${outside[0].name}' outside an aggregate`
+    };
+  }
+  // BigQuery accepts a graph whose measure calls a user-defined function
+  // outside its aggregates, but every GRAPH_EXPAND query on that node table
+  // then fails with "Function not found". One inside an aggregate's operand
+  // becomes a property, so it stays allowed.
+  const udf = userDefinedFunction(sqlExpressionTree(rest, dialect));
+  if (udf) {
+    return {
+      problem: `it calls user-defined function '${udf}' outside an ` +
+          `aggregate, which BigQuery cannot read in a measure`
+    };
+  }
+  return {aggregates};
+}
+
+// The first user-defined function the parser's tree `node` calls, by its
+// dotted name, such as `ds.f`, or undefined when it calls none: a call whose
+// name has a dot, other than `SAFE.` before one name, as in `SAFE.LOG10`.
+// BigQuery reads `ml.f` or `net.f` as the function of a dataset with that
+// name. The parser reads `` `p.ds.f`(…) `` as a function of that name, and
+// `ds.f(…)` or `p.ds.f(…)` as a method call on a column.
+function userDefinedFunction(node: unknown): string|undefined {
+  if (node === null || typeof node !== 'object') return undefined;
+  for (const [kind, value] of Object.entries(node)) {
+    const name = kind === 'function' ? String(value.name) :
+        kind === 'method_call' ?
+        [...namePath(value.this), value.method?.name].join('.') :
+        '';
+    const parts = name.split('.');
+    if (parts.length > 1 &&
+        !(parts.length === 2 && parts[0].toUpperCase() === 'SAFE')) {
+      return name;
+    }
+    const inner = userDefinedFunction(value);
+    if (inner) return inner;
+  }
+  return undefined;
+}
+
+// The parts of the dotted name the parser's tree `node` reads, such as
+// ['p', 'ds'] for `p.ds`, or none when it reads something else.
+function namePath(node: any): string[] {
+  if (node?.column) {
+    const {table, name} = node.column;
+    return table ? [table.name, name.name] : [name.name];
+  }
+  if (node?.dot) return [...namePath(node.dot.this), node.dot.field.name];
+  return [];
+}
+
+// Why the parser's aggregate call `call`, of node kind `kind`, cannot be in a
+// BigQuery measure, or undefined when it can: when it is one of
+// SUPPORTED_AGGREGATES over one operand, or COUNT(*), with at most DISTINCT or
+// ALL, and the operand holds no other aggregate, window or subquery.
+function aggregateProblem(kind: string, call: any): string|undefined {
+  // The parser keeps the call's name in `name` or `original_name`.
+  const name = String(call.name ?? call.original_name ?? kind).toUpperCase();
+  if (!SUPPORTED_AGGREGATES.includes(name)) {
+    return `it uses ${name}, which BigQuery does not allow in a measure (${
+        SUPPORTED_AGGREGATES.join(', ')})`;
+  }
+  // The parser reads an aggregate over several operands, such as
+  // `MIN(a, b)`, as a function with arguments, and `COUNT(DISTINCT a, b)` as
+  // a count of a tuple.
+  const star = kind === 'count' && call.star === true && !call.this;
+  const operand = unwrapped(call.this);
+  const operands = Array.isArray(call.args) ? call.args.length :
+      star                                  ? 1 :
+      operand?.tuple                        ? operand.tuple.expressions.length :
+                                              operand ? 1 : 0;
+  if (operands !== 1) {
+    return `it calls ${name} with ${operands} operands, where an aggregate ` +
+        `in a measure takes one`;
+  }
+  if (!star && nestsAggregateOrSubquery(operand)) {
+    return 'it nests an aggregate, a window or a subquery';
+  }
+  const known = new Set(['this', 'star', 'distinct', 'name', 'original_name']);
+  if (kind === 'function' || kind === 'aggregate_function' ||
+      (!star && operand.star) ||
+      !Object.entries(call).every(
+          ([key, v]) => known.has(key) || v === null || v === undefined ||
+              v === false || (Array.isArray(v) && v.length === 0))) {
+    return `it calls ${name} with something other than one operand and ` +
+        `DISTINCT or ALL`;
+  }
+  return undefined;
+}
+
+// The outermost aggregate calls in the parser's tree `node`, each as its node
+// kind and the call, and whether a window or a subquery sits outside them. A
+// call of the name of one of SUPPORTED_AGGREGATES that the parser reads as a
+// plain function, such as `MIN(a, b)` or `SAFE.SUM(a)`, counts as one.
+function aggregateCalls(node: unknown):
+    {calls: Array<[string, any]>; windowOrSubquery: boolean} {
+  const found = {calls: [] as Array<[string, any]>, windowOrSubquery: false};
+  const visit = (n: unknown): void => {
+    if (Array.isArray(n)) return n.forEach(visit);
+    if (n === null || typeof n !== 'object') return;
+    for (const [kind, value] of Object.entries(n)) {
+      if (kind === 'window_function' || kind === 'subquery' ||
+          kind === 'select') {
+        found.windowOrSubquery = true;
+      } else if (
+          isAggregateCall(kind, value) ||
+          (kind === 'function' &&
+           SUPPORTED_AGGREGATES.includes(
+               String(value.name).toUpperCase().replace(/^SAFE\./, '')))) {
+        found.calls.push([kind, value]);
+      } else {
+        visit(value);
+      }
+    }
+  };
+  visit(node);
+  return found;
+}
+
+// The index of the `)` that closes the `(` at `open` in `tokens`, or -1.
+function closingParen(tokens: SqlToken[], open: number): number {
+  let depth = 0;
+  for (let i = open; i < tokens.length; i++) {
+    if (tokens[i].token_type === 'L_PAREN') depth++;
+    if (tokens[i].token_type === 'R_PAREN' && --depth === 0) return i;
+  }
+  return -1;
 }
 
 // `tokens` without the parentheses around all of them.
@@ -391,18 +585,23 @@ function unwrapped(node: any): any {
 }
 
 // Whether the parser's tree `node` holds an aggregate, a window or a subquery
-// at any depth. The parser gives an aggregate call `distinct` and `filter`
-// keys, or the kind `aggregate_function`.
+// at any depth.
 function nestsAggregateOrSubquery(node: unknown): boolean {
   if (Array.isArray(node)) return node.some(nestsAggregateOrSubquery);
   if (node === null || typeof node !== 'object') return false;
   return Object.entries(node).some(
-      ([kind, value]) => kind === 'aggregate_function' ||
+      ([kind, value]) => isAggregateCall(kind, value) ||
           kind === 'window_function' || kind === 'subquery' ||
-          kind === 'select' ||
-          (value !== null && typeof value === 'object' && 'distinct' in value &&
-           'filter' in value) ||
-          nestsAggregateOrSubquery(value));
+          kind === 'select' || nestsAggregateOrSubquery(value));
+}
+
+// Whether `value`, of node kind `kind` in the parser's tree, is an aggregate
+// call. The parser gives an aggregate call `distinct` and `filter` keys, or
+// the kind `aggregate_function`.
+function isAggregateCall(kind: string, value: any): boolean {
+  return kind === 'aggregate_function' ||
+      (value !== null && typeof value === 'object' && 'distinct' in value &&
+       'filter' in value);
 }
 
 // Whether a key or join column is a physical column name rather than an

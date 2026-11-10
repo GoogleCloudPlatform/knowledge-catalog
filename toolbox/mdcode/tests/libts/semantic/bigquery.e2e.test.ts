@@ -278,10 +278,11 @@ describe(
         expect(genWarnings)
             .toContain(
                 'metric \'status\' collides with an existing property of entity \'orders\'; skipped (rename the metric to avoid a duplicate graph property)');
-        expect(genWarnings.some(
-                   w => w.includes('metric \'spread\'') &&
-                       w.includes('not a single supported aggregate')))
-            .toBe(true);
+        expect(genWarnings)
+            .toContain(
+                'metric \'spread\' expression \'STDDEV(amount)\' cannot be a measure: it uses STDDEV, which BigQuery does not allow in a measure (SUM, AVG, COUNT, MIN, MAX); skipped');
+        expect(genWarnings.filter(w => w.includes('metric \'aov\'')))
+            .toEqual([]);
       });
     });
 
