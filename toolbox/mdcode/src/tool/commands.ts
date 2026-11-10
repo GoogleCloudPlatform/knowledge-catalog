@@ -1862,11 +1862,14 @@ async function pullSemanticModel(
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
       // kept by renaming it and its profile files to the files pull writes,
-      // unless the catalog's model file is already there.
+      // unless the catalog's model file is already there or an earlier file
+      // is renamed to it.
       const file = (name: string) => path.basename(layout.modelPath(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
       const errors: string[] = [];
       const others: string[] = [];
+      // Each model an earlier rename keeps, and the file that holds it.
+      const claimed = new Map<string, string>();
       for (const name of staleLocal) {
         const declared = layout.declaredModelName(name);
         if (declared !== undefined &&
@@ -1875,15 +1878,19 @@ async function pullSemanticModel(
                                    .filter(f => f.profileName !== undefined);
           const own =
               [file(name), ...profileFiles.map(f => path.basename(f.path))];
-          if (fs.existsSync(layout.modelPath(declared))) {
+          const holder = fs.existsSync(layout.modelPath(declared)) ?
+              file(declared) :
+              claimed.get(declared);
+          if (holder !== undefined) {
             errors.push(
                 `local model file '${file(name)}' holds model '${declared}', ` +
-                `which '${file(declared)}' also holds. Delete one of them` +
+                `which '${holder}' also holds. Delete one of them` +
                 `${profileFiles.length ? ' with its profile files' : ''}, ` +
                 `or re-run with --force-remove to delete ${quoted(own)} and ` +
                 `pull the catalog's.`);
             continue;
           }
+          claimed.set(declared, file(name));
           const stem = file(declared).replace(/\.yaml$/, '');
           const renames = [
             `the file to '${file(declared)}'`,

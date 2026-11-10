@@ -2247,7 +2247,8 @@ describe('a pull', () => {
 
   // A local model file that holds the catalog's model under another name is
   // kept by renaming it and its profile files, unless the catalog's model
-  // file is there too. The refusal names what to do, and writes nothing.
+  // file is there too or an earlier file is renamed to it. The refusal names
+  // what to do, and writes nothing.
   const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
   test.each([
     ['the rename that keeps it', ['mysales.yaml'],
@@ -2265,6 +2266,13 @@ describe('a pull', () => {
          "profile files, or re-run with --force-remove to delete " +
          "'mysales.yaml' and 'mysales.profile.prod.yaml' and pull the " +
          "catalog's.", 'commerce'],
+    ['no second rename onto one file', ['mysales.yaml', 'sales2.yaml'],
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or re-run with --force-remove to " +
+         "delete it and pull the catalog's.\nError: local model file " +
+         "'sales2.yaml' holds model 'commerce', which 'mysales.yaml' also " +
+         "holds. Delete one of them, or re-run with --force-remove to " +
+         "delete 'sales2.yaml' and pull the catalog's.", 'commerce'],
     ['the model a file declares under another name', ['old.yaml'],
      "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
          "model 'commerce' in this entry group. An entry group holds one " +
