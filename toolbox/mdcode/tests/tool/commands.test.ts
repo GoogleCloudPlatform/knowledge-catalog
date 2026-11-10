@@ -1860,7 +1860,8 @@ describe('a pull', () => {
        });
 
   // Under --force-remove the summary counts the files pull removes, and pull
-  // removes each directory it leaves empty.
+  // removes each directory it leaves empty, a legacy profile directory with
+  // two files included.
   test('under --force-remove counts the files it removes and removes the ' +
            'directories it empties',
        async () => {
@@ -1868,7 +1869,9 @@ describe('a pull', () => {
          fs.rmSync(local('commerce.profile.prod.yaml'));
          fs.renameSync(local('commerce.yaml'), local('sales.yaml'));
          for (const name of ['sales.overview.md',
-                             'sales/entities/Customer.overview.md']) {
+                             'sales/entities/Customer.overview.md',
+                             'sales.profiles/a.yaml',
+                             'sales.profiles/b.yaml']) {
            fs.mkdirSync(path.dirname(local(name)), {recursive: true});
            fs.writeFileSync(local(name), 'Old.\n');
          }
@@ -1878,10 +1881,10 @@ describe('a pull', () => {
          expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
          expect(messages(logSpy)).toContain(
              'Dry run: would write 2 new and 0 updated file(s); would remove ' +
-             '3 file(s).');
+             '5 file(s).');
          expect(await pull({forceRemove: true})).toBe(0);
          expect(messages(logSpy)).toContain(
-             'Wrote 2 new and 0 updated file(s); removed 3 file(s).');
+             'Wrote 2 new and 0 updated file(s); removed 5 file(s).');
          expect(fs.readdirSync(entryGroupDir()).sort())
              .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
        });

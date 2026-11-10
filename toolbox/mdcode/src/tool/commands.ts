@@ -1851,8 +1851,10 @@ async function pullSemanticModel(
       ];
       if (!options.dryRun) {
         layout.removeModelDocument(name);
-        for (const p of paths.slice(1)) fs.rmSync(p);
-        for (const p of paths) removeEmptyDirs(p, path.dirname(paths[0]));
+        for (const p of paths.slice(1)) {
+          fs.rmSync(p);
+          removeEmptyDirs(p, path.dirname(paths[0]));
+        }
       }
       for (const p of paths) {
         console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
