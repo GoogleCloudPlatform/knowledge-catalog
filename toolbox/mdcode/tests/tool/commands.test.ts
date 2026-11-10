@@ -1286,12 +1286,18 @@ semantic_model:
         [{name: 'placed_by', from_columns: ['buyer'], to_columns: ['key']}],
   }]};
   // `model` with a GOOGLE block holding `data`, written by hand over several
-  // lines with a comment on its `vendor_name` line.
+  // lines with each entity on one line, and a comment on its `vendor_name`
+  // line.
   const withBlock = (data: object, model = VANILLA) => model.replace(
       '    ai_context: Answer in dollars.\n',
       '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
           '      - vendor_name: GOOGLE   # bindings\n        data: |\n' +
-          JSON.stringify(data, null, 2).replace(/^/gm, '          ') + '\n');
+          JSON.stringify(data, null, 2)
+              .replace(/^ {8}\{[^]*?^ {8}\}/gm,
+                       s => s.replace(/\n\s*/g, ' ')
+                                .replace(/([{[]) | ([}\]])/g, '$1$2'))
+              .replace(/^/gm, '          ') +
+          '\n');
   const WITH_BLOCK_ACTION = withBlock({profiles: [{
     ...BLOCK_DATA.profiles[0],
     actions: [{name: 'Refund', executor: null}],

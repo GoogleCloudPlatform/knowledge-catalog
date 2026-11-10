@@ -216,9 +216,9 @@ metrics:
   }
 });
 
-// A JSON `data` string, such as a GOOGLE block's, is changed like the YAML
-// around it: each value that stays keeps its text, and the block keeps its
-// layout. Pull writes `data` as compact JSON.
+// A GOOGLE block's JSON `data` string is changed like the YAML around it: each
+// value that stays keeps its text, and the block keeps its layout. Pull writes
+// `data` as compact JSON.
 describe('updatedText in a JSON data string', () => {
   const DATA = {
     deployments: [{name: 'default', target: 'g/main'}],
@@ -230,13 +230,18 @@ describe('updatedText in a JSON data string', () => {
       ],
     }],
   };
+  // Two layouts: as `JSON.stringify` indents it, and by hand, with each
+  // innermost list or object on one line.
+  const indented = (data: unknown) => JSON.stringify(data, null, 2);
+  const hand = (data: unknown) => indented(data).replace(
+      /[{[][^{}[\]]*[}\]]/g,
+      s => s.replace(/\n\s*/g, ' ').replace(/([{[]) | ([}\]])/g, '$1$2'));
   // `data` as a hand-written block over several lines, and as pull writes it.
   const block = (text: string) => `custom_extensions:
   - vendor_name: GOOGLE   # bindings
     data: |
 ${text.replace(/^/gm, '      ')}
 `;
-  const LOCAL = block(JSON.stringify(DATA, null, 2));
   const pulled = (data: unknown) => `custom_extensions:
   - {vendor_name: GOOGLE, data: '${JSON.stringify(data)}'}
 `;
@@ -256,9 +261,15 @@ ${text.replace(/^/gm, '      ')}
       changed(d => d.profiles[0].entities[0].source = 't/orders_v2'),
     ],
     [
-      'adds an item after the one it follows, in the block\'s layout',
+      'adds an item after the one it follows',
       changed(d => d.profiles[0].entities.splice(
                   1, 0, {name: 'Item', source: 't/item'})),
+    ],
+    [
+      'adds two items after one, in order',
+      changed(d => d.profiles[0].entities.splice(
+                  1, 0, {name: 'A', source: 't/a'},
+                  {name: 'B', source: 't/b'})),
     ],
     [
       'drops an item the catalog no longer has, with its comma',
@@ -286,25 +297,101 @@ ${text.replace(/^/gm, '      ')}
       'adds a key after the one it follows',
       changed(d => d.profiles[0].metrics_exclude = ['revenue']),
     ],
+    [
+      'drops a key the catalog no longer has, with its comma',
+      changed(d => delete d.deployments),
+    ],
+    [
+      'adds an item to a list of one',
+      changed(d => d.deployments.push({name: 'dev', target: 'g/dev'})),
+    ],
+    [
+      'keeps each item\'s text and changes when the catalog reorders a list',
+      changed(d => {
+        d.profiles[0].entities.reverse();
+        d.profiles[0].entities[1].source = 't/orders_v2';
+      }),
+    ],
+  ] as const) {
+    for (const layout of [indented, hand]) {
+      test(`${what}, ${layout === hand ? 'by hand' : 'indented'}`, () => {
+        expect(updatedText(block(layout(DATA)), BASE, pulled(data)))
+            .toBe(block(layout(data)));
+      });
+    }
+  }
+
+  test('writes a new item like the one beside it after a bracket', () => {
+    const deployments = (more = '') => block(`{
+  "deployments": [{
+    "name": "default",
+    "target": "g/main"
+  }${more}]
+}`);
+    const {deployments: [main]} = DATA;
+    const dev = {name: 'dev', target: 'g/dev'};
+    expect(updatedText(
+               deployments(), pulled({deployments: [main]}),
+               pulled({deployments: [main, dev]})))
+        .toBe(deployments(`, {
+    "name": "dev",
+    "target": "g/dev"
+  }`));
+  });
+
+  // A block whose `data` is on one line.
+  const inline = (data: string, vendor = 'GOOGLE') =>
+      `- {vendor_name: ${vendor}, data: '${data}'}  # kept\n`;
+
+  for (const [what, local, base, pulledData, want] of [
+    ['keeps a one-line JSON string on one line', '{"a": 1, "b": [1, 2]}',
+     '{"a":1,"b":[1,2]}', '{"a":2,"b":[1,2,3]}', '{"a": 2, "b": [1, 2, 3]}'],
+    ['keeps each item\'s spacing when the catalog reorders a list',
+     '{"fields": [{"name": "a" }, {"name":"b"}]}',
+     '{"fields":[{"name":"a"},{"name":"b"}]}',
+     '{"fields":[{"name":"b"},{"name":"a"}]}',
+     '{"fields": [{"name":"b"}, {"name": "a" }]}'],
+    // A comma inside a string is not the text's separator.
+    ['writes a new key with the separators of the text\'s entries',
+     '{"s": "f(a,b)", "l": [1, 2]}', '{"s":"f(a,b)","l":[1,2]}',
+     '{"s":"f(a,b)","l":[1,2],"k":[3,4]}',
+     '{"s": "f(a,b)", "l": [1, 2], "k": [3, 4]}'],
+    // A quote and a colon inside a key are not the text's separator.
+    ['writes a new key with the separator of the text\'s pairs',
+     '{"x\\":y": 1}', '{"x\\":y":1}', '{"x\\":y":1,"k":2}',
+     '{"x\\":y": 1, "k": 2}'],
   ] as const) {
     test(what, () => {
-      expect(updatedText(LOCAL, BASE, pulled(data)))
-          .toBe(block(JSON.stringify(data, null, 2)));
+      expect(updatedText(inline(local), inline(base), inline(pulledData)))
+          .toBe(inline(want));
     });
   }
 
-  test('keeps a one-line JSON string on one line', () => {
-    const local = `x: '{"a": 1, "b": [1, 2]}'  # kept\n`;
-    expect(updatedText(
-               local, `x: '{"a":1,"b":[1,2]}'\n`, `x: '{"a":2,"b":[1,2,3]}'\n`))
-        .toBe(`x: '{"a": 2, "b": [1, 2, 3]}'  # kept\n`);
+  // The catalog keeps another vendor's `data` as written.
+  test('leaves another vendor\'s data as the catalog holds it', () => {
+    const local = inline('{"a": 1}', 'ACME');
+    expect(updatedText(local, local, inline('{"a":2}', 'ACME')))
+        .toBe(inline('{"a":2}', 'ACME'));
   });
 
-  test('writes a list again when the catalog changes its order', () => {
-    const local = 'x: \'{"fields": [{"name": "a"}, {"name": "b"}]}\'\n';
-    expect(updatedText(
-               local, 'x: \'{"fields":[{"name":"a"},{"name":"b"}]}\'\n',
-               'x: \'{"fields":[{"name":"b"},{"name":"a"}]}\'\n'))
-        .toBe('x: \'{"fields": [{"name": "b"}, {"name": "a"}]}\'\n');
+  test('matches a GOOGLE block whatever the case of its vendor_name', () => {
+    const local = block(indented(DATA)).replace('GOOGLE', 'Google');
+    const data = changed(d => d.deployments[0].target = 'g/prod');
+    expect(updatedText(local, BASE, pulled(data)))
+        .toBe(block(indented(data)).replace('GOOGLE', 'Google'));
   });
+
+  // JSON reads a lone carriage return as space, and yaml reads the text around
+  // it as other values.
+  test('writes the catalog\'s data when the local data has a lone carriage ' +
+           'return',
+       () => {
+         const local =
+             '- {vendor_name: GOOGLE, data: "{\\"a\\": \\r\\t[1]}"}\n';
+         expect(updatedText(local, inline('{"a":[1]}'),
+                            inline('{"a":[1],"b":2}')))
+             .toBe(
+                 '- {vendor_name: GOOGLE, data: ' +
+                 '"{\\"a\\":[1],\\"b\\":2}"}\n');
+       });
 });

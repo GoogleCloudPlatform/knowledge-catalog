@@ -4,7 +4,7 @@
 
 import * as yaml from 'yaml';
 
-import {isRecord} from './loader';
+import {isGoogleVendor, isRecord} from './loader';
 import {YAML_OPTIONS} from './yaml_options';
 
 /**
@@ -118,15 +118,7 @@ export function updateText(
     edits[i][1] = skipBlank(text, to, edits[i + 1]?.[0] ?? text.length);
     ends.add(edits[i][1]);
   });
-  let out = '';
-  let at = 0;
-  for (const [from, to, s] of edits) {
-    // An edit inside another would write part of the text twice.
-    if (from < at) throw new Error(`Overlapping edits at offset ${from}.`);
-    out += text.slice(at, from) + s;
-    at = to;
-  }
-  out += text.slice(at);
+  const out = spliced(text, edits);
   // A text with no final newline keeps none, unless the text of a block scalar
   // that keeps its final line breaks reaches its end.
   return text.endsWith('\n') || ends.has(text.length) ?
@@ -203,7 +195,7 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const edits = u.edits.length;
   // A flow collection over several lines that changes is written again in
   // block style.
-  if (yaml.isCollection(node) && node.flow && spansLines(u, node) &&
+  if (yaml.isCollection(node) && node.flow && spansLines(u.text, node) &&
       canonical(node.toJS(u.doc)) !== canonical(value)) {
     replace(u, value, node, slot);
   } else if (
@@ -459,7 +451,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // A flow collection on one line stays flow.
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value) &&
-          !spansLines(u, node)) {
+          !spansLines(u.text, node)) {
     u.edits.push([from, to, lead + scalarText(u, value, slot.col, true)]);
     return;
   }
@@ -643,8 +635,29 @@ function readsInBlock(text: string, value: unknown): boolean {
 }
 
 /** Whether the text of `node` holds a line break. */
-function spansLines(u: Update, node: yaml.Node): boolean {
-  return u.text.slice(node.range![0], node.range![1]).includes('\n');
+/** Whether the text of `node`, in `text`, spans lines. */
+export function spansLines(text: string, node: yaml.Node): boolean {
+  return text.slice(node.range![0], node.range![1]).includes('\n');
+}
+
+/**
+ * `text` with each of `edits` made: each replaces the text from one offset to
+ * another. Edits are made in offset order, and two at one offset in the order
+ * given. Throws when two overlap, since one would write part of the text
+ * twice.
+ */
+export function spliced(
+    text: string, edits: ReadonlyArray<readonly [number, number, string]>):
+    string {
+  let out = '';
+  let at = 0;
+  for (const [from, to, s] of [...edits].sort(
+           (a, b) => a[0] - b[0] || a[1] - b[1])) {
+    if (from < at) throw new Error(`Overlapping edits at offset ${from}.`);
+    out += text.slice(at, from) + s;
+    at = to;
+  }
+  return out + text.slice(at);
 }
 
 /** Whether `node` is or holds a block scalar that keeps its final line breaks. */
@@ -829,8 +842,12 @@ export function itemKey(value: unknown, byValue = false): string {
   const key = !byValue && isRecord(value) &&
       ['name', 'dialect', 'concept', 'vendor_name'].find(
           k => typeof value[k] === 'string');
-  return key ? `${key}:${(value as Record<string, unknown>)[key]}` :
-               canonical(value);
+  const name = key && (value as Record<string, unknown>)[key];
+  // A GOOGLE block matches whatever case its vendor_name is written in, as the
+  // loader reads it.
+  return key === 'vendor_name' && isGoogleVendor(name) ? 'vendor_name:GOOGLE' :
+      key                                             ? `${key}:${name}` :
+                                                        canonical(value);
 }
 
 /**
