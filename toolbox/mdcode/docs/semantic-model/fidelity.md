@@ -17,7 +17,9 @@ Which backend a push deploys to — BigQuery or Spanner — is set by each entry
 ## The round-trip matrix
 
 Rows are what you authored; columns are its fate in each direction. `✓` = comes
-back as authored; `—` = not present in that destination. Footnotes carry the
+back as authored, in the normal forms that
+[What pull recovers](#what-pull-recovers) lists; `—` = not present in that
+destination. Footnotes carry the
 nuances that don't fit a cell. BigQuery and Spanner each get a column; they
 agree on every structural row and differ only where a Spanner target has no
 `MEASURE` and no `OPTIONS` metadata, and in which SQL text a field reads — see
@@ -295,8 +297,12 @@ The BigQuery value can differ from the source's value in these cases:
   other result.
 
 Spanner's default time zone, America/Los_Angeles, is written into the date and
-time functions of a `SPANNER` text. Snowflake's default time zone is written
-into the current date and time functions of a `SNOWFLAKE` text.
+time functions of a `SPANNER` text. A Spanner database created with another
+`default_time_zone` reads those functions in its own time zone, so the
+translated text can give other dates and hours than the database does. Edit the
+`BIGQUERY` entries of such a database's fields by hand to name its time zone.
+Snowflake's default time zone is written into the current date and time
+functions of a `SNOWFLAKE` text.
 
 ## To Spanner
 
@@ -365,8 +371,20 @@ not prune the model to a deployment's profile first.
 
 - A field or metric typed `Opaque` comes back with no `datatype`, since push
   stores one with no type as `Opaque` too.
+- A `datatype` written in another letter case comes back in its canonical
+  case, such as `Integer` for `integer`.
+- A Google-flavor model that names its entities under `datasets:` comes back
+  with `entities:`.
+- A description comes back without the spaces and line breaks at its start and
+  end, since push stores it trimmed. A `description: |` block comes back as
+  `|-`.
 - `ai_context` comes back in the object form, and its custom members come
-  back sorted by name.
+  back sorted by name. A number in a custom member comes back in its JSON form,
+  since that is how the catalog stores it. `1.0` comes back as `1`, and `2.50`
+  as `2.5`.
+- In a vanilla model, the `GOOGLE` blocks on an object come back as one block
+  under the name `GOOGLE`, after the other vendors' blocks. Its `data` is
+  written as compact JSON.
 - A profile's `metrics_exclude` comes back as `"*"` when it excludes every
   metric, and otherwise as a list in name order.
 - Entities, relationships, metrics, actions and constraints come back sorted

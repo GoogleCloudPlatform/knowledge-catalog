@@ -246,7 +246,10 @@ same model that name the same target are rejected at load time (see
 `deployments:` is a native model key under the extended `0.2.0.dev0/google`
 flavor; under vanilla Ossie (`0.2.0.dev0`) the same list is written inside a
 `GOOGLE` custom extension instead (see
-[model spec §6](model_spec.md#6-the-extension-mechanism)).
+[model spec §6](model_spec.md#6-the-extension-mechanism)). A vanilla model also
+binds every source, field expression and join column inline.
+[A complete vanilla model](model_spec.md#appendix-a-complete-vanilla-model)
+shows both.
 
 ### Table sources
 

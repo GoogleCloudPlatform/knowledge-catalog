@@ -687,6 +687,8 @@ not recognize and passes it through unchanged — so a vanilla `kcmd` model is s
 a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
 model's deployments and profiles ride here as a `GOOGLE` block carrying
 `{"deployments": [{"name": "…", "target": "…", "profile": "…"}], "profiles": […]}`.
+[Appendix: a complete vanilla model](#appendix-a-complete-vanilla-model) shows
+one.
 The native keys (`entities`, `deployments`, `extends`, `abstract`, metric
 `entity`, relationship `description`) are **not accepted** under vanilla — each
 is rejected with a message naming the `GOOGLE` `custom_extensions` block or
@@ -841,7 +843,8 @@ The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 [profile file rules](profiles.md#file-layout).
 
 A vanilla `0.2.0.dev0` model lists its profiles instead in a `GOOGLE` block on
-the model, as `{"profiles": [...]}`, each with the keys a profile file takes.
+the model, as `{"profiles": [...]}`, each with the keys a profile file takes
+([Appendix: a complete vanilla model](#appendix-a-complete-vanilla-model)).
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).
 
@@ -931,3 +934,90 @@ relationships:
     from_columns: [o_cust_id]
     to_columns: [c_id]
 ```
+
+## Appendix: a complete vanilla model
+
+The logical model of the annotated example, written in vanilla `0.2.0.dev0` as
+one file. A vanilla model binds every `source`, field `expression` and join
+column inline, as Ossie requires. Those inline bindings are the `default`
+profile. Here they bind the BigQuery tables, so the `analytical` deployment
+names no profile. The `GOOGLE` block on the model carries both deployments and
+the `operational` profile, which binds Spanner tables and excludes every
+metric. Its `data` is a JSON string. A field in a block profile may take a bare
+column name as its `expression`, as in a profile file.
+
+```yaml
+# catalog/EntryGroups/sales/sales.yaml
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders
+        primary_key: [o_id]
+        fields:
+          - name: order_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_id }] }
+          - name: customer_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_cust_id }] }
+          - name: net_amount
+            datatype: Decimal
+            label: "Net amount"
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_net }] }
+      - name: customer
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer
+        primary_key: [c_id]
+        fields:
+          - name: customer_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: c_id }] }
+          - name: name
+            datatype: String
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: c_name }] }
+        ai_context:
+          synonyms: [client, account]
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customer
+        from_columns: [o_cust_id]
+        to_columns: [c_id]
+    metrics:
+      - name: revenue
+        expression:
+          dialects:
+            - { dialect: ANSI_SQL, expression: "SUM(orders.net_amount)" }
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: >-
+          {"deployments": [
+             {"name": "analytical",
+              "target": "bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/sales"},
+             {"name": "operational",
+              "target": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/graphs/sales",
+              "profile": "operational"}],
+           "profiles": [
+             {"name": "operational",
+              "entities": [
+                {"name": "orders",
+                 "source": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/tables/Orders",
+                 "primary_key": ["OrderId"],
+                 "fields": [{"name": "order_id", "expression": "OrderId"},
+                            {"name": "customer_id", "expression": "CustomerId"},
+                            {"name": "net_amount", "expression": "NetAmount"}]},
+                {"name": "customer",
+                 "source": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/tables/Customers",
+                 "primary_key": ["CustomerId"],
+                 "fields": [{"name": "customer_id", "expression": "CustomerId"},
+                            {"name": "name", "expression": "FullName"}]}],
+              "relationships": [{"name": "placed_by",
+                                 "from_columns": ["CustomerId"],
+                                 "to_columns": ["CustomerId"]}],
+              "metrics_exclude": "*"}]}
+```
+
+A logical model that leaves its bindings to profiles has no vanilla form, since
+vanilla requires the inline bindings. The layout of the annotated example above,
+a logical model file and a profile file beside it, needs `0.2.0.dev0/google`.
