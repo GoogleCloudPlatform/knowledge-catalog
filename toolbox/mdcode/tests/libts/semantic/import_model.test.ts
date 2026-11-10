@@ -279,6 +279,17 @@ describe('conversion, strict mode, and translation', () => {
                     `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n` +
                     `    metrics: [{name: m, expression: 'SUM(orders.a + orders.b)'}]\n`}),
      'google', "field 'orders.b': 'expression' has no entry in a supported SQL dialect; add one."],
+    // The deployment already refuses relationship oc, which has no join
+    // columns, and leaving the field unbound refuses nothing more.
+    ['a field with no supported dialect under an AlloyDB deployment that refuses a relationship',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
+                extra: `      - name: customers\n        source: ${ALLOYDB_DB}/schemas/public/tables/customers\n` +
+                    `        fields: [{name: id, expression: id}]\n` +
+                    `    relationships: [{name: oc, from: orders, to: customers}]\n` +
+                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
+     'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
+     "remove 'expression' to leave the field unbound."],
     ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
      "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
     ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
@@ -319,6 +330,14 @@ describe('conversion, strict mode, and translation', () => {
         expect((await importSemanticModelYaml(repaired.files[0].content, {flavor, strict: true}))
                    .errors).not.toContain(needed);
       });
+
+  // Push's checks need a model that loads.
+  test('offers no remedy that leaves a field unbound when the repaired model does not load', async () => {
+    const input = googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
+                             extra: `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n    colour: red\n`});
+    expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true})).errors)
+        .toContain("field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one.");
+  });
 
   test(
       'returns a Google-flavor model unchanged as a third-party file, and runs transpileModel in strict mode when requested',
