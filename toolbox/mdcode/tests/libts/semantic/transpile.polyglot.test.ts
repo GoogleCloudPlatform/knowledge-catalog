@@ -368,6 +368,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "a || ' ' || b", {error: 'kcmd does not translate OR of a string'}],
     ['DATABRICKS', "flag = s IN ('a', 'b')", {error: 'kcmd does not translate IN of a comparison'}],
     ['MYSQL', "flag = s NOT LIKE 'a%'", {error: 'kcmd does not translate NOT LIKE of a comparison'}],
+    ['MYSQL', '(a = b) IS NOT TRUE', {error: 'kcmd does not translate IS NOT TRUE'}],
+    ['MYSQL', '(a = b) <=> c', {error: 'kcmd does not translate <=>'}],
     ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['POSTGRES', 'd::date NOT BETWEEN a AND now()', {error: 'kcmd does not translate NOT BETWEEN on a DATE and a TIMESTAMP'}],
     // Date, format and conversion functions off the list.

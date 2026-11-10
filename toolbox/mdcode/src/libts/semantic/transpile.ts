@@ -827,8 +827,9 @@ function nextNodes(kind: string, value: any, read: string):
       [wrapped!, value.this[wrapped!], 'NOT '] :
       [kind, value, ['in', 'between'].includes(kind) && value.not ? 'NOT ' : ''];
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
-  // BigQuery gives a BOOL there.
-  if (read === 'mysql') {
+  // BigQuery gives a BOOL there. For a kind import translates from no dialect,
+  // such as IS TRUE, the message names the node instead (see constructName).
+  if (read === 'mysql' && (checkKind === 'function' || KINDS[checkKind])) {
     const conditions = conditionValues(checkKind, checkValue);
     const children = (checkKind === 'function' ? checkValue.args ?? [] : Object.values(checkValue))
                          .flat(Infinity);
