@@ -2621,34 +2621,41 @@ describe('kcmd profiles --print-store', () => {
 
   // Push refuses a deployment whose database holds no table an entity is
   // bound to, so --print-store gives push's errors, one to a line, naming the
-  // model file.
+  // model file. A GOOGLE block profile has no file of its own.
   test('gives push\'s error for each table outside the database the deployment targets', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     const other = 'spanner.googleapis.com/projects/acme-ops/instances/prod/' +
         'databases/other/tables';
-    fs.writeFileSync(path.join(eg, 'orders.yaml'), `version: "0.2.0.dev0/google"
+    const bound = (name: string, table: string) => ({
+      name, source: `${other}/${table}`, primary_key: ['key'],
+      fields: [{name: 'key', expression: 'key'}],
+    });
+    const data = JSON.stringify({
+      deployments: [{name: 'prod', target: OPERATIONAL_GRAPH, profile: 'p'}],
+      profiles: [{name: 'p', entities: [bound('Customer', 'Customer'),
+                                        bound('Order', 'Orders')]}],
+    });
+    const dataset = (name: string) => `      - name: ${name}
+        source: ${OPERATIONAL_GRAPH.replace('graphs/commerce', 'tables/' + name)}
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: key}]}
+`;
+    fs.writeFileSync(path.join(eg, 'orders.yaml'), `version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
-    deployments:
-      - { name: prod, target: ${OPERATIONAL_GRAPH} }
-    entities:
-      - name: Customer
-        source: ${other}/Customer
-        primary_key: [key]
-        fields:
-          - { name: key, expression: CustomerId }
-      - name: Order
-        source: ${other}/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`);
-    expect(await profiles({printStore: true})).toBe(1);
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${data}'
+    datasets:
+${dataset('Customer')}${dataset('Order')}`);
+    expect(await profiles({printStore: true, profile: 'p'})).toBe(1);
     expect(errs).toEqual([['Customer', 'Customer'], ['Order', 'Orders']].map(
         ([entity, table]) => "Error: [orders] deployment 'prod' targets " +
-            "Spanner database 'acme-ops/prod/commerce', but the model file " +
+            "Spanner database 'acme-ops/prod/commerce', but profile 'p' " +
             `binds entity '${entity}' to '${other}/${table}', which is not a ` +
             'table in that database.'));
   });
