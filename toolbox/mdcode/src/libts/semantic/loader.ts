@@ -50,7 +50,7 @@ export interface LoadOptions {
   // flavor it writes.
   messageFlavor?: FormatVersion;
   // Set when kcmd import checks what it writes for a file another product
-  // wrote, and does not write over that file. The load sets
+  // wrote, unless it writes a GOOGLE block over that file. The load sets
   // SemanticModel.thirdPartyImport on each model.
   thirdPartyImport?: boolean;
 }

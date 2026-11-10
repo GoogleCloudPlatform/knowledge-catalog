@@ -124,22 +124,22 @@ about each graph. Import leaves out push's notes. A profile file that does not
 parse is always an error. Under `--input first-party`, a message from these
 checks names the input file that holds what it reports. Without it, a message
 that suggests a `kcmd import` command leaves out `--input first-party`, so the
-command imports the same input. An import that writes over its input keeps that
-flag, since the command then reads the file the import wrote. The checks that
-read a service stay with push, such as whether each source names a table
-Knowledge Catalog knows about. For its checks, import reads only each table's
-dialect, as push does: a Cloud SQL or third-party table's from its Knowledge
-Catalog entry, and a Spanner table's from its database. Import then judges each
-table in that dialect. When it cannot read a table's dialect, it warns with
-push's reason and skips the checks that need the dialect: whether a field has
-SQL in its table's dialect, what an `ANSI_SQL` text reads when every table of
-the model file or profile is such a table, and whether a profile's or the model
-file's tables are in one database when only that table's entry can say. Tables
-of two systems are never in one database, so import still reports a profile or
-model file that binds a BigQuery table beside such a table. Nothing is written
-when the import reports an error. Import rewrites only the values it changes,
-and every other line of the file stays as written, with its comments, blank
-lines, quoting, indentation and line endings. Comments on anything import
+command imports the same input. An import that writes a `GOOGLE` block over its
+input keeps that flag, since the command then reads the file the import wrote.
+The checks that read a service stay with push, such as whether each source
+names a table Knowledge Catalog knows about. For its checks, import reads only
+each table's dialect, as push does: a Cloud SQL or third-party table's from its
+Knowledge Catalog entry, and a Spanner table's from its database. Import then
+judges each table in that dialect. When it cannot read a table's dialect, it
+warns with push's reason and skips the checks that need the dialect: whether a
+field has SQL in its table's dialect, what an `ANSI_SQL` text reads when every
+table of the model file or profile is such a table, and whether a profile's or
+the model file's tables are in one database when only that table's entry can
+say. Tables of two systems are never in one database, so import still reports a
+profile or model file that binds a BigQuery table beside such a table. Nothing
+is written when the import reports an error. Import rewrites only the values it
+changes, and every other line of the file stays as written, with its comments,
+blank lines, quoting, indentation and line endings. Comments on anything import
 removes or moves elsewhere in the file are dropped, such as those on a key that
 goes into or out of a `GOOGLE` block. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.

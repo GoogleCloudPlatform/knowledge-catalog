@@ -66,8 +66,9 @@ export interface ImportSemanticModelOptions {
   fileName?: string;
   /**
    * Whether writing the model file `fileName` replaces the input file. When
-   * it does, a message in a third-party import that names an import command
-   * names one that reads the written file, with `--input first-party`.
+   * it does and the written file has a `GOOGLE` block, a message in a
+   * third-party import that names an import command names one with
+   * `--input first-party`, which reads that file.
    */
   overwritesInput?: (fileName: string) => Promise<boolean>;
 }
@@ -1899,8 +1900,11 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
-  const thirdPartyImport =
-      !doc.strict && !await opts.overwritesInput?.(fileName);
+  // Third-party import refuses a file with a GOOGLE block, so a command that
+  // reads such a file written over the input takes --input first-party.
+  const thirdPartyImport = !doc.strict &&
+      !(documentHasGoogleBlock(doc.root) &&
+        await opts.overwritesInput?.(fileName));
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
