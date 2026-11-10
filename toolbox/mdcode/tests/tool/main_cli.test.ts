@@ -75,8 +75,9 @@ describe('kcmd: --help and --version', () => {
     expect(out).not.toContain('(default: true)');
     expect(out).toContain(
         'Run the checks and apply nothing; skips the Knowledge Catalog ' +
-        'checks on the entry group, which find a model the push would ' +
-        'refuse or --force-remove would delete');
+        'checks on the entry group and the custom types, which find a ' +
+        'missing entry group or type, a model the push would refuse, or ' +
+        'one --force-remove would delete');
   });
 
   // cac serves `--version` only when nothing matched. With a command matched it
