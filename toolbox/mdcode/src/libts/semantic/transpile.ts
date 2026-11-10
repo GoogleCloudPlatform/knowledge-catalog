@@ -827,10 +827,16 @@ function nextNodes(kind: string, value: any, read: string):
   }
   if (kind === 'function') return functionArgs(value, read);
   if (!KINDS[kind]?.includes(read)) return undefined;
-  const written = (c: string) => c === 'ignore_nulls' ? c in value :
-      ![null, undefined, false].includes(value[c]) && value[c].length !== 0;
-  const clause = Object.entries(CLAUSES[kind] ?? {}).find(([c]) => written(c));
-  if (clause) return `${kind.toUpperCase()} with ${clause[1]}`;
+  // NOT before IN or BETWEEN sets a `not` flag on the same node, where NOT
+  // before LIKE instead wraps it in a `not` node (see comparingKind), so look
+  // through that wrapper to find LIKE's own clauses.
+  const notLike = kind === 'not' && kindOf(value?.this) === 'like' ? value.this.like : undefined;
+  const [checkKind, checkValue, prefix] = notLike ?
+      ['like', notLike, 'NOT '] : [kind, value, value?.not ? 'NOT ' : ''];
+  const written = (c: string) => c === 'ignore_nulls' ? c in checkValue :
+      ![null, undefined, false].includes(checkValue[c]) && checkValue[c].length !== 0;
+  const clause = Object.entries(CLAUSES[checkKind] ?? {}).find(([c]) => written(c));
+  if (clause) return `${prefix}${checkKind.toUpperCase()} with ${clause[1]}`;
   const joined = kind === 'concat' && joinProblem('||', [value.left, value.right], read);
   if (joined) return joined;
   if (read === 'spanner') {
@@ -1187,6 +1193,10 @@ function typeName(type: string, read: string): string {
 // it in `read`, or else the engine's kind of node.
 function constructName(engine: PolyglotEngine, node: any, read: string): string {
   const [kind, value] = Object.entries(node)[0] as [string, any];
+  // A `raw` node is SQL the engine kept as one unparsed string, such as a
+  // prefix NOT before LIKE in most dialects, so there is no operand to swap
+  // for a placeholder column before generating it again. Name it as written.
+  if (kind === 'raw') return value.sql;
   const written = [value.original_name, value.name].find(n => typeof n === 'string');
   if (written) return written.toUpperCase();
   if (kind === 'window_function') return 'OVER';

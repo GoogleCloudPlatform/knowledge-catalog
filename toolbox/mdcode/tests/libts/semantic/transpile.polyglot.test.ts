@@ -318,6 +318,10 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'a /*!50000 + 1 */', {error: 'kcmd does not translate a MySQL executable comment'}],
     ['MYSQL', 'a /*+ BKA(t) */', {error: 'kcmd does not translate a MySQL optimizer hint'}],
     ['POSTGRES', 'TRIM(BOTH FROM s)', {error: 'kcmd does not translate TRIM with BOTH, LEADING or TRAILING'}],
+    // NOT before LIKE, IN or BETWEEN keeps the clause message's own name.
+    ['POSTGRES', "s NOT LIKE 'a%' ESCAPE '!'", {error: 'kcmd does not translate NOT LIKE with ESCAPE'}],
+    ['POSTGRES', 's NOT IN (SELECT 1)', {error: 'kcmd does not translate NOT IN with a subquery'}],
+    ['POSTGRES', 'n NOT BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate NOT BETWEEN with SYMMETRIC'}],
     ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
     ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DAYOFWEEK'"}],
     ['POSTGRES', 'EXTRACT(week(monday) FROM d)', {error: "kcmd does not translate EXTRACT with part 'WEEK(MONDAY)'"}],
@@ -343,6 +347,10 @@ describe('polyglotTranspiler (transformations)', () => {
     ['DATABRICKS', "s LIKE 'a%' = TRUE", {error: 'kcmd does not translate LIKE and = without parentheses, which databases group in different orders'}],
     ['SNOWFLAKE', 'a = b IS NULL', {error: 'kcmd does not translate = and IS NULL without parentheses, which databases group in different orders'}],
     ['POSTGRES', "a = b NOT LIKE 'a%'", {error: 'kcmd does not translate = and NOT LIKE without parentheses, which databases group in different orders'}],
+    // A prefix NOT before LIKE, which most dialects read as unparsed SQL,
+    // named as written, keeping its operand and letter case.
+    ['POSTGRES', "NOT s LIKE 'a%'", {error: "kcmd does not translate NOT s LIKE 'a%'"}],
+    ['POSTGRES', "NOT x LIKE 'a%'", {error: "kcmd does not translate NOT x LIKE 'a%'"}],
     // Values whose types import cannot see.
     ['POSTGRES', 'a - b', {error: 'kcmd does not translate - without a number, SUM, COUNT or AVG on one side'}],
     ['SQLSERVER', "first_name + ' '", {error: 'kcmd does not translate + of a string'}],
