@@ -142,16 +142,17 @@ if (ENABLE_SEMANTIC) {
           'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')
       .option(
           '--all-profiles',
-          'No longer supported on push; kcmd push deploys every entry under deployments: by default')
+          'No longer supported on push; kcmd push deploys every entry under deployments: by default');
+  // --emit-expressions, --no-profile, --no-kc, --profile and --all-profiles
+  // stay registered only so push can say what replaces each: cac refuses an
+  // unregistered option before push runs.
+  pushCmd
       // The value is optional because --no-deployment defaults this option to
       // true, which cac reports as a missing value when the value is required.
       .option('--deployment [names...]', 'Deploy only these deployments, by name')
       .option(
           '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing');
 }
-// --emit-expressions, --no-profile, --no-kc, --profile and --all-profiles
-// stay registered only so push can say what replaces each: cac refuses an
-// unregistered option before push runs.
 pushCmd.action((options) => run(async () => {
   assertScopeSupported();
   const args = process.argv.slice(2);

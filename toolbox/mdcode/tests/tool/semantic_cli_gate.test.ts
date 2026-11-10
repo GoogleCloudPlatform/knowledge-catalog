@@ -105,7 +105,8 @@ describe('gated kcmd CLI (--define __KCMD_ENABLE_SEMANTIC__=false)', () => {
           /semantic|profiles|\bowl\b|skills-generate|--deployment/i);
       expect(res.stdout + res.stderr).not.toMatch(/private/i);
       if (sub === 'pull') {
-        expect(res.stdout).toContain('--force-remove');
+        expect(res.stdout).toContain(
+            'Delete stale local OKF concept files not in Knowledge Catalog');
       }
     });
   }
@@ -158,6 +159,8 @@ describe('gated kcmd CLI (--define __KCMD_ENABLE_SEMANTIC__=false)', () => {
   test('bare init error omits --semantic-model', () => {
     const res = runGated(['init']);
     expect(res.code).toBe(1);
+    expect(res.stderr).toContain(
+        'Error: Must provide --entry-group, --bigquery-dataset, or --kb');
     expect(res.stderr).not.toMatch(/semantic/i);
     expect(res.stdout + res.stderr).not.toMatch(/private/i);
   });

@@ -8,8 +8,9 @@ const distDir = path.join(rootDir, 'dist');
 const stageDir = path.join(distDir, 'semantic-stage');
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const lock = JSON.parse(fs.readFileSync(path.join(rootDir, 'package-lock.json'), 'utf8'));
+const semanticName = '@google-cloud/kcmd-semantic';
 const semanticVersion = `${pkg.version}-semantic`;
-const tarballPath = path.join(distDir, `google-cloud-kcmd-${semanticVersion}.tgz`);
+const tarballPath = path.join(distDir, `google-cloud-kcmd-semantic-${semanticVersion}.tgz`);
 const sbomPath = path.join(distDir, 'sbom-semantic.spdx.json');
 
 execFileSync('npm', ['run', 'build:libts'], {cwd: rootDir, stdio: 'inherit'});
@@ -39,6 +40,10 @@ try {
       recursive: true,
       filter: (s) => s === src || path.relative(src, s).split(path.sep)[0] !== 'node_modules',
     });
+    const {version} = JSON.parse(fs.readFileSync(path.join(dst, 'package.json'), 'utf8'));
+    if (version !== meta.version) {
+      throw new Error(`'${relPath}' is ${version}, but package-lock.json says ${meta.version}; run 'npm ci' first.`);
+    }
   }
 
   let sha = '';
@@ -61,6 +66,7 @@ try {
   const {devDependencies: _dev, publishConfig: _pub, ...restPkg} = pkg;
   const semanticPkg = {
     ...restPkg,
+    name: semanticName,
     version: semanticVersion,
     private: true,
     bundleDependencies: Object.keys(pkg.dependencies),
@@ -73,7 +79,11 @@ try {
   for (const [relPath, meta] of Object.entries(lock.packages)) {
     if (relPath === '') {
       const {devDependencies: _lockDev, ...restRoot} = meta;
-      semanticLockPackages[''] = {...restRoot, version: semanticVersion};
+      semanticLockPackages[''] = {
+        ...restRoot,
+        name: semanticName,
+        version: semanticVersion,
+      };
     } else if (
         !meta.dev && !meta.devOptional &&
         fs.existsSync(path.join(stageDir, relPath))) {
@@ -82,16 +92,33 @@ try {
   }
   fs.writeFileSync(
       path.join(stageDir, 'package-lock.json'),
-      JSON.stringify({...lock, version: semanticVersion, packages: semanticLockPackages}, null, 2) + '\n');
+      JSON.stringify(
+          {
+            ...lock,
+            name: semanticName,
+            version: semanticVersion,
+            packages: semanticLockPackages,
+          },
+          null, 2) +
+          '\n');
 
   const sbomRaw = execFileSync(
       'npm',
       ['sbom', '--sbom-format=spdx', '--package-lock-only'],
       {cwd: stageDir, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024});
   const sbomDoc = JSON.parse(sbomRaw);
-  const rootSpdxId = sbomDoc.documentDescribes?.[0];
+  // SPDX 2.3 allows only letters, digits, '.' and '-' in IDs, and no fractional seconds in 'created'.
+  const spdxId = (id) => id.replace(/[^A-Za-z0-9.-]/g, '-');
+  sbomDoc.creationInfo.created = sbomDoc.creationInfo.created.replace(/\.\d+Z$/, 'Z');
+  sbomDoc.documentDescribes = sbomDoc.documentDescribes?.map(spdxId);
   sbomDoc.relationships ??= [];
+  for (const r of sbomDoc.relationships) {
+    r.spdxElementId = spdxId(r.spdxElementId);
+    r.relatedSpdxElement = spdxId(r.relatedSpdxElement);
+  }
+  const rootSpdxId = sbomDoc.documentDescribes?.[0];
   for (const p of sbomDoc.packages ?? []) {
+    p.SPDXID = spdxId(p.SPDXID);
     if (!p.licenseConcluded && p.licenseDeclared) {
       p.licenseConcluded = p.licenseDeclared;
     }

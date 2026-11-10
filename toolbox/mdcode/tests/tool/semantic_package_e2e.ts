@@ -1,5 +1,5 @@
 // End-to-end verification for `npm run pack:semantic`:
-// confirms `dist/google-cloud-kcmd-<ver>-semantic.tgz` bundles all runtime
+// confirms `dist/google-cloud-kcmd-semantic-<ver>-semantic.tgz` bundles all runtime
 // dependencies (top-level and nested) + WASM + LICENSE files with `private: true`
 // and no `publishConfig` or `package-lock.json`, matches the SPDX SBOM 1:1 on
 // `name@version`, installs 100% offline with an empty npm cache, executes
@@ -17,8 +17,8 @@ import lock from '../../package-lock.json';
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DIST_DIR = path.join(ROOT, 'dist');
-const TARBALL =
-    path.join(DIST_DIR, `google-cloud-kcmd-${pkg.version}-semantic.tgz`);
+const TARBALL = path.join(
+    DIST_DIR, `google-cloud-kcmd-semantic-${pkg.version}-semantic.tgz`);
 const SBOM_PATH = path.join(DIST_DIR, 'sbom-semantic.spdx.json');
 const BUNDLED_PKG_ROOT_RE =
     /^package(?:\/node_modules\/(?:@[^/]+\/[^/]+|[^@/]+))+\/package\.json$/;
@@ -48,6 +48,7 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
 
     const diskPkg = JSON.parse(
         fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    expect(diskPkg.name).toBe('@google-cloud/kcmd');
     expect(diskPkg.version).toBe(pkg.version);
     expect(diskPkg.private).toBeUndefined();
     expect(diskPkg.publishConfig).toEqual({access: 'public'});
@@ -77,6 +78,7 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
 
     const packedPkg = JSON.parse(
         fs.readFileSync(path.join(unpackedDir, 'package', 'package.json'), 'utf8'));
+    expect(packedPkg.name).toBe('@google-cloud/kcmd-semantic');
     expect(packedPkg.version).toBe(`${pkg.version}-semantic`);
     expect(packedPkg.private).toBe(true);
     expect(packedPkg.publishConfig).toBeUndefined();
@@ -124,7 +126,7 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
       return `${p.name}@${p.version}`;
     }));
 
-    const rootId = `@google-cloud/kcmd@${pkg.version}-semantic`;
+    const rootId = `@google-cloud/kcmd-semantic@${pkg.version}-semantic`;
     const sbomAllIds: string[] = (sbom.packages ?? []).map(
         (p: {name?: string; versionInfo?: string}) =>
             `${p.name}@${p.versionInfo}`);
@@ -163,6 +165,17 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
       expect(bundledNames.has(devDep)).toBe(false);
     }
 
+    expect(sbom.creationInfo.created)
+        .toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const spdxIdRe = /^SPDXRef-[A-Za-z0-9.-]+$/;
+    for (const id of sbom.documentDescribes ?? []) {
+      expect(id).toMatch(spdxIdRe);
+    }
+    for (const r of sbom.relationships ?? []) {
+      expect(r.spdxElementId).toMatch(spdxIdRe);
+      expect(r.relatedSpdxElement).toMatch(spdxIdRe);
+    }
+
     const rootSpdxId = sbom.documentDescribes?.[0];
     expect(typeof rootSpdxId).toBe('string');
     const containsTargets = new Set(
@@ -173,6 +186,7 @@ describe('semantic tarball build (npm run pack:semantic)', () => {
                     r.relationshipType === 'CONTAINS')
             .map((r: {relatedSpdxElement?: string}) => r.relatedSpdxElement));
     for (const p of sbom.packages ?? []) {
+      expect(p.SPDXID).toMatch(spdxIdRe);
       expect(Boolean(p.licenseConcluded)).toBe(true);
       expect(p.licenseConcluded).not.toBe('NOASSERTION');
       if (p.SPDXID !== rootSpdxId) {

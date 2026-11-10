@@ -132,7 +132,7 @@ else {
 
 ### CLI
 
-The package provides the `kcmd` CLI tool. This is distributed as a standalone binary.
+The package provides the `kcmd` CLI tool, which runs on Node.js 22.12 or later.
 
 ```bash
 # Initialize a new catalog snapshot for a bigquery dataset
@@ -177,7 +177,7 @@ NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are a
 #### Environment variables
 
 An optional variable overrides where `kcmd` talks to the catalog. It defaults to
-production, so you normally leave them unset.
+production, so you normally leave it unset.
 
 | Variable | Effect |
 |----------|--------|
