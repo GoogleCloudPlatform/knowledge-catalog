@@ -64,6 +64,12 @@ export interface ImportSemanticModelOptions {
    * file that holds them.
    */
   fileName?: string;
+  /**
+   * Whether writing the model file `fileName` replaces the input file. When
+   * it does, a message in a third-party import that names an import command
+   * names one that reads the written file, with `--input first-party`.
+   */
+  overwritesInput?: (fileName: string) => Promise<boolean>;
 }
 
 /** Lists the entries of an entry group. */
@@ -1893,6 +1899,8 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
+  const thirdPartyImport =
+      !doc.strict && !await opts.overwritesInput?.(fileName);
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
@@ -1906,7 +1914,7 @@ async function validateOutputDocument(
           warnUnacceptedSource: !doc.strict,
           fieldTextChecked: true,
           sourceDialects: load.sourceDialects,
-          thirdPartyImport: !doc.strict,
+          thirdPartyImport,
         });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.

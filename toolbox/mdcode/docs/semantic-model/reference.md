@@ -125,9 +125,10 @@ graph. Import leaves out push's notes. A profile file that does not parse is
 always an error. Under `--input first-party`, a message from these checks names
 the input file that holds what it reports. Without it, a message that suggests
 a `kcmd import` command leaves out `--input first-party`, so the command
-imports the same input. The checks that read a service stay
-with push, such as whether each source names a table Knowledge Catalog knows
-about. For its checks, import reads only each table's dialect, as push does: a
+imports the same input. An import that writes over its input keeps that flag,
+since the command then reads the file the import wrote. The checks that read
+a service stay with push, such as whether each source names a table Knowledge
+Catalog knows about. For its checks, import reads only each table's dialect, as push does: a
 Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
 table's from its database. Import then judges each table in that dialect. When
 it cannot read a table's dialect, it warns with push's reason and skips the

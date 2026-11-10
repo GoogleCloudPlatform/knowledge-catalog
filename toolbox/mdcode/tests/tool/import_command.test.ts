@@ -128,6 +128,7 @@ describe('kcmd import', () => {
           [[model(), {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
             listEntries: expect.any(Function), readDialects: expect.any(Function),
+            overwritesInput: expect.any(Function),
           }]]);
       expect(ApiContext.default).not.toHaveBeenCalled();
     });
@@ -172,6 +173,31 @@ describe('kcmd import', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // A third-party import that writes over its input names the import command
+  // that reads the file it writes, which has a GOOGLE block for the
+  // relationship's description. Following it adds the BigQuery text.
+  // [label, the input, --out]
+  test.each([
+    ['in place in the workspace', path.join(GROUP, 'retail.yaml'), undefined],
+    ['over the file --out names', 'retail.yaml', 'retail.yaml'],
+  ])('a third-party import %s hints at a command that reads the written file', async (_, input, out) => {
+    workspace();
+    write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        `      - name: customers\n        source: ${PREFIX}/tables/customers\n` +
+        '        primary_key: [id]\n        fields:\n          - name: id\n' +
+        '            expression: {dialects: [{dialect: BIGQUERY, expression: id}]}\n' +
+        '    relationships:\n      - {name: oc, from: orders, to: customers, ' +
+        'from_columns: [order_id], to_columns: [id], description: d}\n');
+    expect(await importModel(input, {flavor: 'ossie', out})).toBe(0);
+    expect(warnings).toContainEqual(expect.stringContaining(
+        "add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'"));
+    warnings = [];
+    expect(await importModel(input, {flavor: 'ossie', input: 'first-party', transpile: true, out}))
+        .toBe(0);
+    expect(errors).toEqual([]);
+    expect(warnings.join('\n')).not.toContain('has no expression');
+  });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
   // [label, the workspace, the error, the input file]
