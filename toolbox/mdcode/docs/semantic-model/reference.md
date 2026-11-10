@@ -68,9 +68,11 @@ Push runs in two phases:
 kcmd pull
 ```
 
-Rebuilds the model file and profile files from the Knowledge Catalog entries,
-so comments, key order and formatting are not kept. When the model entry's
-`kcmd-push-state` label says the last push stopped partway, it writes nothing.
+Rebuilds the model file and profile files from the Knowledge Catalog entries.
+It keeps a local file that already holds what the catalog holds as it is, and
+writes every other file without its comments, key order and formatting. When
+the model entry's `kcmd-push-state` label says the last push stopped partway, it
+writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 

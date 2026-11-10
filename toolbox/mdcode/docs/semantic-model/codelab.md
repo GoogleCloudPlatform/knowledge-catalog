@@ -362,9 +362,9 @@ Wrote 7 new and 0 updated Knowledge Catalog entries; wrote 6 entry links.
 Each entity, relationship and metric, and the model itself, are now governed
 entries, joined by `semantic-link` and `reference` links —
 discoverable, access-controlled, and the single definition the rest of your work
-reads from. `kcmd pull` rebuilds the model YAML from these entries, confirming
-the round-trip; comments, key order and formatting are not kept. Physical
-bindings can be governed here too, alongside the logical model.
+reads from. `kcmd pull` reads these entries back, confirming the round trip;
+while the catalog holds what your file says, it leaves the file as it is.
+Physical bindings can be governed here too, alongside the logical model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See

@@ -923,11 +923,13 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
     expect(data.parameters).toEqual([]);
   });
 
-  test('a pull recovers every action unchanged', () => {
+  test('a pull recovers every action unchanged, in name order', () => {
     const {entries} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries);
-    // Entries come back ordered by the catalog rather than by the document, so
-    // compare as a set keyed by name.
+    // Listed in reverse, so pull's order cannot come from the catalog's.
+    const {models} = modelsFromCatalogResources([...entries].reverse());
+    expect(models[0].actions!.map(a => a.name)).toEqual([
+      'CloseBooks', 'PlaceOrder', 'RefundOrder', 'ReplaceOrder',
+    ]);
     const byName = (m: SemanticModel) =>
         Object.fromEntries((m.actions ?? []).map(a => [a.name, a]));
     expect(byName(models[0])).toEqual(byName(model));

@@ -27,6 +27,7 @@ import {SemanticModel} from '../libts/semantic/ir';
 import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {catalogForm} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
@@ -1696,8 +1697,23 @@ async function pullSemanticModel(
   }
 
   const pulled = result.models[0];
-  // The catalog stores no profile's actions, so a profile file keeps the
-  // actions it binds locally. A vanilla model declares no action.
+  const {files, warnings} = pulledModelFiles(layout, pulled);
+  for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
+  const kept = filesHoldingCatalog(layout, source, pulled.name, files);
+  for (const [id, sidecar] of result.overviews ?? []) {
+    files.push({
+      fileName: `${id}.overview.md`,
+      content: formatOverviewSidecar(sidecar),
+    });
+  }
+  return writePulledFiles(layout, pulled.name, files, options, kept);
+}
+
+
+// The model and profile files pull writes for `pulled`. The catalog stores no
+// profile's actions, so a profile file keeps the actions it binds locally. A
+// vanilla model declares no action.
+function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
   const model = pulled.version === OSSIE_VERSION ? pulled : {
     ...pulled,
     profiles: pulled.profiles?.map(p => {
@@ -1705,15 +1721,55 @@ async function pullSemanticModel(
       return actions ? {...p, actions} : p;
     }),
   };
-  const {files, warnings} = serializeModelFiles(model, {logical: true});
-  for (const w of warnings) console.warn(`Warning: [${model.name}] ${w}`);
-  for (const [id, sidecar] of result.overviews ?? []) {
-    files.push({
-      fileName: `${id}.overview.md`,
-      content: formatOverviewSidecar(sidecar),
-    });
+  return serializeModelFiles(model, {logical: true});
+}
+
+
+// The names of the files in `files` that pull keeps as they are. `files`
+// holds what pull built from the catalog for `model`. A local file is kept
+// when pull would write the same text for it had push written the local
+// files to the catalog (see pull_update.ts). The model file is compared on
+// its own, and each profile file beside the catalog's model file, which is
+// the model file pull leaves. Warns about the local files that do not load.
+function filesHoldingCatalog(
+    layout: SemanticModelLayout, source: SemanticModelSource, model: string,
+    files: readonly SerializedFile[]): Set<string> {
+  const doc = layout.modelDocuments().find(
+      d => layout.modelPath(d.name) === layout.modelPath(model));
+  if (!doc) return new Set();
+  const modelFile = `${model}.yaml`;
+  // Pull's text for each file, for the model file `text` and the profile
+  // files `profiles` gives, or why they do not load.
+  const texts = (text: string, profiles: ProfileDocs) => {
+    const form = catalogForm({name: doc.name, text}, profiles, source);
+    return 'error' in form ?
+        form :
+        new Map(pulledModelFiles(layout, form.model)
+                    .files.map(f => [f.fileName, f.content]));
+  };
+  const kept = new Set<string>();
+  const own = texts(doc.text, () => []);
+  const catalogModel = files.find(f => f.fileName === modelFile)!;
+  if (own instanceof Map) {
+    if (own.get(modelFile) === catalogModel.content) kept.add(modelFile);
+  } else {
+    console.warn(
+        `Warning: local model file ${layout.modelPath(doc.name)} does not ` +
+        `load, so pull writes it from the catalog: ${own.error}`);
   }
-  return writePulledFiles(layout, model.name, files, options);
+  const profileFiles = files.filter(f => f !== catalogModel);
+  if (!profileFiles.length) return kept;
+  const beside = texts(catalogModel.content, profileDocsReader(layout));
+  if (beside instanceof Map) {
+    for (const f of profileFiles) {
+      if (beside.get(f.fileName) === f.content) kept.add(f.fileName);
+    }
+  } else {
+    console.warn(
+        `Warning: the local profile files of model '${model}' do not load, ` +
+        `so pull writes them from the catalog: ${beside.error}`);
+  }
+  return kept;
 }
 
 
@@ -1734,11 +1790,12 @@ function localProfileActions(
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
-// read. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove.
+// read. A local file named in `kept` already holds the catalog's content and
+// stays as it is. Then it names each local profile file and overview sidecar
+// that the pull did not write, or deletes it under --force-remove.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions): number {
+    options: PullOptions, kept: ReadonlySet<string>): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
   for (const {fileName, content} of files) {
@@ -1753,9 +1810,13 @@ function writePulledFiles(
     written.add(path.resolve(target.path));
     const before =
         fs.existsSync(target.path) ? fs.readFileSync(target.path) : undefined;
-    const state = !before                   ? 'created' :
-        before.equals(Buffer.from(content)) ? 'unchanged' :
-                                              'updated';
+    // A kept file that is not valid UTF-8 is one push refuses, so pull
+    // writes it.
+    const keep = kept.has(fileName) &&
+        !checkUtf8(target.path, fileName, before?.toString() ?? '');
+    const state = !before ? 'created' :
+        keep || before.equals(Buffer.from(content)) ? 'unchanged' :
+                                                      'updated';
     counts[state]++;
     if (state === 'unchanged') {
       console.log(`  unchanged ${target.path}`);

@@ -700,7 +700,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // silently, since the pull rewrites the document it read.
     const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
-    expect(models[0].constraints![0].aiContext).toEqual({
+    const byName = new Map(models[0].constraints!.map(c => [c.name, c]));
+    expect(byName.get('NonNegativeOrderTotal')!.aiContext).toEqual({
       instructions:
           'Quote the shortfall in the customer\'s own currency when refusing.',
       synonyms: ['NoNegativeTotals', 'NonNegativeTotal'],
@@ -708,7 +709,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     });
     // The constraint that declares none stays clean rather than gaining an
     // empty record.
-    expect(models[0].constraints![1].aiContext).toBeUndefined();
+    expect(byName.get('PositiveQuantity')!.aiContext).toBeUndefined();
   });
 
   test('a model with no constraints publishes no constraint entry', () => {
@@ -725,17 +726,15 @@ describe('Knowledge Catalog publish/pull round trip', () => {
          expect(ownedPrefixes).toContain('sales.constraints.');
        });
 
-  test('a pull recovers the constraints', () => {
+  test('a pull recovers actions and constraints together, in name order',
+       () => {
     const {entries} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries);
-    expect(models[0].constraints).toEqual(model.constraints);
-  });
-
-  test('a pull recovers actions and constraints together', () => {
-    const {entries} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries);
-    expect(models[0].actions).toEqual(model.actions);
-    expect(models[0].constraints).toEqual(model.constraints);
+    // Listed in reverse, so pull's order cannot come from the catalog's.
+    const {models} = modelsFromCatalogResources([...entries].reverse());
+    const inNameOrder = <T extends {name: string}>(items: T[] = []) =>
+        [...items].sort((a, b) => a.name < b.name ? -1 : 1);
+    expect(models[0].actions).toEqual(inNameOrder(model.actions));
+    expect(models[0].constraints).toEqual(inNameOrder(model.constraints));
   });
 
   test('a second push of the pulled model produces the same entries', () => {
@@ -867,10 +866,10 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     broken.aspects![CONSTRAINT_ASPECT].data!.judgment = '  ';
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name)).toEqual([
-      'NonNegativeOrderTotal',
-      'OrderWithinStandingLimit',
-      'OrderWithinCustomerCredit',
       'LargeOrderIsJustified',
+      'NonNegativeOrderTotal',
+      'OrderWithinCustomerCredit',
+      'OrderWithinStandingLimit',
     ]);
     expect(warnings.some(
                w => w.includes('constraint \'PositiveQuantity\'') &&

@@ -1166,6 +1166,242 @@ describe('the legacy profile forms', () => {
 });
 
 
+// A pull keeps each local model and profile file that already holds what the
+// catalog holds, byte for byte: its comments, key order and style, and the
+// forms pull would write differently, such as a string `ai_context`, the
+// order of entities and metrics, custom ai_context members and
+// `metrics_exclude`. It writes a file whose content differs, or that does not
+// exist, in full.
+describe('a pull after a push', () => {
+  const MODEL = `# Hand-written model.
+version: "0.2.0.dev0/google"
+semantic_model:
+  - description: Orders and customers   # before name
+    name: commerce
+    ai_context: Answer in dollars.
+    entities:
+      - name: Order
+        primary_key: [id]
+        ai_context:
+          instructions: An order.
+          custom: {zeta: 1, alpha: 2}
+        fields:
+          - { name: id }
+          - { name: buyer }
+      - name: Customer
+        primary_key: [key]
+        fields:
+          - { name: key, label: Customer ID }   # flow style
+    relationships:
+      - { name: placed_by, from: Order, to: Customer, from_columns: [buyer], to_columns: [key] }
+    metrics:
+      - { name: orders, expression: COUNT(Order.id) }
+      - { name: customers, expression: COUNT(Customer.key) }
+      - { name: buyers, expression: COUNT(Order.buyer) }
+`;
+  const TABLES = 'bigquery.googleapis.com/projects/test-project/datasets/prod/tables';
+  const PROFILE = `# Production bindings.
+name: prod
+entities:
+  - name: Order
+    source: ${TABLES}/orders
+    primary_key: [id]
+    fields: [{ name: id, expression: o_id }, { name: buyer, expression: o_buyer }]
+  - name: Customer
+    source: ${TABLES}/customer
+    primary_key: [key]
+    fields: [{ name: key, expression: c_key }]
+relationships:
+  - { name: placed_by, from_columns: [buyer], to_columns: [key] }
+metrics_exclude: [orders, customers]
+`;
+  // A vanilla-flavor model, which binds each dataset to its table and writes
+  // each expression as a list of dialects.
+  const ansi = (sql: string) =>
+      `{dialects: [{dialect: ANSI_SQL, expression: "${sql}"}]}`;
+  const VANILLA = `# Hand-written vanilla model.
+version: "0.2.0.dev0"
+semantic_model:
+  - description: Orders and customers   # before name
+    name: commerce
+    ai_context: Answer in dollars.
+    datasets:
+      - name: Order
+        source: ${TABLES}/orders
+        primary_key: [id]
+        ai_context:
+          instructions: An order.
+          custom: {zeta: 1, alpha: 2}
+        fields:
+          - { name: id, expression: ${ansi('o_id')} }
+          - { name: buyer, expression: ${ansi('o_buyer')} }
+      - name: Customer
+        source: ${TABLES}/customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: ${ansi('c_key')} }   # flow style
+    relationships:
+      - { name: placed_by, from: Order, to: Customer, from_columns: [buyer], to_columns: [key] }
+    metrics:
+      - { name: orders, expression: ${ansi('COUNT(Order.id)')} }
+      - { name: customers, expression: ${ansi('COUNT(Customer.key)')} }
+`;
+  const ANCHOR =
+      'projects/test-project/locations/us/entryGroups/commerce_eg/entries/' +
+      'commerce';
+
+  // Writes `files` into the scope's entry group directory, and pushes them.
+  async function pushed(files: Record<string, string>) {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    for (const [name, text] of Object.entries(files)) {
+      fs.writeFileSync(local(name), text);
+    }
+    const catalog = fakeCatalog();
+    expect(await push({deployment: false})).toBe(0);
+    return catalog;
+  }
+
+  // Push checks a profile without the model's actions, so a `sql` executor in
+  // the model does not count against the profile file.
+  const WITH_SQL_ACTION = `${MODEL}    actions:
+      - name: CloseBooks
+        executor: {sql: {statements: ["UPDATE ledger SET closed = TRUE"]}}
+`;
+  for (const [flavor, files] of [
+    ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
+    ['vanilla', {'commerce.yaml': VANILLA}],
+    ['Google-flavor with a sql action',
+     {'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE}],
+  ] as const) {
+    test(`that changes nothing keeps the ${flavor} files byte for byte`,
+         async () => {
+           await pushed(files);
+           const logSpy = console.log as Mock<any>;
+           logSpy.mockClear();
+
+           expect(await pull()).toBe(0);
+           expect(localFiles()).toEqual(
+               Object.fromEntries(Object.entries(files).map(
+                   ([name, text]) => [local(name), text])));
+           for (const name of Object.keys(files)) {
+             expect(messages(logSpy)).toContain(`unchanged ${shown(name)}`);
+           }
+         });
+  }
+
+  test('writes in full a file whose content changed in the catalog, keeps ' +
+           'the others, and writes a file that does not exist',
+       async () => {
+         const {entries} = await pushed(
+             {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+         entries.get(ANCHOR)!.entrySource!.description = 'Sales';
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+
+         expect(await pull()).toBe(0);
+         const model = fs.readFileSync(local('commerce.yaml'), 'utf8');
+         expect(model).toContain('description: Sales');
+         expect(model).not.toContain('# Hand-written model.');
+         const profile =
+             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+         expect(profile).toContain('name: prod');
+         expect(profile).not.toContain('# Production bindings.');
+
+         // The profile file pull wrote holds what the catalog holds.
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
+         entries.get(ANCHOR)!.entrySource!.description = 'Sales again';
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .toBe(PROFILE);
+       });
+
+  // A local model file push would refuse is written from the catalog. Its
+  // profile file still holds the catalog's content beside the model file pull
+  // writes, so it stays.
+  for (const [why, text, warning] of [
+    ['does not load', Buffer.from(`${MODEL}    colour: red\n`),
+     `Warning: local model file ${shown('commerce.yaml')} does not load, so ` +
+         'pull writes it from the catalog: '],
+    // The bad byte is in a comment, so the content is the catalog's.
+    ['is not valid UTF-8',
+     Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]),
+                    Buffer.from(`\n${MODEL}`)]),
+     undefined],
+  ] as const) {
+    test(`writes the model file in full when it ${why}, and keeps the ` +
+             'profile file',
+         async () => {
+           await pushed(
+               {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+           fs.writeFileSync(local('commerce.yaml'), text);
+           const warnSpy = console.warn as Mock<any>;
+
+           expect(await pull()).toBe(0);
+           if (warning) {
+             expect(messages(warnSpy)).toContain(warning);
+           } else {
+             expect(messages(warnSpy)).not.toContain('does not load');
+           }
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+               .not.toContain('# Hand-written model.');
+           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+               .toBe(PROFILE);
+         });
+  }
+
+  // A local profile file push would refuse is written from the catalog, and
+  // the model file stays.
+  for (const [why, profile] of [
+    ['names another profile',
+     PROFILE.replace('name: prod', 'name: production')],
+    ['excludes a metric the model does not declare',
+     PROFILE.replace('[orders, customers]', '[orders, customers, zz]')],
+  ] as const) {
+    test(`keeps the model file and writes the profile file in full, with a ` +
+             `warning, when the profile file ${why}`,
+         async () => {
+           await pushed(
+               {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE});
+           fs.writeFileSync(local('commerce.profile.prod.yaml'), profile);
+           const warnSpy = console.warn as Mock<any>;
+
+           expect(await pull()).toBe(0);
+           expect(messages(warnSpy)).toContain(
+               "Warning: the local profile files of model 'commerce' do not " +
+               'load, so pull writes them from the catalog: ');
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(MODEL);
+           expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+               .not.toContain('# Production bindings.');
+         });
+  }
+
+  test('writes a profile file that holds the catalog\'s content only beside ' +
+           'the local model file',
+       async () => {
+         // The catalog adds metric `buyers` and excludes it from prod, so prod
+         // excludes every metric. Locally prod excludes every metric too, as
+         // the local model has no `buyers`.
+         await pushed({
+           'commerce.yaml': MODEL,
+           'commerce.profile.prod.yaml': PROFILE.replace(
+               '[orders, customers]', '[orders, customers, buyers]'),
+         });
+         const older = MODEL.replace(
+             '      - { name: buyers, expression: COUNT(Order.buyer) }\n', '');
+         fs.writeFileSync(local('commerce.yaml'), older);
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
+
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+             .toContain('name: buyers');
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .not.toBe(PROFILE);
+       });
+});
+
+
 describe('a pull', () => {
   test('writes the model, profile and sidecar files, skips a name push does ' +
            'not read, and names or deletes stale ones',
