@@ -271,6 +271,15 @@ describe('conversion, strict mode, and translation', () => {
      googleDoc({extra: `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
                    `        fields: [{name: order_id, expression: ${MDX_ONLY}}]\n`}),
      'google', "field 'items.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
+    // An AlloyDB deployment needs every field a metric reads bound, whichever
+    // remedy the metric's own error gets.
+    ['a field with no supported dialect that an unanchored metric reads, under an AlloyDB deployment',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
+                extra: `      - name: customers\n        source: ${ALLOYDB_DB}/schemas/public/tables/customers\n` +
+                    `        primary_key: [id]\n        fields: [{name: id, expression: id}]\n` +
+                    `    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id) + COUNT(customers.id)'}\n` +
+                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
+     'google', "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
     // A metric's error names only the first unbound field it reads, so a
     // field the input already leaves unbound must not hide this one.
     ['a field with no supported dialect that a metric reads after an unbound field, under an AlloyDB deployment',

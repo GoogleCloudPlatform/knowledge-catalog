@@ -1180,11 +1180,17 @@ function keepsMetric(
   return true;
 }
 
-/** Keeps the metrics of `doc` for which `keep` returns true. */
+/**
+ * Keeps the metrics of `doc` for which `keep` returns true. In strict mode,
+ * the model in `doc.root` keeps every metric.
+ */
 function filterMetrics(
     doc: ImportDocument,
     keep: (mt: Record<string, any>, doc: ImportDocument) => boolean): void {
   doc.metrics = doc.metrics.filter(mt => keep(mt, doc));
+  // Strict mode reports each metric it drops and writes nothing.
+  // offerUnbinding judges its remedies on the metrics as written.
+  if (doc.strict) return;
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
