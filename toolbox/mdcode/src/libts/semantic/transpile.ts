@@ -1087,8 +1087,10 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     return sides.map(s => s.interval ? s.interval.this : s);
   }
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
-  // A sum or difference with an INTERVAL is a date or a time.
-  const date = (s: any) => isDate(s) || CURRENT.has(String(bare(s)?.function?.name).toUpperCase()) ||
+  // DATE_ADD, DATE_SUB and a sum or difference with an INTERVAL are dates or
+  // times.
+  const date = (s: any) => isDate(s) ||
+      [...CURRENT, 'DATE_ADD', 'DATE_SUB'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval));
   if (CONVERTING.has(read) && sides.some(date)) return `${op} of a date`;
   if ((kind === 'mul' && !CONVERTING.has(read)) || read === 'spanner') return sides;

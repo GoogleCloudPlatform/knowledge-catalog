@@ -396,6 +396,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', "first_name + ' '", {error: 'kcmd does not translate + of a string'}],
     ['MYSQL', 'CURDATE() - 7', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'd + INTERVAL 1 DAY - 1', {error: 'kcmd does not translate - of a date'}],
+    ['MYSQL', 'DATE_ADD(d, INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'SUM(a > 2)', {error: 'kcmd does not translate SUM of a comparison'}],
     ['MYSQL', 'MAX(a > 2)', {error: 'kcmd does not translate MAX of a comparison'}],
     ['MYSQL', 'COALESCE(a > b, 0)', {error: 'kcmd does not translate COALESCE of a comparison'}],
