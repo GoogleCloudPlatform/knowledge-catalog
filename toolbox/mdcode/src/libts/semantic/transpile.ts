@@ -593,8 +593,10 @@ const KINDS: Record<string, string[]> = Object.fromEntries([
 // Server's CONCAT skip a NULL, where BigQuery's gives NULL. PostgreSQL and
 // MySQL round a FLOAT halfway between two numbers to the even one, and
 // Databricks rounds a DOUBLE through its shortest decimal text. Databricks'
-// date_sub of a timestamp gives a DATE, which the engine does not write. An
-// ANSI_SQL ROUND of a FLOAT rounds to the even number on PostgreSQL tables.
+// date_sub of a timestamp gives a DATE, which the engine does not write.
+// Databricks' date_trunc, dateadd and three-argument date_add give a
+// TIMESTAMP, where BigQuery gives a DATE or a DATETIME. An ANSI_SQL ROUND of
+// a FLOAT rounds to the even number on PostgreSQL tables.
 // SPANNER_FUNCTIONS below lists Spanner's.
 const FUNCTIONS: Record<string, [string[], number, number]> = {
   NULLIF: [except('spanner'), 2, 2],
@@ -605,10 +607,10 @@ const FUNCTIONS: Record<string, [string[], number, number]> = {
   CURRENT_TIMESTAMP: [except('spanner'), 0, 0],
   NOW: [['postgresql', 'mysql', 'databricks'], 0, 0],
   GETDATE: [['tsql'], 0, 0],
-  DATE_TRUNC: [['postgresql', 'snowflake', 'databricks'], 2, 2],
+  DATE_TRUNC: [['postgresql', 'snowflake'], 2, 2],
   DATE_PART: [['postgresql', 'snowflake', 'tsql'], 2, 2],
-  DATEADD: [['snowflake', 'tsql', 'databricks'], 3, 3],
-  DATE_ADD: [['mysql', 'databricks'], 2, 3],
+  DATEADD: [['snowflake', 'tsql'], 3, 3],
+  DATE_ADD: [['mysql', 'databricks'], 2, 2],
   DATE_SUB: [['mysql'], 2, 2],
   DATEDIFF: [['tsql'], 3, 3],
 };

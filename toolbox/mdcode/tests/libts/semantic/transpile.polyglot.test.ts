@@ -236,7 +236,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'CAST(ds AS DATE) = CAST(GETDATE() AS DATE)', {sql: 'CAST(ds AS DATE) = CAST(CURRENT_TIMESTAMP() AS DATE)'}],
     ['POSTGRES', "DATE_TRUNC('month', \"order date\") = CURRENT_DATE AND t = NOW()", {sql: 'DATE_TRUNC(`order date`, MONTH) = CURRENT_DATE AND t = CURRENT_TIMESTAMP()'}],
     ['SNOWFLAKE', 'DATE_TRUNC(week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
-    ['DATABRICKS', "date_trunc('QUARTER', d)", {sql: 'date_trunc(d, QUARTER)'}],
+    ['DATABRICKS', "date_trunc('QUARTER', d)", {error: 'kcmd does not translate DATE_TRUNC'}],
     ['POSTGRES', "date_part('year', d) * EXTRACT(MINUTE FROM t)", {sql: 'EXTRACT(YEAR FROM d) * EXTRACT(MINUTE FROM t)'}],
     ['SQLSERVER', 'DATEPART(month, d) - 1', {sql: 'EXTRACT(MONTH FROM d) - 1'}],
     ['SQLSERVER', 't >= GETDATE() OR d + 1 > d', {sql: 't >= CURRENT_TIMESTAMP() OR d + 1 > d'}],
