@@ -233,11 +233,12 @@ binding rather than the logical model:
   the line is `- Store: none.` followed by the reason, for example `- Store:
   none. Model 'commerce' declares no deployment target in 'deployments', so
   there is no store to run against. Declare a deployment in 'deployments'
-  whose target names a database.` A BigQuery model that binds a table in
-  another BigQuery dataset gets the same line, with that reason. When the
-  profile names a store that cannot be resolved, `kcmd skills-generate` fails
-  and writes nothing instead. For an AlloyDB target named by its cluster, it
-  calls the AlloyDB API to find the cluster's primary instance.
+  whose target names a database.` A BigQuery model that binds a BigLake table
+  or a table in another BigQuery dataset gets the same line, with that reason.
+  When the profile names a store that cannot be resolved,
+  `kcmd skills-generate` fails and writes nothing instead. For an AlloyDB
+  target named by its cluster, it calls the AlloyDB API to find the cluster's
+  primary instance.
 - **Executor**: The executor kind(s) (`sql`, `mcp`, `rest`, or `grpc`) across
   every action the model *declares*, not only the runnable ones. It is a summary
   of the binding, not a runnability signal: a profile in which nothing can run

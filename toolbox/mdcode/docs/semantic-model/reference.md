@@ -268,8 +268,8 @@ two BigQuery deployments of one profile in two datasets, since they leave no
 single store, while push deploys both. It accepts a model that binds a table outside
 the database a deployment deploys to, which push refuses, unless the model has
 actions and that deployment names the store of the selected profile. A BigQuery
-graph may bind a table in any BigQuery dataset. It also accepts a profile file
-that no deployment uses, as push does,
+graph may bind a BigLake table or a table in any BigQuery dataset. It also
+accepts a profile file that no deployment uses, as push does,
 and writes a skill whose store line says there
 is none. A vanilla model lists its deployments in a `GOOGLE` block.
 The command fails the same way when a target there is in no accepted form, or
@@ -296,10 +296,10 @@ that reads one. So does `kcmd profiles --print-store`.
 For a model with actions, it also fails without writing anything when the
 profile names a store that cannot be resolved. That happens when the model
 binds a table outside its Spanner or AlloyDB store, when a BigQuery graph
-deployment binds a table that is not a BigQuery or BigLake table, when the
-AlloyDB cluster has no primary instance, when the primary is not READY, or when
-the instance listing fails. A model with no actions still gets its skill in
-those cases, since the skill does not name the store.
+deployment that names the store binds a table that is not a BigQuery or BigLake
+table, when the AlloyDB cluster has no primary instance, when the primary is
+not READY, or when the instance listing fails. A model with no actions still
+gets its skill in those cases, since the skill does not name the store.
 
 A BigQuery graph may read tables in other datasets, as push allows. For such a
 model, and for a profile whose deployments name no target, the store line says

@@ -52,9 +52,9 @@ export interface SemanticRuntime {
    * results. The target of any deployment may be in no accepted form, the
    * profile's several targets may leave the store ambiguous, the model may
    * bind a table outside its Spanner or AlloyDB store, a BigQuery graph
-   * deployment may bind a table that is not a BigQuery or BigLake table, or
-   * finding how to connect may fail, such as the lookup of an AlloyDB
-   * cluster's primary instance. `storeError` says why.
+   * deployment that names the store may bind a table that is not a BigQuery
+   * or BigLake table, or finding how to connect may fail, such as the lookup
+   * of an AlloyDB cluster's primary instance. `storeError` says why.
    */
   storeFailed?: boolean;
   /**

@@ -176,7 +176,7 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  *
  * Neither is set when the profile names no store, unless a target is in no
  * accepted form. Neither is set either when a BigQuery model with actions
- * binds a table outside the graph's dataset.
+ * binds a BigLake table or a table in another BigQuery dataset.
  */
 export interface StoreError {
   error: string;
