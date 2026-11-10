@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
+import {nodeKey} from '../../../src/libts/semantic/graph_ddl';
 import {Entity, Field, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
@@ -508,8 +509,9 @@ NODE TABLES (
   });
 
   // Spanner drops the metric with a warning, and BigQuery emits it. The
-  // lineitem fixture's orders is keyed only by a unique key; with that taken
-  // away no entity has a key, so the error comes before any metric is reached.
+  // lineitem fixture declares only a unique key on orders and no primary key on
+  // either entity, so no entity has a primary key and the error comes before
+  // any metric is reached.
   test('metric warnings come after the entity warnings, and the no-node-table error leaves them out', () => {
     const noKey = (e: string) => `entity '${e}': empty KEY (no primary key); ` +
         `node table skipped, as a graph node requires a KEY`;
@@ -519,15 +521,11 @@ NODE TABLES (
       entity('party', '', [], {}, {abstract: true}),
     ], {metrics: [{name: 'revenue', entity: 'orders',
                    expression: 'SUM(orders.amount)'}]});
-    const [loaded] =
+    const [lineitem] =
         loadModels(
             fs.readFileSync(
                 path.join(FIXTURES, 'lineitem_databricks_ext.yaml'), 'utf8'))
             .models;
-    const lineitem = {
-      ...loaded,
-      entities: loaded.entities.map(e => ({...e, uniqueKeys: undefined})),
-    };
     for (const [engine, generate] of ENGINES) {
       expect(generate(shop).warnings, engine).toEqual([
         noKey('drafts'),
@@ -815,92 +813,108 @@ describe('key and join columns, on both engines', () => {
 });
 
 
-// On Spanner, a relationship may join on a unique key, and an entity with no
-// primary key is keyed by its first unique key wherever the graph reads its
-// key. (BigQuery keys node tables by primary_key alone; see bigquery.test.ts.)
-describe('a node with no primary key, on Spanner', () => {
-  // customers states no primary key. Its first unique key is customer_code;
-  // its second is email.
+// A node table is keyed by its entity's primary_key alone. An entity with only
+// unique_keys gets no node table on either engine, and any edge or measure on
+// it is skipped when a caller generates DDL directly.
+describe('a node with no primary key, on both engines', () => {
+  // customers states no primary key, only unique_keys.
   const customers = (more: Partial<Entity> = {}) => entity(
       'customers', 'Customers', [], {name: 'name'},
       {uniqueKeys: [['customer_code'], ['email']], ...more});
   const orders = entity('orders', 'Orders', ['order_id'], {amount: 'amount'});
   const regions =
       entity('regions', 'Regions', ['region_id'], {label: 'label'});
+  const skippedNode = (name: string) =>
+      `entity '${name}': empty KEY (no primary key); node table skipped, ` +
+      `as a graph node requires a KEY`;
 
-  test('an entity with only a unique key gets a node keyed by it, and an edge to it is emitted', () => {
-    // `drafts` states neither key (an empty unique key counts as none), so it
-    // still gets no node table.
-    const model = modelOf('shop', [
-      orders, customers(),
-      entity('drafts', 'Drafts', [], {note: 'note'}, {uniqueKeys: [[]]}),
-    ], {relationships: [
-      {
-        name: 'placed_by',
-        source: {entity: 'orders', columns: ['cust_code']},
-        destination: {entity: 'customers', columns: ['customer_code']},
-      },
-      {
-        name: 'gifted_to',
-        source: {entity: 'orders', columns: []},
-        destination: {entity: 'customers', columns: []},
-        association: {
-          dataSource: 'Gifts',
-          keys: ['gift_id'],
-          sourceColumns: ['order_id'],
-          destinationColumns: ['customer_code'],
-          fields: [],
-        },
-      },
-    ]});
-    const {ddl, warnings} = generateSpannerPropertyGraph(model);
-    expect(keyLines(ddl)).toEqual([
-      'KEY(order_id)',
-      'KEY(customer_code)',
-      'KEY(order_id)',
-      'SOURCE KEY(order_id) REFERENCES orders(order_id)',
-      'DESTINATION KEY(cust_code) REFERENCES customers(customer_code)',
-      'KEY(gift_id)',
-      'SOURCE KEY(order_id) REFERENCES orders(order_id)',
-      'DESTINATION KEY(customer_code) REFERENCES customers(customer_code)',
-    ]);
-    expect(ddl).not.toContain('AS drafts');
-    expect(warnings).toEqual([
-      `entity 'drafts': empty KEY (no primary key); node table skipped, ` +
-          `as a graph node requires a KEY`,
-    ]);
-  });
+  test('nodeKey reads only primary_key, and an entity with only unique_keys ' +
+           'gets no node table or incoming edges',
+       () => {
+         expect(nodeKey(orders)).toEqual(['order_id']);
+         expect(nodeKey(customers())).toEqual([]);
+         const model = modelOf('shop', [
+           orders, customers(),
+           entity('drafts', 'Drafts', [], {note: 'note'}, {uniqueKeys: [[]]}),
+         ], {relationships: [
+           {
+             name: 'placed_by',
+             source: {entity: 'orders', columns: ['cust_code']},
+             destination: {entity: 'customers', columns: ['customer_code']},
+           },
+           {
+             name: 'gifted_to',
+             source: {entity: 'orders', columns: []},
+             destination: {entity: 'customers', columns: []},
+             association: {
+               dataSource: 'Gifts',
+               keys: ['gift_id'],
+               sourceColumns: ['order_id'],
+               destinationColumns: ['customer_code'],
+               fields: [],
+             },
+           },
+         ]});
+         for (const [engine, generate] of ENGINES) {
+           const {ddl, warnings} = generate(model);
+           expect(keyLines(ddl), engine).toEqual(['KEY(order_id)']);
+           expect(ddl, engine).not.toContain('AS customers');
+           expect(ddl, engine).not.toContain('AS drafts');
+           expect(ddl, engine).not.toContain('EDGE TABLES');
+           expect(warnings, engine).toEqual([
+             skippedNode('customers'),
+             skippedNode('drafts'),
+             `relationship 'placed_by': references skipped entity ` +
+                 `'customers'; edge omitted`,
+             `relationship 'gifted_to': references skipped entity ` +
+                 `'customers'; edge omitted`,
+           ]);
+         }
+       });
 
-  test('an edge from it uses its unique key', () => {
+  test('an edge from an entity with only unique_keys is omitted', () => {
     const model = modelOf('shop', [customers(), regions], {relationships: [{
       name: 'lives_in',
       source: {entity: 'customers', columns: ['region_fk']},
       destination: {entity: 'regions', columns: ['region_id']},
     }]});
-    const {ddl, warnings} = generateSpannerPropertyGraph(model);
-    expect(keyLines(ddl)).toEqual([
-      'KEY(customer_code)',
-      'KEY(region_id)',
-      'KEY(customer_code)',
-      'SOURCE KEY(customer_code) REFERENCES customers(customer_code)',
-      'DESTINATION KEY(region_fk) REFERENCES regions(region_id)',
-    ]);
-    expect(warnings).toEqual([]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(keyLines(ddl), engine).toEqual(['KEY(region_id)']);
+      expect(ddl, engine).not.toContain('EDGE TABLES');
+      expect(warnings, engine).toEqual([
+        skippedNode('customers'),
+        `relationship 'lives_in': references skipped entity 'customers'; ` +
+            `edge omitted`,
+      ]);
+    }
   });
 
-  test('a metric anchored to it is dropped as on any Spanner node', () => {
-    const model = modelOf('shop', [customers()], {metrics: [
-      {name: 'customer_count', entity: 'customers', expression: 'COUNT(*)'},
-    ]});
-    const {ddl, warnings} = generateSpannerPropertyGraph(model);
-    expect(ddl).toContain('KEY(customer_code)');
-    // Spanner Graph has no MEASURE, so only the node is keyed by it.
-    expect(ddl).not.toContain('MEASURE');
-    expect(warnings).toEqual([
-      `metric 'customer_count' is not emitted: Spanner Graph has no ` +
-          `MEASURE, so model-level metrics have no home in it`,
-    ]);
-  });
+  test('a metric anchored to an entity with only unique_keys is skipped, and ' +
+           'a lone unique_keys entity throws',
+       () => {
+         const lone = modelOf('shop', [customers()]);
+         const withOrders = modelOf('shop', [orders, customers()], {metrics: [
+           {name: 'customer_count', entity: 'customers', expression: 'COUNT(*)'},
+         ]});
+         for (const [engine, generate] of ENGINES) {
+           expect(() => generate(lone), engine).toThrow(new Error(
+               'cannot generate a property graph: every entity was skipped ' +
+               'because it has no primary key (a graph node requires a KEY); ' +
+               'a graph requires at least one NODE TABLE\n' +
+               skippedNode('customers')));
+           const {ddl, warnings} = generate(withOrders);
+           expect(ddl, engine).not.toContain('MEASURE');
+           expect(warnings, engine).toEqual([
+             skippedNode('customers'),
+             engine === 'BigQuery' ?
+                 `metric 'customer_count' targets entity 'customers', which ` +
+                     `has no KEY and was skipped; metric dropped` :
+                 `metric 'customer_count' is not emitted: Spanner Graph has ` +
+                     `no MEASURE, so model-level metrics have no home in it`,
+           ]);
+         }
+       });
 });
 
 

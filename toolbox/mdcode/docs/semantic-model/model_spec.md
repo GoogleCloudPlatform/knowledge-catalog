@@ -337,7 +337,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `entities` (alias for `datasets`) | — | added (alias) | readability; sugar, `/google` only · [§5](#5-extensions) |
 | field `name`, `label`, `dimension` (`is_time`) | defined | same | [§2.1.1](#211-field) |
 | `datatype` + vocabulary | closed enum | same (identical set) | [§2.1.1](#211-field) |
-| `primary_key`, `unique_keys` | defined | same; BigQuery graph stricter | a BigQuery graph node is keyed by `primary_key`, and an edge joins on it · [§2.1](#21-dataset-entity), [§4.1](#41-narrowings-stricter-than-ossie) |
+| `primary_key`, `unique_keys` | defined | same; graph-bound stricter | a graph node is keyed by `primary_key`, and a BigQuery edge joins on it · [§2.1](#21-dataset-entity), [§4.1](#41-narrowings-stricter-than-ossie) |
 | `extends` | — | added | class inheritance; `/google` only · [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
@@ -406,18 +406,24 @@ Each rule and its reason:
   target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.
 
-- **A BigQuery graph-bound concrete dataset MUST declare a `primary_key`.** For
-  a BigQuery target, every non-abstract dataset MUST have a `primary_key` under
-  the binding the deployment uses: the model file's own, or the named profile's.
-  *Why:* a BigQuery graph node table is keyed by the dataset's `primary_key`,
-  and `unique_keys` do not stand in for it. Models with no BigQuery deployment
-  (Spanner, AlloyDB, or catalog-only) need none.
+- **A graph-bound concrete leaf dataset MUST declare a `primary_key`.** For a
+  BigQuery or Spanner target, every concrete leaf dataset (non-abstract, and
+  not extended by another dataset) MUST have a `primary_key` under the binding
+  the deployment uses: the model file's own, or the named profile's. *Why:* a
+  graph node table is keyed by the dataset's `primary_key`, and `unique_keys`
+  do not stand in for it. A model with no deployments, an AlloyDB deployment,
+  and a supertype extended by another dataset need none — though a concrete
+  supertype without a `primary_key` forms no node table and its label is left
+  off its subtypes (push warns), so give it a `primary_key` or mark it
+  `abstract: true` when it has no table of its own.
 
 - **A BigQuery graph-bound relationship MUST join on its target's primary key.**
   For a BigQuery target, a non-M:N relationship's `to_columns` MUST name
   exactly the `primary_key` columns of the `to` dataset, in any order: not a
-  unique key, and not a superset of the primary key. *Why:* the edge references
-  its destination node, which on BigQuery is keyed by that `primary_key`.
+  unique key, and not a superset of the primary key. *Why:* BigQuery accepts the
+  DDL, but treats an edge as ambiguous when querying measures unless it joins on
+  its destination node's `primary_key` columns alone (whereas Spanner Graph
+  executes joins onto a unique key or extra columns).
 
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
@@ -460,10 +466,11 @@ still declare a `source` — the corresponding narrowing in
 relationship join column is not an error: the field is unbound, and each named
 profile binds it or names it in `fields_exclude`. A relationship with no join
 columns is a logical edge. A graph deployment that uses the model's own bindings
-needs every field of a concrete leaf dataset bound. A BigQuery graph
-deployment also needs a `primary_key` on every non-abstract dataset, and each
-relationship's `to_columns` to name exactly its target's `primary_key` columns,
-under the binding it uses ([§4.1](#41-narrowings-stricter-than-ossie)).
+needs every field of a concrete leaf dataset bound. A BigQuery or Spanner graph
+deployment also needs a `primary_key` on every concrete leaf dataset, and a
+BigQuery deployment needs each relationship's `to_columns` to name exactly its
+target's `primary_key` columns, under the binding it uses
+([§4.1](#41-narrowings-stricter-than-ossie)).
 
 - **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
   dataset bound for a graph MUST still declare one.

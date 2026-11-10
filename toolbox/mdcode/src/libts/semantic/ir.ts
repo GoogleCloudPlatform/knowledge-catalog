@@ -356,10 +356,11 @@ export function coversKey(
 
 /**
  * Whether a relationship's `to_columns` name exactly the columns of
- * `primaryKey`, in any order and each once. A BigQuery graph node is keyed by
- * its primary key, so on a BigQuery graph deployment an edge must join on that
- * key: a unique key, or a superset of the primary key, covers a key (see
- * coversKey) without matching it. Column names compare as in coversKey.
+ * `primaryKey`, in any order and each once. BigQuery treats a graph edge as
+ * ambiguous when querying measures unless it joins on its destination node's
+ * `primary_key` columns alone: a unique key, or a superset of the primary key,
+ * covers a key (see coversKey) without matching it. Column names compare as in
+ * coversKey.
  */
 export function matchesKey(
     toColumns: string[], primaryKey: string[]): boolean {

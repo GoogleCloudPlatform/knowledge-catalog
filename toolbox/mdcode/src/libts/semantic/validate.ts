@@ -48,29 +48,15 @@ export function validatePushRequirements(
   for (const {document, model} of models) {
     errors.push(...nameAndDescriptionErrors(model, document));
     const deployInfo = googleDeploymentTargets(model);
-    const targetsBigQuery = deployInfo.bigQuery.length > 0;
-    const targetsGraph = targetsBigQuery || deployInfo.spanner.length > 0;
 
-    // A model that targets a BigQuery graph must give every concrete entity a
-    // primary_key, and a model that targets any graph (BigQuery or Spanner)
-    // must give every relationship its join columns. The loader accepts
-    // keyless entities and column-less relationships so a purely logical model
-    // (an OWL import) loads and pushes to Knowledge Catalog, but a BigQuery
-    // graph node needs a primary_key and a graph edge without join columns
-    // would emit `DESTINATION KEY () REFERENCES Dest ()`, so reject them here.
-    if (targetsBigQuery) {
-      for (const entity of model.entities ?? []) {
-        if (entity.abstract) continue;
-        if (!entity.keys.length) {
-          errors.push(
-              `entity '${entity.name}' in model '${model.name}' (${
-                  document}) targets a BigQuery graph but has no ` +
-              `primary_key; declare primary_key on '${
-                  entity.name}' before a BigQuery Graph deploy.`);
-        }
-      }
-    }
-    if (targetsGraph) {
+    // A model that targets a graph (BigQuery OR Spanner) must have every
+    // relationship's join columns bound. The loader accepts a column-less
+    // relationship so a purely logical model (an OWL import) loads and pushes
+    // to Knowledge Catalog, but a graph deploy would emit an invalid
+    // `DESTINATION KEY () REFERENCES Dest ()` for such an edge -- so reject it
+    // here rather than generate broken DDL. A model with no graph target
+    // skips it.
+    if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
         // direct source/destination columns are empty by design -- the graph
@@ -89,12 +75,12 @@ export function validatePushRequirements(
 
     errors.push(...validateInheritance([{document, model}]));
     errors.push(...validateColumnsAndRelationships(model, document));
-    errors.push(...relationshipKeyErrors(model, document, targetsBigQuery));
+    errors.push(...relationshipKeyErrors(model, document));
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
         flaggedMetrics));
-    if (targetsBigQuery) {
+    if (deployInfo.bigQuery.length > 0) {
       errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
     }
 
@@ -167,8 +153,9 @@ export function validateDeployments(
   const add = (deployment: string, problem: string) =>
       problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
   const baseByName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
   const unbound = unboundInline(model);
-  const keylessEntities = keylessGraphEntities(model);
   const unboundFields = unboundGraphFields(model);
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
@@ -193,26 +180,31 @@ export function validateDeployments(
       for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
     }
     if (named) {
-      if (engine === 'bigquery') {
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+        // An entity whose model file states primary_key is left to
+        // validateProfileCompleteness.
         const keyless =
             (bound.model.entities ?? [])
                 .filter(
-                    e => !e.abstract && !e.keys.length &&
-                        !baseByName.get(e.name)?.keys.length)
+                    e => !e.abstract && !extended.has(e.name) &&
+                        !e.keys.length && !baseByName.get(e.name)?.keys.length)
                 .map(e => `'${e.name}'`);
         if (keyless.length) {
           const many = keyless.length > 1;
           add(d.name,
-              `targets BigQuery, and profile '${named.name}' leaves ${
+              `targets ${target}, and profile '${named.name}' leaves ${
                   many ? 'entities' : 'entity'} ${
-                  listed(keyless)} without a primary_key; a BigQuery graph ` +
-                  `deployment needs a primary_key on every concrete entity, ` +
-                  `so state primary_key for ${
+                  listed(keyless)} without a primary_key; a ${
+                  target} graph deployment needs a primary_key on every ` +
+                  `concrete leaf entity, so state primary_key for ${
                       many ? 'each entity' : 'the entity'} in profile '${
                       named.name}'.`);
         }
-        for (const p of bigQueryEdgeKeyProblems(bound.model, named)) {
-          add(d.name, p);
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model, named)) {
+            add(d.name, p);
+          }
         }
       }
       if (engine === 'spanner' && available.length) {
@@ -229,14 +221,17 @@ export function validateDeployments(
                 unbound}; a deployment needs every entity and relationship ` +
                 `bound.`);
       }
-      if (engine === 'bigquery') {
-        if (keylessEntities) {
-          add(d.name, `uses the model file's own bindings, ${keylessEntities}`);
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const keyless = keylessGraphEntities(bound.model, engine);
+        if (keyless) {
+          add(d.name, `uses the model file's own bindings, ${keyless}`);
         }
-        for (const p of bigQueryEdgeKeyProblems(bound.model)) add(d.name, p);
-      }
-      if (unboundFields && (engine === 'bigquery' || engine === 'spanner')) {
-        add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model)) add(d.name, p);
+        }
+        if (unboundFields) {
+          add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+        }
       }
     }
     // A Spanner deployment deploys no metric.
@@ -470,20 +465,27 @@ function unboundInline(model: SemanticModel): string {
   ].filter(p => p).join(' and ');
 }
 
-// The concrete entities the model file's own bindings leave without a
-// `primary_key`, as the end of a BigQuery graph deployment's error, or
+// The concrete leaf entities the model file's own bindings leave without a
+// `primary_key`, as the end of a graph deployment's error on `engine`, or
 // undefined when there are none.
-function keylessGraphEntities(model: SemanticModel): string|undefined {
-  const entities = (model.entities ?? [])
-                       .filter(e => !e.abstract && !e.keys.length)
-                       .map(e => `'${e.name}'`);
+function keylessGraphEntities(
+    model: SemanticModel,
+    engine: 'bigquery'|'spanner'): string|undefined {
+  const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const entities =
+      (model.entities ?? [])
+          .filter(e => !e.abstract && !extended.has(e.name) && !e.keys.length)
+          .map(e => `'${e.name}'`);
   if (!entities.length) return undefined;
   const many = entities.length > 1;
   return `which leave ${many ? 'entities' : 'entity'} ${
-             listed(entities)} without a primary_key; a BigQuery graph ` +
-      `deployment needs a primary_key on every concrete entity. Declare ` +
-      `primary_key on ${many ? 'each entity' : 'the entity'}, or use a ` +
-      `named profile that states one.`;
+             listed(entities)} without a primary_key; a ${
+             target} graph deployment needs a primary_key on every concrete ` +
+      `leaf entity. Declare primary_key on ${
+             many ? 'each entity' : 'the entity'}, or use a named profile ` +
+      `that states one.`;
 }
 
 // The relationships of `model` whose `to_columns` cover a key of the target
@@ -529,9 +531,9 @@ function bigQueryEdgeKeyProblems(
 // just before it, do not match the primary key of `target`.
 function primaryKeyMismatch(target: Entity): string {
   return `do not match primary_key ${JSON.stringify(target.keys)} of '${
-             target.name}'; a BigQuery graph node is keyed by primary_key, ` +
-      `so an edge must join on exactly those columns, in any order, and not ` +
-      `on a unique key or extra columns.`;
+             target.name}'; a BigQuery graph edge must join on its target's ` +
+      `primary_key columns, in any order, and not on a unique key or extra ` +
+      `columns.`;
 }
 
 // The fields the model file's own bindings leave without an expression on
@@ -1528,20 +1530,15 @@ function validateColumnsAndRelationships(
 // `to_columns` cover a key, so a join that covers no key is invalid in
 // every model, whatever it deploys to. The check runs on every push, a
 // catalog-only push included. A superset of a key covers it (see
-// coversKey). With `targetsBigQuery`, the model deploys to a BigQuery graph,
-// whose node is keyed by `primary_key`, so a join that covers a key must also
-// match the `to` entity's `primary_key` (see matchesKey): a join that covers
-// only a unique key, or the primary key with extra columns, is rejected. A
-// `to` entity with no `primary_key` is left to the entity key check. Keys and
-// join columns are physical columns, so they are compared as written, never
-// read through a field of the same name. Skipped here when the check's own
-// inputs are absent or already invalid (reported by their own checks): an
-// association (junction-table) relationship, an empty `to_columns` list, a
-// non-column entry in `to_columns`, an undeclared or abstract `to` entity, or
-// a non-column entry in the `to` entity's `primary_key` or `unique_keys`.
+// coversKey). Keys and join columns are physical columns, so they are compared
+// as written, never read through a field of the same name. Skipped here when
+// the check's own inputs are absent or already invalid (reported by their own
+// checks): an association (junction-table) relationship, an empty `to_columns`
+// list, a non-column entry in `to_columns`, an undeclared or abstract `to`
+// entity, or a non-column entry in the `to` entity's `primary_key` or
+// `unique_keys`.
 function relationshipKeyErrors(
-    model: SemanticModel, document: string,
-    targetsBigQuery = false): string[] {
+    model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   for (const rel of model.relationships ?? []) {
@@ -1561,13 +1558,6 @@ function relationshipKeyErrors(
               JSON.stringify(to)} cover no primary or unique key of '${
               target.name}'; join on every column of one of its keys, and ` +
           `declare that key if '${target.name}' has none.`);
-    } else if (
-        targetsBigQuery && target.keys.length > 0 &&
-        !matchesKey(to, target.keys)) {
-      errors.push(
-          `relationship '${rel.name}' in model '${model.name}' (${
-              document}) targets a BigQuery graph, and its to_columns ${
-              JSON.stringify(to)} ${primaryKeyMismatch(target)}`);
     }
   }
   return errors;

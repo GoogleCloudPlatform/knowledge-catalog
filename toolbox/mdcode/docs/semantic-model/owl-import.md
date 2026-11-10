@@ -297,9 +297,10 @@ Keys are **logical grain**, not a binding — they are the entity's identity, so
 they come across even though the model has no physical binding. They also tell
 you which columns an edge's `to_columns` must reference when you add join columns
 to the model; see [binding](#4-going-from-ontology-to-a-running-graph-binding).
-A BigQuery Graph deploy needs a `primary_key` on every concrete class,
-including one the import left without one, and each edge's `to_columns` must
-name exactly its target's `primary_key` columns, not a unique key.
+A BigQuery or Spanner Graph deploy needs a `primary_key` on every concrete leaf
+class, including one the import left without one, and on BigQuery each edge's
+`to_columns` must name exactly its target's `primary_key` columns, not a unique
+key.
 
 ### Class hierarchies (`rdfs:subClassOf`)
 
@@ -458,16 +459,15 @@ open, and they belong in different places:
        to_columns: [c_custkey]
    ```
 
-3. **On BigQuery, a primary key on every class — in the model or the profile.**
-   A BigQuery graph node is keyed by its entity's `primary_key`, so every
-   concrete class needs one there (Spanner falls back to the first
-   `unique_keys` entry when `primary_key` is omitted). The import leaves a
-   class without one when it has no usable `owl:hasKey` and several or
-   composite inverse-functional properties (see
+3. **A primary key on every concrete leaf class — in the model or the profile.**
+   A graph node is keyed by its entity's `primary_key`, so every concrete leaf
+   class needs one on BigQuery and Spanner. The import leaves a class without
+   one when it has no usable `owl:hasKey` and not exactly one
+   inverse-functional property (see
    [Keys](#keys-owlhaskey-owlinversefunctionalproperty)). Declare its
-   `primary_key` in the model, or in each profile a BigQuery deployment uses.
-   Each edge's `to_columns` on BigQuery must name exactly that key's columns:
-   a BigQuery deploy rejects a join on a unique key such as `[c_email]`.
+   `primary_key` in the model, or in each profile a graph deployment uses. On
+   BigQuery, each edge's `to_columns` must name exactly that key's columns: a
+   BigQuery deploy rejects a join on a unique key such as `[c_email]`.
 
 With the deployment in the model and the sibling profile file in place, a single
 push publishes the model and deploys the graph:

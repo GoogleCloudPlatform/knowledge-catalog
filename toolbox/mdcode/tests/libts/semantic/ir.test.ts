@@ -122,7 +122,7 @@ describe('isFieldBound', () => {
 });
 
 // coversKey accepts a join on any key, a superset counting; matchesKey, which
-// a graph edge needs, accepts only the primary key's own columns.
+// a BigQuery graph edge needs, accepts only the primary key's own columns.
 describe('coversKey and matchesKey', () => {
   const pk = ['c_id', 'c_region'];
   const uks = [['c_email']];

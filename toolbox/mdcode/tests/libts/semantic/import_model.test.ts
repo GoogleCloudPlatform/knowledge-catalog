@@ -998,8 +998,8 @@ describe('profile checks', () => {
          .replace('        primary_key: [order_id]\n', ''),
      doc => `model 'retail' (${doc}) deployment 'g' uses the model file's own bindings, which ` +
          "leave entity 'orders' without a primary_key; a BigQuery graph deployment needs a " +
-         'primary_key on every concrete entity. Declare primary_key on the entity, or use a ' +
-         'named profile that states one.'],
+         'primary_key on every concrete leaf entity. Declare primary_key on the entity, or use ' +
+         'a named profile that states one.'],
     ['an aspect too large for Knowledge Catalog', googleDoc({source: `${BQ_TABLE}\n        ` +
          `ai_context: {examples: ${JSON.stringify(Array.from({length: 70}, (_, i) => 'e'.repeat(2000) + i))}}`}),
      () => `aspect '${process.env.KC_TYPE_PROJECT ?? 'dataplex-types'}.global.overview' of entry ` +
@@ -2230,7 +2230,7 @@ semantic_model:
         modelAiContext:
             `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`,
         source: `${BQ_TABLE}\n        custom_extensions: [{vendor_name: GOOGLE, data: '{"extends": ["base"]}'}]`,
-        extra: `      - name: base\n        source: ${BQ_TABLE}\n        primary_key: [order_id]\n        fields: []\n` +
+        extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n` +
             joined('self',
                 `        custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "  Self join.\\n"}'}]\n`),
       }),

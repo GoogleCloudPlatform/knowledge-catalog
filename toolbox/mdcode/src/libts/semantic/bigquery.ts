@@ -4,8 +4,7 @@
 // The shared GoogleSQL generator (./graph_ddl) writes the graph structure: node
 // tables, edge tables, labels, properties, and key and join columns. This
 // module supplies its BigQuery engine: qualified names, measures, the
-// per-element OPTIONS clause, the SQL text a field binds to, and primary-key
-// node keys.
+// per-element OPTIONS clause, and the SQL text a field binds to.
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
@@ -21,7 +20,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, physicalColumn} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -65,14 +64,7 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
         aiExtensions(field.aiContext)),
     dialect: 'BIGQUERY',
     fieldExpression,
-    nodeKey,
   };
-}
-
-// A BigQuery node table is keyed by its entity's primary key alone. Empty when
-// the entity states none, and then it gets no node table.
-function nodeKey(entity: Pick<Entity, 'keys'>): string[] {
-  return entity.keys ?? [];
 }
 
 // Places each metric on the single entity its aggregates reference, lowering

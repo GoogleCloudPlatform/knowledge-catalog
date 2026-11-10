@@ -463,8 +463,11 @@ silently dropped as if it were table-less. In Knowledge Catalog, every entity
 gets an entry, abstract or not, and a `reference` link runs from each entity to
 each parent it extends.
 
-A supertype **may** instead be concrete — carry its own `source` and key. It then
-becomes both its own node table and a label on its subtypes. Every subtype table
+A supertype **may** instead be concrete — carry its own `source` and `primary_key`.
+It then becomes both its own node table and a label on its subtypes (a concrete
+supertype without a `primary_key` forms no node table and its label is left off
+its subtypes, with a warning; give it a `primary_key`, or mark it `abstract: true`
+when it has no table of its own). Every subtype table
 must still expose columns that render to the supertype's property signature, so
 each subtype table has to carry the supertype's columns under the same names. The
 supertype's own rows and its subtypes' rows are distinct nodes: a real thing
@@ -497,7 +500,7 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
+| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | — dropped | Spanner has no `MEASURE`, so a Spanner deployment uses a profile that excludes every metric, and push rejects one that leaves a metric available |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
@@ -737,32 +740,32 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   must give every concrete entity a source and every relationship both join
   column lists. They must also bind every field that each deployed metric
   reads, directly or through another field. On a BigQuery or Spanner
-  deployment, they must give every field of a concrete leaf entity an
+  deployment, every concrete leaf entity must have a `primary_key`, and the
+  model file's own bindings must give every field of a concrete leaf entity an
   expression, inherited fields included, since the model file has no
   `fields_exclude`. An AlloyDB deployment reads only
   the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
-  deployment deploys no metric. On a BigQuery deployment, every concrete entity
-  must have a `primary_key`, every relationship's `to_columns` must name
-  exactly its target's `primary_key` columns, in any order (not a `unique_keys`
-  entry, and no extra columns), and each metric becomes a measure, so it must
-  read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one
-  operand. Scalar SQL may combine the aggregates, as in
-  `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around them
-  must be a BigQuery built-in function whose name has no dot, or one with the
-  `SAFE.` prefix. The measure rule skips a metric that has only a vendor text.
-  A BigQuery or Spanner graph cannot hold an entity and a relationship whose
-  names match ignoring case. A BigQuery graph also cannot hold a metric named
-  like a field of another entity, ignoring case. BigQuery limits the options
-  kcmd writes on each label and property, too. The description holds at most
-  1,024 characters, counting the field label and the time-dimension line kcmd
-  adds to it. Each `extensions` value (`instructions`, and `examples` serialized
-  as a JSON array) holds at most 1,024 characters. An element holds at most
-  eight synonyms of one to 300 characters each. No two of them may match
-  ignoring case, and none may match the element's own name.
-  A deployment that names a profile is held to the BigQuery `primary_key`,
-  join-key and measure rules under that profile, with the keys and joins it
-  states, except for the metrics it leaves unavailable. On Spanner, that
-  profile must leave every metric unavailable.
+  deployment deploys no metric. On a BigQuery deployment, every relationship's
+  `to_columns` must name exactly its target's `primary_key` columns, in any
+  order (not a `unique_keys` entry, and no extra columns), and each metric
+  becomes a measure, so it must read every field inside `SUM`, `AVG`, `COUNT`,
+  `MIN` or `MAX`, each over one operand. Scalar SQL may combine the aggregates,
+  as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around
+  them must be a BigQuery built-in function whose name has no dot, or one with
+  the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
+  text. A BigQuery or Spanner graph cannot hold an entity and a relationship
+  whose names match ignoring case. A BigQuery graph also cannot hold a metric
+  named like a field of another entity, ignoring case. BigQuery limits the
+  options kcmd writes on each label and property, too. The description holds at
+  most 1,024 characters, counting the field label and the time-dimension line
+  kcmd adds to it. Each `extensions` value (`instructions`, and `examples`
+  serialized as a JSON array) holds at most 1,024 characters. An element holds
+  at most eight synonyms of one to 300 characters each. No two of them may
+  match ignoring case, and none may match the element's own name.
+  A deployment that names a profile is held to the graph `primary_key` rule
+  and, on BigQuery, the join-key and measure rules under that profile, with the
+  keys and joins it states, except for the metrics it leaves unavailable. On
+  Spanner, that profile must leave every metric unavailable.
   *(static)*
 * **A third-party table is written as its entry name, and takes the dialect
   its entry records.** A table outside Google Cloud is written as the entry

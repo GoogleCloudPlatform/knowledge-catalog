@@ -341,12 +341,12 @@ const MODEL_CASES: Case[] = [
   ["an empty primary_key on a relationship's target",
     base(m => { m.entities[1].primary_key = []; }), true,
     "push needs a key on a relationship's target; the schema checks each entity alone"],
-  ['an empty primary_key on a concrete entity a BigQuery graph deploys', base(m => {
+  ['an empty primary_key on a concrete leaf entity a graph deploys', base(m => {
     m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
     m.metrics = [];
     m.entities[0].primary_key = [];
   }), true,
-    'a BigQuery graph deployment needs a primary_key on every concrete entity; the schema checks each entity alone'],
+    'a graph deployment needs a primary_key on every concrete leaf entity; the schema checks each entity alone'],
 
   // Dialects and datatypes.
   ['a dialect outside the list', base(m => {

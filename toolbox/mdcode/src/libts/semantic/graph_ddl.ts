@@ -19,9 +19,6 @@
 //      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one. A field
 //      that names a sibling field reads that sibling's SQL in its place (see
 //      fieldSql).
-//   5. Node keys. Which key columns an entity's node table is keyed by
-//      (BigQuery uses `primary_key` alone; Spanner falls back to the first
-//      non-empty `unique_keys` entry when `primary_key` is empty).
 //
 // ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
@@ -59,7 +56,7 @@ export interface MetricPlacementInput {
   localSql(entity: Entity, sql: string): {sql: string}|{reads: string};
 }
 
-// The engine's name, and the five ways the engines differ (see the header).
+// The engine's name, and the four ways the engines differ (see the header).
 // Everything else about the graph is shared.
 export interface GraphEngine {
   // The engine's name as warnings write it ("the BigQuery push ...").
@@ -91,10 +88,6 @@ export interface GraphEngine {
   // binds to on this engine, or undefined when the engine has none for it.
   dialect: SqlDialect;
   fieldExpression(field: Field): string|undefined;
-
-  // 5. Node keys. The key columns an entity's node table is keyed by, or
-  // empty when the entity gets no node table on this engine.
-  nodeKey(entity: Pick<Entity, 'keys'|'uniqueKeys'>): string[];
 }
 
 /**
@@ -154,9 +147,10 @@ export function generateGraphDdl(
       new Set(entities.filter(e => e.abstract).map(e => e.name));
 
 
-  // A graph node table requires a non-empty KEY from engine.nodeKey. An entity
-  // without one cannot form a valid node, so skip it and, below, any edge that
-  // references it rather than emit `KEY()`, which is invalid DDL.
+  // A graph node table requires a non-empty KEY: the entity's primary key
+  // (nodeKey). An entity without one cannot form a valid node, so skip it and,
+  // below, any edge that references it rather than emit `KEY()`, which is
+  // invalid DDL.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
     // An abstract entity is intentionally table-less: skip its node table (it
@@ -166,7 +160,7 @@ export function generateGraphDdl(
       skipped.add(entity.name);
       return false;
     }
-    if (engine.nodeKey(entity).length) return true;
+    if (nodeKey(entity).length) return true;
     warnings.push(
         `entity '${
             entity.name}': empty KEY (no primary key); node table skipped, ` +
@@ -444,8 +438,7 @@ function renderNodeTable(
         2,
         `KEY(${
             physicalColumns(
-                engine.nodeKey(entity), engine, warnings,
-                `entity '${entity.name}'`)
+                nodeKey(entity), engine, warnings, `entity '${entity.name}'`)
                 .join(', ')})`),
   ];
   // Element-table metadata attaches to the node's DEFAULT LABEL unless this
@@ -662,6 +655,12 @@ function renderFieldPropertyCore(
 }
 
 
+// The key an entity's node is keyed by: its primary key. Empty when the entity
+// states none, and then it gets no node table.
+export function nodeKey(entity: Pick<Entity, 'keys'>): string[] {
+  return entity.keys ?? [];
+}
+
 // Writes a key or join column as the column it names. An unquoted name is
 // backtick-quoted when it is reserved or is not a simple identifier, and a
 // backtick-quoted name is written as it is.
@@ -700,8 +699,8 @@ function renderEdgeTable(
   // backs the edge (one edge row per source row). Its FK columns
   // (`rel.source.columns`) reference the destination's key columns
   // (`rel.destination.columns`); the edge is keyed by, and references its
-  // source node through, the key of the source entity's node (engine.nodeKey,
-  // looked up here rather than duplicated onto the relationship).
+  // source node through, the key of the source entity's node (nodeKey, looked up
+  // here rather than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
@@ -716,7 +715,7 @@ function renderEdgeTable(
     sourceKey = rel.source.columns;
   } else {
     backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
-    sourceKey = engine.nodeKey(sourceEntity);
+    sourceKey = nodeKey(sourceEntity);
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
@@ -780,8 +779,7 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
     }
     return physicalColumns(
-               entity ? engine.nodeKey(entity) : end.columns, engine, warnings,
-               relCtx)
+               entity ? nodeKey(entity) : end.columns, engine, warnings, relCtx)
         .join(', ');
   };
   // The junction table's own key and join columns.

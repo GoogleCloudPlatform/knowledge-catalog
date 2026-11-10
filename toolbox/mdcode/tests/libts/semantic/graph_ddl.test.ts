@@ -3,8 +3,8 @@
 //
 // The BigQuery goldens (`bigquery.e2e.test.ts`, `bigquery.test.ts`) pin the
 // BigQuery engine's output. This file checks the shared code itself: that each
-// of the five engine differences -- names, measures, element metadata, SQL
-// text, node keys -- comes from the engine.
+// of the four engine differences -- names, measures, element metadata, SQL
+// text -- comes from the engine.
 //
 
 import {describe, expect, test} from 'bun:test';
@@ -46,7 +46,6 @@ describe('each engine difference comes from the engine', () => {
       }
     },
     dialect: 'POSTGRES',
-    nodeKey: entity => entity.keys.map(k => `key_${k}`),
   };
 
   const MODEL: SemanticModel = {
@@ -109,14 +108,13 @@ describe('each engine difference comes from the engine', () => {
     constraints: [{name: 'amount_is_positive'}],
   };
 
-  test('names, measures, metadata, SQL text and node keys land where the ' +
-           'graph puts them',
+  test('names, measures, metadata and SQL text land where the graph puts them',
        () => {
          expect(generateGraphDdl(MODEL, MARKED).ddl).toBe(`\
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(key_order_id)
+    KEY(order_id)
     <options One row per order>
     PROPERTIES(
       id AS order_id,
@@ -126,22 +124,22 @@ NODE TABLES (
       <measure revenue>
     ),
   <table p.d.customers> AS customers
-    KEY(key_customer_id)
+    KEY(customer_id)
     PROPERTIES(
       CAST(id AS STRING) AS customer_id
     )
 )
 EDGE TABLES (
   <table p.d.orders> AS placed_by
-    KEY(key_order_id)
-    SOURCE KEY(key_order_id) REFERENCES orders(key_order_id)
+    KEY(order_id)
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
     DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
     <options Who placed it>
     NO PROPERTIES,
   <table p.d.gifts> AS gifted_to
     KEY(gift_id)
-    SOURCE KEY(order_id) REFERENCES orders(key_order_id)
-    DESTINATION KEY(customer_id) REFERENCES customers(key_customer_id)
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
     <options Who received it>
     PROPERTIES(
       card_text AS message <field options Card text>
@@ -200,7 +198,7 @@ EDGE TABLES (
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(key_order_id)
+    KEY(order_id)
     DEFAULT LABEL
     PROPERTIES(
       id AS order_id,
@@ -208,7 +206,7 @@ NODE TABLES (
       customer_id
     ),
   <table p.d.gift_orders> AS gift_orders
-    KEY(key_order_id)
+    KEY(order_id)
     DEFAULT LABEL
     <options Orders sent as gifts>
     PROPERTIES(
@@ -246,13 +244,10 @@ NODE TABLES (
       entities: [MODEL.entities[0],
                  {...MODEL.entities[1], keys: ['CAST(id AS STRING)']}],
     };
-    expect(generateGraphDdl(
-               computedKey, {...MARKED, nodeKey: entity => entity.keys})
-               .warnings)
-        .toContain(
-            `entity 'customers': key or join column 'CAST(id AS STRING)' is ` +
-            `not a physical column name; a KEY/REFERENCES site requires a ` +
-            `column, so Marked will reject the generated DDL`);
+    expect(generateGraphDdl(computedKey, MARKED).warnings).toContain(
+        `entity 'customers': key or join column 'CAST(id AS STRING)' is not ` +
+        `a physical column name; a KEY/REFERENCES site requires a column, so ` +
+        `Marked will reject the generated DDL`);
     expect(warnings).toContain(
         `1 action(s) reach Knowledge Catalog only; the Marked push deploys ` +
         `none of them.`);

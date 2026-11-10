@@ -19,10 +19,9 @@ Which backend a push deploys to — BigQuery or Spanner — is set by each entry
 Rows are what you authored; columns are its fate in each direction. `✓` = comes
 back as authored; `—` = not present in that destination. Footnotes carry the
 nuances that don't fit a cell. BigQuery and Spanner each get a column; they
-agree on most structural rows and differ where a Spanner target has no
-`MEASURE`, no `OPTIONS` metadata, falls back to an entity's first unique key
-when it has no primary key, and reads `SPANNER` rather than `BIGQUERY` field SQL
-— see [To Spanner](#to-spanner).
+agree on every structural row and differ only where a Spanner target has no
+`MEASURE` and no `OPTIONS` metadata, and in which SQL text a field reads — see
+[To Spanner](#to-spanner).
 
 | Authored element                                               | → Knowledge Catalog             | Recovered by `pull`                            | → BigQuery                                                           | → Spanner                                                            |
 |----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
@@ -32,7 +31,7 @@ when it has no primary key, and reads `SPANNER` rather than `BIGQUERY` field SQL
 | Field expression (canonical SQL)                               | `sql-expressions` aspect³       | ✓³                                             | builds the DDL                                                       | builds the DDL                                                       |
 | Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | noted in `OPTIONS(description)`                                      | — dropped                                                            |
 | Primary key                                                    | `semantic-entity.primaryKey`    | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
-| Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | the first is `KEY(...)` when there is no primary key; else dropped   |
+| Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | — dropped                                                            |
 | Metric                                                         | `semantic-metric` entry         | ✓ (type⁵)                                      | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `semantic-relationship` entry¹⁵ | ✓⁶                                             | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
@@ -329,9 +328,8 @@ design:
 - **Another engine's SQL.** A field reads its `SPANNER` expression, else its
   `ANSI_SQL` one, and is left out with a warning when it has neither.
 
-An entity with no `primary_key` is keyed by its first `unique_keys` entry on
-Spanner (whereas BigQuery requires a `primary_key`). Everything else —
-relationships, the label hierarchy — matches the **→ BigQuery** column above.
+Everything else — keys, relationships, the label hierarchy — matches the
+**→ BigQuery** column above.
 
 **Actions and constraints** reach neither graph. They are published to
 Knowledge Catalog as one `semantic-action` or `semantic-constraint` entry each
