@@ -57,11 +57,14 @@ Push runs in two phases:
    graph's DDL without executing it. The Spanner graph check plans a query of
    what each node and edge table reads and reads the database's schema
    instead (see [Validation](#validation)). A graph whose DDL Spanner still
-   rejects fails in the second phase, after Knowledge Catalog is written.
+   rejects fails in the second phase below, after Knowledge Catalog is
+   written.
 2. **Publish and deploy phase:** Publishes the model file (as written) and any
    sibling `<model>.profile.<name>.yaml` files to Knowledge Catalog, then
    deploys each selected deployment in order with the profile it names. An
-   AlloyDB deployment deploys no graph.
+   AlloyDB deployment deploys no graph. When a graph fails to deploy, push
+   stops, and its error says that Knowledge Catalog already holds the new
+   model. Fixing the cause and pushing again finishes the deploy.
 
 ### pull
 

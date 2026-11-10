@@ -11,6 +11,11 @@ import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
+// What push adds when deployment `d` fails after the catalog write.
+const written = (d: string) =>
+    `Knowledge Catalog already holds the new model, but deployment '${d}' ` +
+    'did not deploy its graph. Fix the cause and push again to finish the ' +
+    'deploy.';
 
 const sales = (s: Scope) =>
     modelFile(s).replace('name: commerce', 'name: sales');
@@ -336,17 +341,23 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
-    name: 'a failed catalog write, or a Spanner or BigQuery deployment that fails to deploy, stops the push',
+    name: 'a failed catalog write, or a Spanner or BigQuery deployment that fails to deploy, stops the push, and a failed deploy says the catalog already holds the model',
     ...THREE,
     services: {spanner: failedDeploy},
     code: 1,
     events: ['preflight', 'apply', 'deploy c', 'deploy a'],
-    errors: ['Error pushing semantic model to Spanner: boom'],
+    errors: [
+      'Error pushing semantic model to Spanner: boom',
+      written('a'),
+    ],
     then: [{
       services: {bq: failedDeploy},
       code: 1,
       events: ['preflight', 'apply', 'deploy c'],
-      errors: ['Error pushing semantic model to BigQuery: boom'],
+      errors: [
+        'Error pushing semantic model to BigQuery: boom',
+        written('c'),
+      ],
     }, {
       services: {apply: kcResult({success: false, details: 'x'})},
       code: 1,
@@ -363,8 +374,10 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       fetch: async () => new Response(REJECTED, {status: 400}),
     },
     code: 1,
-    errors: [`Error pushing semantic model to BigQuery: Failed to deploy ` +
-             `'g': ${LIMIT}`],
+    errors: [
+      `Error pushing semantic model to BigQuery: Failed to deploy 'g': ${LIMIT}`,
+      written('g'),
+    ],
   },
   {
     name: 'a Spanner deployment deploys on an Enterprise or Enterprise Plus edition instance, and under --skip-source-check when its instance cannot be read',

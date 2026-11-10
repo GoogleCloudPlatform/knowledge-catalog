@@ -959,7 +959,13 @@ async function pushInTwoPhases(
     const code = deployment.engine === 'bigquery' ?
         await pushBigQuery([model], ctx, options, printed) :
         await pushSpanner([model], ctx, options, printed);
-    if (code !== 0) return code;
+    if (code !== 0) {
+      console.error(
+          `Knowledge Catalog already holds the new model, but deployment '${
+              deployment.name}' did not deploy its graph. Fix the cause and ` +
+          `push again to finish the deploy.`);
+      return code;
+    }
   }
   return 0;
 }
