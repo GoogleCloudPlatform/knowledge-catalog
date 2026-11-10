@@ -343,6 +343,26 @@ For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
 
+### Reading metrics with `GRAPH_EXPAND`
+
+A query reads a metric by flattening the graph with `GRAPH_EXPAND` and wrapping
+the measure in `AGG()`, as the
+[codelab](codelab.md#query-semantic-model-metrics) shows. `GRAPH_EXPAND` reads
+the graph from one root table, an entity that is the `to` of no relationship.
+It joins every other table to the root with LEFT JOINs, so it reads only the
+rows that some root row reaches. A metric on another entity counts only the
+rows of that entity the root reaches. A graph with more than one root needs a
+`start_node`.
+
+When the graph reaches one table by two paths, a query that names any column of
+that table, measures included, fails with "Unrecognized name". The column still
+appears in the output of `BQ.SHOW_GRAPH_EXPAND_SCHEMA`. Pass
+`start_node => '<entity>'` to read the graph from another table, such as one
+that reaches the table by one path. The function then reads only the rows that
+table reaches, which changes what each metric counts. BigQuery's
+[graph measures](https://docs.cloud.google.com/bigquery/docs/graph-measures)
+page gives the full rules.
+
 ### Class hierarchies (`extends` → labels)
 
 This section is the rules lookup. To model a hierarchy step by step — declaring

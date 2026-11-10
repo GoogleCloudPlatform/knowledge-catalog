@@ -656,6 +656,21 @@ returns the correct one. `revenue` is now an enforced, queryable concept. The
 join and the formula come from the model rather than from whoever writes the
 query, so the correct answer is the default one.
 
+`GRAPH_EXPAND` reads the graph from one root table, an entity that is the `to`
+of no relationship. Here the root is `lineitem`. The function joins every other
+table to the root with LEFT JOINs, so it reads only the rows that some root row
+reaches. An order with no line items would be left out of `revenue`. A customer
+with no orders would not appear, and a metric that counts customers would leave
+it out. A graph with more than one root needs a `start_node`.
+
+When the graph reaches one table by two paths, a query that names any column of
+that table, measures included, fails with "Unrecognized name", although
+`BQ.SHOW_GRAPH_EXPAND_SCHEMA` lists the column. Pass `start_node => '<entity>'`
+to read the graph from another table. The function then reads only the rows
+that table reaches, so the totals change. BigQuery's
+[graph measures](https://docs.cloud.google.com/bigquery/docs/graph-measures)
+page gives the full rules.
+
 > **Tips.** Use `--nouse_cache` — `GRAPH_EXPAND` result caches are not
 > invalidated by graph edits. To see the exact output column names for a graph:
 > `DECLARE s STRING; CALL BQ.SHOW_GRAPH_EXPAND_SCHEMA("$PROJECT.$DATASET.$GRAPH", s); SELECT s;`
