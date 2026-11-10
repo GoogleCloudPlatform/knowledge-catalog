@@ -358,11 +358,11 @@ When the graph reaches one table by two paths, a query that names a column of
 that table as `<entity>_<field>`, measures included, fails with "Unrecognized
 name". The column still appears in the output of `BQ.SHOW_GRAPH_EXPAND_SCHEMA`.
 Instead, name the column as `<relationship>_<entity>_<field>`, where
-`<relationship>` is the relationship that reaches the table. BigQuery's error
-suggests that name. It reads the table along that one path from the root. Or
-pass `start_node => '<entity>'` to read the graph from another table, such as one
-that reaches the table by one path. The function then reads only the rows that
-table reaches, which changes what each metric counts. BigQuery's
+`<relationship>` is one of the relationships whose `to` is the table. BigQuery's
+error suggests that name. That name reads the table along the path through that
+relationship. Or pass `start_node => '<entity>'` to read the graph from another
+table, such as one that reaches the table by one path. The function then reads
+only the rows that table reaches, which changes what each metric counts. BigQuery's
 [graph measures](https://docs.cloud.google.com/bigquery/docs/graph-measures)
 page gives the full rules.
 
@@ -885,8 +885,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   concept that resolves to nothing is reported and then left alone, since every
   later check about it is meaningless; undeclared fields do not chain that way,
   so a concept that does resolve reports every field it does not have.
-  Everything that reads the ontology — the concept check and the field check
-  both — stands down on a profile push, because pruning drops whole entities and
+  The concept check and the field check both read the ontology, and both stand
+  down on a profile push, because pruning drops whole entities and
   whole relationships as well as unbound fields, and an action reaches no graph
   in any case. Pruning now drops an action that names a dropped *concept*, so
   for the concept check the offending action is gone before the check would run;
@@ -908,8 +908,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   one kind, but 2 given (mcp, rest)`), the closed `create` / `modify` / `delete`
   vocabulary for `operation`, the rejection of a repeated guard name, and the
   rejection of a repeated concept-and-operation pair in `affects`. Every check
-  named so far is static — it reads the document alone — so it runs on every
-  push, regardless of destination. What the *names* in a statement mean is
+  named so far is static. It reads the document alone, so it runs on every
+  push, whatever the destination. What the *names* in a statement mean is
   settled live instead, by the store the profile binds: see the DML pre-flight
   under [Validation](#validation). Note that actions themselves deploy **only**
   through the Knowledge Catalog leg (BigQuery and Spanner graph deployments warn

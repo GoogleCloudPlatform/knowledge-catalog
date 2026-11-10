@@ -300,8 +300,8 @@ Spanner's default time zone, America/Los_Angeles, is written into the date and
 time functions of a `SPANNER` text. A Spanner database created with another
 `default_time_zone` reads those functions in its own time zone, so the
 translated text can give other dates and hours than the database does. For such
-a database, edit the translated `BIGQUERY` entries of the fields and metrics
-that read it by hand, so that they name its time zone.
+a database, edit by hand the translated `BIGQUERY` entries of the fields and
+metrics that read it, so that they name its time zone.
 Snowflake's default time zone is written into the current date and time
 functions of a `SNOWFLAKE` text.
 
