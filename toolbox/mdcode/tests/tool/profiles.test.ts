@@ -2620,19 +2620,37 @@ describe('kcmd profiles --print-store', () => {
   }
 
   // Push refuses a deployment whose database holds no table an entity is
-  // bound to, so --print-store gives push's errors, one to a line.
+  // bound to, so --print-store gives push's errors, one to a line, naming the
+  // model file.
   test('gives push\'s error for each table outside the database the deployment targets', async () => {
-    writeWorkspace();
-    fs.writeFileSync(
-        path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.profile.operational.yaml'),
-        OPERATIONAL.replaceAll('databases/commerce/tables', 'databases/other/tables'));
-    expect(await profiles({printStore: true, profile: 'operational'})).toBe(1);
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    const other = 'spanner.googleapis.com/projects/acme-ops/instances/prod/' +
+        'databases/other/tables';
+    fs.writeFileSync(path.join(eg, 'orders.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: prod, target: ${OPERATIONAL_GRAPH} }
+    entities:
+      - name: Customer
+        source: ${other}/Customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: CustomerId }
+      - name: Order
+        source: ${other}/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`);
+    expect(await profiles({printStore: true})).toBe(1);
     expect(errs).toEqual([['Customer', 'Customer'], ['Order', 'Orders']].map(
-        ([entity, table]) => "Error: [commerce] deployment 'operational' " +
-            "targets Spanner database 'acme-ops/prod/commerce', but profile " +
-            `'operational' binds entity '${entity}' to 'spanner.googleapis.com/` +
-            `projects/acme-ops/instances/prod/databases/other/tables/${table}', ` +
-            'which is not a table in that database.'));
+        ([entity, table]) => "Error: [orders] deployment 'prod' targets " +
+            "Spanner database 'acme-ops/prod/commerce', but the model file " +
+            `binds entity '${entity}' to '${other}/${table}', which is not a ` +
+            'table in that database.'));
   });
 
   test('a profile file has no store when no deployment names it', async () => {
