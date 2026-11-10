@@ -405,6 +405,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'INTERVAL 1 DAY + d - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'd - INTERVAL 1 DAY - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'DATE_ADD(d, INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
+    ['SQLSERVER', 'DATEADD(day, 1, GETDATE()) - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'MAX(d + INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'SUM(a > 2)', {error: 'kcmd does not translate SUM of a comparison'}],
     ['MYSQL', 'MAX(a > 2)', {error: 'kcmd does not translate MAX of a comparison'}],
