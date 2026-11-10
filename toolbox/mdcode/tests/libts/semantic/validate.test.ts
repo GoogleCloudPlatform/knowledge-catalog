@@ -3884,6 +3884,66 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
            expect(check(m)).toEqual([]);
          });
   });
+
+  // Spanner compares names ignoring case, and gives a property one type in
+  // the whole graph.
+  describe('Spanner graphs', () => {
+    const table = (t: string) =>
+        SPANNER_TARGET.replace(/graphs\/g$/, `tables/${t}`);
+    // Entities employee and purchase on tables employees and Order, each with
+    // a field of the name and datatype `fields` gives, in a graph named
+    // `graph`.
+    const graphOf =
+        (graph: string, fields = [['code', 'String'], ['code', 'String']]) =>
+            check(loadOne('commerce', `    deployments:
+      - { name: sp, target: ${SPANNER_TARGET.replace(/g$/, graph)} }
+    entities:
+${['employee', 'purchase'].map((e, i) => `      - name: ${e}
+        source: ${table(['employees', 'Order'][i])}
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: ${fields[i][0]}, datatype: ${fields[i][1]}, expression: c }
+`).join('')}`));
+    const IN = (problem: string) =>
+        `model 'commerce' (commerce) deployment 'sp' targets Spanner${problem}`;
+
+    test('refuses a graph name Spanner does not accept or that names a table the graph reads, ignoring case', () => {
+      const name = (g: string) => IN(
+          ` graph '${g}', but a Spanner graph name starts with a letter, ` +
+          'holds only letters, digits and underscores, and is at most 128 ' +
+          'characters long; rename the graph in the target.');
+      const long = `g${'x'.repeat(128)}`;
+      for (const g of ['my-graph', '1graph', '_g', long]) {
+        expect(graphOf(g)).toEqual([name(g)]);
+      }
+      expect(graphOf('ORDER')).toEqual([IN(
+          " graph 'ORDER', which has the name of table 'Order' that entity " +
+          "'purchase' reads; a graph cannot share its name with a table of " +
+          'its database, compared ignoring case. Rename the graph in the ' +
+          'target.')]);
+      for (const g of ['g_1', 'select', long.slice(1)]) {
+        expect({g, errors: graphOf(g)}).toEqual({g, errors: []});
+      }
+    });
+
+    test('refuses a property that two tables declare with datatypes of different Spanner types, ignoring case', () => {
+      expect(graphOf('g', [['code', 'String'], ['Code', 'Integer']]))
+          .toEqual([IN(
+              ", where property 'code' has one type across the graph, but " +
+              "entity 'employee' declares it String and entity 'purchase' " +
+              'declares it Integer; give the fields one datatype, or rename ' +
+              'one.')]);
+      // DateTime and DateTimeTz are both a Spanner TIMESTAMP, and fields of
+      // different names are different properties.
+      for (const fields of [
+             [['at', 'DateTime'], ['at', 'DateTimeTz']],
+             [['code', 'String'], ['kind', 'Integer']],
+           ]) {
+        expect(graphOf('g', fields)).toEqual([]);
+      }
+    });
+  });
 });
 
 describe('validateInlineDialects', () => {

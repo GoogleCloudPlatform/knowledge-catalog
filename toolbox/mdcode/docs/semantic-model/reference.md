@@ -793,7 +793,13 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   them must be a BigQuery built-in function whose name has no dot, or one with
   the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
   text. A BigQuery or Spanner graph cannot hold an entity and a relationship
-  whose names match ignoring case. A BigQuery graph also cannot hold a metric
+  whose names match ignoring case. The `graphs/<g>` segment of a Spanner
+  target names the graph. Spanner takes a graph name that starts with a
+  letter, holds only letters, digits and underscores, and is at most 128
+  characters long. The name cannot be that of a table the graph reads,
+  ignoring case. Two tables of a Spanner graph cannot declare a property of
+  one name, ignoring case, with datatypes Spanner stores as different types,
+  such as `String` and `Integer`. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line

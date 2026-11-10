@@ -23,7 +23,7 @@
 // ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
 
-import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
+import {AiContext, Association, DataType, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {isColumnName, qualifiedColumns, selfReferenceMessage, withSiblingsSpliced} from './sql_expr_utils';
 import {quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -32,6 +32,32 @@ import {sqlExpressionTree} from './sql_parser';
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
   warnings: string[];  // skipped metrics, unresolved table refs, etc.
+  // Each node table, then each edge table, in the order the DDL writes them.
+  elements: GraphElement[];
+}
+
+// One node or edge table of the graph. Each column and property text is
+// written as the DDL writes it.
+export interface GraphElement {
+  // A node table belongs to an entity, and an edge table to a relationship.
+  kind: 'node'|'edge';
+  // The name of the entity or relationship.
+  name: string;
+  // The `dataSource` the table is read from, and the table as the DDL names
+  // it.
+  dataSource: string;
+  table: string;
+  // The KEY columns.
+  key: string[];
+  // An edge's SOURCE KEY and DESTINATION KEY columns. Empty for a node table.
+  endpointColumns: string[];
+  // Each node an edge's REFERENCES clauses name, with the columns of that
+  // node's table they read. Empty for a node table.
+  references: Array<{entity: string; columns: string[]}>;
+  // Each field property the table lists under any of its labels, once, with
+  // the text the DDL writes for it, such as `dept AS code`, and the field's
+  // datatype.
+  properties: Array<{name: string; text: string; type?: DataType}>;
 }
 
 // What the generator knows about the graph when it hands the model's metrics
@@ -289,10 +315,11 @@ export function generateGraphDdl(
                             'sql' in fieldSql(f, leaf, engine)))));
   }
 
+  const elements: GraphElement[] = [];
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, measurePropertiesByEntity.get(entity.name) ?? [],
-          ancestorProperties, engine, warnings));
+          ancestorProperties, engine, warnings, elements));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -308,7 +335,8 @@ export function generateGraphDdl(
                 `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
             return false;
           })
-          .map(rel => renderEdgeTable(rel, entitiesByName, engine, warnings));
+          .map(rel => renderEdgeTable(
+                   rel, entitiesByName, engine, warnings, elements));
 
   const graphName = engine.graphName(resolved.model);
 
@@ -324,7 +352,11 @@ export function generateGraphDdl(
   // entry (see knowledge_catalog.ts), not the graph; bigquery.ts's
   // optionsClause says why.
 
-  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
+  return {
+    ddl: blocks.join('\n') + ';\n',
+    warnings: dedupe(warnings),
+    elements,
+  };
 }
 
 // The names of the fields entity `name` declares or inherits: its own, then
@@ -344,10 +376,11 @@ function declaredOrInherited(
 }
 
 
+// Renders an entity's node table, and adds its record to `elements`.
 function renderNodeTable(
     entity: Entity, measureProperties: string[],
     ancestorProperties: Map<string, string[]>, engine: GraphEngine,
-    warnings: string[]): string {
+    warnings: string[], elements: GraphElement[]): string {
   const table =
       engine.table(entity.dataSource, warnings, `entity '${entity.name}'`);
 
@@ -391,14 +424,11 @@ function renderNodeTable(
       boundFields.map(f => [f.name, renderFieldProperty(f, entity, engine)]));
   const properties = [...rendered.values(), ...measureProperties];
 
+  const key = physicalColumns(
+      nodeKey(entity), engine, warnings, `entity '${entity.name}'`);
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
-    line(
-        2,
-        `KEY(${
-            physicalColumns(
-                nodeKey(entity), engine, warnings, `entity '${entity.name}'`)
-                .join(', ')})`),
+    line(2, `KEY(${key.join(', ')})`),
   ];
   // A node that declares ancestor LABELs must use an EXPLICIT `DEFAULT LABEL`:
   // BigQuery rejects a bare (implicit default) PROPERTIES clause immediately
@@ -424,6 +454,20 @@ function renderNodeTable(
                           .map(name => rendered.get(name)!);
     lines.push(propertiesClause(signature));
   }
+  elements.push({
+    kind: 'node',
+    name: entity.name,
+    dataSource: entity.dataSource,
+    table,
+    key,
+    endpointColumns: [],
+    references: [],
+    properties: boundFields.map(f => ({
+      name: f.name,
+      text: renderFieldPropertyCore(f, entity, engine),
+      type: f.type,
+    })),
+  });
   return lines.join('\n');
 }
 
@@ -584,14 +628,16 @@ function physicalColumns(
 }
 
 
+// Renders a relationship's edge table, and adds its record to `elements`.
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
-    engine: GraphEngine, warnings: string[]): string {
+    engine: GraphEngine, warnings: string[],
+    elements: GraphElement[]): string {
   // A many-to-many relationship is backed by its own association table rather
   // than a source entity's foreign key; render it from that block.
   if (rel.association) {
     return renderAssociationEdge(
-        rel, rel.association, entitiesByName, engine, warnings);
+        rel, rel.association, entitiesByName, engine, warnings, elements);
   }
   // A relationship is a direct foreign key: the SOURCE entity's own base table
   // backs the edge (one edge row per source row). Its FK columns
@@ -603,6 +649,7 @@ function renderEdgeTable(
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
   let sourceKey: string[];
+  let dataSource = rel.source.entity;
   if (!sourceEntity) {
     // Only hand-built IR gets here: the loader rejects a relationship whose
     // endpoint is not one of the model's entities. Name the table after the
@@ -614,18 +661,34 @@ function renderEdgeTable(
   } else {
     backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
     sourceKey = nodeKey(sourceEntity);
+    dataSource = sourceEntity.dataSource;
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
   // table, so its KEY and SOURCE KEY are the source node's key, and its
   // DESTINATION KEY is the FK, the relationship's `from_columns`, referencing
   // the destination's `to_columns`.
-  const key = physicalColumns(sourceKey, engine, warnings, relCtx).join(', ');
-  const destFk =
-      physicalColumns(rel.source.columns, engine, warnings, relCtx).join(', ');
-  const destRef =
-      physicalColumns(rel.destination.columns, engine, warnings, relCtx)
-          .join(', ');
+  const keyColumns = physicalColumns(sourceKey, engine, warnings, relCtx);
+  const fkColumns =
+      physicalColumns(rel.source.columns, engine, warnings, relCtx);
+  const refColumns =
+      physicalColumns(rel.destination.columns, engine, warnings, relCtx);
+  const key = keyColumns.join(', ');
+  const destFk = fkColumns.join(', ');
+  const destRef = refColumns.join(', ');
+  elements.push({
+    kind: 'edge',
+    name: rel.name,
+    dataSource,
+    table: backing,
+    key: keyColumns,
+    endpointColumns: [...keyColumns, ...fkColumns],
+    references: [
+      {entity: rel.source.entity, columns: keyColumns},
+      {entity: rel.destination.entity, columns: refColumns},
+    ],
+    properties: [],
+  });
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
@@ -659,7 +722,8 @@ function renderEdgeTable(
 // that entity's node, and the junction's own `fields` become edge PROPERTIES.
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
-    engine: GraphEngine, warnings: string[]): string {
+    engine: GraphEngine, warnings: string[],
+    elements: GraphElement[]): string {
   const relCtx = `relationship '${rel.name}'`;
   const backing = engine.table(assoc.dataSource, warnings, relCtx);
   if (!assoc.keys?.length) {
@@ -670,33 +734,38 @@ function renderAssociationEdge(
 
   // The REFERENCES target is the key of each endpoint's node; fall back to
   // the endpoint's own columns (and warn) when the entity cannot be resolved.
-  const refColumns = (end: {entity: string; columns: string[]}): string => {
+  const refColumns = (end: {entity: string; columns: string[]}): string[] => {
     const entity = entitiesByName.get(end.entity);
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
     }
     return physicalColumns(
-               entity ? nodeKey(entity) : end.columns, engine, warnings, relCtx)
-        .join(', ');
+        entity ? nodeKey(entity) : end.columns, engine, warnings, relCtx);
   };
   // The junction table's own key and join columns.
-  const columns = (names: string[]): string =>
-      physicalColumns(names, engine, warnings, relCtx).join(', ');
+  const columns = (names: string[]): string[] =>
+      physicalColumns(names, engine, warnings, relCtx);
+  // In the order the DDL writes them, so their warnings come in that order.
+  const key = columns(assoc.keys);
+  const sourceColumns = columns(assoc.sourceColumns);
+  const sourceRef = refColumns(rel.source);
+  const destinationColumns = columns(assoc.destinationColumns);
+  const destinationRef = refColumns(rel.destination);
 
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
-    line(2, `KEY(${columns(assoc.keys)})`),
+    line(2, `KEY(${key.join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${columns(assoc.sourceColumns)}) ` +
+        `SOURCE KEY(${sourceColumns.join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-                refColumns(rel.source)})`),
+                sourceRef.join(', ')})`),
     line(
         2,
-        `DESTINATION KEY(${columns(assoc.destinationColumns)}) ` +
+        `DESTINATION KEY(${destinationColumns.join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
-                refColumns(rel.destination)})`),
+                destinationRef.join(', ')})`),
   ];
 
   // Edge metadata attaches to the DEFAULT LABEL: after the
@@ -708,21 +777,36 @@ function renderAssociationEdge(
   // The junction's own non-key fields are the edge's properties. They name
   // each other under the relationship's name.
   const owner: FieldOwner = {name: rel.name, fields: assoc.fields ?? []};
-  const properties =
-      owner.fields
-          .filter(f => {
-            const sql = fieldSql(f, owner, engine);
-            if ('sql' in sql || !isFieldBound(f)) return true;
-            warnings.push(
-                `relationship '${rel.name}': field '${f.name}' ` +
-                ('through' in sql ?
-                     `reads ${missingSibling(sql.through, owner, engine)}` :
-                     `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
-                `; omitted from the edge table`);
-            return false;
-          })
-          .map(f => renderFieldProperty(f, owner, engine));
-  lines.push(propertiesClause(properties));
+  const listed = owner.fields.filter(f => {
+    const sql = fieldSql(f, owner, engine);
+    if ('sql' in sql || !isFieldBound(f)) return true;
+    warnings.push(
+        `relationship '${rel.name}': field '${f.name}' ` +
+        ('through' in sql ?
+             `reads ${missingSibling(sql.through, owner, engine)}` :
+             `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
+        `; omitted from the edge table`);
+    return false;
+  });
+  lines.push(propertiesClause(
+      listed.map(f => renderFieldProperty(f, owner, engine))));
+  elements.push({
+    kind: 'edge',
+    name: rel.name,
+    dataSource: assoc.dataSource,
+    table: backing,
+    key,
+    endpointColumns: [...sourceColumns, ...destinationColumns],
+    references: [
+      {entity: rel.source.entity, columns: sourceRef},
+      {entity: rel.destination.entity, columns: destinationRef},
+    ],
+    properties: listed.map(f => ({
+      name: f.name,
+      text: renderFieldPropertyCore(f, owner, engine),
+      type: f.type,
+    })),
+  });
 
   return lines.join('\n');
 }

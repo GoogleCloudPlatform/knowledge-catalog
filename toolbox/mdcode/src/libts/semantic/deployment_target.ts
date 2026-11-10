@@ -43,7 +43,9 @@ const BQ_GRAPH_TARGET =
 // A Spanner Graph deployment target, named as Dataplex names the graph's
 // entry: `graphs/<g>`, where a BigQuery graph is `propertyGraphs/<g>`.
 // Instance and database ids follow Spanner's resource-id grammar (lowercase
-// letters, digits, hyphens); the graph name is a GoogleSQL identifier. As with
+// letters, digits, hyphens). The graph segment takes what every target segment
+// takes, and push holds the graph name to Spanner's narrower naming rule
+// (validateDeployments). As with
 // BigQuery, the segments are interpolated into DDL (the graph name) and into
 // the Spanner Admin API path (project/instance/database), so the character
 // classes stay strict.

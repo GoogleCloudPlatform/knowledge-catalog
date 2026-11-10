@@ -13,15 +13,18 @@ import {ApiContext} from '../gcp/context';
 import {SpannerClient} from '../gcp/spanner';
 
 import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
+import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
+import {GraphElement} from './graph_ddl';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, DataType, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -166,8 +169,8 @@ export function validateDeployments(
     const named = model.profiles?.find(p => p.name === d.profile);
     if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE && !named) continue;
     const resolved = resolveModelDeployments(model, [d.name]);
-    const engine =
-        'error' in resolved ? undefined : resolved.deployments[0].engine;
+    const parsed = 'error' in resolved ? undefined : resolved.deployments[0];
+    const engine = parsed?.engine;
     const alloyDb = engine === 'alloydb';
     // The model the deployment's bindings give, less what they leave
     // unavailable. The completeness check reports a named profile that does
@@ -178,6 +181,11 @@ export function validateDeployments(
     const available = bound.model.metrics ?? [];
     if (engine === 'bigquery' || engine === 'spanner') {
       for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
+    }
+    if (parsed?.engine === 'spanner') {
+      for (const p of spannerGraphProblems(bound.model, parsed.coordinates)) {
+        add(d.name, p);
+      }
     }
     if (named) {
       if (engine === 'bigquery' || engine === 'spanner') {
@@ -604,6 +612,70 @@ function graphNameProblems(
               e.name}.${f.name}': a measure's name must differ from every ` +
           `property name in the graph, compared ignoring case; rename one.`);
     }
+  }
+  return problems;
+}
+
+// A Spanner graph name: a letter, then letters, digits and underscores, at most
+// 128 characters in all.
+const SPANNER_GRAPH_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+
+// What Spanner refuses in the graph of `model` that `target` names, each as
+// the end of a sentence about a deployment: a name Spanner does not accept,
+// the name of a table of the target database that the graph reads, and a
+// property that two tables of the graph declare with datatypes of different
+// Spanner types. Names compare ignoring case, as Spanner compares them.
+function spannerGraphProblems(
+    model: SemanticModel, target: SpannerGraphTarget): string[] {
+  const graph = target.graphName;
+  const database =
+      `spanner/${target.project}/${target.instance}/${target.database}`;
+  const problems: string[] = [];
+  if (!SPANNER_GRAPH_NAME.test(graph)) {
+    problems.push(
+        `targets Spanner graph '${graph}', but a Spanner graph name starts ` +
+        `with a letter, holds only letters, digits and underscores, and is ` +
+        `at most 128 characters long; rename the graph in the target.`);
+  }
+  let elements: GraphElement[];
+  try {
+    ({elements} = generateSpannerPropertyGraph(model, {graphName: graph}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return problems;
+  }
+  const owner = (e: GraphElement) =>
+      `${e.kind === 'node' ? 'entity' : 'relationship'} '${e.name}'`;
+  const lower = graph.toLowerCase();
+  const named = elements.find(
+      e => databaseOf(e.dataSource) === database &&
+          boundTable(e.dataSource, [], '', t => t).toLowerCase() === lower);
+  if (named) {
+    problems.push(
+        `targets Spanner graph '${graph}', which has the name of table '${
+            boundTable(named.dataSource, [], '', t => t)}' that ${
+            owner(named)} reads; a graph cannot share its name with a table ` +
+        `of its database, compared ignoring case. Rename the graph in the ` +
+        `target.`);
+  }
+  // Each property's declared datatypes, by its name in lower case.
+  const declared = new Map<string, Array<{owner: string; type: DataType}>>();
+  for (const e of elements) {
+    for (const {name, type} of e.properties) {
+      if (!type) continue;
+      const key = name.toLowerCase();
+      declared.set(key, [...declared.get(key) ?? [], {owner: owner(e), type}]);
+    }
+  }
+  for (const [key, types] of declared) {
+    if (new Set(types.map(t => storeCodeFor(t.type))).size < 2) continue;
+    const name = elements.flatMap(e => e.properties)
+                     .find(p => p.name.toLowerCase() === key)!.name;
+    problems.push(
+        `targets Spanner, where property '${name}' has one type across the ` +
+        `graph, but ${
+            listed(types.map(t => `${t.owner} declares it ${t.type}`))}; ` +
+        `give the fields one datatype, or rename one.`);
   }
   return problems;
 }
