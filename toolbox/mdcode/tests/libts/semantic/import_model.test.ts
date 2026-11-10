@@ -1541,12 +1541,19 @@ describe('sources', () => {
         const loaded =
             loadModels(googleRes.files[0].content, {bindingOptional: true});
         expect(loaded.models[0].entities[0].dataSource).toBe('');
+        const rejected =
+            "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
+            "is not supported, and version '0.2.0.dev0' requires a table " +
+            "'source' on every dataset. Bind the dataset to a table and " +
+            'import again';
         expect(ossieRes.errors).toEqual([
-          "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
-          "is not supported, and version '0.2.0.dev0' requires a table " +
-          "'source' on every dataset. Bind the dataset to a table and " +
-          "import again, or import with '--flavor google', which removes " +
+          `${rejected}, or import with '--flavor google', which removes ` +
           'the source.']);
+        // A strict import with '--flavor google' rejects the source too.
+        expect((await importSemanticModelYaml(
+                    ossieDoc({source: query}), {flavor: 'ossie', strict: true}))
+                   .errors)
+            .toEqual([`${rejected}.`]);
       });
 });
 

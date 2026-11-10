@@ -1574,7 +1574,7 @@ export function googleBlockProfiles(text: string): ProfileSpec[] {
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    return googleBlockProfilesPastYamlError(text, err?.message ?? String(err));
+    return googleBlockProfilesPastYamlError(text, yamlErrorMessage(err, text));
   }
   return blockProfilesOf(doc);
 }

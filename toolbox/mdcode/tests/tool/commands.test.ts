@@ -3487,6 +3487,8 @@ semantic_model:
     ['has a YAML syntax error', '    description: [x\n', 'could not parse input', false],
     ['has an alias whose anchor is not set', '    description: *nope\n',
      'Unresolved alias', true],
+    ['has an unquoted \'*\'', '    description: *\n',
+     'write it in quotes, as in description: "*".', false],
   ] as const;
   for (const [what, extra, problem, listed] of yamlErrors) {
     const writeBroken = () => {

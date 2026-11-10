@@ -1035,11 +1035,14 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
     const parts = doc.entryTables ? sourceParts(trimmed) : undefined;
     if (hasUnquotedWhitespace(trimmed)) {
       if (doc.targetVersion === OSSIE_VERSION) {
+        // A strict import with '--flavor google' rejects the source too.
+        const google = doc.strict ? '' :
+            `, or import with '--flavor google', which removes the source`;
         doc.errors.push(
             `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
-            `every ${word}. Bind the ${word} to a table and import again, ` +
-            `or import with '--flavor google', which removes the source.`);
+            `every ${word}. Bind the ${word} to a table and import ` +
+            `again${google}.`);
       } else {
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
