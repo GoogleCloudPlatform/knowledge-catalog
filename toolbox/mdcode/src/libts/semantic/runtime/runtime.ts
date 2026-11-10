@@ -307,8 +307,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
-    // inheritance does not change.
-    const chosen = resolveStore(authored, profile, document);
+    // inheritance does not change. Push reads a named profile's own sources,
+    // so an entity the profile leaves out is not reported as one it binds.
+    const declared =
+        (profilesByDoc.get(document) ?? []).find(p => p.name === profile);
+    const spec = profile === DEFAULT_PROFILE || !declared ? undefined :
+        'spec' in declared ? declared.spec :
+        loadProfileFile(declared.text, profile, {skipActions: true});
+    const bound = spec && new Map(spec.entities.map(pe => [pe.name, pe.source]));
+    const chosen = bound ?
+        resolveStore(authored, profile, document, e => bound.get(e.name)) :
+        resolveStore(authored, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

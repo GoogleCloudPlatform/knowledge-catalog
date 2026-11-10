@@ -2635,10 +2635,14 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   for (const runtime of opened) {
     const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
-      // A store error already names the model.
-      const named = generated.error.startsWith(`Model '`);
-      console.error(`Error: ${named ? '' : `[${runtime.model.name}] `}${
-          generated.error}`);
+      // A store error already names the model, or holds push's errors, one
+      // to a line, each naming the model file.
+      for (const line of generated.error.split('\n')) {
+        const named = line.startsWith(`Model '`) ||
+            line.startsWith(`[${runtime.document}] `);
+        console.error(
+            `Error: ${named ? '' : `[${runtime.model.name}] `}${line}`);
+      }
       failed = true;
       continue;
     }

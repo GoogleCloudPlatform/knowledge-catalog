@@ -18,7 +18,7 @@
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
 import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets, ParsedDeploymentTarget, resolveModelDeployments, tablesOutsideTarget} from '../deployment_target';
-import {SemanticModel} from '../ir';
+import {Entity, SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
@@ -193,6 +193,8 @@ export interface StoreError {
  * one the operational targets, Spanner or AlloyDB, name, or else the one the
  * BigQuery targets name. Two graphs in one BigQuery dataset or one Spanner
  * database are one store. `document` names the model file in push's errors.
+ * `sourceOf` gives the source push checks for each entity, and defaults to the
+ * source the entity is written with.
  *
  * Fails six ways:
  *
@@ -211,7 +213,9 @@ export interface StoreError {
  */
 export function resolveStore(
     model: SemanticModel, profile: string = DEFAULT_PROFILE,
-    document = model.name): ChosenStore|StoreError {
+    document = model.name,
+    sourceOf: (e: Entity) => string|undefined = writtenSource):
+    ChosenStore|StoreError {
   // Push checks the target of every deployment the model declares, so the
   // targets of every deployment are read before the profile's are picked.
   const all = googleDeploymentTargets(model);
@@ -289,7 +293,7 @@ export function resolveStore(
   const resolved = resolveModelDeployments(scoped);
   const outside = 'error' in resolved ? [] : resolved.deployments
       .filter(d => targetStore(d).name === store.name)
-      .flatMap(d => tablesOutsideTarget(document, model, d, writtenSource));
+      .flatMap(d => tablesOutsideTarget(document, model, d, sourceOf));
   if (outside.length) return {error: outside.join('\n'), named: true};
 
   // Only an action writes, so only a model that declares one needs every
