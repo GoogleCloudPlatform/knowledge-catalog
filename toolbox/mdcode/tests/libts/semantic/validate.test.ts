@@ -1790,10 +1790,10 @@ ${metricBlock}`).models[0];
     test.each([
       ['avg_order', 'revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, and a ` +
        'metric over other metrics is not supported in this version; write the expression ' +
-       "over the fields that 'revenue' reads."],
+       "of 'revenue' in its place."],
       ['avg_order', 'orders.revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, ` +
        'and a metric over other metrics is not supported in this version; write the ' +
-       "expression over the fields that 'revenue' reads."],
+       "expression of 'revenue' in its place."],
       // A metric that reads its own name reads a column or a missing field.
       ['total', 'SUM(total)', `${at('total')}: 'total' must be written as 'entity.field'; a ` +
        'metric reads fields, never columns.'],

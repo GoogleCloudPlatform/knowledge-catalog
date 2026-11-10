@@ -1876,7 +1876,7 @@ export function validateExpressionReferences(
               `metric '${metric.name}' in model '${model.name}' (${
                   document}): '${name}' is a metric, and a metric over ` +
               `other metrics is not supported in this version; write the ` +
-              `expression over the fields that '${name}' reads.`);
+              `expression of '${name}' in its place.`);
         }
         return true;
       };
