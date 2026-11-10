@@ -875,10 +875,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   guard resolving to nothing leaves the author believing the write is checked
   when nothing checks it. Every `concept` in the action's `affects` must
   likewise resolve to an entity or a relationship the same model declares, and
-  its `fields` must be fields of that concept — for a relationship, the
-  properties of the junction table backing a many-to-many edge, so a plain
-  foreign-key edge has none. Naming fields beside a `delete` is rejected,
-  because a `delete` takes the whole instance. An affected concept that resolves
+  its `fields` must be fields of that concept. A relationship declares no
+  fields of its own, so a field named on one is rejected. Naming fields beside
+  a `delete` is rejected, because a `delete` takes the whole instance. An affected concept that resolves
   to nothing is reported and then left alone, since every later check about it
   is meaningless; undeclared fields do not chain that way, so a concept that
   does resolve reports every field it does not have. Everything that reads the

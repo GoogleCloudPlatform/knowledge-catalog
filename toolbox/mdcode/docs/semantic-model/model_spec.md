@@ -247,9 +247,10 @@ requires them (see [§4](#4-narrowings-and-relaxations)). Like `source` and a fi
 and a named profile states them itself ([§7](#7-the-binding-layer)).
 
 > **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
-> exists in `kcmd`'s internal representation but has **no YAML syntax** in
-> `0.2.0.dev0`. It cannot be authored today and is reserved for a future format
-> extension. Direct-FK relationships (1:1, 1:N) are the authorable forms.
+> has **no YAML syntax** in `0.2.0.dev0`, and the loader rejects an
+> `association` key on a relationship as an unknown key. The construct is
+> reserved for a future format extension. Direct-FK relationships (1:1, 1:N) are
+> the authorable forms.
 
 ### 2.3. Metric
 
@@ -403,7 +404,7 @@ Each rule and its reason:
   query it.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
-  target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
+  target, every relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.
 
 - **A graph-bound concrete leaf dataset MUST declare a `primary_key`.** For a
@@ -545,12 +546,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
   normalize to the same thing. Every `concept` MUST resolve to an entity or a
   relationship the same model declares; the two are named the same way, because
   the model already records which one a name is. `operation` is drawn from one
-  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is: a
-  many-to-many relationship is backed by a junction table with fields of its
-  own, so an edge is modified exactly as an entity is. `fields` MUST name fields
-  of the concept and MUST NOT accompany a `delete`, which takes the whole
-  instance. A repeated concept-and-operation pair is a **hard load error**.
-  Accepted only under
+  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is.
+  `fields` MUST name fields of the concept, so an entry on a relationship, which
+  declares no fields of its own, names none. `fields` MUST NOT accompany a
+  `delete`, which takes the whole instance. A repeated concept-and-operation
+  pair is a **hard load error**. Accepted only under
   `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor,
   so `affects` is the author's declaration and nothing verifies it against what
   the executor does. See [Modeling write operations](actions.md).

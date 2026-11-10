@@ -152,9 +152,8 @@ field's datatype, description, label and AI context straight out of the model.
 passes an account id and the write binds it as an integer. Change the field
 later and every parameter projected from it follows, because there's no second
 copy to keep in step. A `concept` is read the way `affects` reads one, so it can
-name a relationship as well as an entity — but what you project from in practice
-is an entity, because a relationship only has fields of its own when a junction
-table backs it, and this format has no syntax for one yet.
+name a relationship as well as an entity. A relationship declares no fields of
+its own, so the field you project from belongs to an entity.
 
 The pair can be written two ways, and they load to the same parameter:
 
@@ -815,11 +814,9 @@ one already covered what the second narrows.
 can change `Account.balance`* answerable. A `delete` takes the whole instance,
 so a field named beside one is rejected rather than ignored.
 
-On a relationship, `fields` means the junction table's own columns, so *modify
-the grade on an Enrollment* is as ordinary a change as *modify an order's
-total*. A plain foreign-key edge carries no columns of its own, and
-`TransferDebits` is one, so naming a field on it is an error — the property you
-meant belongs to an endpoint entity.
+A relationship declares no fields of its own, so naming a field on one, such
+as `TransferDebits`, is an error. The property you meant belongs to an endpoint
+entity.
 
 Name the concept now and refine it later. Writing `- concept: Account` on its
 own says the same thing the bare `Account` does, and it's written back as the

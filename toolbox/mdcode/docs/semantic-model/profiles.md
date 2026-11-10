@@ -157,7 +157,7 @@ leaves declaration alone.
 | an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them, and a profile a BigQuery or Spanner deployment uses must give every concrete leaf entity a `primary_key` | |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself, and which on a BigQuery deployment must join on exactly the target's `primary_key` columns | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
-| whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source`; `deployments` and deployment targets |
+| whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; `deployments` and deployment targets |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. Key and join columns name physical
