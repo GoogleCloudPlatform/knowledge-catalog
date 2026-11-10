@@ -662,8 +662,8 @@ const PARTS: Record<string, string> = {
   minute: 'MINUTE',
 };
 
-// DATE_TRUNC also takes a week, which starts on Monday in PostgreSQL,
-// Snowflake and Databricks, as BigQuery's ISOWEEK does.
+// DATE_TRUNC also takes a week, which starts on Monday in PostgreSQL and
+// Snowflake, as BigQuery's ISOWEEK does.
 const TRUNC_PARTS: Record<string, string> = {...PARTS, week: 'ISOWEEK'};
 
 // The parts that count months. BigQuery cannot add them to a TIMESTAMP, and
@@ -1053,9 +1053,10 @@ function article(noun: string): string {
 // write DATE_ADD, which keeps the type of a DATE, a DATETIME and a TIMESTAMP.
 // Those dialects read a string or a number beside the interval as a date, and
 // BigQuery rejects it or reads another way, so import refuses one. MySQL reads
-// a sum or difference without an INTERVAL as a number, so import refuses that
-// beside the interval as well. The sum is a timestamp in PostgreSQL, so an
-// ANSI_SQL text with one is not translated.
+// a sum or difference without an INTERVAL as a number, also when MAX, COALESCE
+// or a similar function returns it, so import refuses that beside the interval
+// as well. The sum is a timestamp in PostgreSQL, so an ANSI_SQL text with one
+// is not translated.
 // A Databricks DATE plus an INTERVAL of hours or minutes is a TIMESTAMP, where
 // BigQuery gives a DATETIME, so import translates that sum only from the other
 // dialects. SPANNER arithmetic is BigQuery's.
@@ -1069,8 +1070,9 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     if (unit === 'day' && DATE_DAYS.has(read)) {
       const other = sides.find(s => !s?.interval);
       const b = bare(other);
-      const number = numberText(other) !== undefined || (read === 'mysql' &&
-          [b?.add, b?.sub].some(v => v && !v.left?.interval && !v.right?.interval));
+      const sum = (s: any): boolean => returned(s).some(sum) ||
+          [bare(s)?.add, bare(s)?.sub].some(v => v && !v.left?.interval && !v.right?.interval);
+      const number = numberText(other) !== undefined || (read === 'mysql' && sum(other));
       if (!other || number || (b?.literal && b.literal.literal_type !== 'date')) {
         return `${op} of ${valueName(b)}`;
       }
@@ -1088,14 +1090,26 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   }
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   // DATE_ADD, DATE_SUB and a sum or difference with an INTERVAL are dates or
-  // times.
-  const date = (s: any) => isDate(s) ||
+  // times, as is a function that returns one.
+  const date = (s: any): boolean => isDate(s) || returned(s).some(date) ||
       [...CURRENT, 'DATE_ADD', 'DATE_SUB'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval));
   if (CONVERTING.has(read) && sides.some(date)) return `${op} of a date`;
   if ((kind === 'mul' && !CONVERTING.has(read)) || read === 'spanner') return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
+}
+
+// The operands whose value `node`, a source value, can give as its own: the
+// operand of MIN or MAX, each operand of COALESCE or IFNULL, each result of IF
+// or CASE, and the first operand of NULLIF. The other nodes import translates
+// from MySQL or SQL Server compute a new value.
+function returned(node: any): any[] {
+  const b = bare(node);
+  return b?.min ? [b.min.this] : b?.max ? [b.max.this] : b?.coalesce ? b.coalesce.expressions :
+      b?.if_func ? [b.if_func.true_value, b.if_func.false_value] :
+      b?.case ? [...b.case.whens.map((w: any[]) => w[1]), b.case.else_] :
+      String(b?.function?.name).toUpperCase() === 'NULLIF' ? [b.function.args[0]] : [];
 }
 
 // The kinds of node and the functions that give a number, a BOOL, a date or a
