@@ -333,6 +333,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'd + INTERVAL -1.5 DAY', {error: 'kcmd does not translate INTERVAL -1.5 DAY'}],
     ['POSTGRES', "d + INTERVAL '1:30' HOUR TO MINUTE", {error: 'kcmd does not translate INTERVAL 1:30 HOUR TO MINUTE'}],
     ['SNOWFLAKE', "d + INTERVAL '1' DAY(9) TO SECOND(3)", {error: 'kcmd does not translate INTERVAL 1 DAY(9) TO SECOND(3)'}],
+    ['POSTGRES', "d + INTERVAL '1' DAY TO SECOND(3)", {error: 'kcmd does not translate INTERVAL 1 DAY TO SECOND(3)'}],
     ['DATABRICKS', "d + INTERVAL '2' SECOND(3)", {error: 'kcmd does not translate INTERVAL 2 SECOND(3)'}],
     ['SPANNER', "d + INTERVAL '''1''' DAY", {error: 'kcmd does not translate a triple quoted string literal'}],
     ['POSTGRES', "2 * INTERVAL '1 day'", {error: 'kcmd does not translate INTERVAL'}],
@@ -341,6 +342,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'n BETWEEN 1 AND 2 IS NULL', {error: 'kcmd does not translate BETWEEN and IS NULL without parentheses, which databases group in different orders'}],
     ['DATABRICKS', "s LIKE 'a%' = TRUE", {error: 'kcmd does not translate LIKE and = without parentheses, which databases group in different orders'}],
     ['SNOWFLAKE', 'a = b IS NULL', {error: 'kcmd does not translate = and IS NULL without parentheses, which databases group in different orders'}],
+    ['POSTGRES', "a = b NOT LIKE 'a%'", {error: 'kcmd does not translate = and NOT LIKE without parentheses, which databases group in different orders'}],
     // Values whose types import cannot see.
     ['POSTGRES', 'a - b', {error: 'kcmd does not translate - without a number, SUM, COUNT or AVG on one side'}],
     ['SQLSERVER', "first_name + ' '", {error: 'kcmd does not translate + of a string'}],
@@ -350,6 +352,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'COALESCE(a > b, 0)', {error: 'kcmd does not translate COALESCE of a comparison'}],
     ['MYSQL', "a || ' ' || b", {error: 'kcmd does not translate OR of a string'}],
     ['DATABRICKS', "flag = s IN ('a', 'b')", {error: 'kcmd does not translate IN of a comparison'}],
+    ['MYSQL', "flag = s NOT LIKE 'a%'", {error: 'kcmd does not translate NOT LIKE of a comparison'}],
     ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     // Date, format and conversion functions off the list.
     ['SQLSERVER', 'DATEADD(month, -1, GETDATE())', {error: 'kcmd does not translate DATEADD of a month to a value that may be a TIMESTAMP'}],

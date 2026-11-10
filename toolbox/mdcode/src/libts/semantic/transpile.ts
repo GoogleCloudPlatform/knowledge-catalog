@@ -751,13 +751,15 @@ function operatorName(node: any): string {
   return node[kind].not ? not[kind] : OPERATORS[kind];
 }
 
-// The message for `value`, a node of `kind` in COMPARING in the engine's
-// dialect `read`, when one of its operands compares too and import does not
-// translate the pair, or undefined. Without parentheses, the source may group
-// the two operators another way than the engine (see BINDING). BigQuery's LIKE
-// also takes no BOOL, and its IN and BETWEEN take a BOOL only beside another
-// BOOL, where some sources convert it.
-function nestedComparison(kind: string, value: any, read: string): string|undefined {
+// The message for `node`, a node comparingKind names in the engine's dialect
+// `read`, when one of its operands compares too and import does not translate
+// the pair, or undefined. Without parentheses, the source may group the two
+// operators another way than the engine (see BINDING). BigQuery's LIKE also
+// takes no BOOL, and its IN and BETWEEN take a BOOL only beside another BOOL,
+// where some sources convert it.
+function nestedComparison(node: any, read: string): string|undefined {
+  const kind = comparingKind(node)!;
+  const value = (node.not?.this ?? node)[kind];
   const levels = BINDING[read];
   const level = (k: string) => levels.findIndex(l => l.includes(k));
   for (const [i, name] of operandNames(kind).entries()) {
@@ -765,13 +767,13 @@ function nestedComparison(kind: string, value: any, read: string): string|undefi
     const grouped = !inner || (levels && (level(inner) < level(kind) ||
         (i === 0 && read === 'mysql' && level(inner) === level(kind))));
     if (grouped) continue;
-    const [outer, operand] = [operatorName({[kind]: value}), operatorName(value[name])];
+    const [outer, operand] = [operatorName(node), operatorName(value[name])];
     const [first, second] = i === 0 ? [operand, outer] : [outer, operand];
     return `${first} and ${second} without parentheses, which databases group in different orders`;
   }
   const values = comparedValues(kind, value) ?? [value.left, value.right];
   return ['like', 'in', 'between'].includes(kind) && values.some(v => comparingKind(bare(v))) ?
-      `${operatorName({[kind]: value})} of a comparison` : undefined;
+      `${operatorName(node)} of a comparison` : undefined;
 }
 
 // The first construct in `node`, a source expression in the engine's dialect
@@ -810,7 +812,8 @@ function kindOf(node: any): string|undefined {
 // not translate the node.
 function nextNodes(kind: string, value: any, read: string):
     unknown[]|string|undefined {
-  const nested = COMPARING.has(kind) ? nestedComparison(kind, value, read) : undefined;
+  const node = {[kind]: value};
+  const nested = comparingKind(node) ? nestedComparison(node, read) : undefined;
   if (nested) return nested;
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
   // BigQuery gives a BOOL there.
@@ -1105,13 +1108,17 @@ function intervalText(value: any): string {
   return unit ? `${text} ${unit}` : `'${text}'`;
 }
 
-// `unit`, an interval unit as the engine reads it, for a message: a name such
-// as `Day`, or a node such as DAY(9), whose kind is the unit.
+// `unit`, an interval unit as the engine reads it, for a message. The engine
+// gives a name such as `Day`, a `var` node such as DAY, a node such as DAY(9)
+// whose kind is the unit, or a function such as WEEK(2).
 function unitName(unit: any): string {
   if (typeof unit === 'string') return unit.toUpperCase();
+  if (unit?.var) return String(unit.var.this).toUpperCase();
   const kind = Object.keys(unit ?? {}).find(k => k !== 'type') ?? '?';
-  const size = numberText(unit?.[kind]?.this);
-  return `${kind.toUpperCase()}${size === undefined ? '' : `(${size})`}`;
+  const value = unit?.[kind];
+  const name = kind === 'function' ? String(value.name) : kind;
+  const sizes = (value?.args ?? [value?.this]).map(numberText).filter((s: any) => s !== undefined);
+  return `${name.toUpperCase()}${sizes.length ? `(${sizes.join(', ')})` : ''}`;
 }
 
 // The text of `literal`, an engine literal. The engine gives a triple-quoted
