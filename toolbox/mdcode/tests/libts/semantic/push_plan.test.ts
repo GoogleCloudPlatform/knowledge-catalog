@@ -190,7 +190,15 @@ semantic_model:
     const code = await pull();
     expect(code).toBe(0);
 
-    expect(warnSpy).not.toHaveBeenCalled();
+    // Push refuses the Spanner deployment's BigQuery table, and pull says so.
+    expect(warnSpy.mock.calls.map(c => String(c[0]))).toEqual([
+      `Warning: push refuses ${
+          path.join('catalog', 'EntryGroups', 'sales_eg', 'sales.yaml')} as ` +
+          "pull writes it: [sales] deployment 'sp_prod' targets Spanner " +
+          "database 'p/i/db', but the model file binds entity 'bq_uri' to " +
+          "'bigquery.googleapis.com/projects/p/datasets/d/tables/items', " +
+          'which is not a table in that database.',
+    ]);
 
     // The rebuilt file loads and keeps the deployments as declared, the field's
     // expression and the source as written.
