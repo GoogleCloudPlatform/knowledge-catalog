@@ -411,13 +411,28 @@ describe('init --semantic-model: entry-group provisioning', () => {
         CUSTOM_TYPES.map(t => t.id));
   });
 
-  test('a fatal action-type error fails init', async () => {
+  // A 429 is the write quota, which passes on a later run, so its error says
+  // to run init again.
+  test.each([
+    ['aspect type', 'createAspectType', 400, 'bad metadata template',
+     'bad metadata template'],
+    ['aspect type', 'createAspectType', 429, 'Quota exceeded.',
+     'Quota exceeded. Run this command again in a minute.'],
+    ['entry type', 'createEntryType', 429, 'Quota exceeded',
+     'Quota exceeded. Run this command again in a minute.'],
+  ] as const)('a create of an %s (%s) answered %d fails init', async (kind, create, status, message, shown) => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));
-    spyOn(CatalogClient.prototype, 'createAspectType')
-        .mockImplementation(async () => err(400, 'bad metadata template'));
+    spyOn(CatalogClient.prototype, create)
+        .mockImplementation(async () => err(status, message));
+    const errors: string[] = [];
+    spyOn(console, 'error').mockImplementation((...args: any[]) => {
+      errors.push(args.join(' '));
+    });
 
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(1);
+    expect(errors).toEqual(
+        [`Error: creating ${kind} '${CUSTOM_TYPES[0].id}': ${shown}`]);
   });
 
   // A teammate without create permission may be refused the create of an

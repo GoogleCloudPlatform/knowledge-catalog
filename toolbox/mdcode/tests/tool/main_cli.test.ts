@@ -71,6 +71,12 @@ describe('kcmd: --help and --version', () => {
     expect(code).toBe(0);
     expect(usageBlocks(out)).toBe(1);
     expect(out).toContain('kcmd push');
+    // A negated flag shows no default, and --dry-run says what it skips.
+    expect(out).not.toContain('(default: true)');
+    expect(out).toContain(
+        'Run the checks and apply nothing; skips the Knowledge Catalog ' +
+        'checks on the entry group, which find a model the push would ' +
+        'refuse or --force-remove would delete');
   });
 
   // cac serves `--version` only when nothing matched. With a command matched it
@@ -172,9 +178,9 @@ describe('kcmd push refuses a retired flag', () => {
          "<file> --input first-party --flavor <ossie|google> --transpile' to " +
          'translate SQL dialects when importing a model, in the model and each ' +
          'profile whose tables are all in BigQuery or BigLake.'],
-    [['--profile', 'prod'], msg.retired['--profile']],
-    [['--profile'], msg.retired['--profile']],
-    [['--profile='], msg.retired['--profile']],
+    [['--profile', 'ops'], msg.retiredProfile('ops')],
+    [['--profile'], msg.retiredProfile('<profile>')],
+    [['--profile='], msg.retiredProfile('<profile>')],
     [['--all-profiles'], msg.retired['--all-profiles']],
     [['--no-profile'], msg.retired['--no-profile']],
     [['--emit-expressions'], msg.retired['--emit-expressions']],

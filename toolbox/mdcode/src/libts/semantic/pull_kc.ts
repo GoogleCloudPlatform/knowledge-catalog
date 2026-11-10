@@ -19,6 +19,7 @@
 
 import {catalogContainer, CatalogClient, Entry} from '../gcp/dataplex';
 
+import {missingEntryGroupMessage} from './deploy_knowledge_catalog';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
 import {FirstGenerationModel, modelsFromCatalogResources, ReadResult} from './kc_converter';
@@ -53,11 +54,20 @@ export async function pullKnowledgeCatalog(
   // data, so each entry needs its own lookupEntry, and those fetches are
   // independent. The pool preserves input order so warnings stay deterministic.
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
-  for await (const entry of cat.listEntries(
-      opts.project, opts.location, opts.entryGroup)) {
-    const aspectTypes = semanticAspectTypes(entry.entryType);
-    if (aspectTypes) targets.push({entry, aspectTypes});
-    // else: not part of a semantic model; ignore it.
+  try {
+    for await (const entry of cat.listEntries(
+        opts.project, opts.location, opts.entryGroup)) {
+      const aspectTypes = semanticAspectTypes(entry.entryType);
+      if (aspectTypes) targets.push({entry, aspectTypes});
+      // else: not part of a semantic model; ignore it.
+    }
+  } catch (err) {
+    // A listing that fails names no cause push names, so the group itself is
+    // read to tell a missing group, which push names, from any other failure.
+    const group = await cat.getEntryGroup(
+        opts.project, opts.location, opts.entryGroup).catch(() => undefined);
+    if (group?.status === 404) throw new Error(missingEntryGroupMessage(opts));
+    throw err;
   }
 
   // An entry group holds exactly one semantic model. Zero anchors is a clean

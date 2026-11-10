@@ -417,9 +417,9 @@ relationships:
 
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0]))).toEqual([
-      "Error: [commerce] relationship 'placed_by': profile 'prod' joins on " +
-          'to_columns ["c_key"], which cover no primary or unique key of ' +
-          "'Customer'",
+      "Error: [commerce.profile.prod.yaml] profile 'prod': relationship " +
+          "'placed_by' joins on to_columns [\"c_key\"], which cover no " +
+          "primary or unique key of 'Customer'",
     ]);
   });
 
@@ -2245,6 +2245,25 @@ describe('a pull', () => {
     }, '');
   });
 
+  // A local model file that holds the catalog's model under another name is
+  // kept by a rename, which the refusal names.
+  test('refuses a local file that holds the catalog\'s model under another ' +
+           'name, and names the rename that keeps it',
+       async () => {
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('mysales.yaml'));
+         pulled();
+
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             "Error: local model file 'mysales.yaml' holds model 'commerce', " +
+             "which pull writes as 'commerce.yaml'. Rename the file to " +
+             "'commerce.yaml' to keep it, or re-run with --force-remove to " +
+             "delete it and pull the catalog's.");
+         expect(fs.readdirSync(entryGroupDir())).toEqual(['mysales.yaml']);
+       });
+
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
     // Push rejects this sidecar, which the catalog's overview replaces, so it
@@ -3072,7 +3091,8 @@ semantic_model:
 `);
     const kcSpy = spyOn(kc, 'preflightKnowledgeCatalog');
     expect(await push({validateOnly: true})).toBe(1);
-    expect(prints(console.warn).join('\n')).toContain('needs transpilation');
+    // The error says what to fix, so the metric's warning waits for it.
+    expect(prints(console.warn)).toEqual([]);
     expect(prints(console.error).join('\n')).toContain(
         "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
         "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +

@@ -19,7 +19,7 @@ import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf
 import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
-import {parseLeniently, YAML_OPTIONS} from './yaml_options';
+import {parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -96,14 +96,6 @@ export function undefinedEndpointProblem(
 function sourceRequiredMessage(entity: string): string {
   return `entity '${entity}': a non-abstract entity requires a ` +
       `source; set 'source', or mark it 'abstract: true' if it has no table`;
-}
-
-function ansiFallbackNote(preferred: string): string {
-  return `note: no '${
-             preferred}' dialect for one or more expressions; using the portable ` +
-      `'${FALLBACK_DIALECT}' dialect verbatim ('${
-             preferred}' accepts the ANSI core subset — ` +
-      `supply '${preferred}' variants only for ${preferred}-specific SQL)`;
 }
 
 export const DEFAULT_DIALECT = 'BIGQUERY';
@@ -1897,7 +1889,7 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   } catch (err: any) {
     throw new SemanticModelError(
         `Semantic model load error: could not parse input: ${
-            err?.message ?? err}`);
+            yamlErrorMessage(err, text)}`);
   }
   return fromDocument(doc, opts);
 }
@@ -1936,7 +1928,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
 }
 
 // Whether a dialect list takes its ANSI_SQL text for want of one in
-// `preferred`. pickDialect picks by this and expressionWarning warns by it, so
+// `preferred`. pickDialect picks by this and expressionWarning reads it, so
 // the two cannot disagree.
 function fallsBackToAnsi(
     dialects: ReadonlyArray<{dialect: string}>, preferred: string): boolean {
@@ -1963,9 +1955,9 @@ interface Subject {
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
 // when it has text in that dialect. That is the double-quote warning on a
-// dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the transpilation warning or
-// the ANSI_SQL note, which only the `preferred` dialect gives, and never for
-// the string form.
+// dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the warning that it has no
+// text the `preferred` dialect runs, which only that dialect gives, and never
+// for the string form. An ANSI_SQL text runs on every table, so it gives none.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, subject: Subject,
     dialect: string, preferred: string): string|undefined {
@@ -1992,12 +1984,10 @@ function expressionWarning(
         `holds this expression as '<entity>.<field>'`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
-  if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
+  if (fallsBackToAnsi(dialects, preferred)) return undefined;
   const vendor = dialects.find(d => d.dialect !== FALLBACK_DIALECT);
-  return `${ctx}: no '${preferred}' or '${
-             FALLBACK_DIALECT}' dialect; keeping the '${vendor?.dialect}' ` +
-      `expression as imported_expression (needs transpilation to '${
-             preferred}')`;
+  return `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect, so a ${
+      preferred} table cannot run its '${vendor?.dialect}' expression`;
 }
 
 // Whether `entity`'s table runs SQL in `dialect`. An abstract entity runs
@@ -2010,21 +2000,23 @@ function runsDialect(
 
 // The warning `item` gives on `table`, the table of `entity`:
 // expressionWarning's when the load knows the table's dialect, or one saying
-// the table has no text to run. With `profiled`, the second is given only on a
-// Cloud SQL, Spanner or third-party table no lookup has read. On a table of the
-// `preferred` dialect, expressionWarning's transpilation warning already says
-// so.
+// the table has no text to run. On a table of the `preferred` dialect,
+// expressionWarning's warning already says so. With `profiled`, the caller
+// rejects an item its table cannot run when the load knows the table's dialect
+// without guessing, so no warning is given for it then. The second warning is
+// then given only on a Cloud SQL, Spanner or third-party table no lookup has
+// read.
 function tableWarning(
     item: Pick<Field, 'expression'|'dialects'|'stringForm'>, subject: Subject,
     table: TableDialects, entity: string, preferred: string,
     profiled: boolean): string|undefined {
+  const checked = profiled && !table.unread && !table.guessed;
+  const missing = noTextFor(item, table.dialects);
+  if (checked && missing) return undefined;
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || (profiled && !table.unread && !table.guessed) ||
-      !noTextFor(item, table.dialects)) {
-    return w;
-  }
+  if (w || checked || !missing) return w;
   const own = table.dialects.map(d => `'${d}'`).join(', ');
   return `${subject.ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
              table.name} table of entity '${entity}' cannot run it`;

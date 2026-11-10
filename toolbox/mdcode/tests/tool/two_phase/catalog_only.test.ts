@@ -22,7 +22,6 @@ const quotedKey = (label: string) => `Warning: ${label}[commerce] field ` +
     `that names a column alone, in backticks if it needs quoting, and a field ` +
     `of the entity whose fields list holds this expression as ` +
     `'<entity>.<field>'`;
-const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
 // Customer on `source`, its key field given as `text` in `dialect`.
 const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
   ...CUSTOMER, source,
@@ -88,7 +87,7 @@ scenarios('push --no-deployment', [
     flags: {validateOnly: true},
     code: 0,
     warnings: [
-      has('needs transpilation'),
+      has("metric 'positive_keys': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression"),
       has("metric 'quoted_keys': BigQuery reads \"key\" in its 'ANSI_SQL' expression as text"),
     ],
     then: [{
@@ -117,34 +116,32 @@ scenarios('push --no-deployment', [
         has("profile 'ops': field 'Customer.key' has no expression for SPANNER"),
         has("profile 'ops': metric 'positive_keys' has no expression for SPANNER"),
       ],
-      warnings: [has('needs transpilation')],
+      warnings: [has('table cannot run its')],
     }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
   },
   {
-    // Knowledge Catalog receives every profile file, applied or not. The
-    // model file and profile dev give the same ANSI_SQL note, which prints
-    // once.
+    // Knowledge Catalog receives every profile file, applied or not.
     name: 'prints the warnings of each profile file once, labelled with its name, whether or not a selected deployment applies it, and none for a profile push rejects',
     deployments: [{name: 'g', profile: 'prod'}, {name: 'h', profile: 'dev'}],
     entities: [keyAt(bqTable('customer'), 'c_key')],
     profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', '"c_key"')},
     flags: {validateOnly: true},
     code: 0,
-    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    warnings: [quotedKey("profile 'prod': ")],
     then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            {flags: {deployment: 'g', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            // A GOOGLE block profile's field gets the same warning.
            {google: {profiles: [{name: 'prod', entities: [keyIn('prod', '"c_key"').entities.Customer]}]},
             profiles: {}, flags: {validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            // Push's error for the Snowflake-only key is prod's only message.
            {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},
-            flags: {validateOnly: true}, code: 1, warnings: [NOTE],
+            flags: {validateOnly: true}, code: 1, warnings: [],
             rejects: [has("field 'Customer.key' has no expression for BIGQUERY or ANSI_SQL")]}],
     report: {code: 0},
   },
@@ -158,17 +155,17 @@ scenarios('push --no-deployment', [
     profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', executor: null}]}},
     flags: {validateOnly: true},
     code: 0,
-    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    warnings: [quotedKey("profile 'prod': ")],
     then: [{
       profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', description: 'd'}]}},
-      flags: {validateOnly: true}, code: 0, warnings: [NOTE, quotedKey("profile 'prod': ")],
+      flags: {validateOnly: true}, code: 0, warnings: [quotedKey("profile 'prod': ")],
     }, {
       actions: [{
         name: 'refund', parameters: [{name: 'k', type: 'Integer'}],
         executor: {sql: {statements: ['UPDATE customer SET c_key = c_key WHERE c_key = @k']}},
       }],
       flags: {validateOnly: true}, code: 0,
-      warnings: [NOTE, quotedKey("profile 'prod': "), has('1 action(s) published')],
+      warnings: [quotedKey("profile 'prod': "), has('1 action(s) published')],
     }],
     report: {code: 0, check: (lines, _, warnings) => {
       expect(lines).toContain("    not shown: [commerce.profile.prod.yaml] profile 'prod': " +

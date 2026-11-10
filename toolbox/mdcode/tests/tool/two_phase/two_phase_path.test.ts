@@ -28,8 +28,8 @@ scenarios('the two-phase push path', [
     ...refused({kc: false}, err(msg.retired['--no-kc'])),
     then: [
       // cac gives a numeric profile name as a number.
-      refused({profile: 'x'}, err(msg.retired['--profile'])),
-      refused({profile: 7 as any}, err(msg.retired['--profile'])),
+      refused({profile: 'x'}, err(msg.retiredProfile('x'))),
+      refused({profile: 7 as any}, err(msg.retiredProfile('7'))),
       refused({allProfiles: true}, err(msg.retired['--all-profiles'])),
       refused({profile: false}, err(msg.retired['--no-profile'])),
       refused({emitExpressions: true}, err(msg.retired['--emit-expressions'])),

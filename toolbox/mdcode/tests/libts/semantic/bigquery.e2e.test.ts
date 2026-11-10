@@ -155,20 +155,13 @@ describe('every golden fixture passes push validation', () => {
 });
 
 describe('dialect selection is surfaced by risk when the target dialect is absent', () => {
-  test(
-      'an ANSI-only model emits one informational note, not a per-field warning',
-      () => {
-        // The star fixture supplies only ANSI_SQL; the default target is
-        // BIGQUERY. Falling back to the portable canonical dialect is the
-        // intended path, so it collapses to a single note however many
-        // expressions rely on it.
-        const {loadWarnings} = build('star_orders_customer.yaml');
-        const notes = loadWarnings.filter(
-            w => w.includes('using the portable \'ANSI_SQL\''));
-        expect(notes).toEqual([
-          'note: no \'BIGQUERY\' dialect for one or more expressions; using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts the ANSI core subset — supply \'BIGQUERY\' variants only for BIGQUERY-specific SQL)',
-        ]);
-      });
+  // The star fixture supplies only ANSI_SQL, which runs on every table, so
+  // it draws no warning, whether the load prefers BIGQUERY or ANSI_SQL.
+  test('an ANSI-only model draws no warning', () => {
+    for (const load of [{}, {dialect: 'ANSI_SQL'}]) {
+      expect(build('star_orders_customer.yaml', load).loadWarnings).toEqual([]);
+    }
+  });
 
   test(
       'with no ANSI fallback, the vendor dialect is kept as imported and warned per metric',
@@ -182,17 +175,7 @@ describe('dialect selection is surfaced by risk when the target dialect is absen
             loadFixture('lineitem_databricks_ext.yaml');
         expect(loadWarnings)
             .toContain(
-                'metric \'revenue\': no \'BIGQUERY\' or \'ANSI_SQL\' dialect; keeping the \'DATABRICKS\' expression as imported_expression (needs transpilation to \'BIGQUERY\')');
-      });
-
-  test(
-      'selecting the matching dialect explicitly produces no fallback note',
-      () => {
-        const {loadWarnings} =
-            build('star_orders_customer.yaml', {dialect: 'ANSI_SQL'});
-        expect(loadWarnings.filter(
-                   w => w.includes('using the portable \'ANSI_SQL\'')))
-            .toEqual([]);
+                'metric \'revenue\': no \'BIGQUERY\' or \'ANSI_SQL\' dialect, so a BIGQUERY table cannot run its \'DATABRICKS\' expression');
       });
 });
 

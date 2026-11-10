@@ -77,12 +77,12 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(models[0].metrics[0].importedExpression).toBeUndefined();
   });
 
-  test('ANSI_SQL is the fallback when the preferred dialect is absent, with an informational note', () => {
+  test('ANSI_SQL is the fallback when the preferred dialect is absent, with no warning', () => {
     const { models, warnings } = fromDocument(metricDoc([
       { dialect: 'ANSI_SQL', expression: 'SUM(orders.a)' },
     ]));
     expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
-    expect(warnings.some(w => w.startsWith('note:') && w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
+    expect(warnings.some(w => w.includes('dialect'))).toBe(false);
     // The portable canonical dialect targets BigQuery by design; no imported form.
     expect(models[0].metrics[0].importedExpression).toBeUndefined();
   });
@@ -96,7 +96,9 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(models[0].metrics[0].expression).toBeUndefined();
     expect(models[0].metrics[0].importedExpression).toBe('SUM(orders.a)');
     expect(models[0].metrics[0].importedDialect).toBe('SNOWFLAKE');
-    expect(warnings.some(w => w.includes("'SNOWFLAKE'") && w.includes('imported_expression'))).toBe(true);
+    expect(warnings).toContain(
+        "metric 'mx': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY " +
+        "table cannot run its 'SNOWFLAKE' expression");
   });
 
   test('an explicit dialect option overrides the default preference', () => {
@@ -124,7 +126,7 @@ describe('per-dialect expressions collapse to a single string', () => {
   });
 
   test('field expressions select their dialect independently of metrics', () => {
-    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -144,9 +146,6 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(fields[1].expression).toBe('orders.gross - orders.tax');  // ANSI_SQL fallback
     expect(fields[2].expression).toBeUndefined();                    // no target/canonical form
     expect(fields[2].importedExpression).toBe("IFF(orders.ok, 'y', 'n')");  // SNOWFLAKE, kept as imported
-    // The canonical-fallback note is field-agnostic (so it dedupes); the point
-    // here is that the two fields still pick their expressions independently.
-    expect(warnings.some(w => w.includes("using the portable 'ANSI_SQL'"))).toBe(true);
     // The imported (vendor) dialect is recorded only for the vendor field, so the
     // transpile pass rewrites just that one.
     expect(fields[0].importedDialect).toBeUndefined();
@@ -197,8 +196,8 @@ describe('expression warnings judge each expression on the table that runs it', 
   // A warning for field 'f', then the same for metric 'm'.
   const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
   const vendor = (dialect: string) => both(
-      `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
-      `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
+      `no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run ` +
+      `its '${dialect}' expression`);
   const readsX = (database: string, token = 'x') =>
       `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
   // The double-quote warning on a table of `dialect`, in `database`, about
@@ -217,10 +216,6 @@ describe('expression warnings judge each expression on the table that runs it', 
       `no ${dialects} or 'ANSI_SQL' dialect, so the ${table} table of entity ` +
       `'t' cannot run it`);
   const quoted = quotedIn('BigQuery', 'BIGQUERY');
-  const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
-      'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
-      'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
-      'BIGQUERY-specific SQL)'];
 
   test.each([
     ['a BigQuery table, Snowflake text', BQ, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
@@ -258,7 +253,8 @@ describe('expression warnings judge each expression on the table that runs it', 
      [['ANSI_SQL', '"x"']], []],
     ['an AlloyDB table, a double-quoted name in ANSI_SQL', ALLOY, [['ANSI_SQL', '"x"']], []],
     ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
-    ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
+    // ANSI_SQL runs on every table.
+    ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], []],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
     ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
     // The warning names every double-quoted name, each once.
@@ -277,9 +273,8 @@ describe('expression warnings judge each expression on the table that runs it', 
         expect(warned(source, dialects)).toEqual(expected);
       });
 
-  test('a load preferring PostgreSQL gives only its ANSI_SQL note', () => {
-    expect(warned(PG, [['ANSI_SQL', '"x"']], 'POSTGRES'))
-        .toEqual([note[0].replaceAll('BIGQUERY', 'POSTGRES')]);
+  test('a load preferring PostgreSQL gives no warning about an ANSI_SQL text', () => {
+    expect(warned(PG, [['ANSI_SQL', '"x"']], 'POSTGRES')).toEqual([]);
   });
 
   // An inherited field is judged on the table of each entity that inherits
@@ -1178,8 +1173,9 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     const control = m.metrics.find(mt => mt.name === 'total_revenue')!;
     expect(control.expression).toBe('SUM(orders.o_totalprice)');
 
-    expect(warnings.some(w =>
-      w.includes("field 'orders.order_status_label'") && w.includes('imported_expression'))).toBe(true);
+    expect(warnings).toContain(
+        "field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' " +
+        "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression");
   });
 
   test('lineitem_databricks_ext.yaml: unique_keys and custom_extensions', () => {

@@ -211,6 +211,16 @@ describe('SemanticModelLayout sibling profile files', () => {
     l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(/does not parse/);
 
+    // YAML reads an unquoted `*` as an alias, so the error shows it quoted.
+    write('retail.profile.prod.yaml', 'name: prod\nmetrics_exclude: *\n');
+    l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(new Error(
+        "Profile file 'retail.profile.prod.yaml' does not parse: Alias " +
+        'cannot be an empty string at line 2, column 18:\n\n' +
+        'metrics_exclude: *\n                 ^\n' +
+        "YAML reads an unquoted '*' as an alias; write it in quotes, as in " +
+        'metrics_exclude: "*".'));
+
     fs.rmSync(path.join(groupDir(), 'retail.profile.prod.yaml'));
     write('retail.profile.DEFAULT.yaml', 'name: DEFAULT\n');
     l = await layout('eg');

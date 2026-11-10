@@ -717,6 +717,16 @@ export async function existsAfterCreate(
   return status === 409 || (status === 403 && (await lookup()).status === 200);
 }
 
+// The error for a failed create of `what`, whose answer is `res`. A 429 is
+// the write quota, which passes on a later run.
+function createError(what: string, res: {status: number; message?: string}):
+    string {
+  const reason = `${res.message || res.status}`;
+  if (res.status !== 429) return `creating ${what}: ${reason}`;
+  return `creating ${what}: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} ` +
+      `Run this command again in a minute.`;
+}
+
 // One custom type: its aspect type, then the entry type that requires it.
 async function provisionOne(
     cat: CatalogClient, dest: {project: string},
@@ -791,9 +801,7 @@ async function provisionOne(
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);
     if (refused) return refused;
-    return {
-      error: `creating ${aspectLabel}: ${aspect.message || aspect.status}`
-    };
+    return {error: createError(aspectLabel, aspect)};
   } else {
     // The entry type below names this aspect type in its required aspects, and
     // the server rejects that while the create is still in flight, so the wait
@@ -822,10 +830,7 @@ async function provisionOne(
   const refused = denial(entryLabel, entryType.status, entryType.message);
   if (refused) return {...refused, ...collected};
   if (entryType.status !== 200) {
-    return {
-      ...collected,
-      error: `creating ${entryLabel}: ${entryType.message || entryType.status}`
-    };
+    return {...collected, error: createError(entryLabel, entryType)};
   }
   // A push may follow immediately, and an entry naming a type that is still
   // being created is rejected the same way, so wait here too.

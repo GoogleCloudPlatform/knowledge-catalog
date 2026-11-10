@@ -417,7 +417,8 @@ describe('the store a profile uses', () => {
         .toBe(
             "Model 'm' declares no deployment without a 'profile' in its " +
             "GOOGLE block's 'deployments', so there is no store to run " +
-            "against under binding profile 'default'.");
+            "against under binding profile 'default'. Its deployments use " +
+            "profile 'operational'; pass --profile operational.");
   });
 
   test('a block profile no block deployment uses has no store, naming the block', () => {

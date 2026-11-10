@@ -4050,7 +4050,8 @@ ${extra}`, {sourceDialects: new Map([
   const check = (m: SemanticModel) => validateInlineDialects(m, 'doc', {});
   // The error for field `f` of `entity`, whose source has `dialect`, ending
   // in `hint`. `a` is the article before the dialect.
-  const MISSING = (entity: string, dialect: string, hint = '', a = 'a') =>
+  const MISSING =
+      (entity: string, dialect: string, hint = '; give it one', a = 'a') =>
       `field '${entity}.f' in model 'm' (doc) has no expression for ${
           dialect} or ANSI_SQL, and the model file binds entity '${
           entity}' to ${a} ${dialect} source${hint}.`;
@@ -4093,7 +4094,7 @@ ${extra}`, {sourceDialects: new Map([
        [MISSING('e', 'SPANNER'), MISSING('leaf', 'SPANNER')]],
       [BQ_TABLE('t'), dialects('SNOWFLAKE'), other, [TWO_DATABASES('e', 'other')]],
       // The message reads "an" before a dialect that starts with a vowel.
-      [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
+      [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', undefined, 'an')]],
       // kcmd import --transpile translates a Snowflake, Spanner or AlloyDB
       // text into BigQuery SQL, so only a BigQuery source gets the hint.
       [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [MISSING('e', 'BIGQUERY', HINT)]],

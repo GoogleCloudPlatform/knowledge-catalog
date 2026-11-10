@@ -469,9 +469,10 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     check: r => expect(r.printed.filter(
                            l => l.includes('-- Deployment') || l === ALLOYDB_NOTE))
                     .toEqual([header('bq'), header('ad'), ALLOYDB_NOTE]),
+    // A header prints only above what prints under it.
     then: [{
       flags: {validateOnly: true},
-      log: [header('bq'), msg.VALIDATED],
+      log: [msg.VALIDATED],
       warnings: [],
     }],
   },
@@ -652,11 +653,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       pb: scoreSql('pb', 'ANSI_SQL', '((pb'),
     },
     flags: {validateOnly: true},
-    warnings: [
-      ...['pa', 'pb'].map(unreadScore),
-      ...['pa', 'pb'].map(
-          p => has(`Warning: profile '${p}': [commerce] note: no 'BIGQUERY' dialect`)),
-    ],
+    warnings: ['pa', 'pb'].map(unreadScore),
     then: [{
       profiles: {
         pa: scoreSql('pa', 'ANSI_SQL', '((pa'),

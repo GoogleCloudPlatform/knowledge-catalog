@@ -2612,6 +2612,18 @@ export function spannerMetricsErrors(
   ];
 }
 
+// The warnings in `warnings` that push prints beside `errors`: each, less a
+// warning about a field or metric of the model file when one of the errors is
+// about that field or metric of the model file. The error already says what
+// to fix there, and the warning prints once it is fixed.
+export function uncoveredWarnings(
+    warnings: readonly string[], errors: readonly string[]): string[] {
+  return warnings.filter(w => {
+    const subject = /^(?:\[[^\]]*\] )?((?:field|metric) '[^']*')/.exec(w)?.[1];
+    return !subject || !errors.some(e => e.includes(`${subject} in model '`));
+  });
+}
+
 // What localChecks reads. `loaded` is the load of `docs` with the dialects in
 // `load`, and `models` holds each loaded model after withProfileFiles.
 export interface LocalCheckScope {

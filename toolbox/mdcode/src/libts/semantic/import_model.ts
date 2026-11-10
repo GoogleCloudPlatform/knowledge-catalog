@@ -18,7 +18,7 @@ import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
-import {YAML_OPTIONS} from './yaml_options';
+import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
@@ -1038,7 +1038,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.errors.push(
             `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
-            `every ${word}.`);
+            `every ${word}. Bind the ${word} to a table and import again, ` +
+            `or import with '--flavor google', which removes the source.`);
       } else {
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
@@ -1942,14 +1943,14 @@ async function validateOutputDocument(
       text: content,
     };
     // Where the input holds profile `name`, which the output writes in
-    // `written`: its profile file, or the model file's GOOGLE block. Strict
-    // mode writes nothing on an error, so its messages name the input.
+    // `written`: its profile file, or the input file's GOOGLE block. Strict
+    // mode writes nothing on an error, so its messages name the input file.
     const inputFiles =
         doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
     const where = (name: string, written: string) => !input ? written :
         inputFiles.find(pf => parseProfileName(pf.fileName) === name)
                 ?.fileName ??
-            model.name;
+            input;
     // Push stops at a profile file that breaks a file rule, then at an action
     // statement YAML reads differently from how it is written, then at a
     // deployment target in no accepted form. validateDeploymentTargets
@@ -2095,9 +2096,10 @@ export async function importSemanticModelYaml(
     const input = opts.profileFiles?.[i];
     doc.errors.push(
         input?.content === f.content ?
-            profileParseError(input.fileName, problem.message) :
+            profileParseError(
+                input.fileName, yamlErrorMessage(problem, f.content)) :
             `the import writes '${f.fileName}', which does not parse: ${
-                problem.message}`);
+                yamlErrorMessage(problem, f.content)}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
     await validateOutputDocument(files, doc, opts, load);

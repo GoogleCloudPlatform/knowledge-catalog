@@ -88,6 +88,5 @@ EDGE TABLES (
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- metric 'customer_lifetime_value' spans multiple tables (store_sales, customer); skipped (cannot be a single MEASURE)
 -- metric 'store_productivity' spans multiple tables (store_sales, store); skipped (cannot be a single MEASURE)

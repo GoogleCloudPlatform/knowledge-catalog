@@ -36,7 +36,7 @@ import {declaredConceptFields, InheritanceError, resolveInheritance} from './res
 import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {translatesToBigQuery} from './transpile';
-import {YAML_OPTIONS} from './yaml_options';
+import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form).
@@ -429,8 +429,8 @@ export function loadProfileFile(
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    throw new SemanticModelError(
-        `profile '${profileName}' does not parse: ${err?.message ?? err}`);
+    throw new SemanticModelError(`profile '${profileName}' does not parse: ${
+        yamlErrorMessage(err, text)}`);
   }
   if (opts.skipActions && doc && typeof doc === 'object' &&
       !Array.isArray(doc)) {
@@ -1449,13 +1449,13 @@ export function importTranspiles(
       translatesToBigQuery(f, (model.entities ?? []).map(e => e.name));
 }
 
-// The hint that import can add a text in `dialect` to `f`, a field of
-// `model`, or ''.
+// The advice for `f`, a field of `model` with no text in `dialect`: give it
+// one, or add one with import when import can.
 export function importHint(
     f: Parameters<typeof textsFor>[0], dialect: string,
     model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>):
     string {
-  if (!importTranspiles(f, dialect, model)) return '';
+  if (!importTranspiles(f, dialect, model)) return '; give it one';
   return `; give it one, or add one with '${
       importCommand('--transpile', model)}'`;
 }
@@ -1992,18 +1992,19 @@ export function validateProfileCompleteness(
 }
 
 /**
- * Returns one message for each binding, the model file's included, whose
+ * Returns one problem for each binding, the model file's included, whose
  * `to_columns` for a relationship cover no primary or unique key of its
  * target, or an empty list. A superset of a key covers it (see coversKey).
  * Keys and join columns are compared as written. A binding whose key or join
  * columns are not all column names (isColumnName) is left out. `applied` names
  * the profile the push applies. The "covers no key" check then leaves out that
- * profile's join, or the model file's when the profile states none.
+ * profile's join, or the model file's when the profile states none. A named
+ * profile's problem gives the profile.
  */
 export function validateProfileConsistency(
     baseModel: SemanticModel, profiles: ProfileSpec[],
-    applied?: string): string[] {
-  const errors: string[] = [];
+    applied?: string): Array<{problem: string; profile?: string}> {
+  const errors: Array<{problem: string; profile?: string}> = [];
   const entities = baseModel.entities ?? [];
   const byName = new Map(entities.map(e => [e.name, e]));
   for (const r of baseModel.relationships ?? []) {
@@ -2019,17 +2020,22 @@ export function validateProfileConsistency(
     // A binding that states no keys is checked against the model file's,
     // since completeness reports the missing keys. A binding with no join
     // columns is left out; completeness reports it for a named profile.
+    // `profile` is unset for the model file.
     const record =
-        (who: string, to: string[], pk: string[], uks: string[][]) => {
+        (who: string, to: string[], pk: string[], uks: string[][],
+         profile?: string) => {
           // The column name checks report a value that is not a column name.
           if (!to.length || ![...to, ...pk, ...uks.flat()].every(isColumnName)) {
             return;
           }
           if (!coversKey(to, pk, uks) && who !== checkedByPush) {
+            const joins = `joins on to_columns ${JSON.stringify(to)}, which ` +
+                `cover no primary or unique key of '${target.name}'`;
             errors.push(
-                `relationship '${r.name}': ${who} joins on to_columns ${
-                    JSON.stringify(to)}, which cover no primary or unique key ` +
-                `of '${target.name}'`);
+                profile === undefined ?
+                    {problem: `relationship '${r.name}': ${who} ${joins}`} :
+                    {problem: `${who}: relationship '${r.name}' ${joins}`,
+                     profile});
           }
         };
     record(
@@ -2042,7 +2048,8 @@ export function validateProfileConsistency(
           `profile '${p.name}'`, pr?.toColumns ?? [],
           pe?.primaryKey?.length ? pe.primaryKey : target.keys,
           nonEmptyKeys(pe?.uniqueKeys).length ? pe!.uniqueKeys! :
-                                               target.uniqueKeys ?? []);
+                                               target.uniqueKeys ?? [],
+          p.name);
     }
   }
   return errors;
@@ -2139,8 +2146,16 @@ export function namedProfileErrors(
           }).map(tag));
       warnings.push(...profileWarnings.map(at));
     }
+    // A named profile's error names its file and belongs to it, as its other
+    // errors do.
     errors.push(...validateProfileConsistency(logical, specs, DEFAULT_PROFILE)
-                    .map(e => ({error: `[${d.name}] ${e}`, document: d.name})));
+                    .map(({problem, profile}) => ({
+                           error: `[${
+                               named.find(p => p.name === profile)?.label ??
+                               d.name}] ${problem}`,
+                           document: d.name,
+                           ...(profile === undefined ? {} : {profile}),
+                         })));
   }
   return errors;
 }

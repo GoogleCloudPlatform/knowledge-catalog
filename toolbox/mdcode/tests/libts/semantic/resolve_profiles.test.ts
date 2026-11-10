@@ -1380,9 +1380,11 @@ describe('validateProfileConsistency', () => {
       p('a'),
       p('b', {relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['email']}]}),
     ]);
-    expect(errors.join('\n')).toContain(
-        "relationship 'PlacedBy': profile 'b' joins on to_columns [\"email\"], " +
-        "which cover no primary or unique key of 'Customer'");
+    expect(errors).toEqual([{
+      problem: "profile 'b': relationship 'PlacedBy' joins on to_columns " +
+          "[\"email\"], which cover no primary or unique key of 'Customer'",
+      profile: 'b',
+    }]);
     expect(validateProfileConsistency(irModel(), [
       p('b', {
         relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['c_id']}],
@@ -3379,9 +3381,9 @@ semantic_model:
     expect(validateProfileConsistency(model, [{
       name: 'p', entities: [],
       relationships: [{name: 'placed_by', fromColumns: ['x', 'y'], toColumns: ['a', 'a']}],
-    }]).join('\n')).toContain(
-        "profile 'p' joins on to_columns [\"a\",\"a\"], which cover no primary " +
-        "or unique key of 'customer'");
+    }]).map(e => e.problem).join('\n')).toContain(
+        "profile 'p': relationship 'placed_by' joins on to_columns [\"a\",\"a\"], " +
+        "which cover no primary or unique key of 'customer'");
   });
 
   test('pruning drops a metric the profile excludes, and names it excluded', () => {
@@ -3473,7 +3475,8 @@ describe('a relationship joins on a key of its target', () => {
   });
 
   test('a target with no key cannot be joined to', () => {
-    expect(validateProfileConsistency(model({}, ['id']), [prod(['id'])]).join('\n'))
+    expect(validateProfileConsistency(model({}, ['id']), [prod(['id'])])
+               .map(e => e.problem).join('\n'))
         .toContain("the model file joins on to_columns [\"id\"], which cover no " +
                    "primary or unique key of 'customer'");
   });
@@ -3515,13 +3518,14 @@ describe('keys and join columns compare as written', () => {
                   fields: [{name: 'key', expression: 'c_custkey'}]}],
       relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['c_custkey']}],
     };
-    const errors = validateProfileConsistency(model, [prod]).join('\n');
+    const errors = validateProfileConsistency(model, [prod])
+                       .map(e => e.problem).join('\n');
     expect(errors).toContain(
         "the model file joins on to_columns [\"c_key\"], which cover no " +
         "primary or unique key of 'customer'");
     expect(errors).toContain(
-        "profile 'prod' joins on to_columns [\"c_custkey\"], which cover no " +
-        "primary or unique key of 'customer'");
+        "profile 'prod': relationship 'placed_by' joins on to_columns " +
+        "[\"c_custkey\"], which cover no primary or unique key of 'customer'");
     // Joining on the key's own column passes in both bindings.
     const onKey = {
       ...model,
@@ -3827,8 +3831,9 @@ describe('applyProfile options', () => {
   });
 
   test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
-    // A Spanner table runs the Spanner-only text, and a BigQuery table needs
-    // it translated. Both read a double-quoted ANSI_SQL token as text.
+    // A Spanner table runs the Spanner-only text. On a BigQuery table, the
+    // profile check reports it, so it gives no warning. Both read a
+    // double-quoted ANSI_SQL token as text.
     const quoted = base();
     quoted.metrics!.push(
         {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
@@ -3843,16 +3848,14 @@ describe('applyProfile options', () => {
         `as '<entity>.<field>'`);
     const onBigQuery: string[] = [];
     applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
-    expect(onBigQuery.join('\n')).toContain(
-        "field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect");
+    expect(onBigQuery).toEqual([]);
     // A warning the model gave already is the model's, not the profile's.
     const withOwn = base();
-    withOwn.entities[0].fields.push(
-        {name: 'legacy', dialects: [{dialect: 'SPANNER', expression: 'x'}]} as any);
+    withOwn.metrics!.push({name: 'legacy', entity: 'orders',
+                           dialects: [{dialect: 'SPANNER', expression: 'SUM(orders.id)'}]});
     const own: string[] = [];
     applyProfile(withOwn, rebind(BQ('orders2')), {warnings: own});
-    expect(own.join('\n')).toContain("field 'orders.amount'");
-    expect(own.join('\n')).not.toContain("field 'orders.legacy'");
+    expect(own).toEqual([]);
   });
 
   test('a metric the profile excludes gives no warning under it', () => {
@@ -4819,8 +4822,9 @@ entities:
       - {name: tax, expression: x}
 `;
     expect(fromApply(replacesAll)).toEqual([]);
-    // One ANSI_SQL field left as the model file binds it keeps the note, and
-    // a profile text with no BIGQUERY or ANSI_SQL entry warns, prefixed.
+    // An ANSI_SQL field left as the model file binds it runs on every table,
+    // and the profile check reports a profile text with no BIGQUERY or
+    // ANSI_SQL entry, so neither warns.
     const keepsOne = `name: prod
 entities:
   - name: orders
@@ -4832,15 +4836,7 @@ entities:
           dialects:
             - {dialect: SPANNER, expression: t}
 `;
-    expect(fromApply(keepsOne)).toEqual([
-      '[sales] field \'orders.total\': no \'BIGQUERY\' or \'ANSI_SQL\' ' +
-          'dialect; keeping the \'SPANNER\' expression as imported_expression ' +
-          '(needs transpilation to \'BIGQUERY\')',
-      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
-          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
-          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
-          'for BIGQUERY-specific SQL)',
-    ]);
+    expect(fromApply(keepsOne)).toEqual([]);
     // A field the profile excludes takes its warning with it.
     const excludes = `name: prod
 entities:
@@ -4870,10 +4866,6 @@ entities:
         {from: {document: 'sales', warnings: loadedUnanchored.warnings}});
     if ('error' in ordered) throw new Error(ordered.error);
     expect(ordered.warnings).toEqual([
-      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
-          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
-          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
-          'for BIGQUERY-specific SQL)',
       '[sales] metric \'n\': expression references no known entity; it may ' +
           'not be placeable downstream',
       '[sales] action \'Close\': parameter \'reason\' states no \'type\' and ' +
@@ -4881,22 +4873,6 @@ entities:
           'its own scalar type (String/Integer/Decimal/Float/Boolean/Date/' +
           'Time/DateTime/DateTimeTz/Opaque).',
     ]);
-    // A metric that takes its ANSI_SQL text keeps the note, though the
-    // profile rebinds every field that did.
-    const withMetric = model + `    metrics:
-      - name: total_tax
-        entity: orders
-        expression:
-          dialects:
-            - {dialect: ANSI_SQL, expression: SUM(orders.tax)}
-`;
-    const loaded = loadSemanticModels(
-        [{name: 'sales', text: withMetric}], {bindingOptional: true});
-    const metricNote = applyProfileFile(
-        loaded.models[0].model, replacesAll, 'prod',
-        {from: {document: 'sales', warnings: loaded.warnings}});
-    if ('error' in metricNote) throw new Error(metricNote.error);
-    expect(metricNote.warnings.some(w => w.includes('note:'))).toBe(true);
   });
 });
 

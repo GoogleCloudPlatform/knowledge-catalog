@@ -153,6 +153,26 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
             .rejects.toThrow(/holds 2 semantic models.*expected exactly one/i);
       });
 
+  // A listing of a group that does not exist fails, and pull then gives
+  // push's sentence for the missing group. Any other failure keeps its own
+  // error.
+  test.each([
+    [404, "entry group 'eg' does not exist in location 'us' of project " +
+         "'dest'; run 'kcmd init --semantic-model dest.us.eg' to create it, " +
+         'or correct the scope in catalog.yaml.'],
+    [200, 'Failed to list entries: denied'],
+  ])('a failed listing of a group that answers %d', async (status, message) => {
+    spyOn(CatalogClient.prototype, 'listEntries')
+        .mockImplementation(async function*() {
+          throw new Error('Failed to list entries: denied');
+        } as any);
+    spyOn(CatalogClient.prototype, 'getEntryGroup')
+        .mockResolvedValue({status} as any);
+
+    await expect(pullKnowledgeCatalog(new CatalogClient({} as any), OPTS))
+        .rejects.toThrow(new Error(message));
+  });
+
   test('an empty group reconstructs no models (a clean no-op)', async () => {
     stubClient([], []);
 

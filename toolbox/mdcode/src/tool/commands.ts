@@ -38,7 +38,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, uncoveredWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -719,7 +719,8 @@ function retiredPushFlagErrors(options: PushOptions): string[] {
       options.profile !== undefined && typeof options.profile !== 'boolean',
       retired(
           '--profile',
-          `; declare a deployment with 'profile: prod' under ` +
+          `; declare a deployment with 'profile: ${
+              String(options.profile) || '<profile>'}' under ` +
               `'deployments:' and run 'kcmd push --deployment <name>'`),
     ],
     [
@@ -1084,12 +1085,17 @@ async function pushInTwoPhases(
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
   if (options.validateOnly) {
+    // A header prints only above a graph's warnings or, under --print, its
+    // DDL.
     for (const {deployment, generated} of plans) {
       if (!generated) continue;
+      if (!options.print && generated.warnings.every(w => printed.has(w))) {
+        continue;
+      }
       header(deployment);
       printGraph(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
-          options);
+          options, printed);
     }
     return reportCatalogResult(preflight.result!, options);
   }
@@ -1126,26 +1132,40 @@ async function pushInTwoPhases(
   return 0;
 }
 
+// What checkBeforeWrites returns.
+type CheckedPush = {
+  plans: DeploymentPlan[]; kcModels: LoadedModel[]; leftOut: string[];
+  overviews?: Map<string, OverviewSidecar>;
+}|{errors: LocalCheckError[]};
+
 // The local checks of a two-phase push, which call no service: it stops at
 // the first check that fails, and returns each selected deployment's plan, the
 // models the catalog receives, the overview sidecars it writes and what
-// pruning leaves out, or the errors that stop it. With
-// `quiet`, for the `kcmd profiles` report, it prints no warning.
+// pruning leaves out, or the errors that stop it. It prints each warning once
+// when the checks end, less those an error makes redundant (see
+// uncoveredWarnings). With `quiet`, for the `kcmd profiles` report, it prints
+// no warning.
 async function checkBeforeWrites(
-    options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
-  plans: DeploymentPlan[]; kcModels: LoadedModel[]; leftOut: string[];
-  overviews?: Map<string, OverviewSidecar>;
-}|{errors: LocalCheckError[]}> {
+    options: PushOptions, scope: TwoPhaseScope,
+    quiet = false): Promise<CheckedPush> {
+  const warnings: string[] = [];
+  const checked = await runLocalChecks(options, scope, w => warnings.push(w));
+  if (!quiet) {
+    const errors = 'errors' in checked ? checked.errors.map(e => e.error) : [];
+    for (const w of uncoveredWarnings([...new Set(warnings)], errors)) {
+      console.warn(`Warning: ${w}`);
+    }
+  }
+  return checked;
+}
+
+// The checks checkBeforeWrites runs, giving each warning to `warn`.
+async function runLocalChecks(
+    options: PushOptions, scope: TwoPhaseScope,
+    warn: (w: string) => void): Promise<CheckedPush> {
   const {layout, source, docs, profileDocs, load} = scope;
   const stop = (errors: LocalCheckError[]) => ({errors});
   const fail = (...errors: string[]) => stop(errors.map(error => ({error})));
-  // Prints each warning once.
-  const printed = new Set<string>();
-  const warn = (w: string) => {
-    if (quiet || printed.has(w)) return;
-    printed.add(w);
-    console.warn(`Warning: ${w}`);
-  };
 
   let selected: string[]|undefined;
   try {
@@ -1400,7 +1420,8 @@ function printProfileReport(model: SemanticModel, name: string): void {
       targets.length ? targets.join(', ') :
                        '(none; no deployment names this profile)'}`);
   console.log('    sources:');
-  for (const e of model.entities ?? []) {
+  // No profile binds an abstract entity, since it has no table.
+  for (const e of (model.entities ?? []).filter(e => !e.abstract)) {
     console.log(`      ${e.name} -> ${writtenSource(e) || '(unbound)'}`);
   }
 
@@ -1616,11 +1637,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           res.kind === 'error' ?
           profileForDocument(doc, available, name, load, {skipActions: true}) :
           res;
-      if (published?.kind === 'file') {
-        for (const w of published.warnings) {
-          console.warn(`  profile '${name}': warning: ${w}`);
-        }
-      }
       if (res.kind === 'error') {
         applyError =
             profileErrorMessage(doc.name, res, name, profileDocs(doc.name));
@@ -1628,6 +1644,12 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         model = res.model;
       }
       console.log(`  profile '${name}'`);
+      // The warnings print under the profile they belong to.
+      if (published?.kind === 'file') {
+        for (const w of published.warnings) {
+          console.warn(`  profile '${name}': warning: ${w}`);
+        }
+      }
       if (model) {
         printProfileReport(model, name);
       } else if (applyError !== undefined && !pushErrors.length) {
@@ -1852,15 +1874,38 @@ async function pullSemanticModel(
   let removed = 0;
   if (staleLocal.length) {
     if (!options.forceRemove) {
-      const localList = staleLocal.map(n => `'${n}'`).join(', ');
-      const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
-      console.error(
-          `Error: local model(s) ${localList} do not match the catalog ` +
-          `model ${catalogList} in this entry group. An entry group holds ` +
-          `one model, so pull will not leave two behind. Re-run with ` +
-          `--force-remove to delete the local model(s) and pull the ` +
-          `catalog's.`);
-      return 1;
+      // A file that holds the catalog's model under another file name is
+      // kept by a rename to the file pull writes.
+      const file = (name: string) => path.basename(layout.modelPath(name));
+      const errors: string[] = [];
+      const others: string[] = [];
+      for (const name of staleLocal) {
+        const declared = layout.declaredModelName(name);
+        if (declared !== undefined &&
+            catalogPaths.has(layout.modelPath(declared))) {
+          errors.push(
+              `local model file '${file(name)}' holds model '${declared}', ` +
+              `which pull writes as '${file(declared)}'. Rename the file ` +
+              `to '${file(declared)}' to keep it, or re-run with ` +
+              `--force-remove to delete it and pull the catalog's.`);
+        } else {
+          others.push(
+              declared === undefined || declared === name ?
+                  `'${name}'` :
+                  `'${declared}' in '${file(name)}'`);
+        }
+      }
+      if (others.length) {
+        const localList = others.join(', ');
+        const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
+        errors.push(
+            `local model(s) ${localList} do not match the catalog model ${
+                catalogList} in this entry group. An entry group holds ` +
+            `one model, so pull will not leave two behind. Re-run with ` +
+            `--force-remove to delete the local model(s) and pull the ` +
+            `catalog's.`);
+      }
+      return printErrors(...errors);
     }
     for (const name of staleLocal) {
       // Its profile files go too, since push refuses a profile file with no
@@ -2521,7 +2566,9 @@ export async function importModel(
       return !!target && path.resolve(target) === path.resolve(file);
     },
   });
-  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+  for (const w of uncoveredWarnings(result.warnings, result.errors)) {
+    console.warn(`Warning: ${w}`);
+  }
   if (!result.ok) return fail(...result.errors);
 
   // Every target is found before anything is written, so a file that has
