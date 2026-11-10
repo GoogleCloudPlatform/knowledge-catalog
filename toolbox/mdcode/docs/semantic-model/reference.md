@@ -222,8 +222,8 @@ the BigQuery source table probe, the dry runs of action statements and of each
 BigQuery graph's DDL, the check that a deployment's BigQuery dataset or Spanner
 database exists, the check of a Spanner deployment's instance edition, and (on
 a push without `--validate-only`) the Knowledge Catalog checks on the entry
-group. It exits non-zero when push would reject a binding. Under each profile it
-prints the errors of that profile's own
+group and the custom types. It exits non-zero when push would reject a binding.
+Under each profile it prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the
