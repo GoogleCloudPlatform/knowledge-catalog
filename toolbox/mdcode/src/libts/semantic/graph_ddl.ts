@@ -147,10 +147,10 @@ export function generateGraphDdl(
       new Set(entities.filter(e => e.abstract).map(e => e.name));
 
 
-  // A graph node table requires a non-empty KEY: the entity's primary key, else
-  // its first unique key (nodeKey). An entity with neither cannot form a valid
-  // node, so skip it (and, below, any edge that references it) rather than emit
-  // `KEY()` — invalid DDL.
+  // A graph node table requires a non-empty KEY: the entity's primary key
+  // (nodeKey). An entity without one cannot form a valid node, so skip it and,
+  // below, any edge that references it rather than emit `KEY()`, which is
+  // invalid DDL.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
     // An abstract entity is intentionally table-less: skip its node table (it
@@ -655,12 +655,10 @@ function renderFieldPropertyCore(
 }
 
 
-// The key an entity's node is keyed by: its primary key, else its first
-// non-empty unique key. Empty when the entity states neither, and then it gets
-// no node table.
-export function nodeKey(entity: Pick<Entity, 'keys'|'uniqueKeys'>): string[] {
-  if (entity.keys?.length) return entity.keys;
-  return entity.uniqueKeys?.find(k => k.length > 0) ?? [];
+// The key an entity's node is keyed by: its primary key. Empty when the entity
+// states none, and then it gets no node table.
+export function nodeKey(entity: Pick<Entity, 'keys'>): string[] {
+  return entity.keys ?? [];
 }
 
 // Writes a key or join column as the column it names. An unquoted name is

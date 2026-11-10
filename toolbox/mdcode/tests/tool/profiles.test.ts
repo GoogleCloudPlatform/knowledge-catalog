@@ -549,12 +549,11 @@ ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : 
           d => `      - name: ${d}\n        target: ${GRAPH}_${d}\n` +
               `        profile: ${d}\n`).join(''));
 
-  // `model` with no key on any entity, and so no relationship, since push
-  // rejects a join that covers no key. A graph generator builds a node only
-  // from a primary or unique key.
-  const noKeys = (model: string) =>
-      model.replace(/        primary_key: \[\w+\]\n/g, '')
-          .replace(/    relationships:\n[\s\S]*$/, '');
+  // `model` with only an abstract entity, which passes static checks and makes
+  // a graph generator fail with no node table.
+  const abstractOnly = (model: string) => model.replace(
+      /    entities:\n[\s\S]*$/,
+      '    entities:\n      - name: party\n        abstract: true\n');
 
   // `model` with no source on customer.
   const customerUnbound = (model: string) =>
@@ -877,12 +876,11 @@ semantic_model:
   // error names the deployment.
   const DEPLOYMENT_LABEL = "[commerce] deployment 'prod': ";
   const ungenerated: Array<[string, string]> = [
-    ['BigQuery', noKeys(commerce({targets: 1}))],
+    ['BigQuery', abstractOnly(commerce({targets: 1}))],
     [
       'Spanner',
-      noKeys(commerce({targets: 1}))
-          .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`)
-          .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`),
+      abstractOnly(commerce({targets: 1}))
+          .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`),
     ],
   ];
   for (const [system, model] of ungenerated) {
@@ -2242,7 +2240,7 @@ semantic_model:
 
     // A BigQuery graph turns each metric into a measure. A vanilla model
     // anchors a metric in its GOOGLE block.
-    test('rejects a BigQuery metric that cannot be a measure, or on an entity with no key, on push and in the report', async () => {
+    test('rejects a BigQuery metric that cannot be a measure, and reports a keyless entity without a duplicate metric error, on push and in the report', async () => {
       const MEASURE = "model 'commerce' (commerce) deployment 'prod' targets " +
           'BigQuery, where metric ';
       writeScope({
@@ -2273,12 +2271,18 @@ semantic_model:
         expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
 `,
       });
+      const keylessPurchase =
+          "model 'commerce' (commerce) deployment 'prod' uses the model " +
+          "file's own bindings, which leave entity 'purchase' without a " +
+          'primary_key; a BigQuery graph deployment needs a primary_key on ' +
+          'every concrete leaf entity. Declare primary_key on the entity, or ' +
+          'use a named profile that states one.';
       expect(await pushResult()).toEqual({
         code: 1,
-        errors: [`${MEASURE}'n' cannot be a measure: it belongs to entity ` +
-                 "'purchase', which has no primary key or unique key, so the " +
-                 'graph has no node table for it.'],
+        errors: [keylessPurchase],
       });
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(NO_PROFILES))).toEqual([keylessPurchase]);
     });
 
     // Push warns and still pushes when the model file's own bindings are
@@ -2389,6 +2393,220 @@ semantic_model:
             .toEqual({label, inline, prod: errors.filter(e => e !== hinted)});
       }
     });
+
+    test('requires primary_key on concrete leaf entities on BigQuery and ' +
+             'Spanner, and primary_key relationship joins on BigQuery only, ' +
+             'on push and in the report',
+         async () => {
+           const ALLOY_DB = 'alloydb.googleapis.com/projects/acme/locations/' +
+               'us-central1/clusters/c/databases/db';
+           const ALLOY_TABLES = `${ALLOY_DB}/schemas/public/tables/`;
+           const spannerCommerce = (text: string) => text
+               .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`)
+               .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`);
+           const spannerProfile = (text: string) => text.replaceAll(
+               BQ('prod', ''), `${SPANNER_DB}/tables/`);
+           const alloyCommerce = (text: string) => text
+               .replace(`${GRAPH}_prod`, ALLOY_DB)
+               .replaceAll(BQ('dev', ''), ALLOY_TABLES);
+           const inlineKeyless = (engine: 'BigQuery'|'Spanner') =>
+               "model 'commerce' (commerce) deployment 'prod' uses the model " +
+               "file's own bindings, which leave entity 'purchase' without a " +
+               `primary_key; a ${engine} graph deployment needs a primary_key ` +
+               'on every concrete leaf entity. Declare primary_key on the ' +
+               'entity, or use a named profile that states one.';
+           const namedKeyless = (engine: 'BigQuery'|'Spanner') =>
+               "model 'commerce' (commerce) deployment 'prod' targets " +
+               `${engine}, and profile 'prod' leaves entity 'purchase' ` +
+               `without a primary_key; a ${engine} graph deployment needs a ` +
+               'primary_key on every concrete leaf entity, so state ' +
+               "primary_key for the entity in profile 'prod'.";
+           // The end of the error for a join on `to` that does not match
+           // customer's primary_key.
+           const mismatch = (to: string) => `on to_columns ${to}, which do ` +
+               'not match primary_key ["c_id"] of \'customer\'; a BigQuery ' +
+               "graph edge must join on its target's primary_key columns, in " +
+               'any order, and not on a unique key or extra columns.';
+           const inlineJoin = (to: string) =>
+               "model 'commerce' (commerce) deployment 'prod' uses the model " +
+               "file's own bindings, under which relationship 'placed_by' " +
+               `joins ${mismatch(to)}`;
+           const inlineUkJoin = inlineJoin('["c_email"]');
+
+           // A concrete leaf entity with no primary_key, or with only
+           // unique_keys, fails on BigQuery and Spanner deployments, under
+           // --no-deployment too, and passes on AlloyDB and a catalog-only
+           // push.
+           for (const purchaseKeys of ['', '        unique_keys: [[p_id]]\n']) {
+             const base = commerce({targets: 1}).replace(
+                 '        primary_key: [p_id]\n', purchaseKeys);
+             for (const [engine, text] of [
+                      ['BigQuery', base],
+                      ['Spanner', spannerCommerce(base)],
+                    ] as const) {
+               const want = [inlineKeyless(engine)];
+               writeScope({'commerce.yaml': text});
+               expect(await pushResult()).toEqual({code: 1, errors: want});
+               expect(await pushResult(noDeployment))
+                   .toEqual({code: 1, errors: want});
+               expect(await profiles()).toBe(1);
+               expect(rejects(section(NO_PROFILES))).toEqual(want);
+             }
+
+             for (const text of [
+                      commerce({targets: 0}).replace(
+                          '        primary_key: [p_id]\n', purchaseKeys),
+                      alloyCommerce(base),
+                    ]) {
+               writeScope({'commerce.yaml': text});
+               expect(await pushResult()).toEqual({code: 0, errors: []});
+               expect(await profiles()).toBe(0);
+             }
+           }
+
+           // A concrete supertype without primary_key passes on both BigQuery
+           // and Spanner when the leaf entity extending it declares one, and
+           // push warns that its node table and subtype label are omitted.
+           const withSupertype = commerce({targets: 1}).replace(
+               '      - name: purchase\n',
+               `      - name: item\n        source: ${BQ('dev', 'item')}\n` +
+                   '        fields:\n' +
+                   '          - { name: p_id, expression: p_id }\n' +
+                   '      - name: purchase\n        extends: [item]\n');
+           const warned: string[] = [];
+           const warnSpy =
+               spyOn(console, 'warn').mockImplementation((m: any) => {
+                 warned.push(String(m));
+               });
+           for (const [graph, text] of [
+                    ['commerce_prod', withSupertype],
+                    ['commerce', spannerCommerce(withSupertype)],
+                  ] as const) {
+             warned.length = 0;
+             writeScope({'commerce.yaml': text});
+             expect(await pushResult()).toEqual({code: 0, errors: []});
+             expect(warned).toEqual([
+               "Warning: [commerce] entity 'item': no keys declared in the " +
+                   'source model; declare primary_key or unique_keys in the ' +
+                   'model file or in a profile to record a key in Knowledge ' +
+                   'Catalog',
+               `Warning: [commerce -> ${graph}] entity 'item': empty KEY (no ` +
+                   'primary key); node table skipped, as a graph node ' +
+                   'requires a KEY',
+               `Warning: [commerce -> ${graph}] entity 'purchase' extends ` +
+                   "'item', which has no node table and is not abstract (it " +
+                   "was dropped, e.g. for an empty KEY); the 'item' label is " +
+                   "omitted from 'purchase'",
+             ]);
+             expect(await profiles()).toBe(0);
+           }
+           warnSpy.mockRestore();
+
+           // A relationship joining onto unique_keys when the target also
+           // declares primary_key fails on BigQuery, and passes on Spanner,
+           // AlloyDB and a catalog-only push.
+           const withUkJoin = (targets: number) =>
+               joinOnEmail(commerce({targets})).replace(
+                   '        primary_key: [c_id]\n',
+                   '        primary_key: [c_id]\n' +
+                       '        unique_keys: [[c_email]]\n');
+           writeScope({'commerce.yaml': withUkJoin(1)});
+           expect(await pushResult())
+               .toEqual({code: 1, errors: [inlineUkJoin]});
+           expect(await profiles()).toBe(1);
+           expect(rejects(section(NO_PROFILES))).toEqual([inlineUkJoin]);
+           for (const text of [
+                    withUkJoin(0),
+                    spannerCommerce(withUkJoin(1)),
+                    alloyCommerce(withUkJoin(1)),
+                  ]) {
+             writeScope({'commerce.yaml': text});
+             expect(await pushResult()).toEqual({code: 0, errors: []});
+             expect(await profiles()).toBe(0);
+           }
+
+           // A join on to_columns that add a column to customer's primary_key
+           // covers a key, so Spanner, AlloyDB and a catalog-only push accept
+           // it, while BigQuery rejects it.
+           const superset = (text: string) => text
+               .replace('from_columns: [p_customer]',
+                        'from_columns: [p_customer, p_region]')
+               .replace('to_columns: [c_id]', 'to_columns: [c_id, c_region]');
+           const TO = '["c_id","c_region"]';
+           writeScope({'commerce.yaml': superset(commerce({targets: 1}))});
+           expect(await pushResult())
+               .toEqual({code: 1, errors: [inlineJoin(TO)]});
+           expect(await profiles()).toBe(1);
+           expect(rejects(section(NO_PROFILES))).toEqual([inlineJoin(TO)]);
+           for (const text of [
+                    superset(commerce()),
+                    spannerCommerce(superset(commerce({targets: 1}))),
+                    alloyCommerce(superset(commerce({targets: 1}))),
+                  ]) {
+             writeScope({'commerce.yaml': text});
+             expect(await pushResult()).toEqual({code: 0, errors: []});
+             expect(await profiles()).toBe(0);
+           }
+
+           // A named profile that states primary_key when the model file omits
+           // it passes on BigQuery and Spanner. Leaving primary_key out fails
+           // under that profile on both engines even when unique_keys are
+           // given, while joining on a superset fails on BigQuery only.
+           const keylessBase =
+               commerce().replace('        primary_key: [p_id]\n', '');
+           for (const [model, profile] of [
+                    [deploying(keylessBase, 'prod'), profileFile('prod')],
+                    [
+                      spannerCommerce(deploying(keylessBase, 'prod')),
+                      spannerProfile(profileFile('prod')),
+                    ],
+                  ] as const) {
+             writeScope({
+               'commerce.yaml': model,
+               'commerce.profile.prod.yaml': profile,
+             });
+             expect(await pushResult()).toEqual({code: 0, errors: []});
+             expect(await profiles()).toBe(0);
+           }
+
+           const ukProfile = profileFile('prod').replace(
+               '    primary_key: [p_id]\n', '    unique_keys: [[p_id]]\n');
+           for (const [engine, model, profile] of [
+                    ['BigQuery', deploying(keylessBase, 'prod'), ukProfile],
+                    [
+                      'Spanner',
+                      spannerCommerce(deploying(keylessBase, 'prod')),
+                      spannerProfile(ukProfile),
+                    ],
+                  ] as const) {
+             writeScope({
+               'commerce.yaml': model,
+               'commerce.profile.prod.yaml': profile,
+             });
+             await expectReport({default: [], prod: [namedKeyless(engine)]});
+           }
+
+           writeScope({
+             'commerce.yaml': deploying(commerce(), 'prod'),
+             'commerce.profile.prod.yaml': superset(profileFile('prod')),
+           });
+           await expectReport({
+             default: [],
+             prod: [
+               "model 'commerce' (commerce) deployment 'prod' targets " +
+               "BigQuery, and profile 'prod' joins relationship 'placed_by' " +
+               mismatch(TO),
+             ],
+           });
+
+           writeScope({
+             'commerce.yaml': spannerCommerce(deploying(commerce(), 'prod')),
+             'commerce.profile.prod.yaml':
+                 spannerProfile(superset(profileFile('prod'))),
+           });
+           expect(await pushResult()).toEqual({code: 0, errors: []});
+           expect(await profiles()).toBe(0);
+         });
   });
 });
 

@@ -16,12 +16,12 @@ import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -152,6 +152,9 @@ export function validateDeployments(
   const problems = new Map<string, string[]>();
   const add = (deployment: string, problem: string) =>
       problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
+  const baseByName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
   const unbound = unboundInline(model);
   const unboundFields = unboundGraphFields(model);
   // The metrics the reference rules report, which the BigQuery rule leaves to
@@ -177,6 +180,33 @@ export function validateDeployments(
       for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
     }
     if (named) {
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+        // An entity whose model file states primary_key is left to
+        // validateProfileCompleteness.
+        const keyless =
+            (bound.model.entities ?? [])
+                .filter(
+                    e => !e.abstract && !extended.has(e.name) &&
+                        !e.keys.length && !baseByName.get(e.name)?.keys.length)
+                .map(e => `'${e.name}'`);
+        if (keyless.length) {
+          const many = keyless.length > 1;
+          add(d.name,
+              `targets ${target}, and profile '${named.name}' leaves ${
+                  many ? 'entities' : 'entity'} ${
+                  listed(keyless)} without a primary_key; a ${
+                  target} graph deployment needs a primary_key on every ` +
+                  `concrete leaf entity, so state primary_key for ${
+                      many ? 'each entity' : 'the entity'} in profile '${
+                      named.name}'.`);
+        }
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model, named)) {
+            add(d.name, p);
+          }
+        }
+      }
       if (engine === 'spanner' && available.length) {
         add(d.name,
             `targets Spanner, which has no measures, and profile '${
@@ -191,8 +221,17 @@ export function validateDeployments(
                 unbound}; a deployment needs every entity and relationship ` +
                 `bound.`);
       }
-      if (unboundFields && (engine === 'bigquery' || engine === 'spanner')) {
-        add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const keyless = keylessGraphEntities(bound.model, engine);
+        if (keyless) {
+          add(d.name, `uses the model file's own bindings, ${keyless}`);
+        }
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model)) add(d.name, p);
+        }
+        if (unboundFields) {
+          add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+        }
       }
     }
     // A Spanner deployment deploys no metric.
@@ -249,7 +288,8 @@ function profiled(
 // Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
 // out a metric that measurePlacementErrors or the inheritance rules report:
 // one that reads several entities or none, or one on an abstract or extended
-// entity.
+// entity. An entity with no primary_key is the entity key check's to report,
+// so a metric on one is judged only on its aggregates.
 function measureProblem(
     model: SemanticModel, metric: Metric): string|undefined {
   const text = expressionForDialect(metric, 'BIGQUERY');
@@ -271,10 +311,6 @@ function measureProblem(
   if (!columnsForSource(written, 'BIGQUERY')) return undefined;
   const read = measureAggregates(written, 'BIGQUERY');
   if ('problem' in read) return read.problem;
-  if (!statesKey(entity.keys, entity.uniqueKeys)) {
-    return `it belongs to entity '${entity.name}', which has no primary key ` +
-        `or unique key, so the graph has no node table for it`;
-  }
   return undefined;
 }
 
@@ -429,6 +465,77 @@ function unboundInline(model: SemanticModel): string {
   ].filter(p => p).join(' and ');
 }
 
+// The concrete leaf entities the model file's own bindings leave without a
+// `primary_key`, as the end of a graph deployment's error on `engine`, or
+// undefined when there are none.
+function keylessGraphEntities(
+    model: SemanticModel,
+    engine: 'bigquery'|'spanner'): string|undefined {
+  const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const entities =
+      (model.entities ?? [])
+          .filter(e => !e.abstract && !extended.has(e.name) && !e.keys.length)
+          .map(e => `'${e.name}'`);
+  if (!entities.length) return undefined;
+  const many = entities.length > 1;
+  return `which leave ${many ? 'entities' : 'entity'} ${
+             listed(entities)} without a primary_key; a ${
+             target} graph deployment needs a primary_key on every concrete ` +
+      `leaf entity. Declare primary_key on ${
+             many ? 'each entity' : 'the entity'}, or use a named profile ` +
+      `that states one.`;
+}
+
+// The relationships of `model` whose `to_columns` cover a key of the target
+// but do not match its `primary_key` (see matchesKey): they cover a unique key,
+// or the primary key with extra columns. Each is the end of a sentence about a
+// BigQuery graph deployment. A join that covers no key is left to
+// relationshipKeyErrors or validateProfileConsistency, and a named profile that
+// leaves `to_columns` empty is left to validateProfileCompleteness.
+function bigQueryEdgeKeyProblems(
+    model: SemanticModel, named?: ProfileSpec): string[] {
+  const problems: string[] = [];
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  for (const rel of model.relationships ?? []) {
+    if (rel.association) continue;
+    const join = named?.relationships.find(x => x.name === rel.name);
+    if (named && !join?.toColumns?.length) continue;
+    const to = rel.destination.columns;
+    if (!to.length || !to.every(isColumnName)) continue;
+    const target = byName.get(rel.destination.entity);
+    if (!target || target.abstract || !target.keys.length) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
+    if (!coversKey(to, target.keys, target.uniqueKeys ?? []) ||
+        matchesKey(to, target.keys)) {
+      continue;
+    }
+    const detail = `which ${primaryKeyMismatch(target)}`;
+    problems.push(
+        named ?
+            `targets BigQuery, and profile '${
+                named.name}' joins relationship '${rel.name}' on to_columns ${
+                JSON.stringify(to)}, ${detail}` :
+            `uses the model file's own bindings, under which relationship '${
+                rel.name}' joins on to_columns ${
+                JSON.stringify(to)}, ${detail}`);
+  }
+  return problems;
+}
+
+// The end of an error about a BigQuery graph edge whose `to_columns`, named
+// just before it, do not match the primary key of `target`.
+function primaryKeyMismatch(target: Entity): string {
+  return `do not match primary_key ${JSON.stringify(target.keys)} of '${
+             target.name}'; a BigQuery graph edge must join on its target's ` +
+      `primary_key columns, in any order, and not on a unique key or extra ` +
+      `columns.`;
+}
+
 // The fields the model file's own bindings leave without an expression on
 // each concrete leaf entity, counting the fields it inherits, as the end of a
 // deployment's error, or undefined when there are none.
@@ -483,8 +590,7 @@ function graphNameProblems(
         `compared ignoring case; rename one.`);
   }
   if (engine === 'spanner') return problems;
-  const tables =
-      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  const tables = resolvedEntities(model).filter(e => e.keys.length > 0);
   for (const m of model.metrics ?? []) {
     const owner = m.authoredEntity ?? m.entity;
     for (const e of tables.filter(e => e.name !== owner)) {
@@ -559,8 +665,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           check(
               kind, x.name, elementDescription(x.description),
               x.aiContext?.synonyms, aiExtensions(x.aiContext));
-  const tables =
-      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  const tables = resolvedEntities(model).filter(e => e.keys.length > 0);
   const extended = new Set(tables.flatMap(e => e.extends ?? []));
   for (const e of tables) {
     if (!extended.has(e.name)) element('entity', e);

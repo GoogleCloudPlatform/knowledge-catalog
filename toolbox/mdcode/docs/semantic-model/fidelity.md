@@ -31,7 +31,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Field expression (canonical SQL)                               | `sql-expressions` aspect³       | ✓³                                             | builds the DDL                                                       | builds the DDL                                                       |
 | Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | noted in `OPTIONS(description)`                                      | — dropped                                                            |
 | Primary key                                                    | `semantic-entity.primaryKey`    | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
-| Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | the first is `KEY(...)` when there is no primary key; else dropped   | the first is `KEY(...)` when there is no primary key; else dropped   |
+| Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | — dropped                                                            |
 | Metric                                                         | `semantic-metric` entry         | ✓ (type⁵)                                      | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `semantic-relationship` entry¹⁵ | ✓⁶                                             | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
@@ -258,13 +258,13 @@ so they still combine with the field's `description` in `OPTIONS(description)`.
 The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
-into Knowledge Catalog instead. Of an entity's keys only one is emitted: its
-primary key, else its first unique key. The imported vendor SQL is never
-emitted. `kcmd import --transpile` adds a `BIGQUERY` entry to a model file's
-field or metric whose expression is vendor-only or an `ANSI_SQL` expression
-that double-quotes column names, when it can translate the text. It does the
-same in each profile the import
-writes, when all of that profile's tables are in BigQuery or BigLake.
+into Knowledge Catalog instead. Of an entity's keys only its primary key is
+emitted as `KEY(...)`; `unique_keys` are dropped. The imported vendor SQL is
+never emitted. `kcmd import --transpile` adds a `BIGQUERY` entry to a model
+file's field or metric whose expression is vendor-only or an `ANSI_SQL`
+expression that double-quotes column names, when it can translate the text. It
+does the same in each profile the import writes, when all of that profile's
+tables are in BigQuery or BigLake.
 The graph builds each field and metric from its `BIGQUERY` entry, else its
 `ANSI_SQL` one. A field with none of these is left out of its node table with a warning,
 though push rejects such a field in the model file first. A

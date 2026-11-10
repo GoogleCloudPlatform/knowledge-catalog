@@ -996,10 +996,10 @@ describe('profile checks', () => {
     ['a graph whose entities have no primary key',
      googleDoc({extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`})
          .replace('        primary_key: [order_id]\n', ''),
-     doc => `[${doc}] deployment 'g': cannot generate a property graph: every entity was skipped ` +
-         'because it has no primary key (a graph node requires a KEY); a graph requires at least ' +
-         "one NODE TABLE\nentity 'orders': empty KEY (no primary key); node table skipped, as a " +
-         'graph node requires a KEY'],
+     doc => `model 'retail' (${doc}) deployment 'g' uses the model file's own bindings, which ` +
+         "leave entity 'orders' without a primary_key; a BigQuery graph deployment needs a " +
+         'primary_key on every concrete leaf entity. Declare primary_key on the entity, or use ' +
+         'a named profile that states one.'],
     ['an aspect too large for Knowledge Catalog', googleDoc({source: `${BQ_TABLE}\n        ` +
          `ai_context: {examples: ${JSON.stringify(Array.from({length: 70}, (_, i) => 'e'.repeat(2000) + i))}}`}),
      () => `aspect '${process.env.KC_TYPE_PROJECT ?? 'dataplex-types'}.global.overview' of entry ` +
@@ -1029,11 +1029,11 @@ describe('profile checks', () => {
      doc => `Warning: field 'orders.extra' in model 'retail' (${doc}, deployment 'a') has no ` +
          'expression, so it is unavailable there.'],
     ['an entity two graphs named g leave out', model(
-         `      - name: items\n        source: ${BQ_PREFIX}/tables/items\n        fields:\n` +
-         `          - {name: order_id, expression: order_id}\n    deployments: [{name: g, target: ${BQ_GRAPH}}, ` +
+         `      - name: items\n        abstract: true\n` +
+         `    deployments: [{name: g, target: ${BQ_GRAPH}}, ` +
          `{name: h, target: ${BQ_GRAPH.replace('/sales/', '/dev/')}}]\n`), [],
-     () => "Warning: [retail -> g] entity 'items': empty KEY (no primary key); node table " +
-         'skipped, as a graph node requires a KEY'],
+     () => "Warning: [retail -> g] abstract entity 'items' is not a supertype of any concrete " +
+         'entity; it has no table and no descendant to label, so it produces no graph element'],
     ['a field a profile excludes',
      model(`          - {name: extra, expression: extra}\n    deployments: [{name: g, target: ${BQ_GRAPH}, profile: pg}]\n`),
      pg(`${KEYED}    fields_exclude: [extra]\n`),

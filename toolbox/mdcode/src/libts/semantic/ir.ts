@@ -349,10 +349,31 @@ export function isFieldBound(
 export function coversKey(
     toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
     boolean {
-  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
   const has = new Set(toColumns.map(columnKey));
   return [primaryKey, ...uniqueKeys].some(
       key => key.length > 0 && key.every(c => has.has(columnKey(c))));
+}
+
+/**
+ * Whether a relationship's `to_columns` name exactly the columns of
+ * `primaryKey`, in any order and each once. BigQuery treats a graph edge as
+ * ambiguous when querying measures unless it joins on its destination node's
+ * `primary_key` columns alone: a unique key, or a superset of the primary key,
+ * covers a key (see coversKey) without matching it. Column names compare as in
+ * coversKey.
+ */
+export function matchesKey(
+    toColumns: string[], primaryKey: string[]): boolean {
+  const to = new Set(toColumns.map(columnKey));
+  const key = new Set(primaryKey.map(columnKey));
+  return key.size > 0 && to.size === toColumns.length &&
+      to.size === key.size && [...key].every(c => to.has(c));
+}
+
+// A key or join column as BigQuery compares it: ignoring case, and without the
+// backticks that only quote a name.
+function columnKey(column: string): string {
+  return column.replace(/^`(.*)`$/, '$1').toLowerCase();
 }
 
 /**

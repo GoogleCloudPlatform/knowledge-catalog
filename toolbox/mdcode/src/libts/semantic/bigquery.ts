@@ -290,10 +290,9 @@ function placeMetric(
   // Resolve each aggregate's operand to an exposed property. It is read as
   // written, qualifiers kept, so readOperand can tell the entity's fields from
   // its columns. COUNT(*) has no operand column, so it counts the first column
-  // of the node's key instead: the primary key, else the first unique key
-  // (nodeKey). measureAggregates gives a `*` operand for COUNT(*) alone. Every
-  // operand is read before any is exposed, so a metric skipped here leaves no
-  // property behind.
+  // of the node's primary key instead (nodeKey). measureAggregates gives a `*`
+  // operand for COUNT(*) alone. Every operand is read before any is exposed,
+  // so a metric skipped here leaves no property behind.
   const reads: Array<Exclude<OperandRead, {skip: string}>> = [];
   for (const agg of shape.aggregates) {
     const operand = requalified(agg.operand, stand, entityName);

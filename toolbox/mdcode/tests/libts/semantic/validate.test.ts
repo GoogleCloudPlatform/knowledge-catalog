@@ -3052,7 +3052,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const anchored = (e: string) =>
         `{ name: m, entity: purchase, expression: "${e}" }`;
 
-    test('rejects a metric that cannot be a measure or whose entity has no key, on BigQuery only, and passes one that can', () => {
+    test('rejects a metric that cannot be a measure, on BigQuery only, and adds no measure error for an entity that lacks primary_key', () => {
       const STDDEV = 'it uses STDDEV, which BigQuery does not allow in a ' +
           'measure (SUM, AVG, COUNT, MIN, MAX)';
       for (const [e, why] of [
@@ -3107,15 +3107,25 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
             .toEqual({e, errors: []});
       }
       expect(bigQuery(anchored('COUNT(*)'))).toEqual([]);
-      // A graph builds no node table for an entity with no key.
+      // An entity without primary_key, even one with unique_keys, gets only
+      // the entity primary_key error and no second error per metric.
+      const KEYLESS_PURCHASE =
+          `${OWN('bigquery')}which leave entity 'purchase' without a ` +
+          'primary_key; a BigQuery graph deployment needs a primary_key on ' +
+          'every concrete leaf entity. Declare primary_key on the entity, or ' +
+          'use a named profile that states one.';
       for (const e of ['SUM(purchase.amount)', 'COUNT(*)']) {
-        expect({e, errors: bigQuery(anchored(e), {keys: []})}).toEqual({e, errors: [
-          MEASURE("it belongs to entity 'purchase', which has no primary key " +
-                  'or unique key, so the graph has no node table for it'),
-        ]});
-        expect({e, errors: bigQuery(anchored(e), {keys: [], uniqueKeys: [['p_id']]})})
-            .toEqual({e, errors: []});
+        expect({e, errors: bigQuery(anchored(e), {keys: []})})
+            .toEqual({e, errors: [KEYLESS_PURCHASE]});
+        expect({
+          e,
+          errors: bigQuery(anchored(e), {keys: [], uniqueKeys: [['p_id']]}),
+        }).toEqual({e, errors: [KEYLESS_PURCHASE]});
       }
+      // A metric that cannot be a measure is still reported beside the
+      // missing primary_key, so both are fixed in one pass.
+      expect(bigQuery(anchored('STDDEV(purchase.amount)'), {keys: []}))
+          .toEqual([KEYLESS_PURCHASE, MEASURE(STDDEV)]);
     });
 
     // The parser reserves `Date`, so it reads a metric on entity Date only with
@@ -3236,7 +3246,10 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       const keyed = {entities: [{name: 'purchase', primaryKey: ['p_id']}]};
       expect(underOps('bigquery', SUM, keyed, [])).toEqual([]);
       expect(underOps('bigquery', SUM, {}, [])).toEqual([
-        expect.stringContaining("which has no primary key or unique key"),
+        "model 'commerce' (commerce) deployment 'bigquery' targets BigQuery, " +
+        "and profile 'ops' leaves entity 'purchase' without a primary_key; a " +
+        'BigQuery graph deployment needs a primary_key on every concrete ' +
+        "leaf entity, so state primary_key for the entity in profile 'ops'.",
       ]);
     });
 
@@ -3306,11 +3319,19 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       expect(named('C_NAME', ['c_id'], []))
           .toEqual([SHARED('C_NAME', 'customer.c_name')]);
       for (const [name, keys, excluded] of [
-             ['Amount'], ['C_NAME', ['c_id'], ['c_name']], ['C_ID', []],
+             ['Amount'], ['C_NAME', ['c_id'], ['c_name']],
            ] as Array<[string, string[]?, string[]?]>) {
         expect({name, errors: named(name, keys, excluded)})
             .toEqual({name, errors: []});
       }
+      // An entity with no primary_key is not in the graph, so it gets only the
+      // missing-primary_key error and no property-name collision.
+      expect(named('C_ID', [])).toEqual([
+        `${OWN('bigquery')}which leave entity 'customer' without a ` +
+        'primary_key; a BigQuery graph deployment needs a primary_key on ' +
+        'every concrete leaf entity. Declare primary_key on the entity, or ' +
+        'use a named profile that states one.',
+      ]);
     });
 
     // With the catalog check's errors after the graph checks'.
@@ -3502,6 +3523,308 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                      `      - name: dev\n        target: ${BQ_TARGET}2\n`))
           .toEqual([IN(NINE, 'BigQuery', 'dev')]);
     });
+  });
+
+  describe('graph primary_key and BigQuery join-key rules', () => {
+    const allEngines = BQ + deployment('spanner') + deployment('alloydb');
+    const otherEngines = deployment('spanner') + deployment('alloydb');
+    const KEYLESS =
+        (engine: 'bigquery'|'spanner', entities: string, each = 'the entity') =>
+            `${OWN(engine)}which leave ${entities} without a primary_key; a ` +
+        `${engine === 'bigquery' ? 'BigQuery' : 'Spanner'} graph deployment ` +
+        'needs a primary_key on every concrete leaf entity. Declare ' +
+        `primary_key on ${each}, or use a named profile that states one.`;
+    const NAMED_KEYLESS =
+        (engine: 'BigQuery'|'Spanner', entities = "entity 'purchase'",
+         each = 'the entity') =>
+            `model 'commerce' (commerce) deployment '${engine.toLowerCase()}' ` +
+        `targets ${engine}, and profile 'ops' leaves ${entities} without a ` +
+        `primary_key; a ${engine} graph deployment needs a primary_key on ` +
+        `every concrete leaf entity, so state primary_key for ${each} in ` +
+        "profile 'ops'.";
+    // The end of the error for a join that does not match `pk`, the
+    // primary_key of customer.
+    const MISMATCH = (pk = '["c_id"]') =>
+        `do not match primary_key ${pk} of 'customer'; a BigQuery graph edge ` +
+        "must join on its target's primary_key columns, in any order, and " +
+        'not on a unique key or extra columns.';
+    // The errors for relationship placed_by joining on `to`, which does not
+    // match `pk`: under the model file's own bindings of deployments `engine`,
+    // and under profile ops on BigQuery.
+    const INLINE_JOIN = (engine: Engine|Engine[], to: string, pk?: string) =>
+        `${OWN(engine)}under which relationship 'placed_by' joins on ` +
+        `to_columns ${to}, which ${MISMATCH(pk)}`;
+    const NAMED_JOIN = (to: string) =>
+        "model 'commerce' (commerce) deployment 'bigquery' targets BigQuery, " +
+        "and profile 'ops' joins relationship 'placed_by' on to_columns " +
+        `${to}, which ${MISMATCH()}`;
+
+    // Customer has primary_key, and purchase has no primary_key. BigQuery and
+    // Spanner reject purchase; AlloyDB and a catalog-only push accept it.
+    test.each([
+      ['neither key', {keys: [] as string[]}],
+      ['an empty unique key', {keys: [] as string[], uniqueKeys: [[]]}],
+      ['only unique_keys', {keys: [] as string[], uniqueKeys: [['p_id']]}],
+    ])('rejects a concrete leaf entity with %s on BigQuery and Spanner, and ' +
+           'allows it on AlloyDB and catalog-only',
+       (_, over) => {
+         const deployed = commerce({deployments: allEngines});
+         Object.assign(deployed.entities[1], over);
+         expect(check(deployed)).toEqual([
+           KEYLESS('bigquery', "entity 'purchase'"),
+           KEYLESS('spanner', "entity 'purchase'"),
+         ]);
+
+         for (const deployments of ['', deployment('alloydb')]) {
+           const m = commerce({deployments});
+           Object.assign(m.entities[1], over);
+           expect(check(m)).toEqual([]);
+           expect(validatePushRequirements([loaded(m, 'commerce')]))
+               .toEqual([]);
+         }
+       });
+
+    test('names every keyless concrete leaf entity on BigQuery and Spanner, ' +
+             'and skips abstract entities and concrete supertypes',
+         () => {
+           const multi = commerce({deployments: allEngines});
+           multi.entities[0].keys = [];
+           multi.entities[0].uniqueKeys = [['c_id']];
+           multi.entities[1].keys = [];
+           multi.entities.push(
+               {
+                 name: 'party',
+                 abstract: true,
+                 dataSource: '',
+                 keys: [],
+                 fields: [],
+               },
+               {
+                 name: 'account',
+                 dataSource: BQ_TABLE('account'),
+                 keys: [],
+                 fields: [{name: 'id', expression: 'id'}],
+               },
+               {
+                 name: 'premium',
+                 extends: ['account'],
+                 dataSource: BQ_TABLE('premium'),
+                 keys: ['id'],
+                 fields: [{name: 'id', expression: 'id'}],
+               });
+           expect(check(multi)).toEqual([
+             KEYLESS(
+                 'bigquery', "entities 'customer' and 'purchase'",
+                 'each entity'),
+             KEYLESS(
+                 'spanner', "entities 'customer' and 'purchase'",
+                 'each entity'),
+           ]);
+
+           multi.entities[0].keys = ['c_id'];
+           multi.entities[1].keys = ['p_id'];
+           expect(check(multi)).toEqual([]);
+         });
+
+    test('rejects a relationship joining onto unique_keys on BigQuery only, ' +
+             'and allows it on Spanner, AlloyDB and catalog-only',
+         () => {
+           const withUkJoin = (deployments = '') => {
+             const m = commerce({deployments});
+             m.entities[0].uniqueKeys = [['c_email']];
+             m.relationships[0].destination.columns = ['c_email'];
+             return m;
+           };
+           expect(check(withUkJoin(allEngines))).toEqual([
+             INLINE_JOIN('bigquery', '["c_email"]'),
+           ]);
+
+           for (const deployments of ['', otherEngines]) {
+             const m = withUkJoin(deployments);
+             expect(check(m)).toEqual([]);
+             expect(validatePushRequirements([loaded(m, 'commerce')]))
+                 .toEqual([]);
+           }
+
+           const profiledUk = commerce({
+             deployments: deployment('bigquery', 'ops') +
+                 deployment('spanner', 'ops') + deployment('alloydb', 'ops'),
+           });
+           profiledUk.entities[0].uniqueKeys = [['c_email']];
+           profiledUk.profiles = [{
+             name: 'ops',
+             entities: [],
+             relationships: [{
+               name: 'placed_by',
+               fromColumns: ['p_customer'],
+               toColumns: ['c_email'],
+             }],
+           }];
+           expect(check(profiledUk)).toEqual([NAMED_JOIN('["c_email"]')]);
+         });
+
+    test('enforces primary_key on concrete leaf entities under named ' +
+             'profiles on BigQuery and Spanner, allows AlloyDB, and skips ' +
+             'concrete supertypes',
+         () => {
+           const m = commerce({
+             deployments: deployment('bigquery', 'ops') +
+                 deployment('spanner', 'ops') + deployment('alloydb', 'ops'),
+           });
+           m.entities[1].keys = [];
+           m.profiles = [{
+             name: 'ops',
+             entities: [{name: 'purchase', uniqueKeys: [['p_id']]}],
+             relationships: [],
+           }];
+           expect(check(m)).toEqual([
+             NAMED_KEYLESS('BigQuery'),
+             NAMED_KEYLESS('Spanner'),
+           ]);
+
+           const alloyOnly =
+               commerce({deployments: deployment('alloydb', 'ops')});
+           alloyOnly.entities[1].keys = [];
+           alloyOnly.profiles = m.profiles;
+           expect(check(alloyOnly)).toEqual([]);
+
+           // When another entity extends purchase, purchase is not a leaf and
+           // needs no primary_key on BigQuery or Spanner.
+           const withChild = commerce({
+             deployments: deployment('bigquery', 'ops') +
+                 deployment('spanner', 'ops') + deployment('alloydb', 'ops'),
+           });
+           withChild.entities[1].keys = [];
+           withChild.entities.push({
+             ...withChild.entities[1],
+             name: 'online_purchase',
+             extends: ['purchase'],
+             keys: ['p_id'],
+           });
+           withChild.profiles = m.profiles;
+           expect(check(withChild)).toEqual([]);
+
+           m.profiles = [{
+             name: 'ops',
+             entities: [{name: 'purchase', primaryKey: ['p_id']}],
+             relationships: [],
+           }];
+           expect(check(m)).toEqual([]);
+         });
+
+    // A superset of a key covers it, so every non-BigQuery target accepts the
+    // join, while a BigQuery graph edge must join on its target's primary_key
+    // alone.
+    test('rejects to_columns that add a column to primary_key on BigQuery ' +
+             'only, inline and under a named profile, and allows them on ' +
+             'Spanner, AlloyDB and catalog-only',
+         () => {
+           const TO = '["c_id","c_region"]';
+           const withSuperset = (deployments = '') => {
+             const m = commerce({deployments});
+             m.relationships[0].source.columns = ['p_customer', 'p_region'];
+             m.relationships[0].destination.columns = ['c_id', 'c_region'];
+             return m;
+           };
+           expect(check(withSuperset(allEngines)))
+               .toEqual([INLINE_JOIN('bigquery', TO)]);
+
+           // A primary_key column named twice, ignoring case, is no match
+           // either.
+           const repeated = commerce({deployments: BQ});
+           repeated.relationships[0].source.columns = ['p_customer', 'p_buyer'];
+           repeated.relationships[0].destination.columns = ['c_id', 'C_ID'];
+           expect(check(repeated))
+               .toEqual([INLINE_JOIN('bigquery', '["c_id","C_ID"]')]);
+
+           for (const m of [withSuperset(), withSuperset(otherEngines)]) {
+             expect(check(m)).toEqual([]);
+             expect(validatePushRequirements([loaded(m, 'commerce')]))
+                 .toEqual([]);
+           }
+
+           const profiled = commerce({
+             deployments: deployment('bigquery', 'ops') +
+                 deployment('spanner', 'ops') + deployment('alloydb', 'ops'),
+           });
+           profiled.profiles = [{
+             name: 'ops',
+             entities: [],
+             relationships: [{
+               name: 'placed_by',
+               fromColumns: ['p_customer', 'p_region'],
+               toColumns: ['c_id', 'c_region'],
+             }],
+           }];
+           expect(check(profiled)).toEqual([NAMED_JOIN(TO)]);
+         });
+
+    // Customer is keyed by c_id and c_region, and c_email is unique.
+    test('accepts to_columns that name a composite primary_key in another ' +
+             'order, and rejects ones that cover a unique key and part of it ' +
+             'on BigQuery only',
+         () => {
+           const PK = '["c_id","c_region"]';
+           const joined = (from: string[], to: string[], deployments = '') => {
+             const m = commerce({deployments});
+             m.entities[0].keys = ['c_id', 'c_region'];
+             m.entities[0].uniqueKeys = [['c_email']];
+             m.relationships[0].source.columns = from;
+             m.relationships[0].destination.columns = to;
+             return m;
+           };
+           const reordered = [['p_region', 'p_customer'], ['c_region', 'C_ID']];
+           const partial = [['p_email', 'p_customer'], ['c_email', 'c_id']];
+           expect(check(joined(reordered[0], reordered[1], allEngines)))
+               .toEqual([]);
+           expect(check(joined(partial[0], partial[1], allEngines))).toEqual([
+             INLINE_JOIN('bigquery', '["c_email","c_id"]', PK),
+           ]);
+           expect(check(joined(partial[0], partial[1], otherEngines)))
+               .toEqual([]);
+         });
+
+    // Keys are not inherited: each node table is keyed by its own leaf
+    // entity's primary_key.
+    test('rejects a keyless concrete leaf subtype of a keyed concrete ' +
+             'supertype or of an abstract one on BigQuery and Spanner',
+         () => {
+           const withSubtypes = (deployments: string) => {
+             const m = commerce({deployments});
+             m.entities.push(
+                 {
+                   name: 'person', dataSource: BQ_TABLE('person'), keys: ['id'],
+                   fields: [{name: 'id', expression: 'id'}],
+                 },
+                 {
+                   name: 'employee', dataSource: BQ_TABLE('employee'), keys: [],
+                   extends: ['person'],
+                   fields: [{name: 'id', expression: 'e_id'}],
+                 },
+                 {
+                   name: 'party', abstract: true, dataSource: '', keys: [],
+                   fields: [{name: 'code'}],
+                 },
+                 {
+                   name: 'member', dataSource: BQ_TABLE('member'), keys: [],
+                   extends: ['party'],
+                   fields: [{name: 'code', expression: 'code'}],
+                 });
+             return m;
+           };
+           const m = withSubtypes(allEngines);
+           expect(check(m)).toEqual([
+             KEYLESS(
+                 'bigquery', "entities 'employee' and 'member'", 'each entity'),
+             KEYLESS(
+                 'spanner', "entities 'employee' and 'member'", 'each entity'),
+           ]);
+
+           expect(check(withSubtypes(deployment('alloydb')))).toEqual([]);
+           m.entities.find(e => e.name === 'employee')!.keys = ['e_id'];
+           m.entities.find(e => e.name === 'member')!.keys = ['code'];
+           expect(check(m)).toEqual([]);
+         });
   });
 });
 
