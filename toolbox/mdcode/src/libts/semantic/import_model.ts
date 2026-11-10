@@ -16,7 +16,7 @@ import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
-import {localChecks, pruningLines, validateDeployments, withProfileFiles} from './validate';
+import {localChecks, pruningLines, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -136,8 +136,6 @@ interface Unbinding {
   entity: string;
   /** The field, for an error about a field. */
   field?: string;
-  /** The source the input gave the entity, for an error about an entity. */
-  source?: string;
 }
 
 /** Mutable representation of a semantic model document during import. */
@@ -995,7 +993,7 @@ function truncateDescription(
  */
 function mayUnbind(
     doc: ImportDocument, clause: string,
-    u: Pick<Unbinding, 'entity'|'field'|'source'>): void {
+    u: Pick<Unbinding, 'entity'|'field'>): void {
   if (doc.strict && doc.inputVersion === GOOGLE_VERSION) {
     doc.unbinding.push({at: doc.errors.length - 1, clause, ...u});
   }
@@ -1073,7 +1071,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
             `${dsLabel}: source '${trimmed}' is a query; name a table.`);
         mayUnbind(
             doc, `or remove 'source' to leave the ${word} unbound`,
-            {entity: ds.name, source: trimmed});
+            {entity: ds.name});
         delete ds.source;
         doc.modified = true;
       }
@@ -1312,15 +1310,21 @@ async function repairDocument(
 }
 
 /**
- * Adds its remedy to each error of `doc.unbinding` when push's deployment
- * checks refuse nothing more with that entity or field unbound than with it
- * bound. In both runs, every other entity and field of `doc.unbinding` is
- * bound, as it is once the author adds an expression or names a table for it.
- * The checks read the repaired model, so a model that does not load gets no
+ * Adds its remedy to each error of `doc.unbinding` when push's local checks
+ * refuse nothing more with that entity or field unbound than with it bound.
+ * In both runs, every other concrete entity and every other field of one is
+ * bound, so the runs differ only in the one left unbound. An abstract entity
+ * and its fields take no binding in either run. The checks read the repaired
+ * model and the input's profile files. A model that does not load gets no
  * such remedy.
  */
-function offerUnbinding(doc: ImportDocument, load: DialectLoad): void {
+async function offerUnbinding(
+    doc: ImportDocument, opts: ImportSemanticModelOptions,
+    load: DialectLoad): Promise<void> {
   if (!doc.unbinding.length) return;
+  const offer = (u: Unbinding) => {
+    doc.errors[u.at] = `${doc.errors[u.at].slice(0, -1)}, ${u.clause}.`;
+  };
   let model: SemanticModel;
   try {
     [model] = fromDocument(
@@ -1331,29 +1335,53 @@ function offerUnbinding(doc: ImportDocument, load: DialectLoad): void {
     if (!(err instanceof SemanticModelError)) throw err;
     return;
   }
-  // What push refuses with every entity and field of `doc.unbinding` bound
-  // except `unbound`. A field's stand-in expression reads no column, and an
-  // entity's stand-in source is the one the input gave it.
-  const refused = (unbound?: Unbinding) => {
+  const name = doc.model.name;
+  const docs = [{name, text: JSON.stringify(doc.root)}];
+  const profiles = (opts.profileFiles ?? []).map(pf => ({
+    name: parseProfileName(pf.fileName),
+    text: pf.content,
+    fileName: pf.fileName,
+  }));
+  // Every run reads the same text, so its profiles are read once.
+  const declared = declaredProfiles(docs[0], profiles);
+  // A concrete entity with no source takes the table of the first concrete
+  // entity that has one, so the dialect the model's sources imply stays the
+  // same. With no such entity, it takes its own name, which implies no
+  // dialect. A field with no expression takes one that reads no column.
+  const sourced = model.entities?.find(e => !e.abstract && e.dataSource);
+  const refused = async (unbound?: Unbinding) => {
     const m = structuredClone(model);
-    for (const u of doc.unbinding) {
-      if (u === unbound) continue;
-      const e = m.entities?.find(e => e.name === u.entity);
-      const f = e?.fields?.find(f => f.name === u.field);
-      if (f) {
+    for (const e of m.entities ?? []) {
+      if (e.abstract) continue;
+      const left = unbound?.entity === e.name ? unbound : undefined;
+      if (!e.dataSource && (!left || left.field !== undefined)) {
+        e.authoredSource = sourced?.authoredSource;
+        e.dataSource = sourced?.dataSource ?? e.name;
+        e.sourceDialect = sourced?.sourceDialect;
+      }
+      for (const f of e.fields ?? []) {
+        if (isFieldBound(f) || f.name === left?.field) continue;
         f.expression = 'NULL';
         f.dialects = [{dialect: 'ANSI_SQL', expression: 'NULL'}];
-      } else if (e && u.source !== undefined) {
-        e.dataSource = u.source;
       }
     }
-    return validateDeployments(m, doc.model.name, load);
+    const base = {document: name, model: m};
+    const withFiles = withProfileFiles(base, () => profiles);
+    const checked = 'errors' in withFiles ? withFiles : await localChecks(
+        {
+          docs,
+          loaded: {models: [base], warnings: []},
+          models: [withFiles],
+          profileDocs: () => profiles,
+          declaredBy: () => declared,
+          load,
+        },
+        () => {});
+    return 'errors' in checked ? checked.errors.map(e => e.error) : [];
   };
-  const bound = new Set(refused());
+  const bound = new Set(await refused());
   for (const u of doc.unbinding) {
-    if (refused(u).every(problem => bound.has(problem))) {
-      doc.errors[u.at] = `${doc.errors[u.at].slice(0, -1)}, ${u.clause}.`;
-    }
+    if ((await refused(u)).every(problem => bound.has(problem))) offer(u);
   }
 }
 
@@ -2139,7 +2167,7 @@ export async function importSemanticModelYaml(
     };
   }
   const load = await repairDocument(doc, opts);
-  offerUnbinding(doc, load);
+  await offerUnbinding(doc, opts, load);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and

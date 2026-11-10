@@ -265,6 +265,20 @@ describe('conversion, strict mode, and translation', () => {
      'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
      "remove 'expression' to leave the field unbound."],
+    // A subtype restates an inherited field only to rebind it, so the line
+    // keeps its 'expression'.
+    ['a restated inherited field with no supported dialect',
+     googleDoc({extra: `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
+                   `        fields: [{name: order_id, expression: ${MDX_ONLY}}]\n`}),
+     'google', "field 'items.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
+    // A metric's error names only the first unbound field it reads, so a
+    // field the input already leaves unbound must not hide this one.
+    ['a field with no supported dialect that a metric reads after an unbound field, under an AlloyDB deployment',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`,
+                extra: `          - name: a\n          - name: b\n            expression: ${MDX_ONLY}\n` +
+                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n` +
+                    `    metrics: [{name: m, expression: 'SUM(orders.a + orders.b)'}]\n`}),
+     'google', "field 'orders.b': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
      "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
     ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
