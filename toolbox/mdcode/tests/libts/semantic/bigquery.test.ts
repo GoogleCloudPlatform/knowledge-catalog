@@ -2457,6 +2457,64 @@ describe('a metric operand that names a field', () => {
     expect(warnings).toEqual([]);
   });
 
+  // BigQuery gives a property name one type across the graph, so a column
+  // exposed under its own name can clash with another node table's property:
+  // "The property declaration of 'id' has type conflicts".
+  test('does not expose a column under a name another node table\'s field has', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        {
+          name: 'm',
+          relationships: [],
+          metrics:
+              [{name: 'customers', expression: 'COUNT(customer.customer_id)'}],
+          entities: [
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              fields: [{name: 'customer_id', expression: 'id'}],
+            },
+            {
+              name: 'product',
+              dataSource: 'p.d.product',
+              keys: ['id'],
+              fields: [{name: 'id', expression: 'id'}],
+            },
+          ],
+        },
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      id AS customer_id,\n' +
+        '      id AS customers_input,\n' +
+        '      MEASURE(COUNT(customers_input)) AS customers\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('does not expose a column under a name another node table exposed', () => {
+    const model = purchaseWith(
+        [{name: 'amount', expression: 'amount_usd'}],
+        [
+          {name: 'total_amount', expression: 'SUM(purchase.amount)'},
+          {name: 'refunded', expression: 'SUM(refund.amount)'},
+        ]);
+    model.entities.push({
+      name: 'refund',
+      dataSource: 'p.d.refund',
+      keys: ['refund_id'],
+      fields: [{name: 'amount', expression: 'amount_usd'}],
+    });
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      amount_usd,\n' +
+        '      MEASURE(SUM(amount_usd)) AS total_amount\n');
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      amount_usd AS refunded_input,\n' +
+        '      MEASURE(SUM(refunded_input)) AS refunded\n');
+    expect(warnings).toEqual([]);
+  });
+
   test('a measure over a field bound to TRUE, FALSE or NULL aggregates that value', () => {
     for (const value of ['TRUE', 'FALSE', 'NULL']) {
       const {ddl, warnings} = generatePropertyGraph(

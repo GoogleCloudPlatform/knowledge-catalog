@@ -73,9 +73,14 @@ function placeMetrics(
     metrics: Metric[], input: MetricPlacementInput,
     warnings: string[]): Map<string, string[]> {
   const loweringByEntity = new Map<string, MeasureLowering>();
-  const metricNames = new Set(metrics.map(m => m.name.toLowerCase()));
+  // Each metric's and field's name in the graph, lowercased, and each property
+  // exposeOperand adds. BigQuery gives a property name one type across the
+  // graph, so an operand property takes none of them.
+  const graphNames = new Set(
+      [...metrics, ...[...input.entityByName.values()].flatMap(e => e.fields)]
+          .map(({name}) => name.toLowerCase()));
   for (const metric of metrics) {
-    placeMetric(metric, input, metricNames, loweringByEntity, warnings);
+    placeMetric(metric, input, graphNames, loweringByEntity, warnings);
   }
   // The operand properties come first: the measures aggregate them.
   const placed = new Map<string, string[]>();
@@ -99,10 +104,10 @@ interface MeasureLowering {
   // The property names already in use on the node, lowercased: BigQuery
   // ignores case in them, so `AMOUNT` duplicates `amount`.
   taken: Set<string>;
-  // Every metric's name, lowercased. Each metric placed here becomes a property
-  // named so, so no operand property takes one, whatever order the metrics come
-  // in.
-  metricNames: ReadonlySet<string>;
+  // The names in the graph no operand property takes, lowercased, shared by
+  // every entity (see placeMetrics). A metric placed on any node becomes a
+  // property, so this holds every metric's name whatever order they come in.
+  graphNames: Set<string>;
   // Each column a field reads whole under its own name, lowercased -> that
   // field. These are the only fields a measure names (see newLowering).
   byColumn: ReadonlyMap<string, string>;
@@ -124,7 +129,7 @@ interface MeasureLowering {
 // instead (see exposeOperand).
 function newLowering(
     entity: Entity, input: MetricPlacementInput,
-    metricNames: ReadonlySet<string>): MeasureLowering {
+    graphNames: Set<string>): MeasureLowering {
   const taken = new Set<string>();
   const byColumn = new Map<string, string>();
   for (const f of entity.fields) {
@@ -140,7 +145,7 @@ function newLowering(
     derivedProperties: [],
     measures: [],
     taken,
-    metricNames,
+    graphNames,
     byColumn,
     operandToName: new Map()
   };
@@ -159,8 +164,7 @@ function loneColumn(sql: string): string|undefined {
 // warning (and skips) when it references zero/multiple entities or cannot be
 // a measure (see measureAggregates).
 function placeMetric(
-    metric: Metric, input: MetricPlacementInput,
-    metricNames: ReadonlySet<string>,
+    metric: Metric, input: MetricPlacementInput, graphNames: Set<string>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   const {entityByName, skipped, ancestorsUsed} = input;
   // A measure is emitted from the metric's BigQuery SQL (see
@@ -272,7 +276,7 @@ function placeMetric(
   }
 
   const lowering = loweringByEntity.get(entityName) ??
-      newLowering(entity, input, metricNames);
+      newLowering(entity, input, graphNames);
   loweringByEntity.set(entityName, lowering);
 
   // Resolve each aggregate's operand to an exposed property. It is read as
@@ -401,7 +405,7 @@ function exposeOperand(
   if (existing) return existing;
 
   const isFree = (name: string) => !lowering.taken.has(name.toLowerCase()) &&
-      !lowering.metricNames.has(name.toLowerCase());
+      !lowering.graphNames.has(name.toLowerCase());
   let name: string;
   if (read.column && isSimpleIdentifier(sql) && isFree(sql)) {
     // A column not already declared: expose it under its own name.
@@ -414,6 +418,7 @@ function exposeOperand(
         `${read.column ? quoteIfReserved(sql) : sql} AS ${name}`);
   }
   lowering.taken.add(name.toLowerCase());
+  lowering.graphNames.add(name.toLowerCase());
   lowering.operandToName.set(sql, name);
   return name;
 }
