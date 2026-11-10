@@ -3987,10 +3987,8 @@ export function parseSource(
     // a model file's bare names.
     const viaImport = importVersion ?
         `\nOr run '${
-            importCommand('--source-prefix <prefix>', {
-              version: importVersion,
-              thirdPartyImport: opts.thirdPartyImport,
-            })}' to ` +
+            importCommand(
+                '--source-prefix <prefix>', {version: importVersion})}' to ` +
             `complete each bare table name from the database or Knowledge ` +
             `Catalog entry group that <prefix> names.` :
         '';
