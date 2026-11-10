@@ -172,8 +172,8 @@ provisions. A push references those types and never creates them (see
 Every push publishes the model file as written to Knowledge Catalog: every
 entity, metric, and relationship the document declares, apart from a
 many-to-many association, which has no entry yet. A `pull` rebuilds the model
-and profile files from that metadata alone, so a file it writes keeps no
-comments, key order or formatting (see [What pull recovers](#what-pull-recovers)).
+and profile files from that metadata alone, and changes a local file only
+where it differs (see [What pull recovers](#what-pull-recovers)).
 
 A logical model still produces complete entries (footnote 10).
 
@@ -337,17 +337,24 @@ and round-trip losslessly through `pull` — see
 ## What pull recovers
 
 `pull` rebuilds the model file from the catalog metadata that the rest of this
-section describes. A local model or profile file that already holds what the
-catalog holds stays as it is, byte for byte: pull compares the files it would
-write for the local files with the ones it writes for the catalog, so a
-difference that is only one of the normal forms below leaves the file alone.
-Pull writes every other file whole, and keeps none of its comments, key order
-or formatting.
+section describes. It changes a local model or profile file only where its
+content differs from the catalog's: pull compares the file it would write for
+the local file with the one it writes for the catalog, so a difference that is
+only one of the normal forms below changes nothing. Each value the catalog holds
+as the file says keeps its text, comments, key order and formatting, and a file
+that holds what the catalog holds stays byte for byte. A changed string keeps
+its quoting or block style, and other changed values are written in pull's form.
+When the catalog reorders a list whose order counts, such as an entity's fields,
+an item that moves, or an item it moves past, can be written in pull's form too.
+Pull writes a file whole, with none of its comments, key order or formatting,
+when there is no local file, when the local file does not load or is not valid
+UTF-8, and when changing only those values would not give what the catalog
+holds.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 Pull reads the second-generation types. It rebuilds the model file, profile
-files and overview sidecars from the metadata, and writes each metric's entity
-as `entity:`, declared or derived. See
+files and overview sidecars from the metadata. A model file it writes whole
+states each metric's entity as `entity:`, declared or derived. See
 [Reference](reference.md#the-second-generation-types). A model an older
 `kcmd` pushed with the first-generation types is left out with a warning.
 
@@ -365,7 +372,7 @@ not prune the model to a deployment's profile first.
 - Entities, relationships, metrics, actions and constraints come back sorted
   by name. Field order within each entity is kept.
 
-**So a file pull writes is not your original file.** Treat a rebuilt
+**So a file pull writes whole is not your original file.** Treat a rebuilt
 document as a faithful copy of the catalog metadata rather than of the authored
 model, and keep the authored document as the source of truth.
 
