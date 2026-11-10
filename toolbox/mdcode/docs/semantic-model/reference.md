@@ -83,15 +83,17 @@ kcmd pull
 Rebuilds the model file and profile files from the Knowledge Catalog entries.
 It changes a local file only where the catalog differs from it, so the rest
 keeps its comments, key order and formatting, and writes a file whole when it
-cannot. When the model entry's `kcmd-push-state` label says the last push
-stopped partway, it writes nothing.
+cannot. An overview sidecar that push would read into the overview the catalog
+holds keeps its bytes, whatever its line endings. When the model file pull
+writes does not load, pull warns and names the reason. When the model entry's
+`kcmd-push-state` label says the last push stopped partway, it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. The summary counts the files it deletes. |
 
 ### import
 

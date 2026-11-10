@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -31,7 +31,7 @@ import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_convert
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, inheritanceErrorOf, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1831,6 +1831,7 @@ async function pullSemanticModel(
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
+  let removed = 0;
   if (staleLocal.length) {
     if (!options.forceRemove) {
       const localList = staleLocal.map(n => `'${n}'`).join(', ');
@@ -1853,10 +1854,12 @@ async function pullSemanticModel(
       if (!options.dryRun) {
         layout.removeModelDocument(name);
         for (const p of paths.slice(1)) fs.rmSync(p);
+        for (const p of paths) removeEmptyDirs(p, path.dirname(paths[0]));
       }
       for (const p of paths) {
         console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
       }
+      removed += paths.length;
     }
   }
 
@@ -1865,12 +1868,66 @@ async function pullSemanticModel(
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
   const updated = updatedFiles(layout, source, pulled.name, files);
   for (const [id, sidecar] of result.overviews ?? []) {
+    const fileName = `${id}.overview.md`;
     updated.push({
-      fileName: `${id}.overview.md`,
-      content: formatOverviewSidecar(sidecar),
+      fileName,
+      content: keptSidecar(layout, pulled.name, fileName, sidecar) ??
+          formatOverviewSidecar(sidecar),
     });
   }
-  return writePulledFiles(layout, pulled.name, updated, options);
+  const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
+  const problem = modelFile && loadProblem(pulled.name, modelFile.content);
+  if (problem) {
+    console.warn(
+        `Warning: ${layout.modelPath(pulled.name)} does not load as pull ` +
+        `writes it: ${problem} Push rejects it until this is fixed.`);
+  }
+  return writePulledFiles(layout, pulled.name, updated, options, removed);
+}
+
+
+// Why the model file `text` of model `name` does not load, as push loads it,
+// or undefined when it loads. A model whose `extends` do not resolve does not
+// load either, since push skips every check that needs the resolved model.
+function loadProblem(name: string, text: string): string|undefined {
+  const loaded = loadSemanticModels([{name, text}], {bindingOptional: true});
+  const problem = loaded.error ??
+      loaded.models.map(m => inheritanceErrorOf(m.model)).find(e => e);
+  if (problem === undefined) return undefined;
+  return /[.!?]$/.test(problem) ? problem : `${problem}.`;
+}
+
+
+// The text of the local overview sidecar `fileName` of `model` when push
+// would read it into `sidecar`, the overview the catalog holds, so pull keeps
+// its bytes, whatever its line endings and trailing blank lines. Undefined
+// when the file does not exist, is not valid UTF-8 or does not parse.
+function keptSidecar(
+    layout: SemanticModelLayout, model: string, fileName: string,
+    sidecar: OverviewSidecar): string|undefined {
+  const target = pulledFileTarget(layout, model, fileName, true);
+  if (!target || !fs.existsSync(target.path)) return undefined;
+  const text = fs.readFileSync(target.path, 'utf8');
+  if (checkUtf8(target.path, fileName, text)) return undefined;
+  try {
+    return sameOverview(parseOverviewSidecar(text, fileName), sidecar) ?
+        text :
+        undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+
+// Deletes the directory that held `file`, and each directory above it below
+// `top`, while it is empty.
+function removeEmptyDirs(file: string, top: string): void {
+  const stop = path.resolve(top);
+  let dir = path.dirname(path.resolve(file));
+  while (dir.startsWith(`${stop}${path.sep}`) && !fs.readdirSync(dir).length) {
+    fs.rmdirSync(dir);
+    dir = path.dirname(dir);
+  }
 }
 
 
@@ -2029,12 +2086,14 @@ function localProfileActions(
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
 // read. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove.
+// pull did not write, or deletes it under --force-remove with each directory
+// that leaves empty. The summary counts the files it removes, and `removed`
+// more that the pull removed before.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions): number {
+    options: PullOptions, removed = 0): number {
   const written = new Set<string>();
-  const counts = {created: 0, updated: 0, unchanged: 0};
+  const counts = {created: 0, updated: 0, unchanged: 0, removed};
   for (const {fileName, content} of files) {
     const target = pulledFileTarget(layout, model, fileName, true);
     if (!target) {
@@ -2077,6 +2136,7 @@ function writePulledFiles(
           `catalog; delete it, or pull with --force-remove to delete it.`);
     } else if (options.dryRun) {
       console.log(`  would remove ${stale.path}`);
+      counts.removed++;
     } else {
       // The older `<model>.profiles/` directory and a sidecar have no layout
       // method.
@@ -2085,17 +2145,23 @@ function writePulledFiles(
       } else {
         fs.rmSync(stale.path);
       }
+      removeEmptyDirs(stale.path, path.dirname(layout.modelPath(model)));
       console.log(`  removed ${stale.path}`);
+      counts.removed++;
     }
   }
 
   const unchanged = counts.unchanged ? `; ${counts.unchanged} unchanged` : '';
+  const gone = counts.removed ?
+      `; ${options.dryRun ? 'would remove' : 'removed'} ${counts.removed} ` +
+          'file(s)' :
+      '';
   console.log(
       options.dryRun ?
           `Dry run: would write ${counts.created} new and ${
-              counts.updated} updated file(s)${unchanged}.` :
+              counts.updated} updated file(s)${unchanged}${gone}.` :
           `Wrote ${counts.created} new and ${counts.updated} updated ` +
-              `file(s)${unchanged}.`);
+              `file(s)${unchanged}${gone}.`);
   return 0;
 }
 

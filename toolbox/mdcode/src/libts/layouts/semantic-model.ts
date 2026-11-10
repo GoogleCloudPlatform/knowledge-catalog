@@ -544,6 +544,21 @@ export function parseOverviewSidecar(
   return {content: split.body.trim() || undefined, contentType, links};
 }
 
+// Whether the overviews `a` and `b` hold the same content, contentType and
+// links, as the catalog stores them: empty content and an empty list of links
+// are none.
+export function sameOverview(a: OverviewSidecar, b: OverviewSidecar): boolean {
+  const stored = ({content, contentType, links}: OverviewSidecar) =>
+      JSON.stringify({
+        content: content || undefined,
+        contentType,
+        links: links?.length ?
+            links.map(({url, title}) => ({url, title})) :
+            undefined,
+      });
+  return stored(a) === stored(b);
+}
+
 // The text of the overview sidecar that holds `overview`.
 export function formatOverviewSidecar(
     {content = '', ...rest}: OverviewSidecar): string {

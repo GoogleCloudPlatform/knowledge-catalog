@@ -1255,8 +1255,8 @@ semantic_model:
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
-    fs.mkdirSync(entryGroupDir(), {recursive: true});
     for (const [name, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(local(name)), {recursive: true});
       fs.writeFileSync(local(name), text);
     }
     const catalog = fakeCatalog();
@@ -1309,6 +1309,18 @@ semantic_model:
      {'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla with a GOOGLE block profile that binds an action',
      {'commerce.yaml': WITH_BLOCK_ACTION}],
+    // Push stores a sidecar's text without its line endings and trailing
+    // blank lines, so a sidecar that reads as the catalog's overview keeps its
+    // bytes.
+    ['Google-flavor and overview sidecar', {
+      'commerce.yaml': MODEL,
+      'commerce.overview.md':
+          '---\ncontentType: MARKDOWN\n---\nTrailing blank lines.\n\n\n',
+      'commerce/entities/Customer.overview.md':
+          '---\r\ncontentType: MARKDOWN\r\n---\r\n# Customer\r\n\r\nOn Windows.\r\n',
+      'commerce/entities/Order.overview.md':
+          '---\ncontentType: MARKDOWN\n---\nNo final newline.',
+    }],
   ] as const) {
     test(`that changes nothing keeps the ${flavor} files byte for byte`,
          async () => {
@@ -1846,6 +1858,51 @@ describe('a pull', () => {
          expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
              .not.toContain('refund');
        });
+
+  // Under --force-remove the summary counts the files pull removes, and pull
+  // removes each directory it leaves empty.
+  test('under --force-remove counts the files it removes and removes the ' +
+           'directories it empties',
+       async () => {
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('sales.yaml'));
+         for (const name of ['sales.overview.md',
+                             'sales/entities/Customer.overview.md']) {
+           fs.mkdirSync(path.dirname(local(name)), {recursive: true});
+           fs.writeFileSync(local(name), 'Old.\n');
+         }
+         const logSpy = console.log as Mock<any>;
+         pulled();
+
+         expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
+         expect(messages(logSpy)).toContain(
+             'Dry run: would write 2 new and 0 updated file(s); would remove ' +
+             '3 file(s).');
+         expect(await pull({forceRemove: true})).toBe(0);
+         expect(messages(logSpy)).toContain(
+             'Wrote 2 new and 0 updated file(s); removed 3 file(s).');
+         expect(fs.readdirSync(entryGroupDir()).sort())
+             .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
+       });
+
+  // Another writer may delete an entry the model needs, such as an entity
+  // another one extends.
+  test('warns when the model file it writes does not load', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    pulled({
+      ...SECOND_GEN,
+      entities: [{...SECOND_GEN.entities[0], extends: ['Named']}],
+    });
+
+    expect(await pull()).toBe(0);
+    expect(messages(console.warn)).toBe(
+        `Warning: ${shown('commerce.yaml')} does not load as pull writes it: ` +
+        "entity 'Customer' extends unknown entity 'Named'; it is not defined " +
+        'in the model. Push rejects it until this is fixed.');
+  });
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
