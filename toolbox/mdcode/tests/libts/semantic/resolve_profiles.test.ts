@@ -1018,7 +1018,8 @@ actions:
     }]);
   });
 
-  // [where, the profile, the key written, the key the message lists]
+  // [where, the profile, the key written, the key the message lists, the
+  // message]
   test.each([
     ['the profile', 'name: prod\nmetric_exclude: "*"\n', 'metric_exclude', 'metrics_exclude',
      "profile 'prod': unknown key 'metric_exclude'; it takes 'name', 'entities', " +
