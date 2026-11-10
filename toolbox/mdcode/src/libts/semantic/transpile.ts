@@ -1047,9 +1047,11 @@ function article(noun: string): string {
 // MySQL and SQL Server read a date beside a number as a number or a count of
 // days, and every source reads a string beside a number as a number. A date
 // column is not visible, so a MySQL date column plus a number is translated.
-// A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, so import checks the
-// value as a date function's argument, and the repairs write DATE_ADD. It is a
-// timestamp in PostgreSQL, so an ANSI_SQL text with one is not translated.
+// A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, and the repairs
+// write DATE_ADD, which keeps the type of a DATE, a DATETIME and a TIMESTAMP.
+// Those dialects read a string or a number beside the interval as a date, and
+// BigQuery rejects it or reads another way, so import refuses one. The sum is
+// a timestamp in PostgreSQL, so an ANSI_SQL text with one is not translated.
 // SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
@@ -1059,8 +1061,12 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
     const unit = interval(added);
     if (!unit) return `INTERVAL ${intervalText(added)}`;
     if (unit === 'day' && DATE_DAYS.has(read)) {
-      const values = dateValue(op, sides.find(s => !s?.interval));
-      return typeof values === 'string' ? values : [...values, added.this];
+      const other = sides.find(s => !s?.interval);
+      const literal = bare(other)?.literal;
+      if (!other || numberText(other) !== undefined || (literal && literal.literal_type !== 'date')) {
+        return `${op} of ${valueName(bare(other))}`;
+      }
+      return [other, added.this];
     }
     if (unit === 'day' && read === 'generic') {
       return `${op} INTERVAL ${intervalText(added)}, which gives a DATE in some ` +
