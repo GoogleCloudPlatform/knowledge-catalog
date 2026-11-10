@@ -88,7 +88,8 @@ scenarios('push checks every source before it writes', [
        services: {sources: REAL.sources, query: {status: 404, message: 'Not found: Table test-project:d.customer'}},
        code: 1, errors: [has("references BigQuery table 'test-project.d.customer', which does not exist")],
        nothingWritten: true},
-      {services: {getTable: undefined}, code: 0, events: ['preflight', 'apply', 'deploy g']},
+      {services: {getTable: undefined, sources: REAL.sources}, code: 0,
+       events: ['preflight', 'apply', 'deploy g']},
     ],
   },
   {

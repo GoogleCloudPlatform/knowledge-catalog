@@ -138,10 +138,12 @@ const skips = (source: string) => ' --skip-source-check skips this lookup' +
 // found a BigQuery table.
 const notFound = (entity: string, profile: string, source: string, hint = '') =>
     `entity '${entity}' in profile '${profile}': source '${source}' names no ` +
-    `table Knowledge Catalog knows about. The table may not exist, or you may ` +
-    `not be allowed to read its catalog entry.${hint} ${
-        source.startsWith('bigquery.') ? 'Fix the access or the source.' :
-                                         'Create the table or fix the source.'}${skips(source)}`;
+    `table Knowledge Catalog knows about. ${
+        source.startsWith('bigquery.') ?
+            'BigQuery has the table, but Knowledge Catalog has no entry for it ' +
+                `that you may read.${hint} Fix the access or the source.` :
+            'The table may not exist, or you may not be allowed to read its ' +
+                `catalog entry.${hint} Create the table or fix the source.`}${skips(source)}`;
 // The start of the messages for an inline source of `entity`.
 const at = (source: string, entity = 'orders') =>
     `entity '${entity}' in profile 'default': source '${source}'`;

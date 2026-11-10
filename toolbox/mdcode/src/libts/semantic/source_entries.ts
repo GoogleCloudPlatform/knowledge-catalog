@@ -185,14 +185,18 @@ async function problemOf(
     if ('error' in res) return failedProblem(res).problem;
   }
   // A BigQuery table exists here, since getTable read its location.
-  return `names no table Knowledge Catalog knows about. The table may not ` +
-      `exist, or you may not be allowed to read its catalog entry.${
+  const bigquery = table.system === 'bigquery';
+  return `names no table Knowledge Catalog knows about. ${
+             bigquery ?
+                 'BigQuery has the table, but Knowledge Catalog has no entry ' +
+                     'for it that you may read.' :
+                 'The table may not exist, or you may not be allowed to read ' +
+                     'its catalog entry.'}${
              table.system === 'alloydb' ?
                  ' A new AlloyDB cluster can take hours to appear in the ' +
                      'catalog after Dataplex integration is turned on.' :
                  ''}${locations.unfound ?? ''} ${
-             table.system === 'bigquery' ?
-                 'Fix the access or the source.' :
+             bigquery ? 'Fix the access or the source.' :
                  'Create the table or fix the source.'}`;
 }
 

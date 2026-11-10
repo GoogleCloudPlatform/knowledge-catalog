@@ -244,10 +244,10 @@ describe('a model with no deployments checks every profile file\'s sources', () 
     expect(await push({})).toBe(1);
     expect(messages(errorSpy)).toBe(
         `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
-        `table Knowledge Catalog knows about. The table may not exist, or you ` +
-        `may not be allowed to read its catalog entry. Fix the access or the ` +
-        `source. --skip-source-check skips this lookup, but a deployment that ` +
-        `reads the table still checks the table itself.`);
+        `table Knowledge Catalog knows about. BigQuery has the table, but ` +
+        `Knowledge Catalog has no entry for it that you may read. Fix the ` +
+        `access or the source. --skip-source-check skips this lookup, but a ` +
+        `deployment that reads the table still checks the table itself.`);
     expect(preflightSpy).not.toHaveBeenCalled();
     expect(lookup.mock.calls.map(c => c[2]).sort())
         .toEqual([RAW, PROD, DEV].map(entry).sort());
@@ -2689,10 +2689,10 @@ semantic_model:
     expect(await push({})).toBe(1);
     expect(messages(errorSpy)).toBe(
         `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
-        `table Knowledge Catalog knows about. The table may not exist, or you ` +
-        `may not be allowed to read its catalog entry. Fix the access or the ` +
-        `source. --skip-source-check skips this lookup, but a deployment that ` +
-        `reads the table still checks the table itself.`);
+        `table Knowledge Catalog knows about. BigQuery has the table, but ` +
+        `Knowledge Catalog has no entry for it that you may read. Fix the ` +
+        `access or the source. --skip-source-check skips this lookup, but a ` +
+        `deployment that reads the table still checks the table itself.`);
     expect(applySpy).not.toHaveBeenCalled();
     const entry = (source: string) =>
         `projects/test-project/locations/us/entryGroups/@bigquery/entries/${source}`;
