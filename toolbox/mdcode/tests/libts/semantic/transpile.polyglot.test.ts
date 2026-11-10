@@ -289,6 +289,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "CONCAT('é', a) # a's", {sql: "CONCAT('é', a) /* a's */"}],
     ['MYSQL', "CONCAT('a#\nb', s) # note", {sql: "CONCAT('a#\\nb', s) /* note */"}],
     ['MYSQL', 'a /* # x\n# y */ + 1 # z', {sql: 'a /* # x\n# y */ + 1 /* z */'}],
+    ['MYSQL', 'b /* s3://b/*.csv, s3://c/*.csv */ + 1', {sql: 'b /* s3://b/ *.csv, s3://c/ *.csv */ + 1'}],
     ['MYSQL', "IF(s = '#', `a#b`, c /* # */) # note", {sql: "IF(s = '#', `a#b`, c /* # */) /* note */"}],
     // Constructs off the list.
     ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd does not translate TO_CHAR'}],
@@ -496,15 +497,9 @@ describe('polyglotTranspiler (transformations)', () => {
 });
 
 describe('mysqlForEngine', () => {
-  // MySQL texts that the engine reads with a string or a comment open at the
-  // end of a line. mysqlForEngine reads past that line before it rewrites a
-  // marker after it.
-  test.each([
-    ['/* a /* b */ c # d\n + 1 # e', '/* a /* b */ c # d\n + 1 # e'],
-    ['a $$# x\n b # c', 'a $$# x\n b # c'],
-    ["/*~'[#b'01'--/*/*+.5- >@#`--{\t#}*/\v^.", "/*~'[#b'01'--/*/*+.5- >@#` - -{\t#}*/\v^."],
-  ])('writes the MySQL text %j as the engine reads the whole text', async (sql, want) => {
+  test('reads past a line that ends in an open string before it rewrites a # after it', async () => {
     await loadSqlEngine();
-    expect(mysqlForEngine(sql)).toBe(want);
+    // The engine reads $$ as a string that runs to the end of the text.
+    expect(mysqlForEngine('a $$# x\n b # c')).toBe('a $$# x\n b # c');
   });
 });

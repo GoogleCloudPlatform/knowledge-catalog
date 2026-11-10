@@ -234,12 +234,13 @@ function mysqlForEngineAt(sql: string):
   return {text: chars.join(''), from};
 }
 
-// The end of the line that holds the first # or -- in `chars` at or after
+// The end of the line that holds the first #, -- or /* in `chars` at or after
 // `start`, or undefined when there is none. Only these can start a comment
 // the engine reads another way than MySQL.
 function lineOfMarker(chars: string[], start: number): number|undefined {
   for (let i = start; i < chars.length; i++) {
-    if (chars[i] === '#' || chars[i] + chars[i + 1] === '--') {
+    const two = chars[i] + chars[i + 1];
+    if (chars[i] === '#' || two === '--' || two === '/*') {
       const n = chars.indexOf('\n', i);
       return n < 0 ? chars.length : n;
     }
@@ -253,8 +254,10 @@ function lineOfMarker(chars: string[], start: number): number|undefined {
 // gap or token that holds it, where the engine has nothing open. 'open' when a
 // comment is still open at `read`, and undefined when there is neither. MySQL
 // starts a -- comment only before whitespace, so `3--1` is 3 - -1, and starts
-// one at a # outside a string or a quoted name. The gaps between the tokens
-// hold the engine's comments.
+// one at a # outside a string or a quoted name. MySQL ends a block comment at
+// the first */, where the engine nests block comments, so a /* inside a block
+// comment is written as `/ *`. The gaps between the tokens hold the engine's
+// comments.
 function mysqlMisreadComment(
     chars: string[], tokens: SqlToken[], start: number,
     read: number): {at: number; parts: string[]; restart: number}|'open'|undefined {
@@ -269,7 +272,10 @@ function mysqlMisreadComment(
       const two = chars[i] + (chars[i + 1] ?? '');
       if (two === '/*') {
         i += 2;
-        while (i < end && chars[i] + chars[i + 1] !== '*/') i++;
+        while (i < end && chars[i] + chars[i + 1] !== '*/') {
+          if (chars[i] + chars[i + 1] === '/*') return {at: i, parts: ['/', ' *'], restart: start};
+          i++;
+        }
         if (i >= end) return 'open';
         i++;
       } else if (two === '--' && !spaced(i + 2)) {
