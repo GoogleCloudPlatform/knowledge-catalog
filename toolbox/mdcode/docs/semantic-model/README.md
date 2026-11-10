@@ -385,8 +385,9 @@ model has a **different name** than the one on disk, writing it would leave the
 entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
 local model and replace it with the catalog's. When the local file holds the
-catalog's model under another file name, pull says so, and renaming the file to
-`<model>.yaml` keeps it with its comments. Pull never touches the data store.
+catalog's model under another file name, pull says so. Renaming the file to
+`<model>.yaml`, and each of its profile files to `<model>.profile.<name>.yaml`,
+keeps them with their comments. Pull never touches the data store.
 
 Every push sets the `kcmd-push-state` label of the model entry to `writing` when
 it writes the model entry, before the model's other entries, and to `finished`

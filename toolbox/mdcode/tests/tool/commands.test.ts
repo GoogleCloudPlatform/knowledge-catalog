@@ -2246,23 +2246,46 @@ describe('a pull', () => {
   });
 
   // A local model file that holds the catalog's model under another name is
-  // kept by a rename, which the refusal names.
-  test('refuses a local file that holds the catalog\'s model under another ' +
-           'name, and names the rename that keeps it',
-       async () => {
-         writeRoundTripWorkspace();
-         fs.rmSync(local('commerce.profile.prod.yaml'));
-         fs.renameSync(local('commerce.yaml'), local('mysales.yaml'));
-         pulled();
+  // kept by renaming it and its profile files, unless the catalog's model
+  // file is there too. The refusal names what to do, and writes nothing.
+  const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
+  test.each([
+    ['the rename that keeps it', ['mysales.yaml'],
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or re-run with --force-remove to " +
+         "delete it and pull the catalog's.", 'commerce'],
+    ['the rename of each profile file', ['mysales.yaml', 'mysales.profile.prod.yaml'],
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or re-run with " +
+         "--force-remove to delete them and pull the catalog's.", 'commerce'],
+    ['no rename onto the catalog model\'s file',
+     ['commerce.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'],
+     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
+         "profile files, or re-run with --force-remove to delete " +
+         "'mysales.yaml' and 'mysales.profile.prod.yaml' and pull the " +
+         "catalog's.", 'commerce'],
+    ['the model a file declares under another name', ['old.yaml'],
+     "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
+         "model 'commerce' in this entry group. An entry group holds one " +
+         "model, so pull will not leave two behind. Re-run with " +
+         "--force-remove to delete the local model(s) and pull the " +
+         "catalog's.", 'other'],
+  ])('refuses a local file that holds another model name, naming %s',
+     async (_, files, error, declares) => {
+       writeRoundTripWorkspace();
+       for (const f of fs.readdirSync(entryGroupDir())) fs.rmSync(local(f));
+       for (const f of files) {
+         fs.writeFileSync(local(f), f.includes('.profile.') ?
+             ROUND_TRIP_PROFILE :
+             ROUND_TRIP_MODEL.replace('name: commerce', `name: ${declares}`));
+       }
+       pulled();
 
-         expect(await pull()).toBe(1);
-         expect(messages(console.error)).toBe(
-             "Error: local model file 'mysales.yaml' holds model 'commerce', " +
-             "which pull writes as 'commerce.yaml'. Rename the file to " +
-             "'commerce.yaml' to keep it, or re-run with --force-remove to " +
-             "delete it and pull the catalog's.");
-         expect(fs.readdirSync(entryGroupDir())).toEqual(['mysales.yaml']);
-       });
+       expect(await pull()).toBe(1);
+       expect(messages(console.error)).toBe(error);
+       expect(fs.readdirSync(entryGroupDir()).sort()).toEqual([...files].sort());
+     });
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();

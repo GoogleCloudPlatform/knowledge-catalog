@@ -26,7 +26,7 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
@@ -1861,19 +1861,41 @@ async function pullSemanticModel(
   if (staleLocal.length) {
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
-      // kept by a rename to the file pull writes.
+      // kept by renaming it and its profile files to the files pull writes,
+      // unless the catalog's model file is already there.
       const file = (name: string) => path.basename(layout.modelPath(name));
+      const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
       const errors: string[] = [];
       const others: string[] = [];
       for (const name of staleLocal) {
         const declared = layout.declaredModelName(name);
         if (declared !== undefined &&
             catalogPaths.has(layout.modelPath(declared))) {
+          const profileFiles = layout.localProfileFiles(name)
+                                   .filter(f => f.profileName !== undefined);
+          const own =
+              [file(name), ...profileFiles.map(f => path.basename(f.path))];
+          if (fs.existsSync(layout.modelPath(declared))) {
+            errors.push(
+                `local model file '${file(name)}' holds model '${declared}', ` +
+                `which '${file(declared)}' also holds. Delete one of them` +
+                `${profileFiles.length ? ' with its profile files' : ''}, ` +
+                `or re-run with --force-remove to delete ${quoted(own)} and ` +
+                `pull the catalog's.`);
+            continue;
+          }
+          const stem = file(declared).replace(/\.yaml$/, '');
+          const renames = [
+            `the file to '${file(declared)}'`,
+            ...profileFiles.map(f => `'${path.basename(f.path)}' to '${
+                                    stem}.profile.${f.profileName}.yaml'`),
+          ];
+          const them = profileFiles.length ? 'them' : 'it';
           errors.push(
               `local model file '${file(name)}' holds model '${declared}', ` +
-              `which pull writes as '${file(declared)}'. Rename the file ` +
-              `to '${file(declared)}' to keep it, or re-run with ` +
-              `--force-remove to delete it and pull the catalog's.`);
+              `which pull writes as '${file(declared)}'. Rename ${
+                  listed(renames)} to keep ${them}, or re-run with ` +
+              `--force-remove to delete ${them} and pull the catalog's.`);
         } else {
           others.push(
               declared === undefined || declared === name ?
