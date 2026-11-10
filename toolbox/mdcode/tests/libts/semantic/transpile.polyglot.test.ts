@@ -10,7 +10,7 @@
 import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadSqlEngine, sqlExpressionTree} from '../../../src/libts/semantic/sql_parser';
+import {loadSqlEngine, mysqlForEngine, sqlExpressionTree} from '../../../src/libts/semantic/sql_parser';
 import {polyglotTranspiler, transpileModel} from '../../../src/libts/semantic/transpile';
 
 // A model with one entity, `orders`, holding `fields`.
@@ -492,5 +492,19 @@ describe('polyglotTranspiler (transformations)', () => {
     // correlated response and never reject.
     expect(res.id).toBe('0');
     expect(res.error).toBeDefined();
+  });
+});
+
+describe('mysqlForEngine', () => {
+  // MySQL texts that the engine reads with a string or a comment open at the
+  // end of a line. mysqlForEngine reads past that line before it rewrites a
+  // marker after it.
+  test.each([
+    ['/* a /* b */ c # d\n + 1 # e', '/* a /* b */ c # d\n + 1 # e'],
+    ['a $$# x\n b # c', 'a $$# x\n b # c'],
+    ["/*~'[#b'01'--/*/*+.5- >@#`--{\t#}*/\v^.", "/*~'[#b'01'--/*/*+.5- >@#` - -{\t#}*/\v^."],
+  ])('writes the MySQL text %j as the engine reads the whole text', async (sql, want) => {
+    await loadSqlEngine();
+    expect(mysqlForEngine(sql)).toBe(want);
   });
 });

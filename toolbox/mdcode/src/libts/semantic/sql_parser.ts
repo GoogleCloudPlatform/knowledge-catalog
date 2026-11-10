@@ -176,8 +176,10 @@ export function mysqlForEngine(sql: string): string {
 // `sql`, a MySQL text, as mysqlForEngine writes it, with the index in `sql` of
 // each code point of that text, and the engine's tokens of that text when one
 // tokenize read all of it. Each change can turn the rest of the text into code
-// or into a comment, so the first one goes first and the engine reads on from
-// it, up to the end of the line of the next marker.
+// or into a comment, so the first one goes first. The engine then reads again
+// from the start of the gap or token that held the marker, up to the end of the
+// line of the next marker. A token after that line shows whether a string or a
+// comment is still open there, and then the engine reads to the end of the text.
 function mysqlForEngineAt(sql: string):
     {text: string; from: number[]; tokens?: SqlToken[]} {
   if (!loadedEngine) {
@@ -191,20 +193,25 @@ function mysqlForEngineAt(sql: string):
   let start = 0;
   let end = lineOfMarker(chars, start);
   while (end !== undefined) {
-    let res = loadedEngine.tokenize(chars.slice(start, end).join(''), 'mysql');
+    const probe = end < chars.length ? '\n1' : '';
+    let res = loadedEngine.tokenize(chars.slice(start, end).join('') + probe, 'mysql');
     // When the engine cannot tokenize the text, such as at an unclosed quote in
     // a # comment, it reads the text before the point where it stopped.
     let read = end;
+    let open = false;
     if (!res.success && res.errorStart !== undefined) {
-      read = start + res.errorStart;
+      read = Math.min(end, start + res.errorStart);
       res = loadedEngine.tokenize(chars.slice(start, read).join(''), 'mysql');
+    } else if (res.success && probe) {
+      open = res.tokens?.at(-1)?.span.start !== end - start + 1;
+      if (!open) res.tokens!.pop();
     }
     if (!res.success) break;
     const tokens = (res.tokens ?? []).map(t => ({
       ...t, span: {...t.span, start: t.span.start + start, end: t.span.end + start},
     }));
     const fix = mysqlMisreadComment(chars, tokens, start, read);
-    if (fix === 'open' || (!fix && read < end)) {
+    if (fix === 'open' || (!fix && (read < end || open))) {
       // A string or a comment runs past `end`, or the text cannot be read.
       if (end === chars.length) break;
       end = chars.length;
@@ -220,8 +227,8 @@ function mysqlForEngineAt(sql: string):
           (part, k) => [...part].map(c => ({c, at: from[fix.at + k]})));
       chars.splice(fix.at, fix.parts.length, ...written.map(w => w.c));
       from.splice(fix.at, fix.parts.length, ...written.map(w => w.at));
-      start = fix.at;
-      end = lineOfMarker(chars, start);
+      start = fix.restart;
+      end = lineOfMarker(chars, fix.at);
     }
   }
   return {text: chars.join(''), from};
@@ -242,14 +249,15 @@ function lineOfMarker(chars: string[], start: number): number|undefined {
 
 // The first comment marker in `chars` between `start` and `read` that the
 // engine reads another way than MySQL, given the engine's `tokens` of that
-// text, and the parts written in place of its code points. 'open' when a
+// text, the parts written in place of its code points, and the start of the
+// gap or token that holds it, where the engine has nothing open. 'open' when a
 // comment is still open at `read`, and undefined when there is neither. MySQL
 // starts a -- comment only before whitespace, so `3--1` is 3 - -1, and starts
 // one at a # outside a string or a quoted name. The gaps between the tokens
 // hold the engine's comments.
 function mysqlMisreadComment(
     chars: string[], tokens: SqlToken[], start: number,
-    read: number): {at: number; parts: string[]}|'open'|undefined {
+    read: number): {at: number; parts: string[]; restart: number}|'open'|undefined {
   const quoted = (type: string) =>
       type.endsWith('STRING') || type === 'QUOTED_IDENTIFIER' || type === 'HINT';
   // Whether `chars[i]` is whitespace or past the end, as MySQL needs after
@@ -265,7 +273,7 @@ function mysqlMisreadComment(
         if (i >= end) return 'open';
         i++;
       } else if (two === '--' && !spaced(i + 2)) {
-        return {at: i, parts: [' -', ' -']};
+        return {at: i, parts: [' -', ' -'], restart: start};
       } else if (two === '--') {
         const n = chars.indexOf('\n', i);
         i = n < 0 || n > end ? end : n;
@@ -275,7 +283,7 @@ function mysqlMisreadComment(
     const hash = chars.slice(t.span.start, t.span.end).indexOf('#');
     if (hash >= 0 && !quoted(t.token_type)) {
       const at = t.span.start + hash;
-      return {at, parts: [spaced(at + 1) ? ' --' : ' -- ']};
+      return {at, parts: [spaced(at + 1) ? ' --' : ' -- '], restart: t.span.start};
     }
     start = t.span.end;
   }
