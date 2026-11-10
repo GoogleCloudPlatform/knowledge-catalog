@@ -335,6 +335,11 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'NOT n BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate BETWEEN with SYMMETRIC'}],
     ['DATABRICKS', 'NOT MAX(b) FILTER (WHERE y > 0)', {error: 'kcmd does not translate MAX with FILTER'}],
     ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
+    // The part is not a column named like it, and has no parentheses.
+    ['SPANNER', "DATE_TRUNC(d, 'D')", {error: "kcmd does not translate DATE_TRUNC with part 'D'"}],
+    ['SPANNER', "TIMESTAMP_TRUNC(year, 'YEAR')", {error: "kcmd does not translate TIMESTAMP_TRUNC with part 'YEAR'"}],
+    ['SPANNER', 'DATE_TRUNC(week, (WEEK))', {error: "kcmd does not translate DATE_TRUNC with part 'WEEK'"}],
+    ['POSTGRES', "DATE_TRUNC(('decade'), d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
     ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DOW'"}],
     ['POSTGRES', 'EXTRACT(week(monday) FROM d)', {error: "kcmd does not translate EXTRACT with part 'week(monday)'"}],
     ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd does not translate EXTRACT of a difference'}],

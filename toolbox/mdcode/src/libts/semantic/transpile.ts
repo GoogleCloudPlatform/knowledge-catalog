@@ -869,17 +869,22 @@ function writtenCall(
 }
 
 // The date part a message names `part` in `node`, the tree of `call`, as the
-// author wrote it, without quotes, or undefined when it is not found. In
-// EXTRACT it is the text before FROM.
+// author wrote it, without quotes or enclosing parentheses, or undefined when
+// no single argument gives it. In EXTRACT it is the text before FROM.
 function writtenPart(node: any, part: string, call: WrittenCall):
     string|undefined {
   const extract = kindOf(node) === 'extract';
-  const at = extract ? 0 : ((Object.values(node)[0] as any)?.args ?? [])
-      .findIndex((a: any) => String(partName(a)).toUpperCase() === part.toUpperCase());
-  const arg = call.args[at];
+  const at = extract ? [0] : ((Object.values(node)[0] as any)?.args ?? [])
+      .flatMap((a: any, i: number) =>
+          String(partName(a)).toUpperCase() === part.toUpperCase() ? [i] : []);
+  const arg = at.length === 1 ? call.args[at[0]] : undefined;
   if (!arg) return undefined;
   const from = extract ? arg.findIndex(t => t.token_type === 'FROM') : -1;
-  const tokens = from < 0 ? arg : arg.slice(0, from);
+  let tokens = from < 0 ? arg : arg.slice(0, from);
+  while (tokens.length > 2 && tokens[0].token_type === 'L_PAREN' &&
+         tokens.at(-1)!.token_type === 'R_PAREN') {
+    tokens = tokens.slice(1, -1);
+  }
   if (!tokens.length) return undefined;
   return tokens.length === 1 ? tokens[0].text : call.text(tokens);
 }
