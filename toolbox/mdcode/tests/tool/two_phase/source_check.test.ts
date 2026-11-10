@@ -9,7 +9,7 @@ import {expect} from 'bun:test';
 import {entryDenied, NAM3_INSTANCE, NOT_FOUND, spannerDenied} from '../../libts/gcp/location_responses';
 import {cloudSqlEntry} from '../../libts/mocks';
 
-import {boundAt, bqTable, CUSTOMER, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
+import {boundAt, bqTable, CUSTOMER, err, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
 
 const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
     'us-central1/instances/shop/databases/sales/tables/customer';
@@ -69,6 +69,21 @@ scenarios('push checks every source before it writes', [
           expect(lookups(r)).toEqual([]);
         },
       },
+    ],
+  },
+  {
+    name: 'a missing table a deployment of the push reads gets advice that names no flag, as it does under --no-deployment only with one; creating the table clears it',
+    deployments: ['g'],
+    services: {getTable: NOT_FOUND},
+    code: 1,
+    errors: [err(`entity 'Customer' in profile 'default': source '${bqTable('customer')}' ` +
+                 "names a table that does not exist: reading table 'test-project.d.customer' " +
+                 'found nothing (HTTP 404). Create the table or fix the source.')],
+    nothingWritten: true,
+    then: [
+      {flags: {deployment: false}, code: 1,
+       errors: [has('Create the table or fix the source, or pass --skip-source-check.')]},
+      {services: {getTable: undefined}, code: 0, events: ['preflight', 'apply', 'deploy g']},
     ],
   },
   {

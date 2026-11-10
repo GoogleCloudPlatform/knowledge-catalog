@@ -67,10 +67,16 @@ export interface SourceReaders {
   spanner: Pick<SpannerClient, 'getInstance'|'getInstanceConfig'>;
 }
 
+// What is wrong with a source, as the message gives it after the source's
+// name. `orSkip` is OR_SKIP, or '' when skipping the check would not get the
+// push past the problem.
+type Problem = (orSkip: string) => string;
+const OR_SKIP = ', or pass --skip-source-check';
+
 // What a location read gave: the value read, or what is wrong with the
-// source, as the message gives it after the source's name. `unfound`, when
-// set, is said after the message that no location had the entry.
-type Checked<T> = {result: T; unfound?: string}|{problem: string};
+// source. `unfound`, when set, is said after the message that no location had
+// the entry.
+type Checked<T> = {result: T; unfound?: string}|{problem: Problem};
 
 // One message for each entity, in the inline bindings (named `default`) or in
 // a profile, whose source names a table with no Knowledge Catalog entry, in
@@ -91,6 +97,12 @@ type Checked<T> = {result: T; unfound?: string}|{problem: string};
 //   property graph over both (2026-11-04).
 // - A job with no location runs in the primary.
 //
+// A message offers --skip-source-check only when no model in `deployed`
+// reads a table it names. `deployed` holds the models of the graphs this push
+// deploys, each with its profile applied. A graph fails to deploy over a table
+// it cannot read, so skipping this check does not get the push past such a
+// table.
+//
 // Reads each table's location and looks its entry up once per location it
 // may sit in, and reads each instance once and each catalog at most once
 // through each API; tables are checked in parallel, and a table's locations in
@@ -99,7 +111,14 @@ type Checked<T> = {result: T; unfound?: string}|{problem: string};
 // throws.
 export async function sourceEntryErrors(
     model: Pick<SemanticModel, 'name'|'entities'|'profiles'>,
-    readers: SourceReaders): Promise<string[]> {
+    readers: SourceReaders,
+    deployed: ReadonlyArray<Pick<SemanticModel, 'entities'>> = []):
+    Promise<string[]> {
+  const read = new Set(deployed.flatMap(
+      m => m.entities.filter(e => !e.abstract)
+               .map(e => sourceTableOf(writtenSource(e))?.resourceName)));
+  const orSkip = (tables: SourceTable[]) =>
+      tables.some(t => read.has(t.resourceName)) ? '' : OR_SKIP;
   const uses: Array<{entity: string; profile: string; table: SourceTable}> = [];
   const use = (entity: string, profile: string, source: string|undefined) => {
     const table = source ? sourceTableOf(source) : undefined;
@@ -114,7 +133,7 @@ export async function sourceEntryErrors(
 
   const catalogAndInstanceReads = new Map<string, Promise<unknown>>();
   const locations = new Map<string, Promise<Checked<string[]>>>();
-  const problems = new Map<string, Promise<string|undefined>>();
+  const problems = new Map<string, Promise<Problem|undefined>>();
   for (const {table} of uses) {
     if (!problems.has(table.resourceName)) {
       const located = locationsOf(table, readers, catalogAndInstanceReads);
@@ -126,13 +145,15 @@ export async function sourceEntryErrors(
   const errors: string[] = [];
   // By profile, each list of regions BigQuery can query one of its tables in,
   // keyed by the list, with the entities bound to such tables, in the order
-  // bound.
-  const placed = new Map<string, Map<string, {regions: string[]; entities: string[]}>>();
+  // bound, and their tables.
+  const placed = new Map<string, Map<string, {
+    regions: string[]; entities: string[]; tables: SourceTable[];
+  }>>();
   for (const {entity, profile, table} of uses) {
     const problem = await problems.get(table.resourceName)!;
     if (problem) {
       errors.push(`entity '${entity}' in profile '${profile}': source '${
-          table.resourceName}' ${problem}`);
+          table.resourceName}' ${problem(orSkip([table]))}`);
     }
     if (table.system !== 'bigquery' && table.system !== 'biglake') continue;
     const located = await locations.get(table.resourceName)!;
@@ -140,7 +161,12 @@ export async function sourceEntryErrors(
     const regions = located.result;
     const key = regions.join(' ');
     const at = placed.get(profile) ?? new Map();
-    at.set(key, {regions, entities: [...at.get(key)?.entities ?? [], entity]});
+    const before = at.get(key);
+    at.set(key, {
+      regions,
+      entities: [...before?.entities ?? [], entity],
+      tables: [...before?.tables ?? [], table],
+    });
     placed.set(profile, at);
   }
   for (const [profile, at] of placed) {
@@ -155,8 +181,8 @@ export async function sourceEntryErrors(
         `profile '${profile}' of model '${model.name}' binds tables that ` +
         `share no BigQuery location: ${listed.join(', ')}. ` +
         `BigQuery runs each query in one location, so no query can join ` +
-        `them. Bind them to tables that share a location, or pass ` +
-        `--skip-source-check.`);
+        `them. Bind them to tables that share a location${
+            orSkip([...at.values()].flatMap(g => g.tables))}.`);
   }
   return errors;
 }
@@ -168,7 +194,7 @@ export async function sourceEntryErrors(
 // missing entry.
 async function problemOf(
     table: SourceTable, located: Promise<Checked<string[]>>,
-    readers: SourceReaders): Promise<string|undefined> {
+    readers: SourceReaders): Promise<Problem|undefined> {
   const locations = await located;
   if ('problem' in locations) return locations.problem;
   for (const location of locations.result) {
@@ -178,13 +204,14 @@ async function problemOf(
     if ('result' in res) return undefined;
     if ('error' in res) return failedProblem(res).problem;
   }
-  return `names no table Knowledge Catalog knows about. The table may not ` +
-      `exist, or you may not be allowed to read its catalog entry.${
+  return orSkip => `names no table Knowledge Catalog knows about. The ` +
+      `table may not exist, or you may not be allowed to read its catalog ` +
+      `entry.${
              table.system === 'alloydb' ?
                  ' A new AlloyDB cluster can take hours to appear in the ' +
                      'catalog after Dataplex integration is turned on.' :
-                 ''}${locations.unfound ?? ''} Fix the source, or pass ` +
-      `--skip-source-check.`;
+                 ''}${locations.unfound ?? ''} Create the table or fix the ` +
+      `source${orSkip}.`;
 }
 
 // `location`, which is kept in lower case, as BigQuery writes it: a
@@ -338,12 +365,13 @@ async function checked<T>(
   if ('error' in res) return failedProblem(res, hint);
   return {
     problem: res.status === 404 ?
-        `names ${kind} that does not exist: ${what} found nothing (HTTP ` +
-            `404).${hint} Fix the source, or pass --skip-source-check.` :
-        `could not be checked: ${what} was refused (HTTP 403).${
+        orSkip => `names ${kind} that does not exist: ${what} found ` +
+            `nothing (HTTP 404).${hint} Create the table or fix the ` +
+            `source${orSkip}.` :
+        orSkip => `could not be checked: ${what} was refused (HTTP 403).${
             res.message ? ` ${res.message}` : ''}${hint} The ` +
             `source's catalog entry was not looked up. Fix the access or ` +
-            `the source, or pass --skip-source-check.`,
+            `the source${orSkip}.`,
   };
 }
 
@@ -383,19 +411,18 @@ function located(location: string|undefined, what: string, missing: string):
 // table ID, never will, so the source must change, and `hint` follows the
 // service's answer.
 function failedProblem(res: {error: string; status?: number}, hint = ''):
-    {problem: string} {
+    {problem: Problem} {
   return res.status === undefined || isTransientStatus(res.status) ?
       transientProblem(res.error) :
       {
-        problem: `could not be checked: ${res.error}${hint} Fix the source, ` +
-            `or pass --skip-source-check.`,
+        problem: orSkip =>
+            `could not be checked: ${res.error}${hint} Fix the source${orSkip}.`,
       };
 }
 
 // The problem for a read that failed with `detail`, which may pass on retry.
-function transientProblem(detail: string): {problem: string} {
+function transientProblem(detail: string): {problem: Problem} {
   return {
-    problem: `could not be checked; try again, or pass --skip-source-check: ${
-        detail}`,
+    problem: orSkip => `could not be checked; try again${orSkip}: ${detail}`,
   };
 }

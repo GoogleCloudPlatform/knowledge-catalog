@@ -133,8 +133,8 @@ const inline = (source: string) => model([entity('orders', source)]);
 const notFound = (entity: string, profile: string, source: string, hint = '') =>
     `entity '${entity}' in profile '${profile}': source '${source}' names no ` +
     `table Knowledge Catalog knows about. The table may not exist, or you may ` +
-    `not be allowed to read its catalog entry.${hint} Fix the source, or pass ` +
-    `--skip-source-check.`;
+    `not be allowed to read its catalog entry.${hint} Create the table or fix ` +
+    `the source, or pass --skip-source-check.`;
 // The start of the messages for an inline source of `entity`.
 const at = (source: string, entity = 'orders') =>
     `entity '${entity}' in profile 'default': source '${source}'`;
@@ -146,7 +146,8 @@ const couldNotCheck = (source: string, detail: string) =>
 // so the `kind` it names, such as `a table`, does not exist.
 const missing = (source: string, kind: string, what: string, entity?: string, hint = '') =>
     `${at(source, entity)} names ${kind} that does not exist: ${what} found ` +
-    `nothing (HTTP 404).${hint} Fix the source, or pass --skip-source-check.`;
+    `nothing (HTTP 404).${hint} Create the table or fix the source, or pass ` +
+    `--skip-source-check.`;
 // The message for an inline source whose location read `what` answered 400
 // with `message`.
 const failed = (source: string, what: string, message: string, hint = '') =>
@@ -454,6 +455,30 @@ describe('sourceEntryErrors', () => {
           .toEqual(messages);
     });
   }
+
+  // A deployment reads its tables again before it writes, so skipping the
+  // check does not get a push past a table a deployed model reads.
+  test('a message offers --skip-source-check only for tables no deployed model reads, and an existing table clears it', async () => {
+    const {readers} = fakeReaders([], {[`getTable ${P} kcmd_demo orders`]: NOT_FOUND});
+    expect(await sourceEntryErrors(inline(BIGQUERY), readers, [inline(BIGQUERY)])).toEqual([
+      `${at(BIGQUERY)} names a table that does not exist: reading table ` +
+      `'${P}.kcmd_demo.orders' found nothing (HTTP 404). Create the table or ` +
+      `fix the source.`,
+    ]);
+    expect(await sourceEntryErrors(inline(BIGQUERY), readers, [inline(BQ_CENTRAL)])).toEqual([
+      missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`),
+    ]);
+    const {readers: found} = fakeReaders([lookup('bigquery', 'us', BIGQUERY)]);
+    expect(await sourceEntryErrors(inline(BIGQUERY), found, [inline(BIGQUERY)])).toEqual([]);
+    const m = model([entity('orders', BQ_CENTRAL), entity('customers', BQ_EU)]);
+    expect(await sourceEntryErrors(m, fakeReaders(ENTRIES).readers, [model([entity('orders', BQ_EU)])]))
+        .toEqual([
+          "profile 'default' of model 'commerce' binds tables that share no BigQuery " +
+          "location: us-central1 ('orders'), europe-west1 ('customers'). BigQuery runs " +
+          'each query in one location, so no query can join them. Bind them to ' +
+          'tables that share a location.',
+        ]);
+  });
 
   test('the GCP clients provide the reads', () => {
     // Compile-time check: each client fits its reader.
