@@ -10,12 +10,10 @@ NODE TABLES (
       o_totalprice,
       IF(o_orderstatus = 'F', 'fulfilled', 'open') AS order_status_label OPTIONS(description="Human-readable order status"),
       COALESCE(o_clerk, 'unknown') AS clerk_name,
-      SAFE_CAST(o_comment AS STRING) AS comment_text,
       SAFE_CAST(o_totalprice AS FLOAT64) AS price_float,
       DATE_ADD(o_orderdate, INTERVAL 7 DAY) AS due_date,
-      DATE_DIFF(CAST(o_shipdate AS DATETIME), CAST(o_orderdate AS DATETIME), DAY) AS ship_days,
       IF(o_orderstatus = 'F', o_totalprice, 0) AS fulfilled_revenue_input,
-      COALESCE(o_totalprice, 0) AS avg_price_known_input,
+      CAST(COALESCE(o_totalprice, 0) AS NUMERIC) AS avg_price_known_input,
       MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue (portable control expression)"),
       MEASURE(SUM(fulfilled_revenue_input)) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
       MEASURE(AVG(avg_price_known_input)) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
@@ -23,9 +21,7 @@ NODE TABLES (
   `samples.tpch.customer` AS customer
     KEY(c_custkey)
     PROPERTIES(
-      c_custkey,
-      REGEXP_CONTAINS(c_phone, '[0-9]+') AS phone_is_numeric,
-      LOWER(c_mktsegment) LIKE LOWER('AUTO%') AS is_auto_segment
+      c_custkey
     )
 )
 EDGE TABLES (
@@ -40,11 +36,15 @@ EDGE TABLES (
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- field 'orders.order_status_label': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
 -- field 'orders.clerk_name': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
--- field 'orders.comment_text': transpiled 'DATABRICKS' -> 'BIGQUERY'
+-- field 'orders.comment_text': could not transpile 'DATABRICKS' -> 'BIGQUERY' (kcmd does not translate CAST to TEXT); left untranslated
 -- field 'orders.price_float': transpiled 'DATABRICKS' -> 'BIGQUERY'
 -- field 'orders.due_date': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
--- field 'orders.ship_days': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
--- field 'customer.phone_is_numeric': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
--- field 'customer.is_auto_segment': transpiled 'DATABRICKS' -> 'BIGQUERY'
+-- field 'orders.ship_days': could not transpile 'SNOWFLAKE' -> 'BIGQUERY' (kcmd does not translate DATEDIFF); left untranslated
+-- field 'customer.phone_is_numeric': could not transpile 'SNOWFLAKE' -> 'BIGQUERY' (kcmd does not translate REGEXP_LIKE); left untranslated
+-- field 'customer.is_auto_segment': could not transpile 'DATABRICKS' -> 'BIGQUERY' (kcmd does not translate ILIKE); left untranslated
 -- metric 'fulfilled_revenue': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
 -- metric 'avg_price_known': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
+-- entity 'orders': field 'comment_text' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'ship_days' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'customer': field 'phone_is_numeric' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'customer': field 'is_auto_segment' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table

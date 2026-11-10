@@ -323,7 +323,7 @@ describe('profile translation', () => {
       '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}';
   // Its Snowflake text spans two lines, which a profile file writes as a
   // block scalar.
-  const SNOWFLAKE = 'NVL(o.order_id, 0)\n  + NVL(o.order_id, 1) + NVL(o.order_id, 2)';
+  const SNOWFLAKE = 'NVL(o.order_id, 0)\n  * NVL(o.order_id, 1) * NVL(o.order_id, 2)';
   // The texts of order_id on `source`: SNOWFLAKE, and SPANNER on Spanner, as
   // push requires there.
   const textsOn = (source: string) => [
@@ -400,7 +400,7 @@ describe('profile translation', () => {
         loadModels(res.files[0].content).models[0].profiles!.find(p => p.name === 'prod')!;
     const bigQuery = {
       dialect: 'BIGQUERY' as const,
-      expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
+      expression: 'COALESCE(o.order_id, 0) * COALESCE(o.order_id, 1) * COALESCE(o.order_id, 2)',
     };
     expect(written.entities[0].fields![0].dialects).toEqual([
       ...textsOn(written.entities[0].source!), ...translated ? [bigQuery] : [],
