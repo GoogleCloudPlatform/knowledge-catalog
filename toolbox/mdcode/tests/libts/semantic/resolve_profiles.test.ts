@@ -2739,6 +2739,18 @@ semantic_model:
                  {...keyedById('vip', BQ('v'), column('gross')), fieldsExclude: ['discount', 'net']}],
       relationships: [],
     })).toEqual([]);
+    // A field the profile binds in 'fields' moves from there.
+    expect(validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [keyedById('customer', BQ('c'), column('gross'), column('discount')),
+                 {...keyedById('vip', BQ('v'), column('gross'), column('net', 'vip.gross - vip.discount')),
+                  fieldsExclude: ['discount']}],
+      relationships: [],
+    })).toEqual([
+      "profile 'prod': field 'vip.net' depends on 'vip.discount', which this profile " +
+          "excludes; move 'net' from 'fields' to the 'fields_exclude' of entity 'vip', or " +
+          'rebind it',
+    ]);
   });
 
   // leaf extends root directly and through mid. Inheritance gives leaf the

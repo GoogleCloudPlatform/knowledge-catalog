@@ -1898,9 +1898,14 @@ export function validateProfileCompleteness(
   }
   for (const [field, reached] of dangling) {
     const [entity, name] = field.split('.');
+    // A field the entity's binding lists in 'fields' cannot be in
+    // 'fields_exclude' too.
+    const bound =
+        bindingOf.get(entity)?.fields?.some(f => f.name === name) ?? false;
     errors.push(
         `${at}: field '${field}' depends on '${reached}', which this ` +
-        `profile excludes; add '${name}' to the 'fields_exclude' of entity ` +
+        `profile excludes; ${bound ? 'move' : 'add'} '${name}' ${
+            bound ? "from 'fields' " : ''}to the 'fields_exclude' of entity ` +
         `'${entity}', or rebind it`);
   }
   const why = (target: string) => excluded.has(target) ?
