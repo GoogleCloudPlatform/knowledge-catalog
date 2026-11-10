@@ -815,26 +815,31 @@ function nextNodes(kind: string, value: any, read: string):
   const node = {[kind]: value};
   const nested = comparingKind(node) ? nestedComparison(node, read) : undefined;
   if (nested) return nested;
+  // The engine reads infix NOT LIKE, NOT ILIKE and NOT RLIKE, and PostgreSQL's
+  // !~ and !~*, as a `not` node wrapping the operator, so import checks the
+  // operator at the `not` node and the message names NOT for those. NOT after
+  // the operand of IN or BETWEEN sets a `not` flag on the node. For any other
+  // `not` node, such as a prefix NOT, the message names the node it wraps
+  // without NOT.
+  const wrapped = kind === 'not' ? kindOf(value.this) : undefined;
+  const [checkKind, checkValue, prefix] =
+      ['like', 'i_like', 'regexp_like', 'regexp_i_like'].includes(wrapped!) ?
+      [wrapped!, value.this[wrapped!], 'NOT '] :
+      [kind, value, ['in', 'between'].includes(kind) && value.not ? 'NOT ' : ''];
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
   // BigQuery gives a BOOL there.
   if (read === 'mysql') {
-    const conditions = conditionValues(kind, value);
-    const children = (kind === 'function' ? value.args ?? [] : Object.values(value)).flat(Infinity);
+    const conditions = conditionValues(checkKind, checkValue);
+    const children = (checkKind === 'function' ? checkValue.args ?? [] : Object.values(checkValue))
+                         .flat(Infinity);
     if (children.some((c: any) => !conditions.includes(c) && BOOLEANS.has(kindOf(bare(c))!))) {
-      const name = OPERATORS[kind] ?? value.original_name ?? (kind === 'function' ? value.name : kind);
-      return `${String(name).toUpperCase()} of a comparison`;
+      const name = OPERATORS[checkKind] ?? checkValue.original_name ??
+          (checkKind === 'function' ? checkValue.name : checkKind);
+      return `${prefix}${String(name).toUpperCase()} of a comparison`;
     }
   }
   if (kind === 'function') return functionArgs(value, read);
-  if (!KINDS[kind]?.includes(read)) return undefined;
-  // The engine reads `s NOT LIKE p` as a `not` node wrapping a LIKE (see
-  // comparingKind), so look through it to find LIKE's clauses. NOT after the
-  // operand of IN or BETWEEN sets a `not` flag on the node. Any other `not`
-  // node is a prefix NOT, which is its own operator, so the message names the
-  // node it wraps without NOT.
-  const notLike = kind === 'not' && comparingKind(node) === 'like' ? value.this.like : undefined;
-  const [checkKind, checkValue, prefix] = notLike ?
-      ['like', notLike, 'NOT '] : [kind, value, value?.not ? 'NOT ' : ''];
+  if (!KINDS[kind]?.includes(read) || !KINDS[checkKind]?.includes(read)) return undefined;
   const written = (c: string) => c === 'ignore_nulls' ? c in checkValue :
       ![null, undefined, false].includes(checkValue[c]) && checkValue[c].length !== 0;
   const clause = Object.entries(CLAUSES[checkKind] ?? {}).find(([c]) => written(c));
@@ -842,7 +847,7 @@ function nextNodes(kind: string, value: any, read: string):
   const joined = kind === 'concat' && joinProblem('||', [value.left, value.right], read);
   if (joined) return joined;
   if (read === 'spanner') {
-    const spanner = spannerNodes(kind, value);
+    const spanner = spannerNodes(kind, value, prefix);
     if (spanner) return spanner;
   }
   if (kind === 'literal') {
@@ -872,17 +877,21 @@ function nextNodes(kind: string, value: any, read: string):
   if (compared) {
     const times = new Set(compared.map(v => timeType(v, read)));
     const other = ['DATE', 'DATETIME'].find(t => times.has(t));
-    if (times.has('TIMESTAMP') && other) return `${OPERATORS[kind]} on a ${other} and a TIMESTAMP`;
+    if (times.has('TIMESTAMP') && other) {
+      return `${prefix}${OPERATORS[kind]} on a ${other} and a TIMESTAMP`;
+    }
   }
   // Snowflake and SQL Server have no default escape character in LIKE, where
   // BigQuery's is a backslash. SQL Server reads [ in a pattern as a set of
   // characters.
-  if (kind === 'like') {
-    const pattern = String(bare(value.right)?.literal?.value);
+  if (checkKind === 'like') {
+    const pattern = String(bare(checkValue.right)?.literal?.value);
     if (['snowflake', 'tsql'].includes(read) && pattern.includes('\\')) {
-      return 'LIKE with a backslash in its pattern';
+      return `${prefix}LIKE with a backslash in its pattern`;
     }
-    if (read === 'tsql' && pattern.includes('[')) return 'LIKE with a bracket in its pattern';
+    if (read === 'tsql' && pattern.includes('[')) {
+      return `${prefix}LIKE with a bracket in its pattern`;
+    }
   }
   if (kind === 'extract') {
     const part = String(partName(value.field));
@@ -1199,6 +1208,9 @@ function constructName(engine: PolyglotEngine, node: any, read: string): string 
   // prefix NOT before LIKE in most dialects, so there is no operand to swap
   // for a placeholder column before generating it again. Name it as written.
   if (kind === 'raw') return value.sql;
+  // A `not` node here wraps an operator import does not translate, such as
+  // ILIKE in `s NOT ILIKE p` (see nextNodes).
+  if (kind === 'not') return `NOT ${constructName(engine, value.this, read)}`;
   const written = [value.original_name, value.name].find(n => typeof n === 'string');
   if (written) return written.toUpperCase();
   if (kind === 'window_function') return 'OVER';
@@ -1529,10 +1541,11 @@ function spannerType(node: any): string|undefined {
 
 // The parts of a SPANNER node of `kind` that import still has to check, the
 // name of a construct in it import does not translate, or undefined to check
-// the node as any other. A date string without a time zone is translated only
-// where Spanner visibly reads it as a string or a DATE, or where import
-// writes the time zone for it.
-function spannerNodes(kind: string, value: any): unknown[]|string|undefined {
+// the node as any other. A message that names the node's operator starts with
+// `prefix`, which is NOT for NOT IN and NOT BETWEEN. A date string without a
+// time zone is translated only where Spanner visibly reads it as a string or a
+// DATE, or where import writes the time zone for it.
+function spannerNodes(kind: string, value: any, prefix: string): unknown[]|string|undefined {
   const rest = (...used: unknown[]) =>
       Object.values(value).flat(Infinity).filter(c => !used.includes(c));
   const stringLiteral = (n: any) => bare(n)?.literal?.literal_type === 'string';
@@ -1544,7 +1557,7 @@ function spannerNodes(kind: string, value: any): unknown[]|string|undefined {
   const strings = compared?.filter(v => dateString(bare(v)?.literal)) ?? [];
   if (strings.length) {
     return compared!.every(v => ['string', 'date'].includes(spannerType(v)!)) ? rest(...strings) :
-        `${OPERATORS[kind]} of a date string and a value that may be a TIMESTAMP`;
+        `${prefix}${OPERATORS[kind]} of a date string and a value that may be a TIMESTAMP`;
   }
   if (kind === 'timestamp') {
     if (stringLiteral(value.this)) return rest(value.this);

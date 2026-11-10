@@ -313,15 +313,18 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', "TIMESTAMP '2024-01-01 10:00:00'", {error: 'kcmd does not translate a timestamp literal'}],
     ['SNOWFLAKE', "s LIKE 'a\\\\_b'", {error: 'kcmd does not translate LIKE with a backslash in its pattern'}],
     ['SQLSERVER', "s LIKE '[a-c]%' -- first letters", {error: 'kcmd does not translate LIKE with a bracket in its pattern'}],
+    ['SQLSERVER', "s NOT LIKE '%[0-9]%'", {error: 'kcmd does not translate NOT LIKE with a bracket in its pattern'}],
     ['DATABRICKS', "s = 'it''s'", {error: "kcmd does not translate a string with ''"}],
     ['MYSQL', "s LIKE '%\\_%'", {error: 'kcmd does not translate a string with \\_'}],
     ['MYSQL', 'a /*!50000 + 1 */', {error: 'kcmd does not translate a MySQL executable comment'}],
     ['MYSQL', 'a /*+ BKA(t) */', {error: 'kcmd does not translate a MySQL optimizer hint'}],
     ['POSTGRES', 'TRIM(BOTH FROM s)', {error: 'kcmd does not translate TRIM with BOTH, LEADING or TRAILING'}],
-    // NOT before LIKE, IN or BETWEEN keeps the clause message's own name.
+    // The message keeps an infix NOT in the operator's name.
     ['POSTGRES', "s NOT LIKE 'a%' ESCAPE '!'", {error: 'kcmd does not translate NOT LIKE with ESCAPE'}],
     ['POSTGRES', 's NOT IN (SELECT 1)', {error: 'kcmd does not translate NOT IN with a subquery'}],
     ['POSTGRES', 'n NOT BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate NOT BETWEEN with SYMMETRIC'}],
+    ['POSTGRES', "s NOT ILIKE 'a%'", {error: 'kcmd does not translate NOT ILIKE'}],
+    ['DATABRICKS', "s NOT RLIKE 'a'", {error: 'kcmd does not translate NOT RLIKE'}],
     // A prefix NOT is its own operator, so the message names the node it wraps.
     ['POSTGRES', 'NOT s IN (SELECT 1)', {error: 'kcmd does not translate IN with a subquery'}],
     ['POSTGRES', 'NOT n BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate BETWEEN with SYMMETRIC'}],
@@ -366,6 +369,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['DATABRICKS', "flag = s IN ('a', 'b')", {error: 'kcmd does not translate IN of a comparison'}],
     ['MYSQL', "flag = s NOT LIKE 'a%'", {error: 'kcmd does not translate NOT LIKE of a comparison'}],
     ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['POSTGRES', 'd::date NOT BETWEEN a AND now()', {error: 'kcmd does not translate NOT BETWEEN on a DATE and a TIMESTAMP'}],
     // Date, format and conversion functions off the list.
     ['SQLSERVER', 'DATEADD(month, -1, GETDATE())', {error: 'kcmd does not translate DATEADD of a month to a value that may be a TIMESTAMP'}],
     ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],
