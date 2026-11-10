@@ -322,6 +322,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', "s NOT LIKE 'a%' ESCAPE '!'", {error: 'kcmd does not translate NOT LIKE with ESCAPE'}],
     ['POSTGRES', 's NOT IN (SELECT 1)', {error: 'kcmd does not translate NOT IN with a subquery'}],
     ['POSTGRES', 'n NOT BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate NOT BETWEEN with SYMMETRIC'}],
+    ['POSTGRES', 'NOT s IN (SELECT 1)', {error: 'kcmd does not translate NOT IN with a subquery'}],
+    ['POSTGRES', 'NOT n BETWEEN SYMMETRIC 1 AND 2', {error: 'kcmd does not translate NOT BETWEEN with SYMMETRIC'}],
     ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
     ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DAYOFWEEK'"}],
     ['POSTGRES', 'EXTRACT(week(monday) FROM d)', {error: "kcmd does not translate EXTRACT with part 'WEEK(MONDAY)'"}],

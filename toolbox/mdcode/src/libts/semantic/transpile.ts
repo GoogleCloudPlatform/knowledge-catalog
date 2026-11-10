@@ -827,12 +827,12 @@ function nextNodes(kind: string, value: any, read: string):
   }
   if (kind === 'function') return functionArgs(value, read);
   if (!KINDS[kind]?.includes(read)) return undefined;
-  // NOT before IN or BETWEEN sets a `not` flag on the same node, where NOT
-  // before LIKE instead wraps it in a `not` node (see comparingKind), so look
-  // through that wrapper to find LIKE's own clauses.
-  const notLike = kind === 'not' && kindOf(value?.this) === 'like' ? value.this.like : undefined;
-  const [checkKind, checkValue, prefix] = notLike ?
-      ['like', notLike, 'NOT '] : [kind, value, value?.not ? 'NOT ' : ''];
+  // An infix NOT, as in `x NOT IN`, sets a `not` flag on the node. A prefix
+  // NOT wraps the node in a `not` node, so look through that wrapper to find
+  // the node's own clauses.
+  const wrapped = kind === 'not' ? kindOf(value?.this) : undefined;
+  const [checkKind, checkValue, prefix] = wrapped && CLAUSES[wrapped] ?
+      [wrapped, value.this[wrapped], 'NOT '] : [kind, value, value?.not ? 'NOT ' : ''];
   const written = (c: string) => c === 'ignore_nulls' ? c in checkValue :
       ![null, undefined, false].includes(checkValue[c]) && checkValue[c].length !== 0;
   const clause = Object.entries(CLAUSES[checkKind] ?? {}).find(([c]) => written(c));
