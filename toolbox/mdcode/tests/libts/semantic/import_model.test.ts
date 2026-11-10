@@ -232,8 +232,8 @@ describe('conversion, strict mode, and translation', () => {
 
   // [what the input holds, the input, the flavor, the error under --input
   // first-party, which says what the input needs]. Without --input
-  // first-party, import makes that change, and the file it writes draws no
-  // such error.
+  // first-party, import repairs the input itself, and the file it writes
+  // draws no such error.
   test.each([
     ['a dialect alias', googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'), 'google',
      "field 'orders.order_id': write dialect 'GOOGLE_SQL' as 'BIGQUERY'."],
@@ -253,6 +253,11 @@ describe('conversion, strict mode, and translation', () => {
     ['a query-valued source', googleDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
      "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table, or remove " +
      "'source' to leave the entity unbound."],
+    // A deployment on the model file's own bindings needs every entity bound.
+    ['a query-valued source with a deployment on the model file\'s bindings',
+     googleDoc({source: '"SELECT * FROM sales.orders"',
+                extra: `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g}]\n`}),
+     'google', "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
     // A vanilla file requires 'expression' and 'source'.
     ['a vanilla field with no supported dialect',
      ossieDoc({fieldExpr: '{dialects: [{dialect: MDX, expression: x}]}'}), 'google',

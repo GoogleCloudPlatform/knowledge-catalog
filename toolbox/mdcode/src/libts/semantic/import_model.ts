@@ -11,7 +11,7 @@ import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, d
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DEFAULT_PROFILE, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -969,10 +969,23 @@ function truncateDescription(
 }
 
 /**
+ * Whether a strict-mode message may offer to leave an entity or field
+ * unbound: true for a Google input none of whose deployments uses the model
+ * file's own bindings. A vanilla file requires 'source' and 'expression'. A
+ * deployment on the model file's own bindings needs every entity bound, and a
+ * graph deployment needs every field bound too.
+ */
+function mayLeaveUnbound(doc: ImportDocument): boolean {
+  return doc.inputVersion === GOOGLE_VERSION &&
+      !asRecords(doc.model.deployments)
+           .some(d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE);
+}
+
+/**
  * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
  * with a warning in the Google version (or recording an error in the vanilla
- * version) if no supported SQL dialect remains. In strict mode, only a Google
- * input may leave the field unbound.
+ * version) if no supported SQL dialect remains. In strict mode, the error
+ * offers to leave the field unbound only when `mayLeaveUnbound`.
  */
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument): void {
@@ -992,7 +1005,7 @@ function repairField(
               `'expression' and left the field unbound.`,
           `${fLabel}: 'expression' has no entry in a supported SQL ` +
               `dialect; add one${
-                  doc.inputVersion === GOOGLE_VERSION ?
+                  mayLeaveUnbound(doc) ?
                       `, or remove 'expression' to leave the field unbound` :
                       ''}.`);
     }
@@ -1034,12 +1047,11 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
             `every ${word}.`);
       } else {
-        // In strict mode, only a Google input may leave the entity unbound.
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
                 `${word} is now unbound.`,
             `${dsLabel}: source '${trimmed}' is a query; name a table${
-                doc.inputVersion === GOOGLE_VERSION ?
+                mayLeaveUnbound(doc) ?
                     `, or remove 'source' to leave the ${word} unbound` :
                     ''}.`);
         delete ds.source;
