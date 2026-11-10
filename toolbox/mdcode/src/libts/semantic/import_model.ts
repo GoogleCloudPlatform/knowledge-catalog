@@ -811,7 +811,7 @@ function completeFromEntryGroup(
 /**
  * When the output's flavor rejects `obj.datatype`, writes it in its canonical
  * casing, such as `Integer` for `integer`, or deletes an `Opaque` in another
- * casing. The change goes through `warnOrError` when the input's flavor
+ * casing. The change goes through `doc.repair` when the input's flavor
  * rejects the value too.
  */
 function normalizeDatatype(
@@ -964,7 +964,8 @@ function truncateDescription(
 /**
  * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
  * with a warning in the Google version (or recording an error in the vanilla
- * version) if no supported SQL dialect remains.
+ * version) if no supported SQL dialect remains. In strict mode, only a Google
+ * input may leave the field unbound.
  */
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument): void {
@@ -973,9 +974,9 @@ function repairField(
   if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
-          `${fLabel}: no supported SQL dialect remains in 'expression', ` +
+          `${fLabel}: 'expression' has no entry in a supported SQL dialect, ` +
           `and version '${OSSIE_VERSION}' requires an 'expression' on ` +
-          `every field.`);
+          `every field; add one.`);
     } else {
       delete f.expression;
       doc.modified = true;
@@ -983,8 +984,10 @@ function repairField(
           `${fLabel}: no supported SQL dialect remains; removed ` +
               `'expression' and left the field unbound.`,
           `${fLabel}: 'expression' has no entry in a supported SQL ` +
-              `dialect; add one, or remove 'expression' to leave the field ` +
-              `unbound.`);
+              `dialect; add one${
+                  doc.inputVersion === GOOGLE_VERSION ?
+                      `, or remove 'expression' to leave the field unbound` :
+                      ''}.`);
     }
   }
 }
@@ -1024,11 +1027,14 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
             `every ${word}.`);
       } else {
+        // In strict mode, only a Google input may leave the entity unbound.
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
                 `${word} is now unbound.`,
-            `${dsLabel}: source '${trimmed}' is a query; name a table, or ` +
-                `remove 'source' to leave the ${word} unbound.`);
+            `${dsLabel}: source '${trimmed}' is a query; name a table${
+                doc.inputVersion === GOOGLE_VERSION ?
+                    `, or remove 'source' to leave the ${word} unbound` :
+                    ''}.`);
         delete ds.source;
         doc.modified = true;
       }
@@ -1094,7 +1100,8 @@ function repairMetric(
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
-        `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
+        `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
+        `add one.`);
     return true;
   }
   if (!keepsMetric(mt, doc, translatesLater)) return false;
@@ -1305,7 +1312,7 @@ function adaptToGoogleVersion(doc: ImportDocument): void {
  * string expressions into a single-entry `ANSI_SQL` dialect list, and moves
  * plain relationship `description`s into a `GOOGLE` `custom_extensions` block.
  * The vanilla flavor rejects the last two forms, so in a vanilla file each of
- * those changes is a repair and goes through `warnOrError`.
+ * those changes is a repair and goes through `doc.repair`.
  */
 function adaptToOssieVersion(doc: ImportDocument): void {
   // 0. A Google file takes the vanilla version and entity list, and each

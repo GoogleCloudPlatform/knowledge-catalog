@@ -253,6 +253,12 @@ describe('conversion, strict mode, and translation', () => {
     ['a query-valued source', googleDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
      "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table, or remove " +
      "'source' to leave the entity unbound."],
+    // A vanilla file requires 'expression' and 'source'.
+    ['a vanilla field with no supported dialect',
+     ossieDoc({fieldExpr: '{dialects: [{dialect: MDX, expression: x}]}'}), 'google',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
+    ['a vanilla query-valued source', ossieDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
+     "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
     ['an unanchored metric',
      googleDoc({extra: joined('oc', "    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id) + COUNT(customers.order_id)'}\n")}),
      'google',
@@ -1657,20 +1663,23 @@ describe('dialects and datatypes', () => {
     for (const line of lines) expect(res.files[0].content).toContain(line);
   });
 
-  test(
-      'reports an error when a vanilla field or metric is left with no supported dialect',
-      async () => {
+  test.each([false, true])(
+      'reports an error when a vanilla field or metric is left with no supported dialect, with --input first-party %p',
+      async strict => {
         const extra =
             `    metrics:\n      - name: total_orders\n        expression:\n          dialects:\n            - {dialect: MAQL, expression: "SELECT COUNT(order_id)"}\n`;
         const res = await importSemanticModelYaml(ossieDoc({
           fieldExpr:
               '{\n              dialects: [{dialect: MAQL, expression: "1"}]\n            }',
           extra,
-        }));
+        }), {strict});
 
         expect(res.ok).toBe(false);
-        expect(res.errors.some(e => e.includes('orders.order_id'))).toBe(true);
-        expect(res.errors.some(e => e.includes('total_orders'))).toBe(true);
+        expect(res.errors).toContain(
+            "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect, and " +
+            "version '0.2.0.dev0' requires an 'expression' on every field; add one.");
+        expect(res.errors).toContain(
+            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one.");
       });
 
   test(
