@@ -337,7 +337,7 @@ function deploymentsFor(model: SemanticModel, profile: string):
         `'deployments'`;
     let error: string;
     if (profile === DEFAULT_PROFILE) {
-      // Each deployment names a profile, so each of those has a store.
+      // Each deployment names a profile, so --profile selects its deployments.
       const named = [...new Set(model.deployments.map(d => d.profile!))];
       error = `Model '${model.name}' declares no deployment without a ` +
           `'profile' in ${where}, so there is no store to run against ` +

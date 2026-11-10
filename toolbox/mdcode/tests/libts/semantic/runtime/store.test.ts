@@ -407,10 +407,15 @@ describe('the store a profile uses', () => {
             'which store it runs against is ambiguous');
   });
 
-  test('default has no store when every block deployment names a profile, naming the block', () => {
+  test.each([
+    [['operational'], "profile 'operational'; pass --profile operational."],
+    [['a', 'b', 'a'], "profiles 'a' and 'b'; pass --profile <name>."],
+  ])('default has no store when every block deployment names a profile (%j), naming the block',
+     (profiles, advice) => {
     const vanilla = vanillaModel({
-      profiles: [{name: 'operational'}],
-      deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
+      profiles: [...new Set(profiles)].map(name => ({name})),
+      deployments: profiles.map(
+          (profile, i) => ({name: `spanner_${i}`, target: `${DB}${i}/graphs/g`, profile})),
     });
     const store = resolveStore(vanilla, 'default');
     expect('error' in store && store.error)
@@ -418,7 +423,7 @@ describe('the store a profile uses', () => {
             "Model 'm' declares no deployment without a 'profile' in its " +
             "GOOGLE block's 'deployments', so there is no store to run " +
             "against under binding profile 'default'. Its deployments use " +
-            "profile 'operational'; pass --profile operational.");
+            advice);
   });
 
   test('a block profile no block deployment uses has no store, naming the block', () => {
