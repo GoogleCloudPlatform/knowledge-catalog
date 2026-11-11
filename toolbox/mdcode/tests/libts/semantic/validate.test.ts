@@ -1784,21 +1784,24 @@ ${metricBlock}`).models[0];
       }
     });
 
-    // [the metric's name, its expression, the message]. Metric 'revenue' is
-    // anchored on orders. 'amount' is a metric on orders and a field of
-    // customer.
+    // [the metric's name, its expression, the message, its entity when not
+    // orders]. Metric 'revenue' is anchored on orders. 'amount' is a metric on
+    // orders and a field of customer.
     const at = (name: string) => `metric '${name}' in model 'm' (doc)`;
-    test.each([
+    test.each<[string, string, string | undefined, string?]>([
       ['avg_order', 'revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, and a ` +
        'metric over other metrics is not supported in this version; write the expression ' +
        "of 'revenue' in its place."],
       ['avg_order', 'orders.revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, ` +
        'and a metric over other metrics is not supported in this version; write the ' +
        "expression of 'revenue' in its place."],
-      // A bare metric name reads that metric, even when it is also a field.
+      // A bare metric name reads that metric, even when another entity has a
+      // field of that name, and reads a field of the metric's own entity.
       ['avg_order', 'SUM(amount) / COUNT(*)', `${at('avg_order')}: 'amount' is a metric, and a ` +
        'metric over other metrics is not supported in this version; write the expression ' +
        "of 'amount' in its place."],
+      ['avg_cust', 'SUM(amount)', `${at('avg_cust')}: 'amount' must be written as ` +
+       "'entity.field'; a metric reads fields, never columns.", 'customer'],
       // A metric that reads its own name reads a column or a missing field.
       ['total', 'SUM(total)', `${at('total')}: 'total' must be written as 'entity.field'; a ` +
        'metric reads fields, never columns.'],
@@ -1814,13 +1817,13 @@ ${metricBlock}`).models[0];
        "qualifier 'ordrs', which is not a declared entity in model 'm'; write 'entity.field' " +
        'starting with a declared entity.'],
       ['avg_order', 'SUM(orders.net_amount) / COUNT(*)', undefined],
-    ])('a metric %s over %s gets the message for what it reads', (name, expression, message) => {
+    ])('a metric %s over %s gets the message for what it reads', (name, expression, message, entity = 'orders') => {
       const m = model({
         entities: [orders(), customer()],
         metrics: [
           {name: 'revenue', expression: 'SUM(orders.net_amount)', entity: 'orders'},
           {name: 'amount', expression: 'SUM(orders.net_amount)', entity: 'orders'},
-          {name, expression, entity: 'orders', authoredEntity: 'orders'},
+          {name, expression, entity, authoredEntity: entity},
         ],
       });
       expect(validatePushRequirements([loaded(m)])).toEqual(message ? [message] : []);

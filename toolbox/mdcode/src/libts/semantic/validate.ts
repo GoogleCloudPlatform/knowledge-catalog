@@ -1858,14 +1858,21 @@ export function validateExpressionReferences(
         new Map((model.metrics ?? []).map(m => [m.name, m.entity]));
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
+      const authored = metric.authoredEntity;
+      const anchor = authored ?? metric.entity;
       // Whether `name`, read where a field belongs, names another metric of
-      // the model: unqualified, or qualified with `on`, that metric's entity.
-      // A metric cannot read another metric, so each such metric gets one
-      // message, with no advice on how to name a field.
+      // the model: qualified with `on`, that metric's entity, or unqualified
+      // and no field of this metric's entity, declared or inherited. A metric
+      // cannot read another metric, so each such metric gets one message,
+      // with no advice on how to name a field.
       const metricsRead = new Set<string>();
       const readsMetric = (name: string, on?: string) => {
         if (name === metric.name || !entityOfMetric.has(name)) return false;
-        if (on !== undefined && entityOfMetric.get(name) !== on) return false;
+        if (on === undefined ?
+                anchor !== undefined && fieldsByEntity.get(anchor)?.has(name) :
+                entityOfMetric.get(name) !== on) {
+          return false;
+        }
         if (!metricsRead.has(name)) {
           metricsRead.add(name);
           errors.push(
@@ -1893,8 +1900,6 @@ export function validateExpressionReferences(
       addUnreadableWarning(
           `metric '${metric.name}'`, readable.length, unreadDialects);
 
-      const authored = metric.authoredEntity;
-      const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
       const collision = metricFieldCollisionError(
