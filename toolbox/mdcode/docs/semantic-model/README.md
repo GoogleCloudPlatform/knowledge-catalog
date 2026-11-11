@@ -208,7 +208,7 @@ The most common flags:
 kcmd push                         # publish to Knowledge Catalog + deploy every deployment in deployments
 kcmd push --deployment analytical # publish to Knowledge Catalog + deploy only the analytical deployment
 kcmd push --no-deployment         # publish only to Knowledge Catalog, deploy to no store
-kcmd push --validate-only         # run all checks, write nothing
+kcmd push --validate-only         # run the checks, write nothing
 kcmd push --print                 # also print the generated DDL / entry plan
 ```
 

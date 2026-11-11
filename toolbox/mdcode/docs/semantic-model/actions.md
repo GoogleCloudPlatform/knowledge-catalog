@@ -835,10 +835,11 @@ blast radius naming something it can't resolve.
 
 ## 4. Check it before pushing
 
-`kcmd push --validate-only` runs the checks a push runs and deploys nothing. It
-loads your model, checks each action against the ontology that same model
-declares, asks your store about any DML those actions carry, and prints every
-error it finds. A push clears the same gate before it writes anything, so
+`kcmd push --validate-only` runs the checks a push runs, apart from the
+Knowledge Catalog checks on the entry group and the custom types, and deploys
+nothing. It loads your model, checks each action against the ontology that same
+model declares, asks your store about any DML those actions carry, and prints
+every error it finds. A push clears the same gate before it writes anything, so
 whatever this reports would have stopped your deploy:
 
 ```bash
