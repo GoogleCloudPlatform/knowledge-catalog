@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as yaml from 'yaml';
 import * as z from 'zod';
 import * as gcp from './gcp';
+import {ContextSetMetadata, METADATA_KEYS, metadataOfManifest, metadataScopeError} from './context_set';
 import * as dataplex from './gcp/dataplex';
 import { CatalogSource, createSource, Sources } from './source';
 import { EntryGroupSource } from './sources/entrygroup';
@@ -27,6 +28,10 @@ const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
   // The workspace layout, when it is not the scope's own (see above).
   layout: z.string().optional(),
+  // The context set's display name and description (see context_set.ts).
+  // A key with no value (`description:`) is not managed, as an absent one.
+  displayName: z.string().nullish(),
+  description: z.string().nullish(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -35,6 +40,10 @@ const manifestSchema = z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
   }).optional(),
+}).superRefine((manifest, ctx) => {
+  const error = metadataScopeError(
+      manifest.scope, METADATA_KEYS.filter(k => manifest[k] != null));
+  if (error) ctx.addIssue({code: 'custom', message: error});
 });
 
 export interface SnapshotConfig {
@@ -109,17 +118,22 @@ export class CatalogManifest {
   readonly publishingConfig?: PublishingConfig;
   // The workspace layout, when it is not the scope's own (see the schema).
   readonly layout?: WorkspaceLayout;
+  // The context set's display name and description, as catalog.yaml holds
+  // them (see context_set.ts).
+  readonly contextSet: ContextSetMetadata;
 
   private constructor(
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
     publishingConfig?: PublishingConfig,
-    layout?: WorkspaceLayout
+    layout?: WorkspaceLayout,
+    contextSet: ContextSetMetadata = {}
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
     this.layout = layout;
+    this.contextSet = contextSet;
   }
 
   // A manifest for a scope `kcmd init` just named, listing the scope's default
@@ -273,7 +287,8 @@ export class CatalogManifest {
       }
     }
 
-    return new CatalogManifest(source, snapshot, publishing, layout);
+    return new CatalogManifest(
+        source, snapshot, publishing, layout, metadataOfManifest(result.data));
   }
 
   save(path: string): void {
@@ -289,6 +304,8 @@ export class CatalogManifest {
     const data: any = {
       scope: scope,
       layout: this.layout ?? undefined,
+      displayName: this.contextSet.displayName,
+      description: this.contextSet.description,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined
     };

@@ -246,6 +246,22 @@ scope: <type>.<name>              # The resources in the snapshot. Examples:
                                   #   - bq-dataset.<projectId>.<datasetId1>
                                   #   - bq-dataset.<projectId>.<datasetId2>
 
+# Optional. The context set's (entry group's) display name and description,
+# for a scope backed by an entry group (entryGroup, kb, semantic-model), in any
+# layout. `kcmd pull` sets them from the entry group, and removes a key the
+# entry group leaves unset. `kcmd push` writes only the keys that differ, last
+# (the last write wins). An absent key, or one with no value, is not managed;
+# `description: ""` clears the description, and an empty value stays in the
+# file after a pull. Write several lines with `>-`, which joins them with
+# spaces, or `|-`, which keeps the line breaks; `|` adds a trailing newline
+# that push sends. At most 1,024 characters for the
+# description and 256 for the display name; push fails before any write when a
+# value is longer.
+displayName: Sales
+description: >-
+  Orders, customers and revenue
+  for the sales team.
+
 
 aliases:                          # Optional. Can always use 3-part fully qualified references.
                                   # NOTE: All built-in types have predefined simple aliases.
