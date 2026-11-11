@@ -1778,10 +1778,17 @@ function updatedFiles(
       return file;
     }
     if (base === file.content && fromCatalog) return {...file, content: text};
-    const content = updatedText(text, base, file.content);
-    const changed = read(content);
-    if (changed instanceof Map && changed.get(file.fileName) === file.content) {
-      return {...file, content};
+    // A GOOGLE block's `data` that keeps its layout can read as other
+    // content, as when a profile's `metrics_exclude` names every metric, which
+    // reads as `*`, and the catalog adds a metric. The file is then changed
+    // with that `data` as the catalog holds it.
+    for (const content of new Set([true, false].map(
+             jsonLayout => updatedText(text, base, file.content, jsonLayout)))) {
+      const changed = read(content);
+      if (changed instanceof Map &&
+          changed.get(file.fileName) === file.content) {
+        return {...file, content};
+      }
     }
     console.warn(
         `Warning: pull cannot change only the values that differ in ` +

@@ -348,10 +348,14 @@ that holds what the catalog holds stays byte for byte. A changed string keeps
 its quoting or block style, and other changed values are written in pull's form.
 When the catalog reorders a list whose order counts, such as an entity's fields,
 an item that moves, or an item it moves past, can be written in pull's form too.
-Pull writes a file whole, with none of its comments, key order or formatting,
-when there is no local file, when the local file does not load or is not valid
-UTF-8, and when changing only those values would not give what the catalog
-holds.
+The JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
+profiles, changes the same way and keeps its layout. When that `data` would
+then not hold what the catalog holds, it comes back as the catalog holds it,
+and the rest of the file still changes only where it differs. Another
+vendor's `data` comes back as the catalog holds it. Pull writes a file whole,
+with none of its comments, key order or formatting, when there is no local
+file, when the local file does not load or is not valid UTF-8, and when
+changing only those values would not give what the catalog holds.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 Pull reads the second-generation types. It rebuilds the model file, profile

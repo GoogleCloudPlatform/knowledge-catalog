@@ -1273,7 +1273,7 @@ semantic_model:
   // Push checks a profile without its own actions too, so a GOOGLE block
   // profile that binds an action the vanilla model cannot declare counts as
   // the catalog's.
-  const BLOCK_PROFILE = JSON.stringify({profiles: [{
+  const BLOCK_DATA = {profiles: [{
     name: 'prod',
     entities: [
       {name: 'Order', source: `${TABLES}/orders`, primary_key: ['id'],
@@ -1284,12 +1284,24 @@ semantic_model:
     ],
     relationships:
         [{name: 'placed_by', from_columns: ['buyer'], to_columns: ['key']}],
-    actions: [{name: 'Refund', executor: null}],
-  }]});
-  const WITH_BLOCK_ACTION = VANILLA.replace(
+  }]};
+  // `model` with a GOOGLE block holding `data`, written by hand over several
+  // lines with each entity on one line, and a comment on its `vendor_name`
+  // line.
+  const withBlock = (data: object, model = VANILLA) => model.replace(
       '    ai_context: Answer in dollars.\n',
       '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
-          `      - vendor_name: GOOGLE\n        data: '${BLOCK_PROFILE}'\n`);
+          '      - vendor_name: GOOGLE   # bindings\n        data: |\n' +
+          JSON.stringify(data, null, 2)
+              .replace(/^ {8}\{[^]*?^ {8}\}/gm,
+                       s => s.replace(/\n\s*/g, ' ')
+                                .replace(/([{[]) | ([}\]])/g, '$1$2'))
+              .replace(/^/gm, '          ') +
+          '\n');
+  const WITH_BLOCK_ACTION = withBlock({profiles: [{
+    ...BLOCK_DATA.profiles[0],
+    actions: [{name: 'Refund', executor: null}],
+  }]});
   for (const [flavor, files] of [
     ['Google-flavor', {'commerce.yaml': MODEL, 'commerce.profile.prod.yaml': PROFILE}],
     ['vanilla', {'commerce.yaml': VANILLA}],
@@ -1365,6 +1377,31 @@ semantic_model:
            '    fields:\n      - name: sku\n        expression: i_sku\n']);
   const BOTH = (model: string, profile = PROFILE) =>
       ({'commerce.yaml': model, 'commerce.profile.prod.yaml': profile});
+  // BLOCK_DATA with `edit` applied to a copy.
+  const blockData = (edit: (d: typeof BLOCK_DATA) => void) => {
+    const d = structuredClone(BLOCK_DATA);
+    edit(d);
+    return d;
+  };
+  // VANILLA with a dataset added, written by hand and in pull's form, and
+  // BLOCK_DATA with its binding.
+  const withItem = (dataset: string) => edited(
+      VANILLA,
+      ['    relationships:\n',
+       `      - name: Item\n        source: ${TABLES}/item\n${dataset}` +
+           '    relationships:\n']);
+  const VANILLA_ITEM = withItem(
+      `        primary_key: [sku]\n        fields:\n` +
+      `          - { name: sku, expression: ${ansi('i_sku')} }\n`);
+  const PULLED_ITEM = withItem(
+      '        primary_key:\n          - sku\n        fields:\n' +
+      '          - name: sku\n            expression:\n' +
+      '              dialects:\n                - dialect: ANSI_SQL\n' +
+      '                  expression: i_sku\n');
+  const ITEM_DATA = blockData(d => d.profiles[0].entities.push({
+    name: 'Item', source: `${TABLES}/item`, primary_key: ['sku'],
+    fields: [{name: 'sku', expression: 'i_sku'}],
+  }));
   // A second profile file, and the files of a model with both profiles.
   const staging = (profile: string) => edited(
       profile, ['# Production bindings.', '# Staging bindings.'],
@@ -1400,6 +1437,30 @@ semantic_model:
       {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
       {'commerce.yaml': VANILLA},
       {'commerce.yaml': edited(VANILLA, ['Orders and customers', 'Sales'])},
+    ],
+    // A vanilla model's profiles sit in the JSON `data` of its GOOGLE block,
+    // which keeps its layout.
+    [
+      'one profile source in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(blockData(
+           d => d.profiles[0].entities[0].source = `${TABLES}/orders_v2`))},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      {'commerce.yaml': withBlock(blockData(
+           d => d.profiles[0].entities[0].source = `${TABLES}/orders_v2`))},
+    ],
+    [
+      'an added dataset and its binding in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      // The new dataset is written in pull's form, and its binding in the
+      // block's layout.
+      {'commerce.yaml': withBlock(ITEM_DATA, PULLED_ITEM)},
+    ],
+    [
+      'a removed dataset and its binding in a vanilla model\'s GOOGLE block',
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
+      {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
+      {'commerce.yaml': withBlock(BLOCK_DATA)},
     ],
     [
       'one value of a profile file',
@@ -1466,6 +1527,53 @@ semantic_model:
           Object.entries(want).map(([name, text]) => [local(name), text])));
     });
   }
+
+  // A GOOGLE block profile that excludes every metric by name reads as one
+  // that excludes `*`, so after the catalog adds a metric, the local list
+  // with its layout kept no longer holds the catalog's content. The rest of
+  // the file still keeps its text, and `data` is the catalog's.
+  test('changes only the rest of a vanilla model when its GOOGLE block ' +
+           'data cannot keep its layout',
+       async () => {
+         const customers =
+             `      - { name: customers, expression: ${ansi('COUNT(Customer.key)')} }\n`;
+         const buyers = edited(VANILLA, [
+           customers,
+           customers +
+               `      - { name: buyers, expression: ${ansi('COUNT(Order.buyer)')} }\n`,
+         ]);
+         const excluding = (metrics: string[]|'*') => blockData(
+             d => Object.assign(d.profiles[0], {metrics_exclude: metrics}));
+         const moved = (d: typeof BLOCK_DATA) =>
+             d.profiles[0].entities[0].source = `${TABLES}/orders_v2`;
+         const catalog = excluding(['buyers', 'customers', 'orders']);
+         moved(catalog);
+         await pushed({'commerce.yaml': withBlock(catalog, buyers)});
+         const text = withBlock(excluding(['orders', 'customers']));
+         fs.writeFileSync(local('commerce.yaml'), text);
+         const warnSpy = console.warn as Mock<any>;
+
+         expect(await pull()).toBe(0);
+         // Pull's `data` sorts the entities by name.
+         const pulled = excluding('*');
+         moved(pulled);
+         pulled.profiles[0].entities.reverse();
+         expect(messages(warnSpy)).not.toContain('pull cannot change only');
+         expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+             .toBe(edited(
+                 text,
+                 [text.slice(text.indexOf('        data: |\n'),
+                             text.indexOf('    datasets:\n')),
+                  `        data: |-\n          ${JSON.stringify(pulled)}\n`],
+                 ['    metrics:\n',
+                  '    metrics:\n      - name: buyers\n' +
+                      '        expression:\n          dialects:\n' +
+                      '            - dialect: ANSI_SQL\n' +
+                      '              expression: COUNT(Order.buyer)\n' +
+                      '        custom_extensions:\n' +
+                      '          - vendor_name: GOOGLE\n' +
+                      '            data: \'{"entity":"Order"}\'\n']));
+       });
 
   // A local model file push would refuse is written from the catalog. Its
   // profile file still holds the catalog's content beside the model file pull

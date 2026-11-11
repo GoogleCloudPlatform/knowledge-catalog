@@ -35,6 +35,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     "a: 'p\n\n  q'  # c\n"
   ],
   [
+    'double-quoted strings set to other lines, one that writes its line breaks as escapes on one line',
+    'a: "x\\ny"  # c\nb: "x\\ny\n\n  z"\nd: "x"\n', v => (v.a = v.b = v.d = 'p\nq'),
+    'a: "p\\nq"  # c\nb: "p\n\n  q"\nd: "p\n\n  q"\n'
+  ],
+  [
     'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
     v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
   ],
