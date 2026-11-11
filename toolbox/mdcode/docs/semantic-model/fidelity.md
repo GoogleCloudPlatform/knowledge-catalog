@@ -343,7 +343,10 @@ microseconds.
   hours, days and weeks to the current timestamp, a TIMESTAMP, and months and
   years to it as a DATETIME in UTC, as from PostgreSQL.
 - SQL Server: days, weeks, months, quarters and years to a column and to a
-  date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
+  date, such as a cast to date or CURRENT_DATE, and minutes and hours to a
+  column, which BigQuery rejects for a DATE column, as SQL Server rejects them
+  for a date. Seconds stay untranslated on a column, since SQL Server ignores
+  -30 to 29 seconds added to a smalldatetime. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
   and adds every unit to it.
 

@@ -1030,7 +1030,9 @@ const DATE_TABLES: Record<string, DateTable> = {
     },
   },
   // SQL Server's DATEADD gives the type of its date, and a month that lacks
-  // the day gives its last day, as in BigQuery. Its part is a name, never a
+  // the day gives its last day, as in BigQuery. It adds no hour or minute to
+  // a date, as BigQuery's DATE_ADD does not, and a smalldatetime ignores some
+  // seconds, so a column gets no second. Its part is a name, never a
   // string, and its dayofyear and weekday parts add days. GETDATE() and
   // CURRENT_TIMESTAMP give a datetime, which the repairs write as
   // CURRENT_DATETIME('UTC'). It has no INTERVAL, and its date plus a number
@@ -1046,7 +1048,9 @@ const DATE_TABLES: Record<string, DateTable> = {
     rows: {
       column: {
         name: 'a value that may be a date or a TIMESTAMP',
-        units: {...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
+        units: {
+          ...adds(['MINUTE', 'HOUR', 'DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column'),
+        },
       },
       date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
       datetime: {type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime')},
