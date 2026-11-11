@@ -385,8 +385,8 @@ not prune the model to a deployment's profile first.
   since that is how the catalog stores it. `1.0` comes back as `1`, and `2.50`
   as `2.5`.
 - In a vanilla model, the `GOOGLE` blocks on an object come back as one block
-  under the name `GOOGLE`, after the other vendors' blocks. Its `data` is
-  written as compact JSON.
+  under the name `GOOGLE`, after the other vendors' blocks. When its `data`
+  comes back as the catalog holds it, the `data` is compact JSON.
 - A profile's `metrics_exclude` comes back as `"*"` when it excludes every
   metric, and otherwise as a list in name order.
 - Entities, relationships, metrics, actions and constraints come back sorted
