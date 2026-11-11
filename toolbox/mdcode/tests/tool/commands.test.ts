@@ -2246,9 +2246,9 @@ describe('a pull', () => {
   });
 
   // A local model file that holds the catalog's model under another name is
-  // kept by renaming it and its profile files, unless the catalog's model
-  // file is there too or an earlier file is renamed to it. The refusal names
-  // what to do, and writes nothing.
+  // kept by renaming it and its profile files, unless a file the rename
+  // writes is there already or an earlier file is renamed to it. The refusal
+  // names what to do, and writes nothing.
   const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
   test.each([
     ['the rename that keeps it', ['mysales.yaml'],
@@ -2273,6 +2273,25 @@ describe('a pull', () => {
          "'sales2.yaml' holds model 'commerce', which 'mysales.yaml' also " +
          "holds. Delete one of them, or re-run with --force-remove to " +
          "delete 'sales2.yaml' and pull the catalog's.", 'commerce'],
+    ['the profile files of the file that also holds it',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'],
+     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
+         "profile files, or re-run with --force-remove to delete " +
+         "'mysales.yaml' and pull the catalog's.", 'commerce'],
+    ['no rename onto a profile file already there',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'],
+     holds + "which pull writes as 'commerce.yaml', and " +
+         "'commerce.profile.prod.yaml' is already there. Delete one of them " +
+         "with its profile files, or re-run with --force-remove to delete " +
+         "'mysales.yaml' and 'mysales.profile.prod.yaml' and pull the " +
+         "catalog's.", 'commerce'],
+    ['no rename onto a file that holds another model',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'],
+     holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' is " +
+         "already there. Delete one of them with its profile files, or " +
+         "re-run with --force-remove to delete 'mysales.yaml' and pull the " +
+         "catalog's.",
+     {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'} as Record<string, string>],
     ['the model a file declares under another name', ['old.yaml'],
      "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
          "model 'commerce' in this entry group. An entry group holds one " +
@@ -2286,7 +2305,8 @@ describe('a pull', () => {
        for (const f of files) {
          fs.writeFileSync(local(f), f.includes('.profile.') ?
              ROUND_TRIP_PROFILE :
-             ROUND_TRIP_MODEL.replace('name: commerce', `name: ${declares}`));
+             ROUND_TRIP_MODEL.replace('name: commerce', `name: ${
+                 typeof declares === 'string' ? declares : declares[f]}`));
        }
        pulled();
 

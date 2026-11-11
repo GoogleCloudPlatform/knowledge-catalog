@@ -1862,40 +1862,60 @@ async function pullSemanticModel(
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
       // kept by renaming it and its profile files to the files pull writes,
-      // unless the catalog's model file is already there or an earlier file
-      // is renamed to it.
+      // unless one of those files is already there or an earlier file is
+      // renamed to it. The advice to delete either model file names its
+      // profile files too.
       const file = (name: string) => path.basename(layout.modelPath(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
+      const profileFilesOf = (name: string) =>
+          layout.localProfileFiles(name).filter(f => f.profileName !== undefined);
       const errors: string[] = [];
       const others: string[] = [];
-      // Each model an earlier rename keeps, and the file that holds it.
+      // Each model an earlier rename keeps, and the model file that holds it.
       const claimed = new Map<string, string>();
       for (const name of staleLocal) {
         const declared = layout.declaredModelName(name);
         if (declared !== undefined &&
             catalogPaths.has(layout.modelPath(declared))) {
-          const profileFiles = layout.localProfileFiles(name)
-                                   .filter(f => f.profileName !== undefined);
+          const profileFiles = profileFilesOf(name);
           const own =
               [file(name), ...profileFiles.map(f => path.basename(f.path))];
-          const holder = fs.existsSync(layout.modelPath(declared)) ?
-              file(declared) :
+          const stem = file(declared).replace(/\.yaml$/, '');
+          const targets = [
+            file(declared),
+            ...profileFiles.map(f => `${stem}.profile.${f.profileName}.yaml`),
+          ];
+          const dir = path.dirname(layout.modelPath(declared));
+          const taken = targets.filter(t => fs.existsSync(path.join(dir, t)));
+          // The catalog's model file when it holds this model too, else an
+          // earlier file renamed to it.
+          const holder = layout.declaredModelName(stem) === declared ?
+              stem :
               claimed.get(declared);
-          if (holder !== undefined) {
+          if (holder !== undefined || taken.length) {
+            // The other model file, if any, that the advice may delete.
+            const other =
+                holder ?? (taken.includes(file(declared)) ? stem : undefined);
+            const withProfiles = profileFiles.length ||
+                (other !== undefined && profileFilesOf(other).length);
             errors.push(
                 `local model file '${file(name)}' holds model '${declared}', ` +
-                `which '${holder}' also holds. Delete one of them` +
-                `${profileFiles.length ? ' with its profile files' : ''}, ` +
+                (holder !== undefined ?
+                     `which '${file(holder)}' also holds` :
+                     `which pull writes as '${file(declared)}', and ${
+                         quoted(taken)} ${
+                         taken.length > 1 ? 'are' : 'is'} already there`) +
+                `. Delete one of them` +
+                `${withProfiles ? ' with its profile files' : ''}, ` +
                 `or re-run with --force-remove to delete ${quoted(own)} and ` +
                 `pull the catalog's.`);
             continue;
           }
-          claimed.set(declared, file(name));
-          const stem = file(declared).replace(/\.yaml$/, '');
+          claimed.set(declared, name);
           const renames = [
-            `the file to '${file(declared)}'`,
-            ...profileFiles.map(f => `'${path.basename(f.path)}' to '${
-                                    stem}.profile.${f.profileName}.yaml'`),
+            `the file to '${targets[0]}'`,
+            ...profileFiles.map(
+                (f, i) => `'${path.basename(f.path)}' to '${targets[i + 1]}'`),
           ];
           const them = profileFiles.length ? 'them' : 'it';
           errors.push(
