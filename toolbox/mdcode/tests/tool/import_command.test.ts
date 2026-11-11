@@ -260,6 +260,20 @@ describe('kcmd import', () => {
     expect(warnings.join('\n')).not.toContain('--input first-party');
   });
 
+  // Whether an import writes over its input reads the workspace's layout. A
+  // knowledge base scope has none, and resolving it would call a service, so
+  // the import gives its own error.
+  test('a third-party import in a knowledge base workspace gives its error', async () => {
+    write('catalog.yaml', 'scope: kb.test-project.us.sales\n');
+    write('retail.yaml', model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"')
+        .replace('datasets:', 'entities:').replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        '    deployments:\n      - {name: qa, target: nonsense}\n');
+    expect(await importModel('retail.yaml', {flavor: 'google'})).toBe(1);
+    expect(errors).toEqual([expect.stringContaining(
+        "Error: Model 'retail': deployment 'qa' targets 'nonsense', which is not a BigQuery " +
+        'graph, a Spanner graph or an AlloyDB database.')]);
+  });
+
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
   // [label, the workspace, the error, the input file]
   const REFUSED_WITHOUT_OUT: Array<[string, () => void, string, string?]> = [

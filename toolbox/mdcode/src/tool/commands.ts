@@ -3059,14 +3059,20 @@ async function workspaceLayout(
     return `there is no catalog.yaml in this directory, so there is no model ` +
         `layout to write into. Pass --out <path> to write the file directly.`;
   }
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', api());
-  const layout = semanticLayoutOf(snapshot);
-  if (!layout) {
-    return `this catalog is not a semantic-model scope, so there is no ` +
-        `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
-        `first, or pass --out <path> to write the file directly.`;
+  const notSemantic = `this catalog is not a semantic-model scope, so there ` +
+      `is no model layout to write into. Run \`kcmd init --semantic-model ` +
+      `...\` first, or pass --out <path> to write the file directly.`;
+  // Resolving an entry group, BigQuery or knowledge base scope calls a
+  // service, so the scope's type is read from the file first.
+  const scope = yaml.parse(fs.readFileSync('catalog.yaml', 'utf8'))?.scope;
+  const type = Array.isArray(scope) ? Sources.BIGQUERY_DATASET :
+                                      String(scope).split('.')[0];
+  if ([Sources.ENTRYGROUP, Sources.BIGQUERY_DATASET, Sources.KB].some(
+          t => t === type)) {
+    return notSemantic;
   }
-  return layout;
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', api());
+  return semanticLayoutOf(snapshot) ?? notSemantic;
 }
 
 // Refuses to write `model` into `layout`'s entry group beside another
