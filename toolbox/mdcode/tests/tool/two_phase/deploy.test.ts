@@ -721,4 +721,11 @@ scenarios('a deployment push does not select gets every local check of a selecte
     metrics: [{...SNOWFLAKE_METRIC, entity: 'Customer'}],
     profiles: {x: {...boundTo('x'), metrics_exclude: '*'}},
   }, 'x', has("deployment 'g') targets a BigQuery graph with only a 'SNOWFLAKE' expression")),
+  {
+    name: 'a graph with no node table',
+    deployments: ['g'],
+    entities: [{name: 'Party', abstract: true, fields: [{name: 'key'}]}],
+    flags: {deployment: false}, code: 1, nothingWritten: true,
+    errors: [has(`${at('g')}: cannot generate a property graph`)],
+  },
 ]);

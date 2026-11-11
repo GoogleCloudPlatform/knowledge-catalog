@@ -151,6 +151,16 @@ scenarios('a Spanner graph', [
       code: 0,
       events: ['preflight', 'apply', 'deploy sp'],
     }, {
+      services: {
+        executeQuery: (_s: string, sql: string) => isNames(sql) ?
+            {status: 403, message: 'Permission denied.'} : undefined,
+      },
+      code: 1, nothingWritten: true,
+      errors: [err(
+          `${at('sp')}: could not read the schema of Spanner database ` +
+          'test-project/i/db to check the graph before anything is written: ' +
+          'Permission denied.')],
+    }, {
       services: {createSession: {status: 403, message: 'Permission denied.'}},
       code: 1, nothingWritten: true,
       errors: [err(
