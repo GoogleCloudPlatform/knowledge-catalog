@@ -1012,10 +1012,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   also refuses an edge's join column whose type differs from the type of the
   node column it references. Push also reads the database's
   `INFORMATION_SCHEMA`. It refuses a graph whose name matches a table, view,
-  index, sequence, change stream or schema of the database, ignoring case. It
-  refuses a node or edge table whose key columns hold neither the table's
-  primary key nor the columns of a unique index. Push stops when it cannot
-  open a session on the database.
+  index, sequence, change stream, schema, role, constraint or model of the
+  database, ignoring case. It refuses a node or edge table whose key columns
+  hold neither the table's primary key nor the columns of a unique index. Push
+  stops when it cannot open a session on the database.
   *(live — needs query access to the database)*
 * **Every `sql` executor statement is accepted by the store it will run
   against.** Each statement is sent to the bound store with the request that

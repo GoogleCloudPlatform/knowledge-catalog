@@ -2617,9 +2617,12 @@ function probeableRef(dataSource: string|undefined): string|null {
 }
 
 
-// The schema objects of a Spanner database's default schema whose name
-// matches @graph ignoring case, other than property graphs: each row gives the
-// kind of object and its name. A graph cannot share a name with any of them.
+// The schema objects of a Spanner database's default schema, other than
+// property graphs, and the database's roles, whose name matches @graph
+// ignoring case: each row gives the kind of object and its name. A graph
+// cannot share a name with any of them. The constraints Spanner names for a
+// primary key or a NOT NULL column are left out, since a graph can take their
+// names.
 const SPANNER_NAMES_SQL = `SELECT kind, name FROM (
   SELECT IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind, TABLE_NAME AS name
     FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ''
@@ -2631,6 +2634,13 @@ const SPANNER_NAMES_SQL = `SELECT kind, name FROM (
     FROM INFORMATION_SCHEMA.CHANGE_STREAMS WHERE CHANGE_STREAM_SCHEMA = ''
   UNION ALL SELECT 'schema', SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA
     WHERE SCHEMA_NAME NOT IN ('', 'INFORMATION_SCHEMA', 'SPANNER_SYS')
+  UNION ALL SELECT 'role', ROLE_NAME FROM INFORMATION_SCHEMA.ROLES
+  UNION ALL SELECT 'constraint', CONSTRAINT_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = '' AND CONSTRAINT_TYPE IN ('FOREIGN KEY', 'CHECK')
+      AND NOT STARTS_WITH(CONSTRAINT_NAME, 'CK_IS_NOT_NULL_')
+  UNION ALL SELECT 'model', MODEL_NAME FROM INFORMATION_SCHEMA.MODELS
+    WHERE MODEL_SCHEMA = ''
 ) WHERE LOWER(name) = LOWER(@graph)`;
 
 // The key columns of each primary key and unique index on the tables whose
@@ -2661,9 +2671,9 @@ const storedName = (name: string) => name.replace(/^`|`$/g, '').toLowerCase();
 // The live check of the graph that `model` deploys to `target`, before any
 // write. It reads the database's schema, and plans a query of what each node
 // and edge table of the graph reads, so Spanner reports a column the table
-// lacks and SQL it cannot run. It finds a graph named like another schema
-// object, a key that no primary key or unique index of its table backs, a
-// property that two tables give different types, and an edge's join column
+// lacks and SQL it cannot run. It finds a graph named like another object of
+// its database, a key that no primary key or unique index of its table backs,
+// a property that two tables give different types, and an edge's join column
 // whose type differs from the column it references. It changes nothing. `at`
 // names the deployment. Returns one message per problem.
 export async function validateSpannerGraph(
@@ -2802,7 +2812,8 @@ export async function validateSpannerGraph(
       // the column it references, read by that node's own query when it can.
       let offset = 0;
       for (const {entity, columns} of e.references) {
-        const joined = e.endpointColumns.slice(offset, offset += columns.length);
+        const joined =
+            e.endpointColumns.slice(offset, offset += columns.length);
         const node = tables.find(n => n.kind === 'node' && n.name === entity);
         if (!node) continue;
         const own = planned.get(node);
