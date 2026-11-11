@@ -374,7 +374,11 @@ on the current timestamp goes to its DATETIME in UTC as a whole. BigQuery then
 adds months first, then days, then time, as PostgreSQL and Databricks do.
 Where that form is DATE_ADD, the INTERVALs must add up to one amount of their
 smallest unit, so they must all be months and years, or all be weeks and
-smaller units.
+smaller units. An INTERVAL times a whole number adds the product. Times
+another amount n, the sum is an expression of n, such as `(-36 + (n))` months,
+which BigQuery rejects unless n is an INT64. Databricks multiplies weeks and
+smaller units into seconds, so `current_date() + 3 * INTERVAL 1 DAY` gives a
+TIMESTAMP and becomes `TIMESTAMP(CURRENT_DATE) + 3 * INTERVAL 1 DAY`.
 Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
 `DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
 years, or weeks and smaller units, as Databricks does. A single INTERVAL

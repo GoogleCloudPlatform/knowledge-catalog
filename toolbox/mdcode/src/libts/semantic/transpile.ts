@@ -822,6 +822,9 @@ interface DateTable {
   // INTERVALs are values: a sum or difference of INTERVALs, such as INTERVAL
   // '1 day' + INTERVAL '2 hours', or an INTERVAL times an amount.
   sums?: Unit[][];
+  // The finest unit of an INTERVAL value of weeks or shorter units that holds
+  // a product, in a dialect whose product of such an INTERVAL is of that unit.
+  products?: Unit;
   // Why import adds a unit to no operand, or to the operands of some rows, by
   // unit, for a message.
   notes?: Partial<Record<Unit, string>>;
@@ -991,12 +994,13 @@ const DATE_TABLES: Record<string, DateTable> = {
   // TIMESTAMP for a DATE plus an hour, a minute or a second, which it reads
   // at midnight UTC, as BigQuery's TIMESTAMP(x) does. It joins INTERVALs of
   // months and years, or of weeks and smaller units, into one value, whose
-  // smallest unit gives the type of a DATE plus it. It adds a whole
-  // number to a DATE as days. Its current timestamp is a TIMESTAMP, and a day
-  // there is 24 hours in UTC. It adds a month or a year to it in UTC. Its
-  // three-argument dateadd and date_add, whose part is a name, read a DATE as a
-  // TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of a
-  // TIMESTAMP_NTZ, which a column may be, so a column gets no part. They add
+  // smallest unit gives the type of a DATE plus it. A product of weeks or
+  // smaller units is of seconds, so a DATE plus it is a TIMESTAMP. It adds a
+  // whole number to a DATE as days. Its current timestamp is a TIMESTAMP, and
+  // a day there is 24 hours in UTC. It adds a month or a year to it in UTC.
+  // Its three-argument dateadd and date_add, whose part is a name, read a DATE
+  // as a TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of
+  // a TIMESTAMP_NTZ, which a column may be, so a column gets no part. They add
   // a quarter, which an INTERVAL does not name.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
@@ -1010,7 +1014,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     partReads: {row: 'TIMESTAMP', rows: ['DATE', 'TIMESTAMP']},
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
-    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']],
+    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']], products: 'SECOND',
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
@@ -1309,14 +1313,14 @@ function wholeNumber(text: string): unknown {
 }
 
 // One INTERVAL in an INTERVAL value: `amount` `unit`, the INTERVAL's text for
-// a message, whether it is `negative`, as after a `-`, and the amount it is
+// a message, whether it is `negative`, as after a `-`, and the amounts it is
 // multiplied by, if any, as `times`.
 interface IntervalPart {
   amount: any;
   unit: Unit;
   text: string;
   negative: boolean;
-  times?: any;
+  times?: any[];
 }
 
 // An INTERVAL value: its INTERVALs, and the values in it that import checks,
@@ -1346,7 +1350,7 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
     if (!left === !right) return undefined;
     const [joined, times] = left ? [left, b.mul.right] : [right!, b.mul.left];
     if (typeof joined === 'string') return joined;
-    return {parts: joined.parts.map(p => ({...p, times})), values: [...joined.values, times]};
+    return {parts: joined.parts.map(p => ({...p, times: [...p.times ?? [], times]})), values: [...joined.values, times]};
   }
   if (!left || !right) return undefined;
   if (typeof left === 'string') return left;
@@ -1376,17 +1380,33 @@ function intervalTyped(node: any, read: string): boolean {
 // to, in their smallest unit, or undefined. They must all be months, quarters
 // and years, or all be weeks or smaller units. A week is 7 days, a quarter 3
 // months and a year 12 months, in each source as in BigQuery. A day is 24
-// hours, as it is for a DATETIME and for a timestamp in UTC.
+// hours, as it is for a DATETIME and for a timestamp in UTC. An INTERVAL
+// times whole numbers adds their product. Times any other amount, the sum is
+// an expression, which BigQuery rejects unless it is an INT64.
 const FOLDS: Partial<Record<Unit, bigint>>[] = [
   {WEEK: 7n * 86400000000n, DAY: 86400000000n, ...MICROS}, {YEAR: 12n, QUARTER: 3n, MONTH: 1n},
 ];
 function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined {
   const fold = FOLDS.find(f => parts.every(p => f[p.unit]));
   const numbers = parts.map(p => numberText(p.amount));
-  if (!fold || parts.some((p, i) => p.times || numbers[i] === undefined)) return undefined;
-  const total = parts.reduce((t, p, i) => t + (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * fold[p.unit]!, 0n);
+  if (!fold || numbers.some(n => n === undefined)) return undefined;
   const unit = parts.reduce((a, p) => fold[p.unit]! < fold[a]! ? p.unit : a, parts[0].unit);
-  return {amount: wholeNumber(String(total / fold[unit]!)), unit};
+  const whole = (n: any) => /^-?\d+$/.test(numberText(n) ?? '');
+  // Each part's amount of `unit`, with the amounts it is multiplied by that
+  // are not whole numbers.
+  const terms = parts.map((p, i) => {
+    const product = (p.times ?? []).filter(whole).reduce((t, n) => t * BigInt(numberText(n)!), 1n);
+    const n = (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * fold[p.unit]! / fold[unit]! * product;
+    return {n, others: (p.times ?? []).filter(t => !whole(t))};
+  });
+  if (terms.some(t => t.others.some(o => bare(o)?.literal))) return undefined;
+  const total = terms.filter(t => !t.others.length).reduce((sum, t) => sum + t.n, 0n);
+  const products = terms.filter(t => t.others.length);
+  if (!products.length) return {amount: wholeNumber(String(total)), unit};
+  const operands: any[] = [];
+  const written = products.map(t =>
+      [...t.n === 1n ? [] : [String(t.n)], ...t.others.map(o => `(_${operands.push(o)})`)].join(' * '));
+  return {amount: formCall([...total ? [String(total)] : [], ...written].join(' + '), operands), unit};
 }
 
 // The date arithmetic `operand` plus or minus `joined`, an INTERVAL value of
@@ -1410,14 +1430,16 @@ function valueOn(table: DateTable, read: string, sum: {
   const finest = joined.parts.reduce((a, p) => UNITS.indexOf(p.unit) < UNITS.indexOf(a.unit) ? p : a);
   const spelled = (p: IntervalPart) => `${op}${call ? ' with' : ''} ${p.text}${p.times ? ' times an amount' : ''}`;
   const row = table.rows[found.row];
-  const addition = row.units[finest.unit];
+  // A product of weeks or shorter units is of the dialect's `products` unit.
+  const product = table.products && joined.parts.some(p => p.times) && FOLDS[0][finest.unit];
+  const addition = row.units[product ? table.products! : finest.unit];
   const note = table.notes?.[finest.unit];
   if (!addition) return note ? `${spelled(finest)}, ${note}` : `${spelled(finest)} on ${found.name}`;
   if (addition.form === 'DATE_ADD') {
     const fold = folded(joined.parts);
     const one = fold && row.units[fold.unit];
     if (!one) return `${spelled(finest)} on ${found.name}`;
-    return {operand, amount: fold.amount, unit: fold.unit, subtract, first, call, addition: one};
+    return {operand, amount: fold.amount, unit: fold.unit, subtract, first, call, addition: one, values: joined.values};
   }
   const gives = table.rows[addition.gives];
   const other = joined.parts.find(p => !gives.units[p.unit]);
