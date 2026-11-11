@@ -18,6 +18,9 @@ export interface ExpressionProblem {
   problem: string;
 }
 
+// What `build` returns, or nothing when the model's inheritance does not
+// resolve.
+//
 // `declaredFields` and `declaredConcepts` both resolve inheritance, and
 // resolving THROWS on an `extends` naming an entity the model does not declare,
 // on a cycle, and on an ambiguously inherited field, rather than reporting it.

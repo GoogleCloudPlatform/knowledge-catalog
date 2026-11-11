@@ -537,7 +537,6 @@ function unboundGraphFields(model: SemanticModel): string|undefined {
       `named profile that lists ${many ? 'them' : 'it'} in 'fields_exclude'.`;
 }
 
-
 // The names a graph on `engine` cannot hold in `model`, compared ignoring
 // case, each as the end of a sentence about a deployment. A metric named like
 // a field of its own entity is left to metricFieldCollisionError.
@@ -1682,10 +1681,6 @@ function unknownFieldRefs(
   return errors;
 }
 
-// What `build` returns, or nothing when the model's inheritance does not
-// resolve.
-//
-
 // Why resolving the model's inheritance fails, or nothing when it succeeds.
 //
 // Reported rather than thrown, and reported once for the model rather than once
@@ -2012,12 +2007,6 @@ function relationshipKeyErrors(
   }
   return errors;
 }
-
-
-
-
-
-
 
 // The executor coordinate fields that are absent or blank. An executor with no
 // gaps yields an empty list.
