@@ -469,9 +469,26 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         // The yaml library joins a double-quoted line that ends in an escaped
         // line break to the line after one blank line.
         '- "UPDATE customer SET doc = doc -- every row?\\', '', '  WHERE c_key = @k"',
+        // A line of spaces and a tab sets a '>' block's indent.
+        '- >', '  \t', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- >', '  \t', '    UPDATE customer SET doc = doc -- every row?', '    WHERE c_key = @k',
+        // An indentation indicator sets a '>' block's indent.
+        '- >2', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- >1', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
+        // A double-quoted line of blanks and an escaped line break adds no
+        // text.
+        '- "UPDATE customer SET doc = doc -- every row?', '  \\', '', '', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  \\', '  "',
       ])},
-      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--']].map(
+      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--']].map(
           ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
+    }, {
+      // A file with CRLF line breaks reads the same.
+      files: {'commerce.yaml': modelWriting([
+        '- >2', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- "UPDATE customer SET doc = doc -- every row?\\', '  \\', '', '', '  WHERE c_key = @k"',
+      ]).replace(/\n/g, '\r\n')},
+      errors: [has("statement 1 has '--' on a line YAML joins")],
     }, {
       files: {'commerce.yaml': modelWriting([
         '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',

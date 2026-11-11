@@ -1061,8 +1061,9 @@ export function yamlChangedStatementErrors(
          ...profileDocs(document),
        ]) {
     const dialects = statementDialects(model, file.name);
-    for (const {action, index, statement, anchor, holder} of
-             writtenStatements(file.text)) {
+    const statements = writtenStatements(file.text);
+    const markers = joinedLineMarkers(statements, file.text, dialects);
+    for (const {action, index, statement, anchor, holder} of statements) {
       // An alias names its anchor, which is where the author edits.
       const at = `action '${action}' in model '${model.name}' (${
           file.fileName}) has a sql executor whose statement ${index + 1}${
@@ -1072,7 +1073,7 @@ export function yamlChangedStatementErrors(
       // The indent of a comment line after the statement, past blank lines.
       const commentIndent =
           /^(?:[ \t]*\r?\n)+([ \t]*)#/.exec(after)?.[1].length ?? -1;
-      const marker = joinedLineMarker(statement, file.text, dialects);
+      const marker = markers.get(statement);
       if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
@@ -1194,47 +1195,83 @@ function statementDialects(model: SemanticModel, profile: string): string[] {
 // start one in every dialect. AlloyDB reads `#` as an operator.
 const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
 
-// The first SQL comment marker that one of `dialects` reads on a line of
-// `statement` that YAML joins to the next one. A marker counts anywhere on the
-// line, inside a string or a quoted name too. YAML joins a line to the next
-// when both hold text. A '>' block also keeps the line break before and after
-// a more-indented line, and a '|' block keeps every line break, so it has
-// none. With no dialect, `#` is not a marker.
-function joinedLineMarker(statement: yaml.Scalar, text: string,
-                          dialects: string[]): string|undefined {
-  const joins = ['PLAIN', 'BLOCK_FOLDED', 'QUOTE_SINGLE', 'QUOTE_DOUBLE'];
-  if (!joins.includes(statement.type ?? '')) return undefined;
+// For each of `statements` in the model or profile file `text`, the first SQL
+// comment marker that one of `dialects` reads on a line YAML joins to the next
+// one. A statement with no such marker is left out. A marker counts anywhere
+// on the line, inside a string or a quoted name too. With no dialect, `#` is
+// not a marker. The yaml library decides which lines it joins. Each line that
+// holds a marker gets a character that `text` does not hold at its end, and
+// the text is parsed again. A line is joined when its character is followed by
+// more than spaces and tabs before the next line break of the statement YAML
+// reads.
+function joinedLineMarkers(statements: WrittenStatement[], text: string,
+                           dialects: string[]): Map<yaml.Scalar, string> {
   const marker = dialects.some(d => HASH_COMMENT_DIALECTS.has(d)) ?
       /--|\/\*|#/ :
       /--|\/\*/;
-  // A quoted statement's lines, without its quotes.
-  const quoted = statement.type!.startsWith('QUOTE');
-  const folded = statement.type === 'BLOCK_FOLDED';
-  const lines = text.slice(statement.range![0] + (quoted ? 1 : 0),
-                           statement.range![1] - (quoted ? 1 : 0))
-                    .split(/\r?\n/)
-                    // A '>' block's first line is its header.
-                    .slice(folded ? 1 : 0);
-  // YAML reads a line of spaces and tabs only as blank. A no-break space is
-  // text.
-  const blank = (line: string) => /^[ \t]*$/.test(line);
-  // A '>' block's indent is the spaces before its first line's text, and a
-  // line with a space or tab after them is more indented.
-  const blockIndent = /^ */.exec(lines.find(line => !blank(line)) ?? '')![0]
-                          .length;
-  const kept = (line: string) =>
-      blank(line) || (folded && /^[ \t]/.test(line.slice(blockIndent)));
-  // A double-quoted line that ends in an escaped line break also joins the
-  // line after one blank line, as the yaml library reads it.
-  const escaped = (line: string) =>
-      statement.type === 'QUOTE_DOUBLE' && /(?<!\\)(\\\\)*\\$/.test(line);
-  for (let i = 0; i + 1 < lines.length; i++) {
-    const next = escaped(lines[i]) && blank(lines[i + 1]) ? i + 2 : i + 1;
-    if (kept(lines[i]) || next >= lines.length || kept(lines[next])) continue;
-    const found = marker.exec(lines[i]);
-    if (found) return found[0];
+  const unused = unusedPrivateUseCharacters(text);
+  // The marked lines of each statement, in order, by the character at their
+  // end. An alias shares its anchor's statement.
+  const marked = new Map<yaml.Scalar, Array<{end: string; marker: string}>>();
+  const inserts: Array<{at: number; end: string}> = [];
+  for (const {statement} of statements) {
+    if (marked.has(statement)) continue;
+    const lines: Array<{end: string; marker: string}> = [];
+    marked.set(statement, lines);
+    const [start, stop] = statement.range!;
+    for (let from = start, to = text.indexOf('\n', from); to >= 0 && to < stop;
+         from = to + 1, to = text.indexOf('\n', from)) {
+      const line = text.slice(from, to).replace(/\r$/, '');
+      const found = marker.exec(line);
+      if (!found) continue;
+      const next = unused.next();
+      if (next.done) break;
+      // The character goes after the line's last character other than a
+      // space or tab. In a double-quoted statement, an odd number of
+      // backslashes there escapes the blank after them, or the line break when
+      // no blank follows, so it goes after that blank or before the last
+      // backslash.
+      const body = line.slice(0, /[ \t]*$/.exec(line)!.index);
+      let at = from + body.length;
+      if (statement.type === 'QUOTE_DOUBLE' && /\\*$/.exec(body)![0].length % 2) {
+        at += body.length < line.length ? 1 : -1;
+      }
+      lines.push({end: next.value, marker: found[0]});
+      inserts.push({at, end: next.value});
+    }
   }
-  return undefined;
+  const joined = new Map<yaml.Scalar, string>();
+  if (!inserts.length) return joined;
+  let changed = '';
+  let copied = 0;
+  for (const {at, end} of inserts.sort((a, b) => a.at - b.at)) {
+    changed += text.slice(copied, at) + end;
+    copied = at;
+  }
+  changed += text.slice(copied);
+  // The changed text holds the same statements in the same order.
+  const reread = writtenStatements(changed);
+  statements.forEach(({statement}, i) => {
+    const value = String(reread[i]?.statement.value ?? '');
+    const first = marked.get(statement)!.find(({end}) => {
+      const at = value.indexOf(end);
+      return at >= 0 && !/^[ \t]*(\n|$)/.test(value.slice(at + end.length));
+    });
+    if (first) joined.set(statement, first.marker);
+  });
+  return joined;
+}
+
+// The private-use characters that `text` does not hold, from U+E000 upward.
+function* unusedPrivateUseCharacters(text: string): Generator<string> {
+  const held = new Set(text);
+  for (const [first, last] of
+           [[0xe000, 0xf8ff], [0xf0000, 0xffffd], [0x100000, 0x10fffd]]) {
+    for (let point = first; point <= last; point++) {
+      const character = String.fromCodePoint(point);
+      if (!held.has(character)) yield character;
+    }
+  }
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a
