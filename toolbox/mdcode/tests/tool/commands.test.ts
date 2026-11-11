@@ -1487,6 +1487,18 @@ semantic_model:
     'commerce.profile.dev.yaml': 'entities: [\n',
   };
 
+  // MODEL with action CloseBooks, whose sql executor runs a statement written
+  // as a '|' block and then `second`.
+  const STATEMENTS = (second: string) => `${MODEL}    actions:
+      - name: CloseBooks
+        executor:
+          sql:
+            statements:
+              - |
+                UPDATE ledger SET closed = TRUE
+              - ${second}
+`;
+
   // Each row pushes the catalog's files, writes the local ones in their
   // place, pulls, and gives the files pull leaves. Only what the catalog
   // changes is written, and the rest keeps its comments, key order and style.
@@ -1526,6 +1538,14 @@ semantic_model:
       {'commerce.yaml': withBlock(BLOCK_DATA)},
       {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
       {'commerce.yaml': withBlock(BLOCK_DATA)},
+    ],
+    // An unchanged '|' statement keeps its text when the one after it
+    // changes.
+    [
+      'one of two action statements',
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = FALSE')),
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
     ],
     [
       'one value of a profile file',

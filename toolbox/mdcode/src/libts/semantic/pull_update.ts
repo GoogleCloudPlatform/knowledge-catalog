@@ -372,7 +372,7 @@ function updatedJson(text: string, value: unknown): string|undefined {
 // another vendor's `data`, comes back as the catalog holds it.
 function merged(
     local: unknown, base: unknown, pulled: unknown, jsonLayout: boolean,
-    json = false): unknown {
+    json = false, statements = false): unknown {
   if (isDeepStrictEqual(base, pulled)) return local;
   const [l, b, p] = [local, base, pulled].map(jsonIn);
   if (json && l !== undefined && b !== undefined && p !== undefined) {
@@ -385,13 +385,17 @@ function merged(
     return Object.fromEntries(entries!);
   }
   if (Array.isArray(local) && Array.isArray(base) && Array.isArray(pulled)) {
+    // An action statement matches trimmed, as pull reads it, so a '|' block's
+    // final line break keeps it the same statement.
+    const read = (v: unknown) =>
+        statements && typeof v === 'string' ? v.trim() : v;
     // A key two items of one of the lists share matches by value in all three.
     const repeated = new Set([local, base, pulled].flatMap(items => {
-      const keys = items.map(v => itemKey(v));
+      const keys = items.map(v => itemKey(read(v)));
       return keys.filter((k, i) => keys.indexOf(k) !== i);
     }));
     const keyed = (items: unknown[]) => {
-      const keys = itemKeys(items, repeated);
+      const keys = itemKeys(items.map(read), repeated);
       return items.map((v, i) => [keys[i], v] as const);
     };
     const entries = mergedEntries(
@@ -447,6 +451,7 @@ function mergedEntries<K>(
         !b.has(k) && !p.has(k) ? l.get(k) :
                                  merged(l.get(k), b.get(k), p.get(k),
                                         jsonLayout,
-                                        googleBlock && k === 'data'),
+                                        googleBlock && k === 'data',
+                                        !isList && k === 'statements'),
   ]);
 }
