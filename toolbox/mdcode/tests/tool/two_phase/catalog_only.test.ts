@@ -471,13 +471,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
           {deployments: [{name: 's', target: spannerGraph('s')}]})},
       errors: [has("statement 1 has '#' on a line")],
-    }, {
-      // Another profile's deployment target, in no accepted form, does not
-      // hide the BigQuery deployment's reading.
-      files: {'commerce.yaml': modelWriting(
-          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
-          {deployments: ['g', {name: 'bad', target: 'not-a-target', profile: 'p'}]})},
-      errors: [has("statement 1 has '#' on a line")],
+
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],

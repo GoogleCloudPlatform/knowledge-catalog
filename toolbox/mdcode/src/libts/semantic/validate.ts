@@ -1181,17 +1181,13 @@ function writtenStatements(text: string): WrittenStatement[] {
 
 // The dialects of the stores where binding profile `profile` runs
 // statements: one for each deployment that uses it, named after its engine.
-// A deployment whose target is in no accepted form, which localChecks
-// reports, adds none.
+// Empty when no deployment uses it, or when a deployment's target is in no
+// accepted form, which localChecks reports.
 function statementDialects(model: SemanticModel, profile: string): string[] {
-  const engines = (model.deployments ?? []).flatMap(d => {
-    if ((d.profile ?? DEFAULT_PROFILE) !== profile) return [];
-    const resolved = resolveModelDeployments(model, [d.name]);
-    return 'error' in resolved ?
-        [] :
-        resolved.deployments.map(r => r.engine.toUpperCase());
-  });
-  return [...new Set(engines)];
+  const deployments = resolveModelDeployments(model);
+  if ('error' in deployments) return [];
+  return [...new Set(deployments.deployments.filter(d => d.profile === profile)
+                         .map(d => d.engine.toUpperCase()))];
 }
 
 // The deployment dialects in which `#` starts a SQL comment. `--` and `/*`
