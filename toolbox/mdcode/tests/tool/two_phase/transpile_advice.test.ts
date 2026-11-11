@@ -113,6 +113,14 @@ describe('the advice to add a BigQuery text', () => {
              "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
              'BIGQUERY source; give it one'),
      {entities: [withCode({name: 'custom', expression: bigquery('c_key')})]}],
+    ['the first of two errors',
+     {entities: [withCode({name: 'custom', expression: snowflake('MY_UDF(c_key)')})],
+      ...metric('SUM(IFF(TRUE, key, 0))', 'Customer')},
+     warning("field 'Customer.code'", `field 'Customer.custom' ${MODEL} has no expression ` +
+             "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
+             'BIGQUERY source; give it one'),
+     {entities: [withCode({name: 'custom', expression: bigquery('c_key')})],
+      ...metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer')}],
     ['a relationship key error',
      {entities: [withCode(), ORDERS], relationships: [{
        name: 'placed', from: 'Orders', to: 'Customer', from_columns: ['o_cust'],

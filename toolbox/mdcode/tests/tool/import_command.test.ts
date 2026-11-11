@@ -220,6 +220,28 @@ describe('kcmd import', () => {
     expect(warnings.join('\n')).not.toContain("field 'orders.order_id' in model");
   });
 
+  // The command a third-party import names for the file it writes over its
+  // input stops on a field import cannot translate, so the advice names that
+  // field's error.
+  test('a third-party import over its input names the error of the command it suggests', async () => {
+    workspace();
+    const input = path.join(GROUP, 'retail.yaml');
+    write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        '          - name: custom_val\n            expression: {dialects: [{dialect: SNOWFLAKE, ' +
+        "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n" + DESCRIBED);
+    const error = "field 'orders.custom_val' in model 'retail' (retail) has no expression for " +
+        "BIGQUERY or ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; " +
+        'give it one';
+    expect(await importModel(input, {flavor: 'ossie'})).toBe(0);
+    expect(warnings).toContain("Warning: field 'orders.order_id': no 'BIGQUERY' or 'ANSI_SQL' " +
+        "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
+        "one with 'kcmd import <file> --input first-party --flavor ossie --transpile' after " +
+        `fixing this: ${error}`);
+    expect(await importModel(input, {flavor: 'ossie', input: 'first-party', transpile: true}))
+        .toBe(1);
+    expect(errors).toEqual([`Error: ${error}.`]);
+  });
+
   // A profile that passes its checks prints its load warnings, which name the
   // same command as the model file's.
   test('a third-party import of a Google model and its profile file names one command', async () => {
