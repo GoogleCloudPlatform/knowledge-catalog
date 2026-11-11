@@ -809,8 +809,9 @@ const DATE_TABLES: Record<string, DateTable> = {
   // MySQL gives a DATE for a DATE plus a day or longer, and a DATETIME for a
   // DATE plus an hour, a minute or a second, as BigQuery's DATE_ADD and `+`
   // do. ADDDATE and SUBDATE are DATE_ADD and DATE_SUB, and with a number they
-  // add days. Its current timestamp is a DATETIME, which the repairs write as
-  // CURRENT_DATETIME('UTC'). It reads a date plus a number as a number.
+  // add days. Its current timestamp is a DATETIME in whole seconds, which the
+  // repairs write as DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND). It reads a
+  // date plus a number as a number.
   mysql: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
@@ -1441,18 +1442,8 @@ function nextNodes(kind: string, value: any, read: string):
       [value.left, value.right, value.this].some(n => bare(n)?.literal?.literal_type === 'string')) {
     return `${kind.toUpperCase()} of a string`;
   }
-  // A comparison, and the results of one COALESCE, NVL, IF or CASE, translate
-  // when their visible types are all in one group of COMPARED.
-  const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
-  const pairs: [any[], string][] = [[comparedValues(kind, value) ?? [], OPERATORS[kind]], [merged, valueName(node)]];
-  for (const [values, name] of pairs) {
-    const order = COMPARED.flat();
-    const types = [...new Set(values.map(v => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined)))]
-        .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    const group = COMPARED.find(g => g.includes(types[0])) ?? [];
-    const other = types.find(t => !group.includes(t));
-    if (other) return `${prefix}${name} on a ${types[0]} and a ${other}`;
-  }
+  const exact = exactForm(node, read);
+  if (typeof exact === 'string') return `${prefix}${exact}`;
   // Snowflake and SQL Server have no default escape character in LIKE, where
   // BigQuery's is a backslash. SQL Server reads [ in a pattern as a set of
   // characters.
@@ -1610,7 +1601,7 @@ function joinProblem(op: string, parts: any[], read: string): string|undefined {
 // The groups of visible types that BigQuery compares with each other, or gives
 // as results of one COALESCE, NVL, IF or CASE. The sources also compare a
 // TIMESTAMP with a DATE or a DATETIME, and MySQL a date or a time with a
-// number, which it reads as a number such as 20240101.
+// number (see valueForms).
 const COMPARED = [['DATE', 'DATETIME'], ['TIMESTAMP'], ['number']];
 
 // The values a node of `kind`, a comparison, BETWEEN, IN or a CASE with an
@@ -1626,12 +1617,17 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 // BigQuery's type for `node`, a source value in the engine's dialect `read`,
 // when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
 // literal, a cast on the list, the current date or timestamp, date arithmetic
-// import translates, by its row in DATE_TABLES, or the first such value that
-// MAX, COALESCE or a similar function returns. A SPANNER text's current
-// timestamp is a TIMESTAMP.
+// import translates, by its row in DATE_TABLES, PostgreSQL's DATE_TRUNC of a
+// DATE, or the first such value that MAX, COALESCE or a similar function
+// returns. A SPANNER text's current timestamp is a TIMESTAMP.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
+  // PostgreSQL truncates a DATE as a timestamp with time zone.
+  const fn = b?.function;
+  if (read === 'postgresql' && String(fn?.name).toUpperCase() === 'DATE_TRUNC' && isDate(fn.args?.[1])) {
+    return 'TIMESTAMP';
+  }
   const table = DATE_TABLES[read];
   const found = table && operandRow(b, read, table);
   if (typeof found === 'object') return table.rows[found.row].type;
@@ -1653,18 +1649,131 @@ function givenValues(node: any): any[] {
   return results.length ? results.flatMap(givenValues) : [node];
 }
 
-// The arguments of NULLIF, in the engine's dialect `read`, that import still
-// has to check, or why it does not translate it. BigQuery gives NULLIF the
-// common type of its values. PostgreSQL, Databricks and SQL Server give the
-// type of the first, and MySQL gives a date or a time as text. So NULLIF
-// translates when every value its arguments can give has one type, the same
-// visible type or none, and in MySQL when none is a date or a time. A value
-// with no visible type, such as a column, may be any type.
-function nullifArgs(args: any[], read: string): unknown[]|string {
+// --- Exact forms ----------------------------------------------------------------
+//
+// Some constructs give another value or type when the engine translates them,
+// and BigQuery has a form that gives the source's. forBigQuery puts a FORM_CALL
+// for that form in place of the construct, and formSql writes the form with the
+// operands the engine translated.
+
+// The name of the call that stands for a form in the text the engine
+// translates. Its first argument is the form's BigQuery SQL, in which _1, _2
+// and so on stand for the arguments that follow, each as an argument of a
+// function or of CAST. A source text that calls it is refused, since it is no
+// function on the lists.
+const FORM_CALL = 'KCMD_BIGQUERY_FORM';
+
+// The dialects whose NULLIF gives the type of its first value.
+const NULLIF_FIRST = new Set(['postgresql', 'databricks', 'tsql', 'snowflake']);
+
+// A FORM_CALL of `sql`, BigQuery SQL that names `operands`, source values, _1,
+// _2 and so on.
+function formCall(sql: string, operands: any[]): any {
+  const call = sqlExpressionTree(`${FORM_CALL}('')`, 'BIGQUERY').function;
+  return {function: {...call, args: [{literal: {literal_type: 'string', value: sql}}, ...operands]}};
+}
+
+// The source comparison `left` = `right`.
+function equal(left: any, right: any): any {
+  return {eq: {left, right, left_comments: [], operator_comments: [], trailing_comments: []}};
+}
+
+// `node` with each value in it that `swap` has replaced by what `swap` gives.
+function swapped(node: any, swap: Map<any, any>): any {
+  if (swap.has(node)) return swap.get(node);
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(n => swapped(n, swap));
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, swapped(v, swap)]));
+}
+
+// The node to write in place of `node`, a source node in the engine's dialect
+// `read`, with a FORM_CALL for each form it needs; a message when import does
+// not translate it; or undefined to translate it as it is. PostgreSQL
+// truncates a DATE as a timestamp with time zone at midnight UTC, which a unit
+// of a day or less leaves at the date. A comparison, and the results of one
+// COALESCE, NVL, IF or CASE, get the forms valueForms gives.
+function exactForm(node: any, read: string): any {
+  const kind = kindOf(node) ?? '';
+  const value = node[kind];
+  const args: any[] = kind === 'function' ? value.args ?? [] : [];
+  const name = String(value?.name).toUpperCase();
+  if (read === 'postgresql' && name === 'DATE_TRUNC' && args.length === 2 && isDate(args[1])) {
+    const unit = TRUNC_PARTS[String(partName(args[0])).toLowerCase()];
+    const day = ['DAY', ...SUB_DAY].includes(unit);
+    return unit && formCall(day ? 'TIMESTAMP(_1)' : `TIMESTAMP(DATE_TRUNC(_1, ${unit}))`, [args[1]]);
+  }
+  if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
+  const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
+  const pairs: [any[], string, boolean][] =
+      [[comparedValues(kind, value) ?? [], OPERATORS[kind], false], [merged, valueName(node), true]];
+  const swap = new Map();
+  for (const [values, how, results] of pairs) {
+    const forms = valueForms(values, read, results);
+    if (typeof forms === 'string') return `${how} on ${forms}`;
+    forms.forEach((f, v) => swap.set(v, f));
+  }
+  return swap.size ? swapped(node, swap) : undefined;
+}
+
+// The FORM_CALL in place of each of `values`, the values a node compares or,
+// with `results`, its results, by value, or the types BigQuery does not
+// compare, for a message. BigQuery compares the visible types of one group of
+// COMPARED. MySQL compares a DATE or a DATETIME with a number as the number of
+// its digits, such as 20240101 or 20240101093000, and gives it among numbers as
+// its text, as it gives each number written.
+function valueForms(values: any[], read: string, results: boolean): Map<any, any>|string {
+  const order = COMPARED.flat();
+  const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined);
+  const types = [...new Set(values.map(typeOf))]
+      .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const group = COMPARED.find(g => g.includes(types[0])) ?? [];
+  const other = types.find(t => !group.includes(t));
+  if (!other) return new Map();
+  const problem = `a ${types[0]} and a ${other}`;
+  if (read !== 'mysql' || types.length !== 2 || other !== 'number') return problem;
+  const digits = types[0] === 'DATE' ? "FORMAT_DATE('%Y%m%d', _1)" : "FORMAT_DATETIME('%Y%m%d%H%M%S', _1)";
+  const swap = new Map();
+  for (const v of values) {
+    if (v === null || v === undefined || bare(v)?.null !== undefined) continue;
+    const text = numberText(v);
+    if (typeOf(v) === types[0]) {
+      swap.set(v, formCall(results ? 'CAST(_1 AS STRING)' : `CAST(${digits} AS INT64)`, [v]));
+    } else if (results && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(text ?? '')) {
+      swap.set(v, formCall(`'${text}'`, []));
+    } else if (results || typeOf(v) !== 'number') {
+      return problem;
+    }
+  }
+  return swap;
+}
+
+// The node to write in place of NULLIF(a, b), whose arguments are `args`, in
+// the engine's dialect `read`; a message; or undefined to translate it as it
+// is. BigQuery's NULLIF gives the common type of its values, PostgreSQL's,
+// Databricks', SQL Server's and Snowflake's the type of a, and MySQL's a date
+// or a time as text. IF(a = b, NULL, a) gives the type of a, with TIMESTAMP(x)
+// around a DATE or a DATETIME compared with a TIMESTAMP, which the sources
+// read as midnight UTC. MySQL's text needs a to be visibly a date or a time; a
+// DATETIME column, which MySQL writes with its own fraction digits, has no
+// form. A value with no visible type, such as a column, may be any type.
+function nullifForm(args: any[], read: string): any {
+  const [a, b] = args;
   const types = [...new Set(args.flatMap(givenValues).map(v => timeType(v, read)))];
   const time = types.find(t => t);
-  if (types.length === 1 && !(read === 'mysql' && time)) return args;
-  if (types.length === 1) return `NULLIF of a ${time}, which MySQL gives as text`;
+  if (types.length === 1 && !(read === 'mysql' && time)) return undefined;
+  const times = givenValues(a).map(v => timeType(v, read));
+  if (read === 'mysql' && times.every(t => t === 'DATE' || t === 'DATETIME')) {
+    const forms = valueForms([a, b], read, false);
+    return typeof forms === 'string' ? `NULLIF on ${forms}` :
+        formCall('CAST(IF(_1, NULL, _2) AS STRING)', [equal(a, b), a]);
+  }
+  if (NULLIF_FIRST.has(read)) {
+    const stamped = [a, b].map((v, i) => timeType(args[1 - i], read) === 'TIMESTAMP' &&
+        ['DATE', 'DATETIME'].includes(timeType(v, read)!) ? formCall('TIMESTAMP(_1)', [v]) : v);
+    const forms = valueForms(stamped, read, false);
+    return typeof forms === 'string' ? `NULLIF on ${forms}` :
+        formCall('IF(_1, NULL, _2)', [equal(stamped[0], stamped[1]), a]);
+  }
   const other = types.find(t => t && t !== time);
   return `NULLIF on a ${time} and ${other ? `a ${other}` : 'a value that may be another type'}`;
 }
@@ -1690,30 +1799,30 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return undefined;
   }
   if (name === 'CONCAT') return joinProblem(name, args, read) ?? args;
-  if (name === 'NULLIF') return nullifArgs(args, read);
+  if (name === 'NULLIF') {
+    const exact = nullifForm(args, read);
+    return typeof exact === 'string' ? exact : args;
+  }
   const part = (arg: any) => String(partName(arg) ?? '?');
   if (name === 'DATE_TRUNC' || name === 'DATE_PART' || name === 'DATEDIFF') {
     const parts = name === 'DATE_TRUNC' ? TRUNC_PARTS : PARTS;
     if (!parts[part(args[0]).toLowerCase()]) {
       return `${name} with part '${part(args[0])}'`;
     }
-    const values = args.slice(1).map(a => dateValue(name, a, read));
+    const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
   }
   return args;
 }
 
-// `[node]`, the date or timestamp the date function `name` reads in the
-// engine's dialect `read`, to check next, or a message. It may be a column, a
-// DATE literal, a cast or the current date or time; BigQuery reads a string, a
-// number or a sum another way, or rejects it. PostgreSQL's DATE_TRUNC reads
-// only a value import does not see as a DATE, since PostgreSQL truncates a
-// DATE as a timestamp with time zone, where BigQuery gives a DATE.
-function dateValue(name: string, node: any, read = ''): unknown[]|string {
+// `[node]`, the date or timestamp the date function `name` reads, to check
+// next, or a message. It may be a column, a DATE literal, a cast or the
+// current date or time; BigQuery reads a string, a number or a sum another way,
+// or rejects it.
+function dateValue(name: string, node: any): unknown[]|string {
   const b = bare(node);
-  const readsDate = read !== 'postgresql' || name !== 'DATE_TRUNC';
-  if (isDate(b)) return readsDate ? [node] : `${name} of a DATE, which PostgreSQL truncates as a timestamp with time zone`;
-  const allowed = b?.column || b?.cast || b?.try_cast || CURRENT.has(String(b?.function?.name).toUpperCase());
+  const allowed = b?.column || b?.cast || b?.try_cast || b?.literal?.literal_type === 'date' ||
+      CURRENT.has(String(b?.function?.name).toUpperCase());
   return allowed ? [node] : `${name} of ${valueName(b)}`;
 }
 
@@ -1867,7 +1976,8 @@ const DATE_CALL = 'KCMD_DATE_ARITHMETIC';
 
 // `sql`, in the engine's dialect `read`, ready for the engine to translate to
 // BigQuery, or an error. Each date arithmetic in DATE_TABLES with a unit is a
-// DATE_CALL (see dateCall). A whole number added to a column has no unit and is
+// DATE_CALL (see dateCall), and each construct exactForm gives a form for has
+// its FORM_CALL. A whole number added to a column has no unit and is
 // kept, since the engine writes it as written. In a dialect of EXTRACT_FIRST,
 // YEAR(d) and the other functions of PARTS are written as EXTRACT, whose
 // argument the engine translates.
@@ -1885,7 +1995,10 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       while (sum.addition.form === 'DATE_ADD' && operand?.paren) operand = operand.paren.this;
       return dateCall(sum, rewrite(operand), whole, dialect);
     }
-    const out: any = Object.fromEntries(Object.entries(node).map(([k, v]) => [k, rewrite(v)]));
+    const exact = isNode(node) ? exactForm(node, read) : undefined;
+    if (exact && typeof exact === 'object') changed = true;
+    const source = exact && typeof exact === 'object' ? exact : node;
+    const out: any = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, rewrite(v)]));
     const part = EXTRACT_FIRST.has(read) && Object.keys(PARTS).find(k => out[k]?.this);
     if (!part) return out;
     changed = true;
@@ -1939,7 +2052,8 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 // timestamp, MySQL's and SQL Server's current timestamp, and Snowflake's
 // division and average, which give another value or type in BigQuery. So the
 // adapter reads the engine's BigQuery output back and rewrites them. It also
-// writes each date arithmetic in place of its DATE_CALL (see dateSql).
+// writes each date arithmetic in place of its DATE_CALL (see dateSql), and each
+// form in place of its FORM_CALL (see formSql).
 
 // The types BigQuery has for Snowflake's TIMESTAMP_NTZ, a wall-clock time.
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
@@ -1982,6 +2096,7 @@ function repairNode(node: any, read: string): unknown {
     return sqlExpressionTree(CURRENT_TIME[read][name], 'BIGQUERY');
   }
   if (name === DATE_CALL) return dateSql(args);
+  if (name === FORM_CALL) return formSql(args);
   // Snowflake divides and averages a NUMBER, and PostgreSQL averages an
   // integer or a NUMERIC, as an exact decimal, and BigQuery as a FLOAT64 unless
   // a value is a NUMERIC. A Snowflake FLOAT or PostgreSQL double precision
@@ -2072,6 +2187,16 @@ function dateSql(args: any[]): unknown {
   return op === how ? sum : {paren: {this: sum}};
 }
 
+// BigQuery's SQL for a FORM_CALL whose arguments are `args`, engine nodes of
+// BigQuery SQL: the form's SQL, then the operands it names _1, _2 and so on.
+function formSql(args: any[]): unknown {
+  const [sql, ...operands] = args;
+  return mapTree(sqlExpressionTree(String(bare(sql)?.literal?.value), 'BIGQUERY'), node => {
+    const index = /^_(\d+)$/.exec(node.column?.table ? '' : node.column?.name?.name ?? '')?.[1];
+    return index ? operands[Number(index) - 1] : undefined;
+  });
+}
+
 // `node`, an engine node of BigQuery SQL, with each cast of a date string to
 // DATE that it compares with a value other than a literal written as the plain
 // string, or undefined when it has none. The engine writes a DATE literal as
@@ -2109,14 +2234,16 @@ function withPlainDates(node: any): unknown {
 // engine's dialect and the name the engine writes. Snowflake reads them in its
 // default time zone, America/Los_Angeles, and its TIMESTAMP_NTZ column, its
 // default, is compared with the current timestamp as a wall-clock time there.
-// MySQL's NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME and SQL
-// Server's GETDATE() and CURRENT_TIMESTAMP give a DATETIME, in UTC by default.
+// MySQL's NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME give a
+// DATETIME in whole seconds, and SQL Server's GETDATE() and CURRENT_TIMESTAMP a
+// DATETIME, each in UTC by default.
 const CURRENT_TIME: Record<string, Record<string, string>> = {
   snowflake: {
     CURRENT_DATE: "CURRENT_DATE('America/Los_Angeles')",
     CURRENT_TIMESTAMP: "CURRENT_DATETIME('America/Los_Angeles')",
   },
-  mysql: Object.fromEntries(['CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'].map(n => [n, "CURRENT_DATETIME('UTC')"])),
+  mysql: Object.fromEntries(['CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME']
+      .map(n => [n, "DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"])),
   tsql: {CURRENT_TIMESTAMP: "CURRENT_DATETIME('UTC')"},
 };
 

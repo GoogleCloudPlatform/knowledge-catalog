@@ -221,7 +221,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SNOWFLAKE', 'SUM(a) / AVG(x)', {sql: 'CAST(SUM(a) AS NUMERIC) / AVG(CAST(x AS NUMERIC))'}],
     ['SNOWFLAKE', '((SUM(a) - SUM(b)) / SUM(a)) * 100', {sql: '(CAST((SUM(a) - SUM(b)) AS NUMERIC) / SUM(a)) * 100'}],
     ['SNOWFLAKE', '((NVL(a, 0))) > 1 -- c', {sql: '((COALESCE(a, 0))) > 1 /* c */'}],
-    ['MYSQL', '((COALESCE(ordered_at, NOW()))) IS NULL # when', {sql: "((COALESCE(ordered_at, CURRENT_DATETIME('UTC')))) IS NULL /* when */"}],
+    ['MYSQL', '((COALESCE(ordered_at, NOW()))) IS NULL # when', {sql: "((COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)))) IS NULL /* when */"}],
     ['POSTGRES', 'AVG(x)', {sql: 'AVG(CAST(x AS NUMERIC))'}],
     ['POSTGRES', 'TRIM(FROM s)', {sql: "TRIM(s, ' ')"}],
     // Text compared by a collation, which differs only for text that differs in
@@ -277,7 +277,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
     ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
     ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
-    ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: "COALESCE(ordered_at, CURRENT_DATETIME('UTC')) /* when the order was placed */"}],
+    ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: "COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) /* when the order was placed */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
     ['MYSQL', 'SUM(a)--1 /* a--b */#c', {sql: 'SUM(a) - -1 /* a--b */ /* c */'}],
     ['MYSQL', 'SUM(a) -- a--b /*\n + 1 # c', {sql: 'SUM(a) /* a--b / * */ + 1 /* c */'}],
@@ -411,12 +411,12 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', '(a = b) <=> c', {error: 'kcmd does not translate <=>'}],
     ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['POSTGRES', 'd::date NOT BETWEEN a AND now()', {error: 'kcmd does not translate NOT BETWEEN on a DATE and a TIMESTAMP'}],
-    ['MYSQL', 'CURDATE() - INTERVAL 1 QUARTER < NOW()', {sql: "DATE_SUB(CURRENT_DATE, INTERVAL 1 QUARTER) < CURRENT_DATETIME('UTC')"}],
+    ['MYSQL', 'CURDATE() - INTERVAL 1 QUARTER < NOW()', {sql: "DATE_SUB(CURRENT_DATE, INTERVAL 1 QUARTER) < DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"}],
     ['POSTGRES', "t::timestamptz >= CURRENT_DATE - INTERVAL '1 month'", {error: 'kcmd does not translate >= on a DATETIME and a TIMESTAMP'}],
     ['POSTGRES', 'CURRENT_DATE - 7 < NOW()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['SQLSERVER', 'DATEADD(day, 1, CAST(d AS DATE)) < GETDATE()', {sql: "DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) < CURRENT_DATETIME('UTC')"}],
     ['DATABRICKS', 'date_add(d, 1) < current_timestamp()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
-    ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) < NOW()', {sql: "(CURRENT_DATE + INTERVAL 1 HOUR) < CURRENT_DATETIME('UTC')"}],
+    ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) < NOW()', {sql: "(CURRENT_DATE + INTERVAL 1 HOUR) < DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"}],
     // Date, format and conversion functions off the list.
     ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],
     ['SQLSERVER', 'CONVERT(varchar(10), d, 103)', {error: 'kcmd does not translate CONVERT'}],
@@ -528,7 +528,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
   test.each([
     ['MYSQL', 'd + INTERVAL 1 {U}', 'd', ['DAY'], SUB_DAY],
     ['MYSQL', 'CURDATE() + INTERVAL 1 {U}', 'CURRENT_DATE', DAY_OR_LONGER, SUB_DAY],
-    ['MYSQL', 'NOW() + INTERVAL 1 {U}', "CURRENT_DATETIME('UTC')", UNITS, []],
+    ['MYSQL', 'NOW() + INTERVAL 1 {U}', "DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)", UNITS, []],
     ['POSTGRES', "d + INTERVAL '1 {u}'", 'd', [], [...SUB_DAY, 'DAY', 'WEEK']],
     ['POSTGRES', "d::date + INTERVAL '1 {u}'", 'CAST(d AS DATE)', [], UNITS.filter(u => u !== 'QUARTER')],
     ['POSTGRES', "d::date + INTERVAL '1 hour' + INTERVAL '1 {u}'", 'CAST(d AS DATE) + INTERVAL 1 HOUR', [], UNITS.filter(u => u !== 'QUARTER')],
@@ -626,16 +626,22 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'NOW - 7', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
     ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {error: 'kcmd does not translate a bare GETDATE, which the database reads as a column'}],
     ['SPANNER', 'd < NOW', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
-    // NULLIF of two date and time types.
-    ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a TIMESTAMP'}],
-    ['MYSQL', 'NULLIF(CURDATE(), NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
-    ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(CURRENT_DATE, d::timestamp))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
-    ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(x, COALESCE(CURRENT_DATE, d::timestamp)))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
-    ['POSTGRES', 'NULLIF(CURRENT_DATE, d)', {error: 'kcmd does not translate NULLIF on a DATE and a value that may be another type'}],
-    ['MYSQL', 'NULLIF(CURDATE(), CURDATE())', {error: 'kcmd does not translate NULLIF of a DATE, which MySQL gives as text'}],
-    // A date compared with a number, and PostgreSQL's DATE_TRUNC of a DATE.
-    ['MYSQL', 'CURDATE() = 20240101', {error: 'kcmd does not translate = on a DATE and a number'}],
-    ['POSTGRES', "DATE_TRUNC('month', CURRENT_DATE)", {error: 'kcmd does not translate DATE_TRUNC of a DATE, which PostgreSQL truncates as a timestamp with time zone'}],
+    // NULLIF of two date and time types, and in MySQL of a date, which it gives
+    // as text, and of a column beside a date, which has no exact form.
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {sql: 'IF(TIMESTAMP(CURRENT_DATE) = CURRENT_TIMESTAMP(), NULL, CURRENT_DATE)'}],
+    ['MYSQL', 'NULLIF(CURDATE(), NOW())', {sql: "CAST(IF(CURRENT_DATE = DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), NULL, CURRENT_DATE) AS STRING)"}],
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(CURRENT_DATE, d::timestamp))', {sql: 'IF(CURRENT_DATE = COALESCE(CURRENT_DATE, CAST(d AS DATETIME)), NULL, CURRENT_DATE)'}],
+    ['MYSQL', 'NULLIF(d, CURDATE())', {error: 'kcmd does not translate NULLIF on a DATE and a value that may be another type'}],
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, d)', {sql: 'IF(CURRENT_DATE = d, NULL, CURRENT_DATE)'}],
+    ['MYSQL', 'NULLIF(CURDATE(), CURDATE())', {sql: 'CAST(IF(CURRENT_DATE = CURRENT_DATE, NULL, CURRENT_DATE) AS STRING)'}],
+    // A date beside a number, which MySQL reads as the number of its digits, or
+    // as its text among results, and PostgreSQL's DATE_TRUNC of a DATE.
+    ['MYSQL', 'CURDATE() = 20240101', {sql: "CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) = 20240101"}],
+    ['MYSQL', '20240131000000 < NOW()', {sql: "20240131000000 < CAST(FORMAT_DATETIME('%Y%m%d%H%M%S', DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) AS INT64)"}],
+    ['MYSQL', 'COALESCE(CURDATE(), 20240101)', {sql: "COALESCE(CAST(CURRENT_DATE AS STRING), '20240101')"}],
+    ['POSTGRES', 'CURRENT_DATE = 20240101', {error: 'kcmd does not translate = on a DATE and a number'}],
+    ['POSTGRES', "DATE_TRUNC('month', CURRENT_DATE)", {sql: 'TIMESTAMP(DATE_TRUNC(CURRENT_DATE, MONTH))'}],
+    ['POSTGRES', "DATE_TRUNC('day', CURRENT_DATE)", {sql: 'TIMESTAMP(CURRENT_DATE)'}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor a column, or
     // one outside DATE_ADD and the like with a unit other than days, hours or
     // minutes.
@@ -660,7 +666,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
       Object.entries(words).map(([unit, list]) => [dialect, want(unit), list.map(sum)] as [string, string, string[]]);
   const sfDate = "CURRENT_DATE('America/Los_Angeles')";
   test.each([
-    ['MYSQL', "DATE_SUB(CURRENT_DATETIME('UTC'), INTERVAL 7 DAY)",
+    ['MYSQL', "DATE_SUB(DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), INTERVAL 7 DAY)",
      ['NOW() - INTERVAL 7 DAY', 'DATE_SUB(NOW(), INTERVAL 7 DAY)', 'CURRENT_TIMESTAMP - INTERVAL 7 DAY', 'DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)',
       'SUBDATE(LOCALTIMESTAMP, INTERVAL 7 DAY)', 'LOCALTIME() - INTERVAL 7 DAY', 'SUBDATE(NOW(), 7)']],
     ['MYSQL', 'DATE_ADD(CURRENT_DATE, INTERVAL 1 WEEK)', ['CURDATE() + INTERVAL 1 WEEK', 'DATE_ADD(CURDATE(), INTERVAL 1 WEEK)', 'CURRENT_DATE + INTERVAL 1 WEEK', 'ADDDATE(CURDATE(), INTERVAL 1 WEEK)']],
