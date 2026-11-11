@@ -1161,7 +1161,8 @@ async function checkBeforeWrites(
 
   // A model file may leave every source to its profile files, so a source is
   // required only once a deployment's profile is applied. The checks below
-  // reject a field its table cannot run, so the load does not warn about it.
+  // reject a field its table cannot run, so the load warns about it only on a
+  // table of the preferred dialect.
   const loaded = loadSemanticModels(
       docs, {bindingOptional: true, ...load, fieldTextChecked: true});
   if (loaded.error) return fail(loaded.error);

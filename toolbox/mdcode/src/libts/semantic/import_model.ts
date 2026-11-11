@@ -1919,8 +1919,8 @@ async function validateOutputDocument(
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
     // validation while turning unaccepted table sources into warnings in
     // non-strict mode, deduplicating warnings already recorded. Step 2 gives
-    // push's error for a field its table cannot run, so the load does not
-    // warn about it too.
+    // push's error for a field its table cannot run, so the load warns about
+    // it only on a table of the preferred dialect or one no lookup has read.
     const loaded = loadModels(
         content, {
           bindingOptional: true,

@@ -41,9 +41,9 @@ export interface LoadOptions {
   // repointed yet.
   warnUnacceptedSource?: boolean;
   // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it. A Cloud SQL, Spanner or
-  // third-party table no lookup has read keeps the warning, since the caller
-  // does not check it.
+  // model file, so the load warns about it only on a table of the preferred
+  // dialect, and on a Cloud SQL, Spanner or third-party table no lookup has
+  // read, since the caller does not check that one.
   fieldTextChecked?: boolean;
   // The flavor whose word for an entry of `entities` the load's messages use,
   // when it is not the document's own. kcmd import uses the word of the
