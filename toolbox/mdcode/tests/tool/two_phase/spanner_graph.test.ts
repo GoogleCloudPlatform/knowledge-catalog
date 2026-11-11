@@ -5,7 +5,7 @@
 
 import {expect} from 'bun:test';
 
-import {at, CUSTOMER, err, scenarios, SPANNER, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {at, CUSTOMER, err, has, scenarios, SPANNER, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const ON_SPANNER = {...CUSTOMER, source: SPANNER_CUSTOMER};
 const BAD_NAME =
@@ -59,6 +59,29 @@ const UNBACKED = err(
     'on (id).');
 
 scenarios('a Spanner graph', [
+  {
+    name: 'whose check fails on a supertype column the subtype table lacks prints the warning that explains it',
+    deployments: [{name: 'sp', target: spannerGraph('g')}],
+    entities: [{
+      name: 'Party', source: `${SPANNER}/tables/parties`, primary_key: ['id'],
+      fields: [{name: 'id', expression: 'id'},
+               {name: 'code', expression: 'party_code'}],
+    }, {
+      name: 'Customer', extends: ['Party'],
+      source: `${SPANNER}/tables/customers`, primary_key: ['id'],
+      fields: [{name: 'id', expression: 'id'},
+               {name: 'code', expression: 'cust_code'}],
+    }],
+    services: {
+      executeQuery: when(
+          (_s: string, sql: string, opts: any) =>
+              isPlan(sql, opts, 'customers'),
+          {status: 400, message: 'Unrecognized name: party_code'}),
+    },
+    code: 1, nothingWritten: true,
+    warnings: [has("entity 'Customer' remaps inherited property 'code'")],
+    errors: [has("Spanner cannot read the node table of entity 'Customer'")],
+  },
   {
     name: 'that Spanner would refuse for its name is refused before the catalog preflight, also under --no-deployment, and kcmd profiles reports it',
     entities: [ON_SPANNER],

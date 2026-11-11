@@ -923,7 +923,13 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
-  if (errors.length) return fail(...errors);
+  if (errors.length) {
+    // A warning about a generated graph can explain why a check fails.
+    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+      console.warn(`Warning: ${w}`);
+    }
+    return fail(...errors);
+  }
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
