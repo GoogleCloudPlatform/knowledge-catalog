@@ -2039,6 +2039,27 @@ describe('a pull', () => {
     expect(messages(console.warn)).not.toContain('push refuses');
   });
 
+  // Pull keeps a local sidecar the catalog lacks, and push reads it, so
+  // --dry-run warns about one push rejects, as the real pull does.
+  test('under --dry-run warns about a kept local sidecar push rejects',
+       async () => {
+         fs.writeFileSync(
+             path.join(dir, 'catalog.yaml'),
+             'scope: semantic-model.test-project.us.commerce_eg\n');
+         const sidecar = 'commerce/entities/Customer.overview.md';
+         fs.mkdirSync(path.dirname(local(sidecar)), {recursive: true});
+         fs.writeFileSync(local(sidecar), '---\nfoo: bar\n---\nOld.\n');
+         pulled();
+
+         expect(await pull({dryRun: true})).toBe(0);
+         expect(messages(console.warn)).toBe(
+             `Warning: local overview sidecar ${shown(sidecar)} is not in ` +
+             `the catalog; delete it, or pull with --force-remove to delete ` +
+             `it.\nWarning: push refuses ${shown('commerce.yaml')} as pull ` +
+             `writes it: Overview sidecar '${sidecar}': its frontmatter ` +
+             `holds only contentType and links, not 'foo'.`);
+       });
+
   test('profile files are written and deleted through the layout', async () => {
     withStaleProfile();
     const write = spyOn(SemanticModelLayout.prototype, 'writeProfileDocument');

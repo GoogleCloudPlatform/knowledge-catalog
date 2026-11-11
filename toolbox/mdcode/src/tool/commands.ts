@@ -1021,8 +1021,12 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
-  // The overview sidecars to check, by entry id, in place of those on disk.
-  overviews?: Map<string, OverviewSidecar>;
+  // The overview sidecars to check in place of those on disk: the catalog's,
+  // by entry id, and the local ones to read from disk.
+  overviews?: {
+    catalog: Map<string, OverviewSidecar>;
+    local: Array<{entryId: string; path: string}>;
+  };
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
@@ -1184,16 +1188,20 @@ async function checkBeforeWrites(
     }
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
-  let overviews = scope.overviews;
-  if (docs.length === 1 && !overviews) {
+  let overviews: Map<string, OverviewSidecar>|undefined;
+  if (docs.length === 1) {
+    const local = scope.overviews?.local ?? layout.overviewSidecarPaths();
     try {
-      for (const {path: sidecar} of layout.overviewSidecarPaths()) {
+      for (const {path: sidecar} of local) {
         const error = checkUtf8(
             sidecar, fileNameOf(layout, docs[0].name, sidecar),
             fs.readFileSync(sidecar, 'utf8'));
         if (error) return fail(error);
       }
-      overviews = layout.overviewSidecars();
+      overviews = new Map([
+        ...scope.overviews?.catalog ?? [],
+        ...layout.overviewSidecars(local),
+      ]);
     } catch (err: any) {
       return fail(err.message);
     }
@@ -1879,13 +1887,19 @@ async function pullSemanticModel(
   }
   const code = writePulledFiles(layout, pulled.name, updated, options, removed);
   const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
-  // Under --dry-run the sidecars on disk are not the ones pull writes, so the
-  // check reads the catalog's.
-  const overviews = options.dryRun ?
-      new Map([...result.overviews ?? []].filter(
-          ([id]) => pulledFileTarget(
-              layout, pulled.name, `${id}.overview.md`, true))) :
-      undefined;
+  // Under --dry-run the sidecars on disk are not the ones pull leaves, so the
+  // check reads the catalog's, and each local one that pull keeps because
+  // the catalog lacks it.
+  let overviews: TwoPhaseScope['overviews'];
+  if (options.dryRun) {
+    const catalog = new Map([...result.overviews ?? []].filter(
+        ([id]) => pulledFileTarget(
+            layout, pulled.name, `${id}.overview.md`, true)));
+    const local = options.forceRemove ?
+        [] :
+        layout.overviewSidecarPaths().filter(s => !catalog.has(s.entryId));
+    overviews = {catalog, local};
+  }
   const refusal = modelFile && await pushRefusal(
       ctx, layout, source, {name: pulled.name, text: modelFile.content},
       pulledProfileDocs(layout, pulled, updated), overviews);
@@ -1910,7 +1924,7 @@ async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
     profiles: ReturnType<ProfileDocs>,
-    overviews?: Map<string, OverviewSidecar>): Promise<string|undefined> {
+    overviews?: TwoPhaseScope['overviews']): Promise<string|undefined> {
   const parserError = await sqlParserError();
   if (parserError) return parserError;
   const docs = [doc];

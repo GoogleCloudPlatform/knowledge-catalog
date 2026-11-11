@@ -227,10 +227,12 @@ export class SemanticModelLayout implements CatalogLayout {
     ];
   }
 
-  // The overview sidecar of each entry, by entry id. Throws naming a sidecar
+  // The overview sidecar of each entry, by entry id, read from `paths`, which
+  // default to every sidecar on disk. Throws naming a sidecar
   // parseOverviewSidecar rejects.
-  overviewSidecars(): Map<string, OverviewSidecar> {
-    return new Map(this.overviewSidecarPaths().map(
+  overviewSidecars(paths = this.overviewSidecarPaths()):
+      Map<string, OverviewSidecar> {
+    return new Map(paths.map(
         ({entryId, path: p}) => [
           entryId,
           parseOverviewSidecar(
