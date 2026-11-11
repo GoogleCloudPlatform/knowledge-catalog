@@ -556,8 +556,8 @@ NODE TABLES (
     const noKey = (e: string) => `entity '${e}': empty KEY (no primary key); ` +
         `node table skipped, as a graph node requires a KEY`;
     const customer = entity('customer', 'Customer', ['id'], {id: 'id'});
-    const vip = entity('vip_customer', 'VipCustomer', [], {tier: 'tier'},
-                       {extends: ['customer']});
+    const vip = entity('vip_customer', 'VipCustomer', [],
+                       {id: 'id', tier: 'tier'}, {extends: ['customer']});
     const orders = entity('orders', 'Orders', ['id'], {id: 'id'});
     for (const [engine, generate] of ENGINES) {
       const {ddl, warnings} = generate(modelOf('shop', [customer, vip, orders]));
@@ -665,9 +665,11 @@ NODE TABLES (
   test('leaves that share none of an ancestor\'s fields carry its label with NO PROPERTIES', () => {
     const model = modelOf('contacts', [
       entity('contact', 'Contact', ['id'], {phone: 'phone', email: 'email'}),
-      entity('caller', 'Caller', ['caller_id'], {caller_id: 'caller_id'},
+      entity('caller', 'Caller', ['caller_id'],
+             {caller_id: 'caller_id', phone: 'phone'},
              {extends: ['contact'], excludedFields: ['email']}),
-      entity('mailer', 'Mailer', ['mailer_id'], {mailer_id: 'mailer_id'},
+      entity('mailer', 'Mailer', ['mailer_id'],
+             {mailer_id: 'mailer_id', email: 'email'},
              {extends: ['contact'], excludedFields: ['phone']}),
     ]);
     for (const [engine, generate] of ENGINES) {
