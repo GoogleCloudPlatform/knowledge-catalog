@@ -431,7 +431,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
   {
     // `--` and `/*` are SQL comment markers everywhere. `#` is one on
     // BigQuery, and an operator on AlloyDB. A marker counts anywhere on a line
-    // but the last, inside a string too.
+    // YAML joins to the next one, inside a string too.
     name: 'refuses a SQL comment marker on a line YAML joins to the next one, as the statement\'s database reads it',
     files: {'commerce.yaml': modelWriting(
         ['- UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
@@ -485,7 +485,6 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
           {deployments: [{name: 's', target: spannerGraph('s')}]})},
       errors: [has("statement 1 has '#' on a line")],
-
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],

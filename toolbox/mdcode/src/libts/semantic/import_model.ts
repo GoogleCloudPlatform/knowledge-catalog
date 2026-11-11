@@ -1950,9 +1950,10 @@ async function validateOutputDocument(
         inputFiles.find(pf => parseProfileName(pf.fileName) === name)
                 ?.fileName ??
             model.name;
-    // Push stops at a profile file that breaks a file rule, then at a
-    // deployment target in no accepted form. validateDeploymentTargets reports
-    // such a target as an error in either mode.
+    // Push stops at a profile file that breaks a file rule, then at an action
+    // statement YAML reads differently from how it is written, then at a
+    // deployment target in no accepted form. validateDeploymentTargets
+    // reports such a target as an error in either mode.
     let read: ReturnType<ProfileFiles>|undefined;
     try {
       const seen = new Map<string, string>();
