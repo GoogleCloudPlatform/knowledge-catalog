@@ -871,7 +871,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a
-  BigQuery entry for a text it can translate. Every push
+  BigQuery entry for a text it can translate. A message that suggests that
+  command with `--input first-party` also names the first problem push would
+  report once the command has translated the file, since the command writes
+  nothing until that problem is fixed. Every push
   runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming

@@ -96,11 +96,11 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(models[0].metrics[0].expression).toBeUndefined();
     expect(models[0].metrics[0].importedExpression).toBe('SUM(orders.a)');
     expect(models[0].metrics[0].importedDialect).toBe('SNOWFLAKE');
-    expect(warnings).toContain(
+    expect(warnings).toContainEqual(expect.stringContaining(
         "metric 'mx': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY " +
         "table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
         "one with 'kcmd import <file> --input first-party --flavor ossie " +
-        "--transpile'");
+        "--transpile'"));
   });
 
   test('an explicit dialect option overrides the default preference', () => {
@@ -197,10 +197,14 @@ describe('expression warnings judge each expression on the table that runs it', 
   };
   // A warning for field 'f', then the same for metric 'm'.
   const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
+  // Push refuses metric 'm', whose SUM reads a bare column, so the advice to
+  // translate a text names that problem.
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run ` +
       `its '${dialect}' expression; give it one, or add one with 'kcmd ` +
-      `import <file> --input first-party --flavor google --transpile'`);
+      `import <file> --input first-party --flavor google --transpile' after ` +
+      `fixing this: metric 'm' in model 'shop' (shop): 'x' must be written ` +
+      `as 'entity.field'; a metric reads fields, never columns`);
   const readsX = (database: string, token = 'x') =>
       `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
   // The double-quote warning on a table of `dialect`, in `database`, about
@@ -282,9 +286,9 @@ describe('expression warnings judge each expression on the table that runs it', 
 
   // An inherited field is judged on the table of each entity that inherits
   // it, and a metric on the tables of the entities it reaches, or on any
-  // table of the model when it reaches none. Push refuses a metric with no
-  // entity that reaches no entity or two, so its warning names no import
-  // command.
+  // table of the model when it reaches none. The advice to translate a text
+  // names the first problem push would report after the translation: the
+  // model file's tables in two databases, or a metric's missing anchor.
   test('an inherited field and a metric are judged on the tables that run them', () => {
     const {warnings} = fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
       name: 'shop',
@@ -298,14 +302,21 @@ describe('expression warnings judge each expression on the table that runs it', 
                 {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')},
                 {name: 'b', expression: expr('COUNT(c.x) + COUNT(o.x)', 'SPANNER')}],
     }]}, opts);
-    const noCommand = (name: string) => `metric '${name}': no 'BIGQUERY' or 'ANSI_SQL' ` +
-        "dialect, so a BIGQUERY table cannot run its 'SPANNER' expression; give it one";
+    const advice = (subject: string, problem: string) => `${subject}: no 'BIGQUERY' or ` +
+        "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SPANNER' expression; give " +
+        "it one, or add one with 'kcmd import <file> --input first-party --flavor google " +
+        `--transpile' after fixing this: ${problem}`;
+    const unanchored = (name: string, reaches: string) => `metric '${name}' in model ` +
+        `'shop' (shop) has no 'entity' anchor and its expression reaches ${reaches}, so ` +
+        "it does not resolve to a single entity; set 'entity' on the metric or scope its " +
+        'expression to one entity';
     expect(warnings).toEqual([
-      vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
-      noCommand('n'),
+      advice("field 'c.f'", "model 'shop' (shop) binds entities in more than one database " +
+             "('p', 'c'); bind the model file's entities to tables in one database"),
+      advice("metric 'n'", unanchored('n', 'no declared entity')),
       "metric 'n': expression references no known entity; it may not be placeable downstream",
       "metric 'r': no 'SPANNER' or 'ANSI_SQL' dialect, so the SPANNER table of entity 'o' cannot run it",
-      noCommand('b'),
+      advice("metric 'b'", unanchored('b', 'multiple entities (c, o)')),
     ]);
   });
 });
@@ -1182,11 +1193,11 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     const control = m.metrics.find(mt => mt.name === 'total_revenue')!;
     expect(control.expression).toBe('SUM(orders.o_totalprice)');
 
-    expect(warnings).toContain(
+    expect(warnings).toContainEqual(expect.stringContaining(
         "field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' " +
         "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression" +
         "; give it one, or add one with 'kcmd import <file> --input " +
-        "first-party --flavor ossie --transpile'");
+        "first-party --flavor ossie --transpile'"));
   });
 
   test('lineitem_databricks_ext.yaml: unique_keys and custom_extensions', () => {

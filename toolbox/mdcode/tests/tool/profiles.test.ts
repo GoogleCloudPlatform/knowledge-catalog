@@ -1800,8 +1800,8 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
     });
 
     // Push refuses a metric with no entity whose text reaches no entity, so
-    // the profile's error about it names no import command.
-    test('and names no import command for a vendor-only metric with no entity', async () => {
+    // the profile's error names that problem after the import command.
+    test('and names push\'s problem after the import command for a vendor-only metric with no entity', async () => {
       writeScope({
         'commerce.yaml': `${commerce()}    metrics:
       - name: purchases
@@ -1814,8 +1814,13 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       expect((await pushResult()).errors).toContain(
           "[commerce.profile.prod.yaml] profile 'prod': metric 'purchases' " +
               'has no expression for BIGQUERY or ANSI_SQL, and this ' +
-              "profile's sources are BIGQUERY; give it one, or add it to " +
-              "'metrics_exclude'");
+              "profile's sources are BIGQUERY; give it one, add it to " +
+              "'metrics_exclude', or add one with 'kcmd import <file> " +
+              "--input first-party --flavor google --transpile' after fixing " +
+              "this: metric 'purchases' in model 'commerce' (commerce) has no " +
+              "'entity' anchor and its expression reaches no declared entity, " +
+              'so it does not resolve to a single entity; set \'entity\' on ' +
+              'the metric or scope its expression to one entity');
     });
 
     // A profile file push cannot read gives one error, which names the file,

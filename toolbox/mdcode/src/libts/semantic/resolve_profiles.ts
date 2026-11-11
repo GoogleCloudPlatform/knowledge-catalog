@@ -29,13 +29,13 @@
 
 import * as yaml from 'yaml';
 
+import {ExpressionItem, transpileAdvice} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
-import {translatesToBigQuery} from './transpile';
 import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -1447,50 +1447,17 @@ export function importCommand(
   return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
-// Whether push refuses metric `m` of `model` for want of an anchor. It does
-// when `m` names no entity and either kcmd reads every text of its SQL and
-// finds no column, or the columns it finds reach more than one declared entity.
-// `read` gives the columns a text reads, undefined when it cannot read the
-// text. It defaults to reading the text in the dialect the model's sources
-// imply.
-export function lacksAnchor(
-    m: Parameters<typeof textsFor>[0]&Pick<Metric, 'authoredEntity'>,
-    model: Pick<SemanticModel, 'entities'>,
-    read = (text: string, dialect: string) =>
-        columnsForSource(text, dialect, sourcesDialect(model))): boolean {
-  if (m.authoredEntity !== undefined) return false;
-  const parsed =
-      expressionSources(m)
-          .filter(s => noSqlReason(s.text, s.dialect) === undefined)
-          .map(s => read(s.text, s.dialect));
-  const columns = parsed.flatMap(c => c ?? []);
-  return parsed.every(c => c !== undefined) && !columns.length ||
-      entitiesReached(columns, (model.entities ?? []).map(e => e.name))
-          .length > 1;
-}
-
-// Whether `kcmd import --transpile` gives BigQuery SQL to a field, or to
-// `metric`, of `model` with no text for `dialect`: true when `dialect` is
-// BIGQUERY, import's translator turns its imported text into BigQuery SQL,
-// and push does not refuse the metric for want of an anchor.
-export function importTranspiles(
-    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
-    model: Pick<SemanticModel, 'entities'>,
-    metric?: Pick<Metric, 'authoredEntity'>): boolean {
-  return dialect === 'BIGQUERY' && !!f.importedExpression &&
-      !(metric && lacksAnchor({...f, ...metric}, model)) &&
-      translatesToBigQuery(f, (model.entities ?? []).map(e => e.name));
-}
-
-// The advice for `f`, a field of `model` with no text in `dialect`: give it
-// one, or add one with import when import can.
+// The advice for `f`, a field or metric with no text in `dialect`: give it
+// one, or, when `dialect` is BIGQUERY, add one with import, as
+// transpileAdvice gives that advice for `f` in `model`, written in `document`.
+// `item` is the field or metric `f` is in the model file.
 export function importHint(
-    f: Parameters<typeof textsFor>[0], dialect: string,
-    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>,
-    metric?: Pick<Metric, 'authoredEntity'>): string {
-  if (!importTranspiles(f, dialect, model, metric)) return '; give it one';
-  return `; give it one, or add one with '${
-      importCommand('--transpile', model)}'`;
+    f: Parameters<typeof transpileAdvice>[2], dialect: string,
+    model: SemanticModel, document: string, item?: ExpressionItem): string {
+  const advice = dialect === 'BIGQUERY' ?
+      transpileAdvice(model, document, f, item) :
+      undefined;
+  return advice ? `; give it one, or ${advice}` : '; give it one';
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -1607,6 +1574,9 @@ export interface CompletenessOptions extends DialectLoad {
   // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
   // the caller cannot read it either.
   ownSqlOnly?: {dialect?: string|null};
+  // The model file's document, which push's messages that the advice to add a
+  // BigQuery text quotes name. Defaults to the model's name.
+  document?: string;
 }
 
 /**
@@ -1626,6 +1596,7 @@ export interface CompletenessOptions extends DialectLoad {
 export function validateProfileCompleteness(
     baseModel: SemanticModel, profile: ProfileSpec, warnings: string[] = [],
     opts: CompletenessOptions = {}): string[] {
+  const document = opts.document ?? baseModel.name;
   const errors: string[] = [];
   // Each field or metric whose SQL the parser cannot read, reported once, by
   // the label fieldLabel or metricLabel gives it.
@@ -1908,7 +1879,11 @@ export function validateProfileCompleteness(
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}${importHint(f, dialect, baseModel)}`);
+                  dialect}${
+                  importHint(
+                      f, dialect, baseModel, document,
+                      asInModelFile === f ? {entity: e.name, field: f.name} :
+                                            undefined)}`);
         }
       }
     }
@@ -1916,14 +1891,19 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
-          const viaImport = importTranspiles(m, dialect, baseModel, m) ?
-              ` add one with '${
-                  importCommand('--transpile', baseModel)}',` :
-              '';
+          const advice = dialect === 'BIGQUERY' ?
+              transpileAdvice(baseModel, document, m, {metric: m.name}) :
+              undefined;
+          // Advice that ends with a problem comes last.
+          const choices = advice === undefined ?
+              ['give it one', `add it to 'metrics_exclude'`] :
+              advice.endsWith(`'${importCommand('--transpile', baseModel)}'`) ?
+              ['give it one', advice, `add it to 'metrics_exclude'`] :
+              ['give it one', `add it to 'metrics_exclude'`, advice];
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
-              `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
-              `one,${viaImport} or add it to 'metrics_exclude'`);
+              `ANSI_SQL, and this profile's sources are ${dialect}; ${
+                  choices.slice(0, -1).join(', ')}, or ${choices.at(-1)}`);
         }
       }
     }
@@ -2175,6 +2155,7 @@ export function namedProfileErrors(
       errors.push(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
             ownSqlOnly,
+            document: d.name,
             ...load,
           }).map(tag));
       warnings.push(...profileWarnings.map(at));

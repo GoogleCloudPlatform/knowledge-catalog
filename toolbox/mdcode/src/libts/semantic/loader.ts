@@ -12,6 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
+import {ExpressionItem} from './expression_checks';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
@@ -53,6 +54,10 @@ export interface LoadOptions {
   // wrote, unless it writes a GOOGLE block over that file. The load sets
   // SemanticModel.thirdPartyImport on each model.
   thirdPartyImport?: boolean;
+  // The name push's messages give the document the load reads, which the
+  // load's advice to add a BigQuery text quotes. Defaults to the model's
+  // name.
+  document?: string;
 }
 
 export interface LoadResult {
@@ -1946,13 +1951,15 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   DATABRICKS: 'Databricks',
 };
 
-// A field or metric as a warning names it in `ctx`, in `model`. A metric
-// reads fields as `entity.field`.
+// A field or metric as a warning names it in `ctx`, and as `item`, in `model`,
+// which push's messages name `document`. A metric reads fields as
+// `entity.field`.
 interface Subject {
   ctx: string;
-  // The metric's anchor as written, for a metric.
-  metric?: Pick<Metric, 'authoredEntity'>;
-  model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>;
+  metric: boolean;
+  item: ExpressionItem;
+  model: SemanticModel;
+  document: string;
 }
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
@@ -1963,7 +1970,9 @@ interface Subject {
 // every table, so it gives none.
 function expressionWarning(
     item: Pick<
-        Field, 'dialects'|'stringForm'|'importedExpression'|'importedDialect'>,
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
     subject: Subject, dialect: string, preferred: string): string|undefined {
   const {ctx} = subject;
   const dialects = item.dialects ?? [];
@@ -1993,7 +2002,8 @@ function expressionWarning(
   return `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect, so a ${
              preferred} table cannot run its '${vendor?.dialect}' expression${
       importHint(
-          item, preferred.toUpperCase(), subject.model, subject.metric)}`;
+          item, preferred.toUpperCase(), subject.model, subject.document,
+          subject.item)}`;
 }
 
 // Whether `entity`'s table runs SQL in `dialect`. An abstract entity runs
@@ -2032,10 +2042,17 @@ function tableWarning(
 // tableDialects gives. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
 function fieldWarnings(
-    model: SemanticModel, preferred: string, textChecked: boolean): string[] {
+    model: SemanticModel, preferred: string, textChecked: boolean,
+    document: string): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, {ctx: `field '${e.name}.${f.name}'`, model},
+               f, {
+                 ctx: `field '${e.name}.${f.name}'`,
+                 metric: false,
+                 item: {entity: e.name, field: f.name},
+                 model,
+                 document,
+               },
                table, e.name, preferred, textChecked))
       .filter((w): w is string => w !== undefined);
 }
@@ -2048,13 +2065,17 @@ function metricWarning(
     metric: Pick<
         Metric,
         'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
-        'importedDialect'|'authoredEntity'>,
-    reached: ReadonlyArray<string|undefined>,
-    model: Pick<SemanticModel, 'version'|'thirdPartyImport'>&
-    {entities: Entity[]},
-    preferred: string): string|undefined {
-  const entities = model.entities;
-  const subject = {ctx: `metric '${metric.name}'`, metric, model};
+        'importedDialect'>,
+    reached: ReadonlyArray<string|undefined>, model: SemanticModel,
+    preferred: string, document: string): string|undefined {
+  const entities = model.entities ?? [];
+  const subject = {
+    ctx: `metric '${metric.name}'`,
+    metric: true,
+    item: {metric: metric.name},
+    model,
+    document,
+  };
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
@@ -2132,14 +2153,14 @@ export function inferMetricEntities(
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each field's expression warning, then each metric's
 // expression warning and its warning when it names no entity. A metric a
-// profile excludes gives none. `textChecked` is LoadOptions.fieldTextChecked.
-// A profile changes only these; a load's other warnings, about actions, come
-// after them.
+// profile excludes gives none. `textChecked` is LoadOptions.fieldTextChecked,
+// and push's messages name the model's document `document`. A profile changes
+// only these; a load's other warnings, about actions, come after them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT,
-    textChecked = false): string[] {
+    textChecked = false, document = model.name): string[] {
   const entities = model.entities ?? [];
-  const out = fieldWarnings(model, preferred, textChecked);
+  const out = fieldWarnings(model, preferred, textChecked, document);
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);
@@ -2148,8 +2169,7 @@ export function entityAndMetricWarnings(
     const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
-        m, [m.authoredEntity, ...referenced],
-        {...model, entities}, preferred);
+        m, [m.authoredEntity, ...referenced], model, preferred, document);
     if (w) out.push(w);
     if (mw) out.push(mw);
   }
@@ -2243,17 +2263,13 @@ function convertModel(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
       true);
 
-  // A field is judged on each entity that inherits it too, so its warning
-  // waits until every entity is read.
-  warnings.push(...fieldWarnings(
-      {name: m.name, version, entities, relationships, metrics: [],
-       thirdPartyImport: opts.thirdPartyImport},
-      dialect, !!opts.fieldTextChecked));
+  // A field is judged on each entity that inherits it too, and the advice
+  // about a field or metric reads the whole model, so their warnings wait
+  // until the model is read. They come here, before the actions' warnings.
+  const expressionWarningsAt = warnings.length;
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
-      mt => convertMetric(
-          mt, version, entities, warnings, dialect, word, impliedDialect,
-          opts.thirdPartyImport));
+      mt => convertMetric(mt, version, entities, dialect, word, impliedDialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
@@ -2346,6 +2362,10 @@ function convertModel(
   if (ai) model.aiContext = ai;
   // The blocks the model keeps are carried verbatim.
   if (block.kept) model.customExtensions = block.kept;
+  warnings.splice(
+      expressionWarningsAt, 0,
+      ...entityAndMetricWarnings(
+          model, dialect, !!opts.fieldTextChecked, opts.document));
   return model;
 }
 
@@ -2614,8 +2634,7 @@ function convertRelationship(
 
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entities: Entity[],
-    warnings: string[], dialect: string, word: string,
-    impliedDialect?: string|null, thirdPartyImport?: boolean): Metric {
+    dialect: string, word: string, impliedDialect?: string|null): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const entityNames = entities.map(e => e.name);
@@ -2624,8 +2643,9 @@ function convertMetric(
   const authored = mt.entity ?? block.values.entity;
   const {dialects, stringForm, picked} =
       convertExpression(mt.expression, version, dialect, ctx);
-  // Infer referenced entities across all dialect entries of the metric.
-  const {referenced, warning: mw} = inferMetricEntities(
+  // Infer referenced entities across all dialect entries of the metric. The
+  // load warns about the metric once the model is read (see convertModel).
+  const {referenced} = inferMetricEntities(
       {
         name: mt.name,
         authoredEntity: authored,
@@ -2635,13 +2655,6 @@ function convertMetric(
         dialects,
       },
       entityNames, dialect, impliedDialect, version);
-  const ew = metricWarning(
-      {name: mt.name, dialects, stringForm, ...picked,
-       authoredEntity: authored},
-      [authored, ...referenced], {entities, version, thirdPartyImport},
-      dialect);
-  if (ew) warnings.push(ew);
-  if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
   if (authored !== undefined) {
     // Like a relationship endpoint, an anchor must name a dataset the model
@@ -4134,7 +4147,7 @@ export function loadSemanticModels(
   for (const doc of docs) {
     let loaded: LoadResult;
     try {
-      loaded = loadModels(doc.text, opts);
+      loaded = loadModels(doc.text, {document: doc.name, ...opts});
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return {

@@ -15,6 +15,7 @@ import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as engine from '../../src/libts/semantic/import_model';
+import {loadSemanticModels} from '../../src/libts/semantic/loader';
 import {Sources} from '../../src/libts/source';
 import {ImportCommandOptions, importModel} from '../../src/tool/commands';
 
@@ -235,6 +236,81 @@ describe('kcmd import', () => {
         expect.stringContaining("add one with 'kcmd import <file> --flavor google --transpile'"));
     expect(warnings.join('\n')).not.toContain('--input first-party');
   });
+
+  // The load's advice to add a BigQuery text with a first-party import names
+  // the first problem push would report once that import has translated the
+  // file. After the author fixes that problem, following the advice clears
+  // the warning.
+  const SALES = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: retail
+    entities:
+      - name: orders
+        source: ${PREFIX}/tables/orders
+        primary_key: [id]
+        fields:
+          - {name: id, expression: {dialects: [{dialect: BIGQUERY, expression: id}]}}
+          - {name: amount, expression: {dialects: [{dialect: BIGQUERY, expression: amount}]}}
+      - name: customers
+        source: ${PREFIX}/tables/customers
+        primary_key: [id]
+        fields:
+          - {name: id, expression: {dialects: [{dialect: BIGQUERY, expression: id}]}}
+`;
+  const snowflake = (text: string) => `{dialects: [{dialect: SNOWFLAKE, expression: '${text}'}]}`;
+  const metric = (text: string, entity?: string) => `    metrics:\n      - {name: total, ${
+      entity ? `entity: ${entity}, ` : ''}expression: ${snowflake(text)}}\n`;
+  const anchorless = (reaches: string) => "metric 'total' in model 'retail' (retail) has no " +
+      `'entity' anchor and its expression reaches ${reaches}, so it does not resolve to a ` +
+      "single entity; set 'entity' on the metric or scope its expression to one entity";
+  // [label, the field or metric, the text after the model, the problem, the fix]
+  test.each([
+    ['a bare column', "metric 'total'", metric('SUM(IFF(TRUE, amount, 0))', 'orders'),
+     "metric 'total' in model 'retail' (retail): 'amount' must be written as " +
+         "'entity.field'; a metric reads fields, never columns",
+     ['TRUE, amount', 'TRUE, orders.amount']],
+    ['an undeclared qualifier', "metric 'total'", metric('SUM(IFF(TRUE, x.amount, 0))', 'orders'),
+     "metric 'total' in model 'retail' (retail): 'x.amount' has qualifier 'x', which is not " +
+         "a declared entity in model 'retail'; write 'entity.field' starting with a declared " +
+         'entity',
+     ['x.amount', 'orders.amount']],
+    ['an anchor the SQL contradicts', "metric 'total'",
+     metric('SUM(IFF(TRUE, orders.amount, 0))', 'customers'),
+     "metric 'total' in model 'retail' (retail) is anchored to entity 'customers', but its " +
+         "expression only references 'orders'; the anchor contradicts the SQL",
+     ['entity: customers', 'entity: orders']],
+    ['a metric that reaches no entity', "metric 'total'", metric('IFF(TRUE, COUNT(*), 0)'),
+     anchorless('no declared entity'), ['{name: total, ', '{name: total, entity: orders, ']],
+    ['a metric that reaches two entities', "metric 'total'",
+     metric('IFF(TRUE, COUNT(orders.id) + COUNT(customers.id), 0)'),
+     anchorless('multiple entities (orders, customers)'),
+     ['{name: total, ', '{name: total, entity: orders, ']],
+    ['a field another field blocks', "field 'orders.code'", '',
+     "field 'orders.custom' in model 'retail' (retail) has no expression for BIGQUERY or " +
+         "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source",
+     ["{dialect: SNOWFLAKE, expression: 'MY_UDF(id)'}", '{dialect: BIGQUERY, expression: id}']],
+  ])('the advice to translate %s names the problem, and works once it is fixed',
+     async (_, label, rest, problem, [from, to]) => {
+       workspace();
+       const file = path.join(GROUP, 'retail.yaml');
+       const fields = label.startsWith('field') ?
+           `          - {name: code, expression: ${snowflake('IFF(TRUE, id, 0)')}}\n` +
+               `          - {name: custom, expression: ${snowflake('MY_UDF(id)')}}\n` :
+           '';
+       const text = SALES.replace('      - name: customers', `${fields}      - name: customers`) + rest;
+       const loaded = (text: string) =>
+           loadSemanticModels([{name: 'retail', text}]).warnings.join('\n');
+       expect(loaded(text)).toContain(`[retail] ${label}: no 'BIGQUERY' or 'ANSI_SQL' dialect, ` +
+           "so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
+           "one with 'kcmd import <file> --input first-party --flavor google --transpile' " +
+           `after fixing this: ${problem}`);
+       expect(text).toContain(from);
+       write(file, text.replace(from, to));
+       expect(await importModel(file, {flavor: 'google', input: 'first-party', transpile: true}))
+           .toBe(0);
+       expect(loaded(fs.readFileSync(path.join(dir, file), 'utf8')))
+           .not.toContain(`${label}: no 'BIGQUERY'`);
+     });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
   // [label, the workspace, the error, the input file]
