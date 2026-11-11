@@ -1887,9 +1887,13 @@ async function pullSemanticModel(
       // refusal ends with a pull that succeeds. The first file that holds a
       // model is told to keep it, by deleting the files in the way and one
       // of each two files of one profile, then renaming the rest. A file is
-      // told to delete its own files when --force-remove would delete other
-      // files too. --force-remove is named with every file it deletes.
+      // told to delete its own files when another model file is refused too.
+      // --force-remove is named with every file it deletes.
       const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
+      // The names in the entry group directory as they are on disk, so that a
+      // case-insensitive file system does not find 'commerce.yaml' when only
+      // 'Commerce.yaml' is there.
+      const present = new Set(fs.readdirSync(groupDir));
       // A file by its path in the entry group directory.
       const shown = (p: string) => path.relative(groupDir, p);
       const file = (name: string) => shown(layout.modelPath(name));
@@ -1934,8 +1938,7 @@ async function pullSemanticModel(
           const groups = [...new Set(targets)].map(
               t => files.flatMap((_, i) => targets[i] === t ? [i] : []));
           const twice = groups.filter(g => g.length > 1);
-          const taken = [...new Set(targets)].filter(
-              t => fs.existsSync(path.join(groupDir, t)));
+          const taken = [...new Set(targets)].filter(t => present.has(t));
           // The catalog's model file when it holds this model too, else the
           // file a refusal before this one tells to keep it.
           const holder = layout.declaredModelName(stem) === declared ?
@@ -1950,18 +1953,21 @@ async function pullSemanticModel(
                   'there' :
               twice.length ? '' :
                              `, which pull writes as '${file(declared)}'`;
-          const facts = where + twice.map(
+          // Only the file told to keep the model is told about a profile in
+          // both forms.
+          const keeps = !kept.has(declared);
+          const facts = where + (keeps ? twice : []).map(
               g => `, and its profile '${files[g[0]].profileName}' is in ` +
                   `both ${quoted(g.map(i => own[i]))}`).join('');
           const them = files.length > 1 ? 'them' : 'it';
           const choices: string[] = [];
           let renamesOnly = false;
-          if (!kept.has(declared)) {
+          if (keeps) {
             kept.set(declared, name);
             // The files in the way: the model file pull writes, with its
             // profile files, and each other file at a name pull writes.
             const inTheWay = [...new Set([
-              ...fs.existsSync(path.join(groupDir, file(declared))) ?
+              ...present.has(file(declared)) ?
                   localFiles(stem).map(f => shown(f.path)) :
                   [],
               ...taken,

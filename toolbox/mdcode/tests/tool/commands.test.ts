@@ -2420,6 +2420,24 @@ describe('a pull', () => {
         }
       });
 
+  // A case-insensitive file system, as on macOS and Windows, finds
+  // 'Commerce.yaml' under the name pull writes.
+  test('gives the plain rename to a file named like the one pull writes but for case',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('Commerce.yaml'));
+         const exists = fs.existsSync;
+         spyOn(fs, 'existsSync').mockImplementation(((p: fs.PathLike) => exists(
+             String(p).replace(/commerce\.yaml$/, 'Commerce.yaml'))) as any);
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds.replace('mysales', 'Commerce') + "which pull writes as " +
+             "'commerce.yaml'. Rename the file to 'commerce.yaml' to keep it, " +
+             'or ' + force('it'));
+       });
+
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
     // Push rejects this sidecar, which the catalog's overview replaces, so it
