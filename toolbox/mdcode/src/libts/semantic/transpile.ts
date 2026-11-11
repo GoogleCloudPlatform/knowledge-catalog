@@ -1124,12 +1124,12 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
       `${op} without a number, SUM, COUNT or AVG on one side`;
 }
 
-// The operand of `value`, a `+` or `-` of `kind` with an INTERVAL, to check
-// next, or a message, by `shape`, the dialect's entry in INTERVAL_SHAPES. Any
-// other value beside the INTERVAL may be a number, a string or another
-// INTERVAL, such as MySQL's `d + 1`, which is a number. BigQuery adds no month,
-// quarter or year to a TIMESTAMP, and its DATE_ADD adds no week, so import adds
-// one only to a DATE it can see.
+// The operand and the amount of `value`, a `+` or `-` of `kind` with an
+// INTERVAL, to check next, or a message, by `shape`, the dialect's entry in
+// INTERVAL_SHAPES. Any other value beside the INTERVAL may be a number, a
+// string or another INTERVAL, such as MySQL's `d + 1`, which is a number.
+// BigQuery adds no month, quarter or year to a TIMESTAMP, and its DATE_ADD adds
+// no week, so import adds one only to a DATE it can see.
 function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[]|string {
   const op = OPERATORS[kind];
   const first = kind === 'add' && !!value.left?.interval;
@@ -1151,7 +1151,7 @@ function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[
   if (timestampless && !isDate(operand)) {
     return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
   }
-  return [operand];
+  return [operand, added.this];
 }
 
 // The amount of `added`, an engine interval, as written, or undefined when it

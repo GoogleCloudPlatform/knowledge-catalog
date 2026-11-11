@@ -396,6 +396,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate + of an INTERVAL'}],
     ['MYSQL', 'INTERVAL 1 DAY - d', {error: 'kcmd does not translate - with INTERVAL 1 DAY first'}],
     ['MYSQL', 'd + INTERVAL n DAY', {error: 'kcmd does not translate INTERVAL of a column'}],
+    ['MYSQL', 'd + INTERVAL -9223372036854775808 DAY', {error: 'kcmd does not translate the number 9223372036854775808'}],
     ['MYSQL', 'd + INTERVAL 1 MICROSECOND', {error: 'kcmd does not translate INTERVAL 1 MICROSECOND'}],
     ['MYSQL', 'd + INTERVAL 1 MONTH', {error: 'kcmd does not translate + INTERVAL 1 MONTH on a value that may be a TIMESTAMP'}],
     ['DATABRICKS', 'd - INTERVAL 1 WEEK', {error: 'kcmd does not translate - INTERVAL 1 WEEK on a value that may be a TIMESTAMP'}],
