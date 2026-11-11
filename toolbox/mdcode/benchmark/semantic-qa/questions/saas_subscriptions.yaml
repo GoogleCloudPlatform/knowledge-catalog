@@ -1,0 +1,74 @@
+# Retrieval questions for models/saas_subscriptions.yaml.
+# See questions/retail_sales.yaml for what the fields mean.
+
+model: saas_subscriptions
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What is our ARR right now?
+    expect:
+      required: [metric:arr]
+      supporting: [entity:subscription]
+      confusable: [metric:mrr, metric:net_new_mrr]
+    why: >-
+      An acronym that does appear in the metric name, so lexical search
+      should find it. The near-miss is mrr, which differs by one letter and
+      twelve times in value.
+
+  - id: q2
+    difficulty: medium
+    question: How many customers do we have, and how much does each one pay us?
+    expect:
+      required: [metric:account_count, metric:arpa, entity:account]
+      supporting: [entity:subscription]
+      confusable: [metric:active_subscription_count, metric:licensed_seats]
+    why: >-
+      "Customer" is not a word this model uses: the entity is account. The
+      distractor is real, because one account can hold several subscriptions,
+      so active_subscription_count answers a different question with a
+      different number.
+
+  - id: q3
+    difficulty: medium
+    question: Is the installed base growing without new logos?
+    expect:
+      required: [metric:net_revenue_retention, entity:subscription_event]
+      supporting: [metric:expansion_mrr, metric:churned_mrr]
+      confusable: [metric:new_mrr, metric:gross_revenue_churn_rate]
+    why: >-
+      The question describes net revenue retention without naming it, and the
+      phrase "without new logos" is the precise signal to EXCLUDE new_mrr.
+      gross_revenue_churn_rate shares a denominator and is the classic wrong
+      pick.
+
+  - id: q4
+    difficulty: hard
+    question: Which industries are we losing the most money in, and which reps own those accounts?
+    expect:
+      required:
+        [
+          metric:churned_mrr,
+          entity:account,
+          entity:sales_rep,
+          entity:subscription_event,
+        ]
+      supporting: [entity:subscription]
+      confusable: [metric:contraction_mrr, metric:outstanding_balance]
+    why: >-
+      Four entries across a three-hop path, and "losing money" is ambiguous
+      between churn (churned_mrr) and downgrades (contraction_mrr). Reaching
+      sales_rep requires knowing it hangs off account, not off subscription.
+
+  - id: q5
+    difficulty: hard
+    question: What have we billed customers net of anything we credited back?
+    expect:
+      required: [metric:net_billings, entity:invoice, entity:credit_note]
+      supporting: [metric:invoiced_amount, metric:credited_amount]
+      confusable: [metric:collected_amount, metric:outstanding_balance]
+    why: >-
+      The answer spans two sibling subtypes of the abstract billing_document.
+      Retrieving invoice alone looks complete and silently overstates the
+      figure. Tests whether search surfaces both members of a hierarchy when
+      the question names neither.

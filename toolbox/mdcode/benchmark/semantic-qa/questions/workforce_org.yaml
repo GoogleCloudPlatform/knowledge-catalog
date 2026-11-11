@@ -1,0 +1,84 @@
+# Retrieval questions for models/workforce_org.yaml.
+# See questions/retail_sales.yaml for what the fields mean.
+
+model: workforce_org
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: How many people work here?
+    expect:
+      required: [metric:headcount, entity:employee]
+      confusable: [metric:fte_headcount, metric:contractor_count]
+    why: >-
+      Deliberately the easiest question in the corpus, as a floor. Any
+      retriever that misses this is broken. The confusables are narrower
+      slices of the same population.
+
+  - id: q2
+    difficulty: medium
+    question: What is our churn like this year?
+    expect:
+      required: [metric:attrition_rate, entity:employment_event]
+      supporting: [metric:voluntary_attrition_rate, metric:termination_count]
+      confusable:
+        [
+          saas_subscriptions.metric:gross_revenue_churn_rate,
+          saas_subscriptions.metric:churned_mrr,
+        ]
+    why: >-
+      This model never uses the word "churn" -- it says attrition -- while
+      saas_subscriptions uses churn in three metric names. A lexical search
+      returns the wrong model outright; a semantic one has to decide whether
+      people or revenue is meant from no other signal.
+
+  - id: q3
+    difficulty: medium
+    question: How many promotions did we give out last cycle?
+    expect:
+      required: [metric:promotion_count, entity:employment_event]
+      supporting: [metric:promotion_recommendation_rate, entity:performance_review]
+      confusable:
+        [retail_sales.metric:promotion_discount, retail_sales.entity:promotion]
+    why: >-
+      The mirror of retail_sales q5. Same word, unrelated meaning, and both
+      models carry several matching entries. "Cycle" is the only hint that
+      this is a review period rather than a marketing calendar.
+
+  - id: q4
+    difficulty: hard
+    question: Are we paying people fairly for their level and location?
+    expect:
+      required:
+        [
+          metric:compa_ratio,
+          entity:compensation_snapshot,
+          entity:job_role,
+          entity:location,
+        ]
+      supporting: [metric:average_base_salary, entity:employee]
+      confusable: [metric:total_compensation_cost, metric:total_base_salary]
+    why: >-
+      "Fairly" has to reach compa_ratio, which measures pay against the band
+      midpoint -- the only fairness notion this model encodes. Four entries,
+      and the two confusables are cost measures that answer what we spend
+      rather than whether it is right.
+
+  - id: q5
+    difficulty: hard
+    question: Who is about to quit, and how long would it take to backfill them?
+    expect:
+      required:
+        [
+          metric:high_flight_risk_count,
+          metric:average_days_to_fill,
+          entity:performance_review,
+          entity:requisition,
+        ]
+      supporting: [entity:employee, entity:job_role]
+      confusable: [metric:voluntary_exit_count, metric:open_requisition_count]
+    why: >-
+      Two unrelated halves that must both be retrieved: retention risk sits
+      on performance_review, hiring speed on requisition, and nothing links
+      them in the model. voluntary_exit_count is the backward-looking
+      version of the first half and will match "quit" more strongly.
