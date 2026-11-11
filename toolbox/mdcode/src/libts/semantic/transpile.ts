@@ -737,12 +737,15 @@ type Unit = typeof UNITS[number];
 // With `timestamp`, BigQuery adds to TIMESTAMP(x), the operand at midnight UTC.
 // With `utc`, BigQuery adds to DATETIME(x, 'UTC'), the wall-clock time in UTC
 // of a TIMESTAMP, and reads the result back with TIMESTAMP(y, 'UTC'), as a
-// source adds a month to a timestamp in its time zone, UTC.
+// source adds a month to a timestamp in its time zone, UTC. With `inDays`,
+// BigQuery adds each week as 7 days, which its DATE_ADD also adds to a
+// TIMESTAMP.
 interface Addition {
   form: 'DATE_ADD'|'+';
   gives: string;
   timestamp?: true;
   utc?: true;
+  inDays?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
@@ -830,6 +833,11 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
   return Object.fromEntries(units.map(u => [u, {form, gives}]));
 }
 
+// Weeks added with DATE_ADD as days (see Addition), giving the row `gives`.
+function weeksAsDays(gives: string): Partial<Record<Unit, Addition>> {
+  return {WEEK: {form: 'DATE_ADD', gives, inDays: true}};
+}
+
 // `units`, each added with `+` to the wall-clock time in UTC (see Addition),
 // giving the row `gives`.
 function inUtc(units: readonly Unit[], gives: string): Partial<Record<Unit, Addition>> {
@@ -879,7 +887,10 @@ const DATE_TABLES: Record<string, DateTable> = {
       SECOND_MICROSECOND: ['SECOND', 'MICROSECOND'],
     },
     rows: {
-      column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
+      column: {
+        name: MAY_BE_TIMESTAMP,
+        units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column'), ...adds(SUB_DAY, '+', 'column')},
+      },
       DATE: {
         type: 'DATE', name: 'a DATE',
         units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'DATETIME')},
@@ -996,7 +1007,10 @@ const DATE_TABLES: Record<string, DateTable> = {
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
     sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']],
     rows: {
-      column: {name: MAY_BE_TIMESTAMP, units: adds(['DAY'], 'DATE_ADD', 'column'), days: {form: '+', gives: 'column'}},
+      column: {
+        name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
+        days: {form: '+', gives: 'column'},
+      },
       DATE: {
         type: 'DATE', name: 'a DATE',
         units: {
@@ -1026,7 +1040,10 @@ const DATE_TABLES: Record<string, DateTable> = {
       MONTH: ['mm', 'm'], QUARTER: ['qq', 'q'], YEAR: ['yy', 'yyyy'],
     }),
     rows: {
-      column: {name: 'a value that may be a date or a TIMESTAMP', units: adds(['DAY'], 'DATE_ADD', 'column')},
+      column: {
+        name: 'a value that may be a date or a TIMESTAMP',
+        units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
+      },
       date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
       datetime: {type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime')},
     },
@@ -2483,7 +2500,13 @@ function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolea
       sum.call && !whole && !reads.includes('UTC') ? `(${op})` : op;
   const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
   const text = (value: string) => ({literal: {literal_type: 'string', value}});
-  return {function: {...call, args: [operand, amount, text(sum.unit!), text(form), ...reads.map(text)]}};
+  // Weeks as days (see Addition): 7 times a whole number, or times any other
+  // amount.
+  const number = numberText(amount);
+  const days = !sum.addition.inDays ? amount : /^-?\d+$/.test(number ?? '') ?
+      wholeNumber(String(7n * BigInt(number!))) : formCall('7 * (_1)', [amount]);
+  const unit = sum.addition.inDays ? 'DAY' : sum.unit!;
+  return {function: {...call, args: [operand, days, text(unit), text(form), ...reads.map(text)]}};
 }
 
 // How BigQuery reads the operand of `sum` first, as names in READS, in order:

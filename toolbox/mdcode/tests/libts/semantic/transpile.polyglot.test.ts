@@ -534,31 +534,35 @@ describe('polyglotTranspiler (date arithmetic)', () => {
 
   // Each row of each dialect's table: the sum, with {U} or {u} for the unit,
   // the operand as BigQuery writes it, the units BigQuery adds with DATE_ADD
-  // and with `+`, the operand of `+` when it differs, and the units BigQuery
-  // adds with `+` in UTC. Every other unit stays untranslated.
+  // and with `+`, and any of the operand of `+` when it differs, the units
+  // BigQuery adds with `+` in UTC, and whether DATE_ADD adds a week as 7 days.
+  // Every other unit stays untranslated.
   test.each([
-    ['MYSQL', 'd + INTERVAL 1 {U}', 'd', ['DAY'], SUB_DAY],
+    ['MYSQL', 'd + INTERVAL 1 {U}', 'd', ['DAY', 'WEEK'], SUB_DAY, {weekDays: true}],
     ['MYSQL', 'CURDATE() + INTERVAL 1 {U}', 'CURRENT_DATE', DAY_OR_LONGER, SUB_DAY],
     ['MYSQL', 'NOW() + INTERVAL 1 {U}', "DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)", UNITS, []],
     ['POSTGRES', "d + INTERVAL '1 {u}'", 'd', [], [...SUB_DAY, 'DAY', 'WEEK']],
     ['POSTGRES', "d::date + INTERVAL '1 {u}'", 'CAST(d AS DATE)', [], UNITS.filter(u => u !== 'QUARTER')],
     ['POSTGRES', "d::date + INTERVAL '1 hour' + INTERVAL '1 {u}'", 'CAST(d AS DATE) + INTERVAL 1 HOUR', [], UNITS.filter(u => u !== 'QUARTER')],
-    ['POSTGRES', "NOW() + INTERVAL '1 {u}'", 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK'], undefined, ['MONTH', 'YEAR']],
+    ['POSTGRES', "NOW() + INTERVAL '1 {u}'", 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK'], {utc: ['MONTH', 'YEAR']}],
     ['SNOWFLAKE', 'DATEADD({u}, 1, d)', 'd', ['DAY'], SUB_DAY],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_DATE)', "CURRENT_DATE('America/Los_Angeles')", DAY_OR_LONGER, SUB_DAY],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_TIMESTAMP)', "CURRENT_DATETIME('America/Los_Angeles')", DAY_OR_LONGER, []],
-    ['DATABRICKS', 'd + INTERVAL 1 {U}', 'd', ['DAY'], []],
-    ['DATABRICKS', 'current_date() + INTERVAL 1 {U}', 'CURRENT_DATE', ['DAY', 'WEEK', 'MONTH', 'YEAR'], SUB_DAY, 'TIMESTAMP(CURRENT_DATE)'],
-    ['DATABRICKS', 'now() + INTERVAL 1 {U}', 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK'], undefined, ['MONTH', 'YEAR']],
-    ['DATABRICKS', 'dateadd({U}, 1, current_date())', 'TIMESTAMP(CURRENT_DATE)', [], [...SUB_DAY, 'DAY', 'WEEK'], undefined, ['MONTH', 'QUARTER', 'YEAR']],
-    ['SQLSERVER', 'DATEADD({u}, 1, d)', 'd', ['DAY'], []],
+    ['DATABRICKS', 'd + INTERVAL 1 {U}', 'd', ['DAY', 'WEEK'], [], {weekDays: true}],
+    ['DATABRICKS', 'current_date() + INTERVAL 1 {U}', 'CURRENT_DATE', ['DAY', 'WEEK', 'MONTH', 'YEAR'], SUB_DAY, {plusOperand: 'TIMESTAMP(CURRENT_DATE)'}],
+    ['DATABRICKS', 'now() + INTERVAL 1 {U}', 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK'], {utc: ['MONTH', 'YEAR']}],
+    ['DATABRICKS', 'dateadd({U}, 1, current_date())', 'TIMESTAMP(CURRENT_DATE)', [], [...SUB_DAY, 'DAY', 'WEEK'], {utc: ['MONTH', 'QUARTER', 'YEAR']}],
+    ['SQLSERVER', 'DATEADD({u}, 1, d)', 'd', ['DAY', 'WEEK'], [], {weekDays: true}],
     ['SQLSERVER', 'DATEADD({u}, 1, CAST(d AS DATE))', 'CAST(d AS DATE)', DAY_OR_LONGER, []],
     ['SQLSERVER', 'DATEADD({u}, 1, GETDATE())', "CURRENT_DATETIME('UTC')", UNITS, []],
     ['ANSI_SQL', `CURRENT_DATE + INTERVAL '1' {U}`, '', [], []],
-  ] as [string, string, string, string[], string[], string?, string[]?][])('%s %s adds the units of its row', async (dialect, sum, operand, dateAdd, plus, plusOperand = operand, utc = []) => {
+  ] as [string, string, string, string[], string[], {plusOperand?: string; utc?: string[]; weekDays?: true}?][])(
+      '%s %s adds the units of its row', async (dialect, sum, operand, dateAdd, plus, more = {}) => {
+    const {plusOperand = operand, utc = [], weekDays} = more;
     const texts = UNITS.map(u => sum.replace('{U}', u).replace('{u}', u.toLowerCase()));
     expect(await translate(dialect, texts))
-        .toEqual(UNITS.map(u => dateAdd.includes(u) ? `DATE_ADD(${operand}, INTERVAL 1 ${u})` :
+        .toEqual(UNITS.map(u => dateAdd.includes(u) ?
+            `DATE_ADD(${operand}, INTERVAL ${weekDays && u === 'WEEK' ? '7 DAY' : `1 ${u}`})` :
             plus.includes(u) ? `${plusOperand} + INTERVAL 1 ${u}` :
             utc.includes(u) ? `TIMESTAMP(DATETIME(${operand}, 'UTC') + INTERVAL 1 ${u}, 'UTC')` : 'untranslated'));
   });
@@ -608,6 +612,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SNOWFLAKE', 'DATEADD(day, n, d)', {sql: 'DATE_ADD(d, INTERVAL n DAY)'}],
     ['SQLSERVER', "DATEADD(day, '1', d)", {sql: 'DATE_ADD(d, INTERVAL 1 DAY)'}],
     ['MYSQL', 'DATE_ADD(d, INTERVAL DAY(d) DAY)', {sql: 'DATE_ADD(d, INTERVAL EXTRACT(DAY FROM d) DAY)'}],
+    ['MYSQL', 'DATE_SUB(d, INTERVAL n + 1 WEEK)', {sql: 'DATE_SUB(d, INTERVAL (7 * (n + 1)) DAY)'}],
     ['POSTGRES', "d::timestamp - INTERVAL '30 days'", {error: 'kcmd does not translate - of a cast to TIMESTAMP'}],
     ['POSTGRES', "d + '90 minutes'::interval hour", {sql: 'd + INTERVAL 1 HOUR'}],
     ['POSTGRES', "CURRENT_DATE + '1 day 25 hours 61 minutes'::interval day to hour", {sql: 'CURRENT_DATE + (INTERVAL 1 DAY + INTERVAL 26 HOUR)'}],
