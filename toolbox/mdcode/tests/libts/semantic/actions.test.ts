@@ -659,6 +659,14 @@ describe('validatePushRequirements gates actions', () => {
     }])).toEqual(errors);
   });
 
+  test('checks no parameter names of an action without a sql executor', () => {
+    expect(validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      parameters: [{name: 'id', type: 'Integer'}, {name: 'ID', type: 'String'}],
+    }])])).toEqual([]);
+  });
+
   test('an @ inside a string literal is not read as a binding', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'A',

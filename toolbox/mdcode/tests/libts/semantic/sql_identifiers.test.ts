@@ -265,6 +265,10 @@ describe('referencedParameters', () => {
     expect(referencedParameters(sql)).toEqual(['note']);
   });
 
+  test('reads a PostgreSQL parameter only directly after the @', () => {
+    expect(referencedParameters('UPDATE t SET a = @ note', 'POSTGRES')).toEqual([]);
+  });
+
   test('returns distinct parameter names in order and ignores @@ and bare @',
        () => {
          expect(referencedParameters(

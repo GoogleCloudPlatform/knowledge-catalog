@@ -1388,6 +1388,23 @@ semantic_model:
     expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toContain(`- "${statement}"`);
   });
 
+  // Pull keeps a statement that YAML reads as the catalog holds it, and warns
+  // when push refuses it.
+  test('a kept statement that push refuses draws push\'s error', async () => {
+    await pushed({'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE});
+    const kept = WITH_SQL_ACTION.replace(
+        '{sql: {statements: ["UPDATE ledger SET closed = TRUE"]}}',
+        '\n          sql:\n            statements:\n' +
+            '              - UPDATE ledger SET closed = TRUE # all rows');
+    fs.writeFileSync(local('commerce.yaml'), kept);
+    (console.warn as Mock<any>).mockClear();
+
+    expect(await pull()).toBe(0);
+    expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(kept);
+    expect(messages(console.warn)).toContain(
+        'has a sql executor whose statement 1 has a comment on the same line');
+  });
+
   // `text` with each pair of `pairs` replaced, each first part found once.
   const edited = (text: string, ...pairs: Array<[string, string]>) =>
       pairs.reduce((t, [from, to]) => {
@@ -2128,6 +2145,19 @@ describe('a pull', () => {
            }],
          }, error && `action 'tag' in model 'commerce' (commerce) ${error}`));
   }
+
+  // GoogleSQL reads `id` and `ID` as one name, and PostgreSQL does not.
+  test('on a Spanner table gives no warning about two parameter names that ' +
+           'differ only in case',
+       () => checkPull({
+         name: 'commerce', relationships: [], metrics: [],
+         entities: [onTable('Order', `${SPANNER}/orders`, ['id'])],
+         actions: [{
+           name: 'tag',
+           parameters: [{name: 'id', type: 'String'}, {name: 'ID', type: 'Integer'}],
+           executor: {kind: 'sql', sql: {statements: ['UPDATE orders SET note = @ID WHERE id = @id']}},
+         }],
+       }, ''));
 
   // A table's dialect may read an unqualified name as a keyword and a name in
   // double quotes as a string, so pull skips both. A metric text that loses a
