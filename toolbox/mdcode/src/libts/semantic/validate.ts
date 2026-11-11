@@ -1194,28 +1194,36 @@ function statementDialects(model: SemanticModel, profile: string): string[] {
 // start one in every dialect. AlloyDB reads `#` as an operator.
 const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
 
-// The SQL comment marker that one of `dialects` reads on a line of
-// `statement` before the last, when YAML joins its lines into one. A marker
-// counts anywhere on the line, inside a string or a quoted name too. A '|'
-// block keeps its line breaks, so it has none. With no dialect, `#` is not a
-// marker.
+// The first SQL comment marker that one of `dialects` reads on a line of
+// `statement` that YAML joins to the next one. A marker counts anywhere on the
+// line, inside a string or a quoted name too. YAML joins a line to the next
+// when both hold text. A '>' block also keeps the line break before and after
+// a more-indented line, and a '|' block keeps every line break, so it has
+// none. With no dialect, `#` is not a marker.
 function joinedLineMarker(statement: yaml.Scalar, text: string,
                           dialects: string[]): string|undefined {
   const joins = ['PLAIN', 'BLOCK_FOLDED', 'QUOTE_SINGLE', 'QUOTE_DOUBLE'];
   if (!joins.includes(statement.type ?? '')) return undefined;
-  const markers = ['--', '/*'];
-  if (dialects.some(d => HASH_COMMENT_DIALECTS.has(d))) markers.push('#');
+  const marker = dialects.some(d => HASH_COMMENT_DIALECTS.has(d)) ?
+      /--|\/\*|#/ :
+      /--|\/\*/;
   // A quoted statement's lines, without its quotes.
   const quoted = statement.type!.startsWith('QUOTE');
+  const folded = statement.type === 'BLOCK_FOLDED';
   const lines = text.slice(statement.range![0] + (quoted ? 1 : 0),
                            statement.range![1] - (quoted ? 1 : 0))
                     .split(/\r?\n/)
                     // A '>' block's first line is its header.
-                    .slice(statement.type === 'BLOCK_FOLDED' ? 1 : 0)
-                    .filter(line => line.trim());
-  for (const line of lines.slice(0, -1)) {
-    const marker = markers.find(m => line.includes(m));
-    if (marker) return marker;
+                    .slice(folded ? 1 : 0);
+  const indent = (line: string) => /^[ \t]*/.exec(line)![0].length;
+  // A '>' block's indent is its first line's.
+  const blockIndent = indent(lines.find(line => line.trim()) ?? '');
+  const kept = (line: string) =>
+      !line.trim() || (folded && indent(line) > blockIndent);
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (kept(lines[i]) || kept(lines[i + 1])) continue;
+    const found = marker.exec(lines[i]);
+    if (found) return found[0];
   }
   return undefined;
 }

@@ -455,9 +455,15 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         '- >', '  UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
         // The closing quote alone on a line ends no SQL line.
         '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  "',
+        // A '>' block keeps the line break before a blank or more-indented
+        // line.
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '', '  WHERE c_key = @k',
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '    WHERE c_key = @k',
+        // The first marker on the line is named.
+        '- >', '  UPDATE customer SET doc = doc /* -- */', '  WHERE c_key = @k',
       ])},
-      errors: ['--', '--', '/*', '--'].map(
-          (m, i) => has(`statement ${i + 1} has '${m}' on a line YAML joins`)),
+      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*']].map(
+          ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
     }, {
       files: {'commerce.yaml': modelWriting([
         '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',
