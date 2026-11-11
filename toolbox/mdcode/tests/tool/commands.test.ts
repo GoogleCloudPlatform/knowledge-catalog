@@ -1965,6 +1965,19 @@ describe('a pull', () => {
      "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
          "'Gone', which is not a declared entity in model 'commerce'; write " +
          "'entity.field' starting with a declared entity."],
+    // Pull reads no Spanner table's dialect, and still checks the fields a
+    // profile field reads.
+    ['a field a profile field reads',
+     {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
+       name: 'Customer',
+       source: 'spanner.googleapis.com/projects/test-project/instances/i/' +
+           'databases/db/tables/customer',
+       fields: [
+         {name: 'id', expression: 'Customer.gone * 2', stringForm: true},
+       ],
+     }]}]},
+     "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
+         "'Customer.gone', which is not a field of 'Customer'."],
   ] as Array<[string, SemanticModel, string]>) {
     test(`warns when push refuses the model file it writes without ${what}`,
          async () => {
