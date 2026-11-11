@@ -5,7 +5,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {isReservedKeyword, leadingDmlVerb, quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from '../../../src/libts/semantic/sql_identifiers';
+import {isReservedKeyword, leadingDmlVerb, quoteColumnIfReserved, quoteIdentifier, quoteIfReserved, referencedParameters} from '../../../src/libts/semantic/sql_identifiers';
 
 describe('isReservedKeyword', () => {
   test('recognizes reserved keywords case-insensitively', () => {
@@ -122,6 +122,8 @@ describe('leadingDmlVerb', () => {
     // lost and a legitimate zero-row INSERT is refused.
     expect(leadingDmlVerb('# update the audit trail\nINSERT INTO t VALUES (1)'))
         .toBe('INSERT');
+    expect(leadingDmlVerb('# @before\rINSERT INTO orders (id) VALUES (@id)'))
+        .toBe('INSERT');
     expect(leadingDmlVerb('-- update the audit trail\nINSERT INTO t VALUES (1)'))
         .toBe('INSERT');
   });
@@ -131,6 +133,15 @@ describe('leadingDmlVerb', () => {
         .toBe('UPDATE');
     expect(leadingDmlVerb('WITH x AS (SELECT 1) UPDATE t SET a = 1'))
         .toBe('UPDATE');
+    expect(leadingDmlVerb(
+               'WITH s AS (SELECT doc #>> \'{k}\' AS k FROM customer) ' +
+                   'UPDATE customer SET note = s.k FROM s WHERE c_key = @id',
+               'ALLOYDB'))
+        .toBe('UPDATE');
+    expect(leadingDmlVerb(
+               '/* outer /* inner */ DELETE */ SELECT * FROM customer',
+               'ALLOYDB'))
+        .toBe('');
   });
 
   test('a quoted literal is not a verb', () => {
@@ -141,4 +152,119 @@ describe('leadingDmlVerb', () => {
     expect(leadingDmlVerb('SELECT * FROM t')).toBe('');
     expect(leadingDmlVerb('# nothing here')).toBe('');
   });
+});
+
+
+describe('referencedParameters', () => {
+  test('ignores @name inside -- and /* */ comments, including \\r line endings and EOF',
+       () => {
+         expect(referencedParameters(
+                    'UPDATE orders SET status = @status -- @note is optional'))
+             .toEqual(['status']);
+         expect(referencedParameters(
+                    'UPDATE orders SET status = @status /* @note */'))
+             .toEqual(['status']);
+         expect(referencedParameters(
+                    '-- @before\nUPDATE orders SET status = @status\n/* @after */'))
+             .toEqual(['status']);
+         expect(referencedParameters(
+                    'UPDATE orders -- @before\rSET status = @status'))
+             .toEqual(['status']);
+         expect(referencedParameters(
+                    'UPDATE orders SET status = @status /* @unterminated'))
+             .toEqual(['status']);
+         // GoogleSQL block comments do not nest.
+         expect(referencedParameters('SELECT @y1 /* /* @n1 */ + @y2'))
+             .toEqual(['y1', 'y2']);
+         // An apostrophe inside a comment never opens a string literal.
+         expect(referencedParameters(
+                    '-- don\'t bind @note\n' +
+                    'UPDATE orders SET status = @status, kind = \'rush\''))
+             .toEqual(['status']);
+       });
+
+  test('treats # as a comment in GoogleSQL and as an operator in PostgreSQL/AlloyDB',
+       () => {
+         expect(referencedParameters(
+                    'UPDATE orders SET status = @status # @note is optional'))
+             .toEqual(['status']);
+         expect(referencedParameters(
+                    '# @before\rINSERT INTO orders (id) VALUES (@id)', 'SPANNER'))
+             .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE orders SET doc = doc #- \'{draft}\' WHERE id = @id',
+                    'ALLOYDB'))
+             .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE orders SET doc = doc #- \'{draft}\' WHERE id = @id',
+                    'POSTGRES'))
+             .toEqual(['id']);
+       });
+
+  test('handles GoogleSQL string/raw/triple literals and backticked identifiers',
+       () => {
+         expect(referencedParameters(
+                    'UPDATE `my@table` SET email = \'a@b.com\', ' +
+                    'note = \'it\\\'s @nobody\', id = @id'))
+             .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE customer SET a = \'\'\'don\'t @bind\'\'\', ' +
+                    'b = """say "hi" to @nobody""", ' +
+                    'pat = r\'it\\\'s @skip\', esc = r\'\\\'\', ' +
+                    'dir = r\'\'\'C:\\\\\'\'\', ' +
+                    'bytes = b\'it\\\'s @skip\' WHERE id = @id -- \''))
+             .toEqual(['id']);
+         expect(referencedParameters('SELECT \'\'\'a\\\'\'\' @n1\'\'\', @y1'))
+             .toEqual(['y1']);
+       });
+
+  test('handles PostgreSQL/AlloyDB quotes, E\'...\', dollar-quotes, and nested comments',
+       () => {
+         // Single backslash does not escape `'` in standard PG strings (even
+         // after a keyword ending in E); `''''` is a complete literal.
+         expect(referencedParameters(
+                    'DELETE FROM "user@table" WHERE path LIKE\'C:\\\' ' +
+                        'AND quote = \'\'\'\' AND note = \'it\'\'s @nobody\' ' +
+                        'AND id = @id',
+                    'POSTGRES'))
+             .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE t SET body = E\'it\'\'s \\\'@nobody\\\'\' WHERE id = @id',
+                    'POSTGRES'))
+             .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE customer SET note = E\'first line\\n\'\n' +
+                        '  -- comment\n' +
+                        '  \'it\\\'s @note\' WHERE c_key = @id -- ' +
+                        '-'.repeat(60),
+                    'POSTGRES'))
+             .toEqual(['id']);
+         // Nested block comments, ` operator, $-identifiers, and $tag$ strings.
+         expect(referencedParameters(
+                    '/* outer /* inner */ @skip */ UPDATE t SET x = a ` b, ' +
+                        'col$a$b = $$@skip$$, fn = $fn$a $$ @skip $$ b$fn$, ' +
+                        's = e\'it\\\'s @skip\' WHERE id = $1 AND k = @id',
+                    'ALLOYDB'))
+             .toEqual(['id']);
+         expect(referencedParameters('SELECT $1$$@id', 'POSTGRES'))
+             .toEqual([]);
+         expect(referencedParameters(
+                    '/* outer /* inner */ @ignored', 'POSTGRES'))
+             .toEqual([]);
+       });
+
+  test('returns distinct parameter names in order and ignores @@ and bare @',
+       () => {
+         expect(referencedParameters(
+                    'UPDATE account SET balance = balance - -@amount_1 ' +
+                    'WHERE account_id = @_source AND @amount_1 > 0 ' +
+                    'AND tz = @@time_zone'))
+             .toEqual(['amount_1', '_source']);
+         expect(referencedParameters(
+                    'DELETE FROM docs WHERE tsv @@ plainto_tsquery(@query) ' +
+                        'AND x@@y',
+                    'POSTGRES'))
+             .toEqual(['query']);
+         expect(referencedParameters('SELECT @1, @')).toEqual([]);
+       });
 });

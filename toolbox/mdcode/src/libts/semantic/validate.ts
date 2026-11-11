@@ -16,7 +16,7 @@ import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
-import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {alloyDbTargets, ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {GraphElement} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
@@ -826,6 +826,10 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
+  const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
+      sourcesDialect(model) ??
+          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : undefined) :
+      undefined;
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -929,7 +933,7 @@ export function validateActions(
       }
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
-    errors.push(...sqlExecutorErrors(action, where));
+    errors.push(...sqlExecutorErrors(action, where, sqlDialect));
   }
   return errors;
 }
@@ -951,7 +955,8 @@ export function validateActions(
 //   - Every `@parameter` is declared. This is the load-bearing one: it is what
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
-function sqlExecutorErrors(action: Action, where: string): string[] {
+function sqlExecutorErrors(
+    action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
   const executor = action.executor;
   const errors: string[] = [];
@@ -971,7 +976,7 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
     // authored executor `kcmd` refused. Sharing the scanner does not widen
     // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
     // does not list, so a MERGE is still refused here.
-    const verb = leadingDmlVerb(text);
+    const verb = leadingDmlVerb(text, dialect);
     if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
       // Name what the author wrote, not merely that nothing was found. The
       // scanner reads DML verbs only, so a SELECT executor -- the likeliest
@@ -992,7 +997,7 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
           `${at} contains ';'. Each statement runs on its own, so write ` +
           `one statement per list entry.`);
     }
-    for (const name of referencedParameters(text)) {
+    for (const name of referencedParameters(text, dialect)) {
       if (!bindable.has(name)) {
         errors.push(
             `${at} binds '@${name}', but action '${action.name}' ` +
@@ -2294,10 +2299,17 @@ export async function localChecks(
     }
   }
   const kcWarnings: string[] = [];
-  const kcErrors = models.flatMap(
-      m => ofModel(m.document, ...validatePushRequirements(
-          [{...m, model: {...m.model, deployments: []}}],
-          {warnings: kcWarnings})));
+  const kcErrors = models.flatMap(m => {
+    const inlineAlloyDb = (m.model.deployments ?? []).filter(
+        d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE &&
+            everyByDoc.get(m.document)!.some(
+                r => r.name === d.name && r.engine === 'alloydb'));
+    return ofModel(
+        m.document,
+        ...validatePushRequirements(
+            [{...m, model: {...m.model, deployments: inlineAlloyDb}}],
+            {warnings: kcWarnings}));
+  });
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
     return stop([...profileErrors, ...kcErrors]);
