@@ -1890,10 +1890,15 @@ async function pullSemanticModel(
       // told to delete its own files when another model file is refused too.
       // --force-remove is named with every file it deletes.
       const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
-      // The names in the entry group directory as they are on disk, so that a
-      // case-insensitive file system does not find 'commerce.yaml' when only
-      // 'Commerce.yaml' is there.
+      // The names in the entry group directory as they are on disk.
       const present = new Set(fs.readdirSync(groupDir));
+      // The file at `name` in the entry group directory, by its name on disk:
+      // `name`, or on a case-insensitive file system, as on macOS and Windows,
+      // the name that differs from it only in case.
+      const onDisk = (name: string) => present.has(name) ? name :
+          fs.existsSync(path.join(groupDir, name)) ?
+          [...present].find(n => n.toLowerCase() === name.toLowerCase()) :
+          undefined;
       // A file by its path in the entry group directory.
       const shown = (p: string) => path.relative(groupDir, p);
       const file = (name: string) => shown(layout.modelPath(name));
@@ -1938,7 +1943,11 @@ async function pullSemanticModel(
           const groups = [...new Set(targets)].map(
               t => files.flatMap((_, i) => targets[i] === t ? [i] : []));
           const twice = groups.filter(g => g.length > 1);
-          const taken = [...new Set(targets)].filter(t => present.has(t));
+          // Each other file at a name pull writes.
+          const taken = [...new Set(targets.flatMap(t => {
+            const there = onDisk(t);
+            return there === undefined || own.includes(there) ? [] : [there];
+          }))];
           // The catalog's model file when it holds this model too, else the
           // file a refusal before this one tells to keep it.
           const holder = layout.declaredModelName(stem) === declared ?

@@ -2438,6 +2438,31 @@ describe('a pull', () => {
              'or ' + force('it'));
        });
 
+  // A case-insensitive file system also finds a file whose name differs only
+  // in case under a name pull writes, and a rename onto that name replaces it.
+  test('names a file under a name pull writes but for case as in the way',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.renameSync(local('commerce.yaml'), local('mysales.yaml'));
+         fs.copyFileSync(local('commerce.profile.prod.yaml'),
+                         local('mysales.profile.prod.yaml'));
+         fs.renameSync(local('commerce.profile.prod.yaml'),
+                       local('COMMERCE.profile.prod.yaml'));
+         const exists = fs.existsSync;
+         spyOn(fs, 'existsSync').mockImplementation(((p: fs.PathLike) => exists(
+             String(p).replace(/commerce\.profile\.prod\.yaml$/,
+                               'COMMERCE.profile.prod.yaml'))) as any);
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds + "which pull writes as 'commerce.yaml', and " +
+             "'COMMERCE.profile.prod.yaml' is already there. Delete " +
+             "'COMMERCE.profile.prod.yaml' and rename 'mysales.yaml' to " +
+             "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+             "'commerce.profile.prod.yaml' to keep them, or " +
+             force("'mysales.yaml' and 'mysales.profile.prod.yaml'"));
+       });
+
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
     // Push rejects this sidecar, which the catalog's overview replaces, so it
