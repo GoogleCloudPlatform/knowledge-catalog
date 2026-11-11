@@ -483,10 +483,16 @@ function engineTranslation(
       withExtract(engine, text, dialect, read) : text;
   // The engine reads some expressions only after SELECT, such as one that
   // starts with `((`. T-SQL reads `SELECT a = b` as an alias, so the engine
-  // reads the expression alone first.
+  // reads the expression alone first. After SELECT, the engine writes the
+  // functions of a comparison or a CASE before a comment as the source does,
+  // so it reads the expression there without its comments. transpileWith puts
+  // them last.
   let res = engine.transpile(sql, read, write);
   if (!res.success) {
-    const selected = engine.transpile(`SELECT ${sql}`, read, write);
+    const chars = [...sql];
+    const code = (engine.tokenize(sql, read).tokens ?? [])
+        .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
+    const selected = engine.transpile(`SELECT ${code}`, read, write);
     if (selected.success) {
       res = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
     }

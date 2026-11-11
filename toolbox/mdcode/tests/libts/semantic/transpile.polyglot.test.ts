@@ -220,6 +220,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SNOWFLAKE', 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)', {sql: 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)'}],
     ['SNOWFLAKE', 'SUM(a) / AVG(x)', {sql: 'CAST(SUM(a) AS NUMERIC) / AVG(CAST(x AS NUMERIC))'}],
     ['SNOWFLAKE', '((SUM(a) - SUM(b)) / SUM(a)) * 100', {sql: '(CAST((SUM(a) - SUM(b)) AS NUMERIC) / SUM(a)) * 100'}],
+    ['SNOWFLAKE', '((NVL(a, 0))) > 1 -- c', {sql: '((COALESCE(a, 0))) > 1 /* c */'}],
+    ['MYSQL', '((COALESCE(ordered_at, NOW()))) IS NULL # when', {sql: '((COALESCE(ordered_at, CURRENT_TIMESTAMP()))) IS NULL /* when */'}],
     ['POSTGRES', 'AVG(x)', {sql: 'AVG(CAST(x AS NUMERIC))'}],
     ['POSTGRES', 'TRIM(FROM s)', {sql: "TRIM(s, ' ')"}],
     // Text compared by a collation, which differs only for text that differs in
