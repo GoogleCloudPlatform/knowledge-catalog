@@ -12,12 +12,12 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DEFAULT_PROFILE, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
-import {commentCutStatementErrors, localChecks, pruningLines, withProfileFiles} from './validate';
+import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1992,14 +1992,15 @@ async function validateOutputDocument(
       if (!own.includes(w) && !doc.warnings.includes(w)) doc.warnings.push(w);
     };
     const withFiles = withProfileFiles(base, () => profiles);
-    // Push then refuses an unquoted action statement with a comment on the
-    // same line, in the model file and in each profile file.
-    const commented = 'errors' in withFiles ? [] :
-        [{fileName: model.name, text: content}, ...profiles].flatMap(
-            f => commentCutStatementErrors(
-                f.text, f.fileName, base.model.name));
-    for (const error of commented) doc.warnOrError(error);
-    if (commented.length) return;
+    // Push then refuses an action statement YAML reads differently from how
+    // it is written, in the model file and in each profile file.
+    const changed = 'errors' in withFiles ? [] : [
+      {fileName: model.name, text: content, name: DEFAULT_PROFILE},
+      ...profiles,
+    ].flatMap(f => yamlChangedStatementErrors(
+                  f.text, f.fileName, base.model, f.name));
+    for (const error of changed) doc.warnOrError(error);
+    if (changed.length) return;
     const checked = 'errors' in withFiles ? withFiles : await localChecks(
         {
           docs: [model],

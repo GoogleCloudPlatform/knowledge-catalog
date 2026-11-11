@@ -9,7 +9,7 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
+import {ALLOYDB, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -241,6 +241,10 @@ const withStatementLines = (text: string, ...lines: string[]) => {
   const [line, indent] = /^( *)- STATEMENT$/m.exec(text)!;
   return text.replace(line, lines.map(l => indent + l).join('\n'));
 };
+// The model file of `scope` with action purge, whose one statement is written
+// as `lines`.
+const modelWriting = (lines: string[], scope: Scope = {}) => withStatementLines(
+    modelFile({...scope, actions: [purge(ONE_STATEMENT)]}), ...lines);
 const COMMENTED = "UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
 
 scenarios('push --no-deployment refuses a scope before any network call', [
@@ -294,20 +298,20 @@ scenarios('push --no-deployment refuses a scope before any network call', [
   },
   {
     name: 'refuses an unquoted action statement with a comment on the same line',
-    files: {'commerce.yaml': withStatementLines(
-        modelFile({actions: [purge(ONE_STATEMENT)]}), `- ${COMMENTED}`)},
+    files: {'commerce.yaml': modelWriting([`- ${COMMENTED}`])},
     errors: [err(
         "action 'purge' in model 'commerce' (commerce) has a sql executor " +
         'whose statement 1 has a comment on the same line, so YAML reads the ' +
-        "statement as 'UPDATE customer SET doc = doc'. Put the statement in " +
-        "quotes, or write it as a block scalar with '|'.")],
+        "statement as 'UPDATE customer SET doc = doc'. If the text after ' #' " +
+        "is part of the statement, write it as a block scalar with '|'. If it " +
+        'is a YAML comment, move it to its own line.')],
     then: [{
-      files: {'commerce.yaml': withStatementLines(
-          modelFile({actions: [purge(ONE_STATEMENT)]}),
-          '- UPDATE customer SET doc = doc WHERE c_key = @k',
-          '  # a comment on its own line',
-          `- "${COMMENTED}" # a note`,
-          '- |', `  ${COMMENTED}`)},
+      files: {'commerce.yaml': modelWriting([
+        '- UPDATE customer SET doc = doc WHERE c_key = @k',
+        '# a comment on its own line',
+        `- "${COMMENTED}" # a note`,
+        '- |', `  ${COMMENTED}`,
+      ])},
       code: 0,
     }, {
       actions: [purge()],
@@ -315,7 +319,59 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
           `- ${COMMENTED}`)},
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1")],
+    }, {
+      files: {'commerce.yaml': modelWriting([`- &cut ${COMMENTED}`, '- *cut'])},
+      errors: [has('whose statement 1 has a comment'), has('whose statement 2 has a comment')],
     }],
     report: {code: 1, rejects: {'': [pushed()], 'no profiles': []}},
+  },
+  {
+    name: 'refuses an unquoted action statement followed by a comment line indented under it',
+    files: {'commerce.yaml': modelWriting(
+        ['- UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        'whose statement 1 is followed by a comment line indented under it, ' +
+        "so YAML reads the statement as 'UPDATE customer SET doc = doc'. If " +
+        'the comment line is part of the statement, write it as a block ' +
+        "scalar with '|'. If it is a YAML comment, move it to the '-' column " +
+        'or above the statement.')],
+    then: [{
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k"])},
+      code: 0,
+    }],
+  },
+  {
+    // With no deployment, only `--` is a SQL comment. On BigQuery `#` is one
+    // too, and on AlloyDB it is an operator.
+    name: 'refuses a SQL comment on a line YAML joins to the next one, as the statement\'s database reads it',
+    files: {'commerce.yaml': modelWriting(
+        ['- UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        'whose statement 1 has a SQL comment on a line YAML joins to the ' +
+        'next one, so the comment also covers the lines after it. Write it ' +
+        "as a block scalar with '|', which keeps its line breaks.")],
+    then: [{
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
+          {deployments: ['g']})},
+      errors: [has('has a SQL comment on a line YAML joins to the next one')],
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k'],
+          {deployments: [{name: 'pg', target: ALLOYDB}],
+           entities: [{...CUSTOMER, source: `${ALLOYDB}/schemas/public/tables/customer`}]})},
+      code: 0,
+    }],
   },
 ], {flags: {deployment: false}, code: 1, noNetwork: true});

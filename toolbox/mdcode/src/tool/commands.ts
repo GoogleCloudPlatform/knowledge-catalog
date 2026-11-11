@@ -38,7 +38,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {commentCutStatementErrors, DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1176,8 +1176,8 @@ async function checkBeforeWrites(
     const model = withProfileFiles(base, profileDocs);
     if ('errors' in model) return stop(model.errors);
     models.push(model);
-    // The model file and each profile file must be valid UTF-8, and no
-    // unquoted action statement in them may have a comment on the same line.
+    // The model file and each profile file must be valid UTF-8, and YAML must
+    // read each action statement in them as it is written.
     // withProfileFiles has read the profile files, so profileDocs does not
     // throw here.
     const modelPath = layout.modelPath(base.document);
@@ -1186,20 +1186,23 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    // Pull writes its files as UTF-8, so their bytes are not checked.
-    const commented: string[] = [];
-    for (const file of [modelFile, ...profileDocs(base.document)]) {
+    // The model file goes by its document name, as in the other action
+    // messages, and holds the inline bindings. Pull writes its files as
+    // UTF-8, so their bytes are not checked.
+    const changed: string[] = [];
+    for (const file of [
+           {...modelFile, label: base.document, profile: DEFAULT_PROFILE},
+           ...profileDocs(base.document)
+               .map(p => ({...p, label: p.fileName, profile: p.name})),
+         ]) {
       const error = scope.pulled ?
           undefined :
           checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
-      // The model file goes by its document name, as in the other action
-      // messages.
-      const label = file === modelFile ? base.document : file.fileName;
-      commented.push(
-          ...commentCutStatementErrors(file.text, label, base.model.name));
+      changed.push(...yamlChangedStatementErrors(
+          file.text, file.label, base.model, file.profile));
     }
-    if (commented.length) return fail(...commented);
+    if (changed.length) return fail(...changed);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;

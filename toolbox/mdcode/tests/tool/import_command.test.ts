@@ -566,7 +566,8 @@ describe('kcmd import', () => {
     expect(errors).toEqual([
       "Error: action 'purge' in model 'retail' (retail) has a sql executor whose statement 1 " +
       "has a comment on the same line, so YAML reads the statement as 'UPDATE orders SET doc = " +
-      "doc'. Put the statement in quotes, or write it as a block scalar with '|'.",
+      "doc'. If the text after ' #' is part of the statement, write it as a block scalar with " +
+      "'|'. If it is a YAML comment, move it to its own line.",
     ]);
     expect(filesIn('out')).toEqual([]);
   });
