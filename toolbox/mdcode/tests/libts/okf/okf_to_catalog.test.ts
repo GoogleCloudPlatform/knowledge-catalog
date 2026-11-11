@@ -124,7 +124,7 @@ describe('CatalogSync OKF push --validate-only', () => {
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(
       path.join(root, 'broken.md'),
-      '---\ntype: [unclosed\n---\nbody\n',
+      '---\ntitle: missing type\n---\nbody\n',
       'utf8',
     );
 
@@ -134,8 +134,8 @@ describe('CatalogSync OKF push --validate-only', () => {
     expect(res.details).toContain('broken');
   });
 
-  test('skips untyped .md non-concept files (README.md, AGENTS.md, CONTRIBUTING.md, SKILL.md) and subdirectory log.md while pushing typed agents.md', async () => {
-    const base = makeTempDir('okfpush-v03-skip-');
+  test('skips reserved log.md at any level while pushing typed agents.md and Attested Computation concepts', async () => {
+    const base = makeTempDir('okfpush-v02-skip-');
     fs.writeFileSync(
       path.join(base, 'catalog.yaml'),
       'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
@@ -145,24 +145,12 @@ describe('CatalogSync OKF push --validate-only', () => {
     fs.mkdirSync(path.join(root, 'computations'), {recursive: true});
     fs.writeFileSync(
       path.join(root, 'index.md'),
-      '---\nokf_version: "0.2"\ntitle: Finance\nlicense: CC-BY-4.0\n---\n# Finance\n',
+      '---\nokf_version: "0.2"\n---\n# Finance\n',
       'utf8',
     );
     fs.writeFileSync(
       path.join(root, 'agents.md'),
       '---\ntype: Knowledge Base Root\ntitle: Finance Router\n---\n# Finance Router\n',
-      'utf8',
-    );
-    fs.writeFileSync(path.join(root, 'README.md'), '# Readme\n', 'utf8');
-    fs.writeFileSync(path.join(root, 'CONTRIBUTING.md'), '# Contributing\n', 'utf8');
-    fs.writeFileSync(
-      path.join(root, 'SKILL.md'),
-      '---\nname: finance-skill\ndescription: Untyped skill file\n---\n# Skill\n',
-      'utf8',
-    );
-    fs.writeFileSync(
-      path.join(root, 'computations/AGENTS.md'),
-      '# Subdir agent instructions\n',
       'utf8',
     );
     fs.writeFileSync(

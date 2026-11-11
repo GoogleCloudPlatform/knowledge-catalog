@@ -190,6 +190,24 @@ path/to/root/
                                       # frontmatter, Overview in body
 ```
 
+**Open Knowledge Format (OKF) Layout (`layout: okf`):**
+Used for `entryGroup` or `kb` scopes initialized with `kcmd init ... --format okf`.
+Entries are stored as an Open Knowledge Format (OKF v0.2) bundle under `bundle/`,
+with entry links in `bundle/_links.yaml` and lossless Knowledge Catalog round-trip
+residue in `x-kcmd` frontmatter. Every non-reserved `.md` file in `bundle/` must
+carry a non-empty `type` in its frontmatter (OKF v0.2 §11). `kcmd` applies the
+following workspace extensions when mapping `bundle/` to Knowledge Catalog:
+
+* Root `bundle/index.md` maps to the `agents` catalog entry, and
+  `bundle/<dir>/index.md` maps to the `<dir>` entry (unless an explicit
+  `bundle/agents.md` or `bundle/<dir>.md` exists alongside an untyped listing
+  `index.md`, in which case the explicit file is used).
+* Reserved `log.md` files at any directory level (OKF v0.2 §§3.1, 9) are skipped
+  during local discovery, unless a `log.md` carries `x-kcmd` / `extra` metadata
+  from an existing pulled catalog entry.
+* Hidden dot-files and dot-directories (such as `.git` or `.staging`) and
+  symbolic links that resolve outside `bundle/` are skipped.
+
 **NOTE: IDE Workspace**
 An IDE workspace, like the one in Antigravity, can include one or more such
 directories, organized according to the user's preferences.

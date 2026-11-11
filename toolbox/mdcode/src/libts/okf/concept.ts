@@ -17,7 +17,6 @@ export const ENTRY_SOURCE_KEYS = ['title', 'description', 'resource'] as const;
 export const OKF_METADATA_KEYS = [
   'tags',
   'status',
-  'superseded_by',
   'stale_after',
   'runtime',
   'parameters',

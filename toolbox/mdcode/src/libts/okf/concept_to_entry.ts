@@ -146,8 +146,8 @@ export function conceptToEntry(
       conceptType = 'knowledge-base-index';
     } else {
       throw new ConceptError(
-        `${concept.id}: no ${RESIDUE_KEY}.entryType and no frontmatter 'type', ` +
-          `so the catalog entry type is unknown`,
+        `${concept.id}.md: an OKF concept needs a non-empty \`type\` in its frontmatter ` +
+          `(OKF v0.2 §11); add one, or move the file out of bundle/.`,
       );
     }
   }

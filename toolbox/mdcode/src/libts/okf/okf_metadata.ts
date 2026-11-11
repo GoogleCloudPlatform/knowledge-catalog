@@ -36,8 +36,8 @@ export function appendOkfMetadata(
   for (const key of OKF_METADATA_KEYS) {
     if (frontmatter[key] !== undefined) carried[key] = frontmatter[key];
   }
-  // Preserve `x-*` producer extensions (SPEC §4.1) and any other unknown OKF
-  // frontmatter keys across push -> pull.
+  // Preserve producer-defined additional frontmatter keys (OKF v0.2 §4.1) across
+  // push -> pull.
   for (const [key, value] of Object.entries(frontmatter)) {
     if (value === undefined || key in carried || NON_CARRIED_KEYS.has(key)) {
       continue;
