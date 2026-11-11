@@ -2204,8 +2204,10 @@ async function pullSemanticModel(
 // action's SQL statement only when every dialect refuses it. It reads the
 // overview sidecars on disk, as push does, unless given `overviews`. Like
 // push, it runs the import that the advice to add a BigQuery text suggests,
-// writing nothing, on `doc` and `profiles`, and that import reads no table's
-// dialect either.
+// writing nothing, and that import reads no table's dialect either. The
+// import reads the files on disk, which pull has written, unless given
+// `overviews`, which pull gives under --dry-run. It then reads `doc` and
+// `profiles`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
@@ -2220,7 +2222,8 @@ async function pushRefusal(
   const load = {
     readWithoutDialect: true,
     transpileOutcomes: await transpileOutcomes(
-        ctx, docs, profileDocs, layout, {}, noDialects, true),
+        ctx, docs, profileDocs, layout, {}, noDialects,
+        overviews !== undefined),
   };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load, overviews,
