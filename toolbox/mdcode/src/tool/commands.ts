@@ -1089,13 +1089,11 @@ async function pushInTwoPhases(
     // DDL.
     for (const {deployment, generated} of plans) {
       if (!generated) continue;
-      if (!options.print && generated.warnings.every(w => printed.has(w))) {
-        continue;
-      }
+      if (!options.print && !generated.warnings.length) continue;
       header(deployment);
       printGraph(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
-          options, printed);
+          options);
     }
     return reportCatalogResult(preflight.result!, options);
   }
