@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 import {cloudSqlEntry} from '../../libts/mocks';
 
-import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
+import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -30,6 +30,21 @@ const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
 // A profile that binds Customer to table customer in dataset `name`.
 const keyIn = (name: string, text: string, dialect?: string) =>
     ({entities: {Customer: keyAt(bqTable('customer', name), text, dialect)}});
+// Customer on `source`, with field flag in BigQuery SQL only, which reads no
+// column, so a profile may leave it as the model file binds it.
+const withFlag = (source: string) => ({
+  ...CUSTOMER, source,
+  fields: [...CUSTOMER.fields, {
+    name: 'flag',
+    expression: {dialects: [{dialect: 'BIGQUERY', expression: 'IF(TRUE, 1, 0)'}]},
+  }],
+});
+const alloyDb = (table: string) => `${ALLOYDB}/schemas/public/tables/${table}`;
+// Push's error for field flag on a table of `dialect`.
+const flagError = (dialect: string) => err(
+    "field 'Customer.flag' in model 'commerce' (commerce) has no expression " +
+    `for ${dialect} or ANSI_SQL, and the model file binds entity 'Customer' ` +
+    `to ${/^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source; give it one.`);
 
 // A catalog preflight that plans one line and gives `result`.
 const planned = (result = {}) =>
@@ -121,6 +136,24 @@ scenarios('push --no-deployment', [
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
+  },
+  {
+    // Profiles that inherit field flag unchanged add no copy of push's error
+    // about it, as with no profile files. The report keeps each profile's
+    // warning.
+    name: 'a model-file field its AlloyDB or Spanner table cannot run gets push\'s error once, with no warning for each profile that inherits it',
+    entities: [withFlag(alloyDb('customer'))],
+    profiles: {dev: boundAt(alloyDb('customer_dev')), prod: boundAt(alloyDb('customer_prod'))},
+    code: 1, errors: [flagError('ALLOYDB')], warnings: [],
+    then: [{
+      entities: [withFlag(SPANNER_CUSTOMER)],
+      profiles: {prod: boundAt(`${SPANNER}/tables/CustomerProd`)},
+      code: 1, errors: [flagError('SPANNER')], warnings: [],
+    }],
+    report: {code: 1, check: (_, __, warnings) => expect(warnings).toContain(
+        "  profile 'dev': warning: [commerce] field 'Customer.flag': no " +
+        "'ALLOYDB' or 'ANSI_SQL' dialect, so the ALLOYDB table of entity " +
+        "'Customer' cannot run it")},
   },
   {
     // Knowledge Catalog receives every profile file, applied or not.

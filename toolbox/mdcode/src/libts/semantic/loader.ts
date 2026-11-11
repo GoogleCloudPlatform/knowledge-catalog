@@ -2132,12 +2132,14 @@ export function inferMetricEntities(
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each field's expression warning, then each metric's
 // expression warning and its warning when it names no entity. A metric a
-// profile excludes gives none. A profile changes only these; a load's other
-// warnings, about actions, come after them.
+// profile excludes gives none. `textChecked` is LoadOptions.fieldTextChecked.
+// A profile changes only these; a load's other warnings, about actions, come
+// after them.
 export function entityAndMetricWarnings(
-    model: SemanticModel, preferred: string = DEFAULT_DIALECT): string[] {
+    model: SemanticModel, preferred: string = DEFAULT_DIALECT,
+    textChecked = false): string[] {
   const entities = model.entities ?? [];
-  const out = fieldWarnings(model, preferred, false);
+  const out = fieldWarnings(model, preferred, textChecked);
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);

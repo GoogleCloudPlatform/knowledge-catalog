@@ -441,17 +441,17 @@ export function loadProfileFile(
 }
 
 // The source dialects a command looked up before it loads
-// (LoadOptions.sourceDialects), and LoadOptions.thirdPartyImport, which kcmd
+// (LoadOptions.sourceDialects), LoadOptions.thirdPartyImport, which kcmd
 // import sets for a file another product wrote unless it writes a GOOGLE block
-// over that file. `sourceDatabases` holds the database each third-party
-// table's entry names, by entry name, for the one-database rule. With
-// `readWithoutDialect`, push's checks of which fields and entities the
-// expressions of a model file or a profile read parse an ANSI_SQL text as
-// generic SQL when no lookup read its tables' dialect, and leave out each name
-// whose reading depends on the dialect (see columnsWithoutDialect). Without
-// it, they skip such a text.
+// over that file, and LoadOptions.fieldTextChecked. `sourceDatabases` holds
+// the database each third-party table's entry names, by entry name, for the
+// one-database rule. With `readWithoutDialect`, push's checks of which fields
+// and entities the expressions of a model file or a profile read parse an
+// ANSI_SQL text as generic SQL when no lookup read its tables' dialect, and
+// leave out each name whose reading depends on the dialect (see
+// columnsWithoutDialect). Without it, they skip such a text.
 export type DialectLoad =
-    Pick<LoadOptions, 'sourceDialects'|'thirdPartyImport'>&{
+    Pick<LoadOptions, 'sourceDialects'|'thirdPartyImport'|'fieldTextChecked'>&{
       sourceDatabases?: ReadonlyMap<string, string>;
       readWithoutDialect?: boolean;
     };
@@ -459,8 +459,9 @@ export type DialectLoad =
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
-  // field takes, and the source dialects it was given.
-  load?: Pick<LoadOptions, 'dialect'|'sourceDialects'>;
+  // field takes, the source dialects it was given, and whether the caller
+  // checks each field's text on its table (LoadOptions.fieldTextChecked).
+  load?: Pick<LoadOptions, 'dialect'|'sourceDialects'|'fieldTextChecked'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
   warnings?: string[];
@@ -702,8 +703,11 @@ export function profileForDocument(
 export function appliedProfileWarnings(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
     profileName: string, own: string[], load: DialectLoad = {}): string[] {
-  const res =
-      profileForDocument(doc, profiles, profileName, load, {skipActions: true});
+  // Push reports a field the model file's own table cannot run on the model
+  // file, so the profile's load leaves it out, as the model file's load does.
+  const res = profileForDocument(
+      doc, profiles, profileName, {...load, fieldTextChecked: true},
+      {skipActions: true});
   if (res.kind !== 'file') return [];
   return res.warnings.filter(w => !own.includes(w))
       .map(w => `profile '${profileName}': ${w}`);
@@ -797,11 +801,12 @@ function warningsAfterProfile(
   const from = opts.from;
   const prefix = from ? `[${from.document}] ` : '';
   const preferred = opts.load?.dialect ?? DEFAULT_DIALECT;
-  const before =
-      new Set(entityAndMetricWarnings(model, preferred).map(w => prefix + w));
+  const checked = !!opts.load?.fieldTextChecked;
+  const before = new Set(entityAndMetricWarnings(model, preferred, checked)
+                             .map(w => prefix + w));
   const kept = (from?.warnings ?? []).filter(w => !before.has(w));
   const after =
-      entityAndMetricWarnings(applied, preferred).map(w => prefix + w);
+      entityAndMetricWarnings(applied, preferred, checked).map(w => prefix + w);
   return [...new Set([...after, ...kept])];
 }
 
