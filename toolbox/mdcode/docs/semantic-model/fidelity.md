@@ -278,11 +278,12 @@ interval arithmetic only as a column, a cast to DATE, a DATE literal, the
 current date or a date-adding function plus or minus `INTERVAL n unit` with a
 whole number n, in the units that give the source's value and type in BigQuery.
 It adds months, quarters and years only to a value it can see is a DATE, such
-as the current date, as it does weeks outside PostgreSQL, since BigQuery cannot
-add them to a TIMESTAMP. A SPANNER text keeps its date arithmetic, which is
-BigQuery's. From PostgreSQL, Snowflake and Databricks, it also translates a
-cast to DATE, a DATE literal, the current date or a date-adding function plus
-or minus a whole number n, which those databases add as n days.
+as the current date, as it does weeks outside PostgreSQL. BigQuery adds no
+month, quarter or year to a TIMESTAMP, and its DATE_ADD adds no week to one. A
+SPANNER text keeps its date arithmetic, which is BigQuery's. From PostgreSQL,
+Snowflake and Databricks, it also translates a cast to DATE, a DATE literal,
+the current date or a date-adding function plus or minus a whole number n,
+which those databases add as n days.
 Its warning about any other text names the first part it does not translate. It
 names a function and a date part as the author wrote them, such as `CHAR_LENGTH`
 or `DATEPART` with part `w`.
@@ -301,8 +302,8 @@ The BigQuery value can differ from the source's value in these cases:
   daylight saving change. MySQL, PostgreSQL, Snowflake and Databricks add a
   day in the session time zone, so a day there can be 23 or 25 hours, where
   BigQuery adds 24. Snowflake's default time zone, America/Los_Angeles, has
-  daylight saving time. MySQL also adds hours and minutes in the local time,
-  and gives a DATETIME where BigQuery gives a TIMESTAMP.
+  daylight saving time. MySQL also adds hours, minutes and seconds in the local
+  time, and gives a DATETIME where BigQuery gives a TIMESTAMP.
 - MySQL, SQL Server and PostgreSQL compare text by a collation. Text that
   differs only in letter case, accents or trailing spaces can give another
   value. PostgreSQL also ignores spaces and punctuation when it sorts text.
