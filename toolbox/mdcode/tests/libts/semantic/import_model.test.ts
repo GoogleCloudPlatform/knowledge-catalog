@@ -340,17 +340,15 @@ describe('conversion, strict mode, and translation', () => {
                    .errors).not.toContain(needed);
       });
 
-  // Push's checks need a model that loads. One that does not load keeps the
-  // remedy only when it has no deployments.
+  // Push's checks need a model that loads, with or without deployments.
   test.each([
-    ['without deployments', '', ", or remove 'expression' to leave the field unbound."],
-    ['with a deployment', `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`, '.'],
-  ])('offers to leave a field unbound in a model that does not load only %s', async (_, deployments, end) => {
-    const input = googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
-                             extra: `${deployments}    colour: red\n`});
-    expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true})).errors).toContain(
-        `field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one${end}`);
-  });
+    ['the repaired model does not load', '    colour: red\n', []],
+  ] as Array<[string, string, Array<{fileName: string; content: string}>]>)(
+      'offers no remedy that leaves a field unbound when %s', async (_, extra, profileFiles) => {
+        expect((await importSemanticModelYaml(googleDoc({fieldExpr: MDX_ONLY, extra}),
+                                              {flavor: 'google', strict: true, profileFiles})).errors)
+            .toContain("field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one.");
+      });
 
   test(
       'returns a Google-flavor model unchanged as a third-party file, and runs transpileModel in strict mode when requested',
