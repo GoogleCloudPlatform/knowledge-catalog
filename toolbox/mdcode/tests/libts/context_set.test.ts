@@ -179,6 +179,14 @@ describe('writing catalog.yaml', () => {
     expect(text.replace(/\r\n/g, '')).not.toContain('\n');
   });
 
+  test('keeps a byte order mark outside the keys it adds', () => {
+    fs.writeFileSync(manifest, '\uFEFFscope: entryGroup.p.us.sales\n');
+    writeContextSetMetadata(manifest, {displayName: 'Sales'});
+    expect(fs.readFileSync(manifest, 'utf8'))
+        .toBe('\uFEFFscope: entryGroup.p.us.sales\ndisplayName: Sales\n');
+    expect(readContextSetMetadata(manifest)).toEqual({displayName: 'Sales'});
+  });
+
   test('an empty value is kept while the entry group sets none', () => {
     const text = 'scope: entryGroup.p.us.sales\ndescription: ""\n';
     fs.writeFileSync(manifest, text);
