@@ -5,13 +5,13 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, targetProblem} from './deployment_target';
+import {deploymentTargetError, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -1322,7 +1322,10 @@ async function repairDocument(
  * bound, so the runs differ only in the one left unbound. An abstract entity
  * and its fields take no binding in either run. The checks read the repaired
  * model and the input's profile files. A model or profile file that does not
- * load cannot be checked, and gets no such remedy.
+ * load cannot be checked, and gets no such remedy. Neither does a model that
+ * push refuses before any check that reads a binding: one with a profile file
+ * named 'default', a deployment target in no accepted form, or a deployment
+ * whose profile no file declares.
  */
 async function offerUnbinding(
     doc: ImportDocument, opts: ImportSemanticModelOptions,
@@ -1353,6 +1356,11 @@ async function offerUnbinding(
   const docs = [{name, text: JSON.stringify(doc.root)}];
   // Every run reads the same text, so its profiles are read once.
   const declared = declaredProfiles(docs[0], profiles);
+  if ('errors' in withProfileFiles({document: name, model}, () => profiles) ||
+      'error' in resolveModelDeployments(model) ||
+      undeclaredProfileError(name, model, declared.map(p => p.name))) {
+    return;
+  }
   // A concrete entity with no source takes the table of the first concrete
   // entity that has one, so the dialect the model's sources imply stays the
   // same. With no such entity, it takes its own name, which implies no
