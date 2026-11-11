@@ -23,14 +23,19 @@
     "README.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "build:libts": "node -e \"require('fs').rmSync('build/ts/kcmd',{recursive:true,force:true})\" && npx tsc -p src/libts/tsconfig.json",
-    "build:cli": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--target=node','--format=cjs','--packages=external','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--banner=#!/usr/bin/env node','--outfile','build/ts/kcmd/cli.js','src/tool/main.ts'],{stdio:'inherit'});require('fs').chmodSync('build/ts/kcmd/cli.js',0o755)\"",
+    "build:cli": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--target=node','--format=cjs','--packages=external','--define','__KCMD_ENABLE_SEMANTIC__=false','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--banner=#!/usr/bin/env node','--outfile','build/ts/kcmd/cli.js','src/tool/main.ts'],{stdio:'inherit'});require('fs').chmodSync('build/ts/kcmd/cli.js',0o755)\"",
     "build:tool": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--compile','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--outfile','dist/kcmd','src/tool/main.ts'],{stdio:'inherit'})\"",
     "build": "npm run build:libts && npm run build:cli && npm run build:tool",
+    "pack:semantic": "node scripts/pack-semantic.mjs",
     "compile": "npx tsc --noEmit",
     "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/ ./tests/libts/okf/",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
+    "test:semantic-pkg": "npx bun test ./tests/tool/semantic_package_e2e.ts",
     "test:tool": "npx bun test ./tests/tool/",
     "test:gcp": "npx bun test ./tests/libts/gcp/",
     "test": "npm run test:libts && npm run test:gcp && npm run test:semantic && npm run test:tool",
