@@ -622,9 +622,11 @@ describe('validatePushRequirements gates actions', () => {
   });
 
   // GoogleSQL reads `@ note` and `` @`note` `` as the parameter `note`.
-  test.each([
+  test.each<[string, string[]]>([
     ['UPDATE orders SET note = @ note WHERE id = @id', ['binds \'@note\'']],
     ['UPDATE orders SET note = @`note` WHERE id = @id', ['binds \'@note\'']],
+    // GoogleSQL matches parameter names without regard to case.
+    ['DELETE FROM orders WHERE id = @ID', []],
   ])('reads the parameters of %p as GoogleSQL does', (statement, binds) => {
     const errs = validatePushRequirements([loaded([{
       name: 'A',

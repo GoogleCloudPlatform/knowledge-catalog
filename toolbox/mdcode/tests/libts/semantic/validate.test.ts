@@ -378,6 +378,8 @@ describe('action statement pre-flight', () => {
       ['each referenced parameter', GOOD],
       ['parameters written with a space or in backticks',
        'UPDATE account SET balance = @ amount WHERE account_id = @`id`'],
+      ['parameters written in another case',
+       'UPDATE account SET balance = @AMOUNT WHERE account_id = @Id'],
     ])('sends the declared type of %s', async (_, statement) => {
       const spanner = new SpannerClientMock();
       spanner.schema = mockSchema(ACCOUNT);
@@ -625,6 +627,9 @@ describe('action statement pre-flight', () => {
        {tz: 'TIMESTAMP', id: 'INT64'}],
       ['the types of parameters written with a space or in backticks',
        'UPDATE account SET balance = @ amount WHERE account_id = @`id`',
+       {amount: 'FLOAT64', id: 'INT64'}],
+      ['the declared types of parameters written in another case',
+       'UPDATE account SET balance = @AMOUNT WHERE account_id = @Id',
        {amount: 'FLOAT64', id: 'INT64'}],
     ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();

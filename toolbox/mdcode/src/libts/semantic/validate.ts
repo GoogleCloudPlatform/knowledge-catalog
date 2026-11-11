@@ -28,7 +28,7 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
+import {boundParameter, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -977,7 +977,7 @@ function sqlExecutorErrors(
   }
   const executor = action.executor;
   const errors: string[] = [];
-  const bindable = new Set(action.parameters.map(p => p.name));
+  const declared = action.parameters.map(p => p.name);
   executor.sql.statements.forEach((stmt, i) => {
     const at = `${where} has a sql executor whose statement ${i + 1}`;
     const text = stmt.trim();
@@ -1015,7 +1015,7 @@ function sqlExecutorErrors(
           `one statement per list entry.`);
     }
     for (const name of referencedParameters(text, dialect)) {
-      if (!bindable.has(name)) {
+      if (!boundParameter(name, declared, dialect)) {
         errors.push(
             `${at} binds '@${name}', but action '${action.name}' ` +
             `declares no parameter of that name.`);
@@ -3165,13 +3165,14 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 
 
 // The parameter types to send with one statement's pre-flight request, keyed by
-// `@name`.
+// the name each parameter is declared with.
 //
-// `names` are the parameters the statement reads. Only those whose declared
-// type maps to a store type we can state are sent. An `Opaque` type is exactly
-// the case we cannot: it means the model does not know the type, so asserting
-// one would invent a constraint the author never wrote. Those are left out and
-// the store resolves them from context.
+// `names` are the parameters the statement reads. Each binds a declared
+// parameter as BigQuery and Spanner match names, without regard to case. Only
+// those whose declared type maps to a store type we can state are sent. An
+// `Opaque` type is exactly the case we cannot: it means the model does not
+// know the type, so asserting one would invent a constraint the author never
+// wrote. Those are left out and the store resolves them from context.
 //
 // Sending the types at all is optional -- a statement with no parameter types
 // passes either backend's dry run, except that BigQuery types a parameter
@@ -3186,9 +3187,10 @@ function statementParameterTypes(
   const declared = new Map(action.parameters.map(p => [p.name, p.type]));
   const types: Record<string, string> = {};
   for (const name of names) {
-    const type = declared.get(name);
+    const parameter = boundParameter(name, [...declared.keys()]);
+    const type = parameter && declared.get(parameter);
     if (!type || type === 'Opaque') continue;
-    types[name] = codeFor(type);
+    types[parameter] = codeFor(type);
   }
   return types;
 }
@@ -3311,7 +3313,11 @@ export async function validateBigQueryActionStatements(
       const names = referencedParameters(pending.sql);
       const types =
           statementParameterTypes(pending.action, names, bigQueryCodeFor);
-      const untyped = names.some(name => !Object.hasOwn(types, name));
+      const declared = pending.action.parameters.map(p => p.name);
+      const untyped = names.some(name => {
+        const parameter = boundParameter(name, declared);
+        return !parameter || !Object.hasOwn(types, parameter);
+      });
       const res = await bq.query(
           project, pending.sql, undefined, true, untyped ? {} : types);
       if (res.status === 200) continue;

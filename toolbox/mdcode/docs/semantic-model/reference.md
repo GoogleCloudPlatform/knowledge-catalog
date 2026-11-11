@@ -927,6 +927,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares.
+  On BigQuery and Spanner, a name matches a declared one without regard to
+  case.
   Together those are what let every value be bound instead of interpolated, so
   an argument cannot reach the store as SQL. Push also refuses a statement
   that YAML reads differently from how it is written: an unquoted statement

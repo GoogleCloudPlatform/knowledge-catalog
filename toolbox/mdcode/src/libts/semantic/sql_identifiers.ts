@@ -344,6 +344,19 @@ export function referencedParameters(
   return [...names];
 }
 
+// The parameter of `declared` that `@name` binds in `dialect`, or undefined
+// when none does. GoogleSQL matches parameter names without regard to case,
+// so a name binds the parameter written the same way, or else the one
+// parameter written in another case. PostgreSQL matches them exactly.
+export function boundParameter(
+    name: string, declared: readonly string[],
+    dialect?: string|null): string|undefined {
+  if (declared.includes(name)) return name;
+  if (readsPostgres(dialect)) return undefined;
+  const same = declared.filter(d => d.toLowerCase() === name.toLowerCase());
+  return same.length === 1 ? same[0] : undefined;
+}
+
 
 // The DML verb a statement leads with, or '' when none can be read.
 //
