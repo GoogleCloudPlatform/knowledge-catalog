@@ -1950,7 +1950,8 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
 // reads fields as `entity.field`.
 interface Subject {
   ctx: string;
-  metric: boolean;
+  // The metric's anchor as written, for a metric.
+  metric?: Pick<Metric, 'authoredEntity'>;
   model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>;
 }
 
@@ -1991,7 +1992,8 @@ function expressionWarning(
   const vendor = dialects.find(d => d.dialect !== FALLBACK_DIALECT);
   return `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect, so a ${
              preferred} table cannot run its '${vendor?.dialect}' expression${
-      importHint(item, preferred.toUpperCase(), subject.model)}`;
+      importHint(
+          item, preferred.toUpperCase(), subject.model, subject.metric)}`;
 }
 
 // Whether `entity`'s table runs SQL in `dialect`. An abstract entity runs
@@ -2033,7 +2035,7 @@ function fieldWarnings(
     model: SemanticModel, preferred: string, textChecked: boolean): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, {ctx: `field '${e.name}.${f.name}'`, metric: false, model},
+               f, {ctx: `field '${e.name}.${f.name}'`, model},
                table, e.name, preferred, textChecked))
       .filter((w): w is string => w !== undefined);
 }
@@ -2046,13 +2048,13 @@ function metricWarning(
     metric: Pick<
         Metric,
         'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
-        'importedDialect'>,
+        'importedDialect'|'authoredEntity'>,
     reached: ReadonlyArray<string|undefined>,
     model: Pick<SemanticModel, 'version'|'thirdPartyImport'>&
     {entities: Entity[]},
     preferred: string): string|undefined {
   const entities = model.entities;
-  const subject = {ctx: `metric '${metric.name}'`, metric: true, model};
+  const subject = {ctx: `metric '${metric.name}'`, metric, model};
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
@@ -2632,7 +2634,8 @@ function convertMetric(
       },
       entityNames, dialect, impliedDialect, version);
   const ew = metricWarning(
-      {name: mt.name, dialects, stringForm, ...picked},
+      {name: mt.name, dialects, stringForm, ...picked,
+       authoredEntity: authored},
       [authored, ...referenced], {entities, version, thirdPartyImport},
       dialect);
   if (ew) warnings.push(ew);

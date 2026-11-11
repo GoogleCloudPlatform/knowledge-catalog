@@ -282,7 +282,9 @@ describe('expression warnings judge each expression on the table that runs it', 
 
   // An inherited field is judged on the table of each entity that inherits
   // it, and a metric on the tables of the entities it reaches, or on any
-  // table of the model when it reaches none.
+  // table of the model when it reaches none. Push refuses a metric with no
+  // entity that reaches no entity or two, so its warning names no import
+  // command.
   test('an inherited field and a metric are judged on the tables that run them', () => {
     const {warnings} = fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
       name: 'shop',
@@ -293,13 +295,17 @@ describe('expression warnings judge each expression on the table that runs it', 
       ],
       metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
                 {name: 'n', expression: expr('COUNT(*)', 'SPANNER')},
-                {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')}],
+                {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')},
+                {name: 'b', expression: expr('COUNT(c.x) + COUNT(o.x)', 'SPANNER')}],
     }]}, opts);
+    const noCommand = (name: string) => `metric '${name}': no 'BIGQUERY' or 'ANSI_SQL' ` +
+        "dialect, so a BIGQUERY table cannot run its 'SPANNER' expression; give it one";
     expect(warnings).toEqual([
       vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
-      vendor('SPANNER')[1].replace("'m'", "'n'"),
+      noCommand('n'),
       "metric 'n': expression references no known entity; it may not be placeable downstream",
       "metric 'r': no 'SPANNER' or 'ANSI_SQL' dialect, so the SPANNER table of entity 'o' cannot run it",
+      noCommand('b'),
     ]);
   });
 });

@@ -1442,13 +1442,36 @@ export function importCommand(
   return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
-// Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
-// of `model` with no text for `dialect`: true when `dialect` is BIGQUERY and
-// import's translator turns its imported text into BigQuery SQL.
+// Whether push refuses metric `m` of `model` for want of an anchor: `m` names
+// no entity, and its SQL reaches no declared entity or several. `read` gives
+// the columns a text reads, undefined when it cannot read the text. It
+// defaults to reading the text in the dialect the model's sources imply.
+export function lacksAnchor(
+    m: Parameters<typeof textsFor>[0]&Pick<Metric, 'authoredEntity'>,
+    model: Pick<SemanticModel, 'entities'>,
+    read = (text: string, dialect: string) =>
+        columnsForSource(text, dialect, sourcesDialect(model))): boolean {
+  if (m.authoredEntity !== undefined) return false;
+  const parsed =
+      expressionSources(m)
+          .filter(s => noSqlReason(s.text, s.dialect) === undefined)
+          .map(s => read(s.text, s.dialect));
+  const columns = parsed.flatMap(c => c ?? []);
+  return parsed.every(c => c !== undefined) && !columns.length ||
+      entitiesReached(columns, (model.entities ?? []).map(e => e.name))
+          .length > 1;
+}
+
+// Whether `kcmd import --transpile` gives BigQuery SQL to a field, or to
+// `metric`, of `model` with no text for `dialect`: true when `dialect` is
+// BIGQUERY, import's translator turns its imported text into BigQuery SQL,
+// and push does not refuse the metric for want of an anchor.
 export function importTranspiles(
     f: Parameters<typeof textsFor>[0], dialect: string|undefined,
-    model: Pick<SemanticModel, 'entities'>): boolean {
+    model: Pick<SemanticModel, 'entities'>,
+    metric?: Pick<Metric, 'authoredEntity'>): boolean {
   return dialect === 'BIGQUERY' && !!f.importedExpression &&
+      !(metric && lacksAnchor({...f, ...metric}, model)) &&
       translatesToBigQuery(f, (model.entities ?? []).map(e => e.name));
 }
 
@@ -1456,9 +1479,9 @@ export function importTranspiles(
 // one, or add one with import when import can.
 export function importHint(
     f: Parameters<typeof textsFor>[0], dialect: string,
-    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>):
-    string {
-  if (!importTranspiles(f, dialect, model)) return '; give it one';
+    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>,
+    metric?: Pick<Metric, 'authoredEntity'>): string {
+  if (!importTranspiles(f, dialect, model, metric)) return '; give it one';
   return `; give it one, or add one with '${
       importCommand('--transpile', model)}'`;
 }
@@ -1886,7 +1909,7 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
-          const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
+          const viaImport = importTranspiles(m, dialect, baseModel, m) ?
               ` add one with '${
                   importCommand('--transpile', baseModel)}',` :
               '';

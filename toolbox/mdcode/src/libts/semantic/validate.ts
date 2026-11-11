@@ -25,7 +25,7 @@ import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems,
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, lacksAnchor, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
@@ -355,7 +355,7 @@ function measurePlacementErrors(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
           `'BIGQUERY' or 'ANSI_SQL' expression${
-              importTranspiles(metric, 'BIGQUERY', model) ?
+              importTranspiles(metric, 'BIGQUERY', model, metric) ?
                   `, or add one with '${
                       importCommand('--transpile', model)}'` :
                   ''}.`);
@@ -2451,9 +2451,8 @@ export function validateExpressionReferences(
         errors.push(noSql);
       } else if (
           !partial &&
-          (!authored && unreadDialects.length === 0 &&
-               allColumns.length === 0 ||
-           !authored && reached.length > 1)) {
+          lacksAnchor(metric, model, (text, dialect) =>
+                          read(text, dialect).columns)) {
         const fixHint = model.version === '0.2.0.dev0' ?
             `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
             `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
