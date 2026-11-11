@@ -2126,6 +2126,31 @@ describe('a pull', () => {
          () => checkPull(model, error));
   }
 
+  // Push's advice to add a BigQuery text names the first error the import it
+  // suggests would stop on. Pull runs that import on the file it writes, with
+  // no table's dialect read, so its warning gives push's error whole.
+  test('warns with the error the import push suggests would stop on', () => {
+    const text = 'IFF(TRUE, id, 0)';
+    const order = onTable(
+        'Order',
+        'bigquery.googleapis.com/projects/test-project/datasets/d/tables/orders',
+        ['id']);
+    return checkPull({
+      name: 'commerce', relationships: [],
+      entities: [{...order, fields: [...order.fields, {
+        name: 'code', dialects: [{dialect: 'SNOWFLAKE', expression: text}],
+        importedExpression: text, importedDialect: 'SNOWFLAKE',
+      }]}],
+      metrics: [metric('m', 'COUNT(Gone.id)', 'Order')],
+    }, "field 'Order.code' in model 'commerce' (commerce) has no expression " +
+        "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Order' " +
+        "to a BIGQUERY source; give it one, or add one with 'kcmd import " +
+        "<file> --input first-party --flavor google --transpile' after " +
+        "fixing this: metric 'm' in model 'commerce' (commerce): 'Gone.id' " +
+        "has qualifier 'Gone', which is not a declared entity in model " +
+        "'commerce'; write 'entity.field' starting with a declared entity.");
+  });
+
   // With no table's dialect read, pull still reads which fields and entities
   // an ANSI_SQL expression reads, and warns as push refuses. It leaves to push
   // a text that one of the dialects the table may have cannot parse.

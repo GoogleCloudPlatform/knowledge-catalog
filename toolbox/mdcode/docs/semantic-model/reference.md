@@ -86,7 +86,10 @@ keeps its comments, key order and formatting, and writes a file whole when it
 cannot. An overview sidecar that push would read into the overview the catalog
 holds keeps its bytes, whatever its line endings. When push's checks that call
 no service would refuse the model pull writes, pull warns and gives push's first
-error. Pull leaves out push's checks that call a service, such as those that
+error. When that error suggests `kcmd import --transpile`, pull runs that import
+on the files it writes, as push does, without writing its output. The error then
+names the first error the import would stop on. Pull leaves out push's checks
+that call a service, such as those that
 need a table's SQL dialect, the source check and the Spanner graph check, so
 only push reports those. When
 the model entry's `kcmd-push-state` label says the last push stopped partway,

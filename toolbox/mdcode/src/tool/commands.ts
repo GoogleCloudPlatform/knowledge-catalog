@@ -557,22 +557,31 @@ async function scopeTranspileOutcomes(
 // that may get the advice to add a BigQuery text: null when it would write
 // its files, or the first error it would stop on. The import reads each
 // table's dialect from `dialects`, read with `load` for the same files, and
-// calls services with `ctx`. The caller has loaded the SQL parser.
+// calls services with `ctx`. With `fromTexts`, it reads the texts of `docs`
+// and of their profile files in place of the files on disk. The caller has
+// loaded the SQL parser.
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
-    dialects: SourceDialects): Promise<Map<string, string|null>> {
+    dialects: SourceDialects,
+    fromTexts = false): Promise<Map<string, string|null>> {
   const outcomes = new Map<string, string|null>();
   for (const doc of docs) {
     const model = transpilingModel(doc, profileDocs, load);
     if (!model) continue;
+    const source = fromTexts ? {
+      text: doc.text,
+      profileFiles: profileDocs(doc.name).map(
+          p => ({fileName: path.basename(p.path), content: p.text})),
+    } :
+                               undefined;
     const plan = await planImport(
         layout.modelPath(doc.name), {
           flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
           input: 'first-party',
           transpile: true,
         },
-        {readDialects: async () => dialects, api: () => ctx});
+        {source, readDialects: async () => dialects, api: () => ctx});
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
   return outcomes;
@@ -2193,7 +2202,10 @@ async function pullSemanticModel(
 // SQL for the checks of which fields and entities an expression reads, and
 // skips each name whose reading depends on the dialect. It refuses an
 // action's SQL statement only when every dialect refuses it. It reads the
-// overview sidecars on disk, as push does, unless given `overviews`.
+// overview sidecars on disk, as push does, unless given `overviews`. Like
+// push, it runs the import that the advice to add a BigQuery text suggests,
+// writing nothing, on `doc` and `profiles`, and that import reads no table's
+// dialect either.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
@@ -2203,7 +2215,13 @@ async function pushRefusal(
   if (parserError) return parserError;
   const docs = [doc];
   const profileDocs = () => profiles;
-  const load = {readWithoutDialect: true};
+  const noDialects: SourceDialects =
+      {dialects: new Map(), databases: new Map(), errors: [], unread: []};
+  const load = {
+    readWithoutDialect: true,
+    transpileOutcomes: await transpileOutcomes(
+        ctx, docs, profileDocs, layout, {}, noDialects, true),
+  };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load, overviews,
            pulled: true},
