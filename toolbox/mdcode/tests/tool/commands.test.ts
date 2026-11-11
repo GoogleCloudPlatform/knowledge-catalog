@@ -2480,6 +2480,32 @@ describe('a pull', () => {
              force("'mysales.yaml' and 'mysales.profile.prod.yaml'"));
        });
 
+  // A case-insensitive file system also gives the older profile directory
+  // 'Commerce.profiles/' to model 'commerce'. --force-remove names each file
+  // once, by its name on disk.
+  test('names a file in an older profile directory once when its model differs from the catalog\'s but for case',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('Commerce.yaml'));
+         fs.mkdirSync(local('Commerce.profiles'));
+         fs.writeFileSync(local('Commerce.profiles/prod.yaml'), ROUND_TRIP_PROFILE);
+         const caseless = (p: fs.PathLike) => String(p).replace(
+             /\/commerce(\.yaml$|\.profiles(?=\/|$))/, '/Commerce$1');
+         for (const name of ['existsSync', 'statSync', 'readdirSync', 'readFileSync'] as const) {
+           const real = fs[name] as any;
+           spyOn(fs, name).mockImplementation(((p: fs.PathLike, ...rest: unknown[]) =>
+               real(caseless(p), ...rest)) as any);
+         }
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds.replace('mysales', 'Commerce') + "which pull writes as " +
+             "'commerce.yaml'. Rename the file to 'commerce.yaml' and " +
+             "'Commerce.profiles/prod.yaml' to 'commerce.profile.prod.yaml' to " +
+             'keep them, or ' + force('them'));
+       });
+
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
     // Push rejects this sidecar, which the catalog's overview replaces, so it

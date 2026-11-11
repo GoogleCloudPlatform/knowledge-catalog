@@ -100,10 +100,14 @@ export function vanillaSiblingError(file: string, modelFile: string): string {
 }
 
 // The profile files in the older `<model>.profiles/` directory in `dir`, each
-// named by its file basename.
+// named by its file basename. The directory is looked up by its name as `dir`
+// lists it, so that on a case-insensitive file system, as on macOS and
+// Windows, two model names that differ only in case do not share it.
 export function legacyProfileFiles(dir: string, model: string):
     {name: string; path: string}[] {
-  const legacy = path.join(dir, `${model}.profiles`);
+  const sub = `${model}.profiles`;
+  if (!fs.existsSync(dir) || !fs.readdirSync(dir).includes(sub)) return [];
+  const legacy = path.join(dir, sub);
   if (!fs.statSync(legacy, {throwIfNoEntry: false})?.isDirectory()) return [];
   const out: {name: string; path: string}[] = [];
   for (const entry of fs.readdirSync(legacy)) {
