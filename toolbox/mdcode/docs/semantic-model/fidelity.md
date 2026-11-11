@@ -297,9 +297,9 @@ DATEADD reads a string of a whole number, such as '1', as the number. A column
 can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
 only the units that keep the value and type of each. It also adds months,
 quarters and years to a column, which BigQuery rejects for a TIMESTAMP column.
-From MySQL, Databricks and SQL Server it adds a week to a column as 7 days,
-which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks that
-is an expression becomes `7 * (n)` days. These are the units it adds, by
+From MySQL, Snowflake, Databricks and SQL Server it adds a week to a column as
+7 days, which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks
+that is an expression becomes `7 * (n)` days. These are the units it adds, by
 database. Milliseconds and microseconds go wherever seconds go, where the
 database names them: PostgreSQL, Snowflake and Databricks name both, and MySQL
 names microseconds.
@@ -327,8 +327,7 @@ names microseconds.
   cast to INTERVAL with fields, such as `'90 minutes'::interval hour`, and
   `INTERVAL '90 minutes' HOUR` become the INTERVAL PostgreSQL computes, here
   `INTERVAL 1 HOUR`.
-- Snowflake: seconds, minutes, hours, days, months, quarters and years to a
-  column, and every unit to a DATE. It writes CURRENT_TIMESTAMP as
+- Snowflake: every unit from seconds to years to a column and to a DATE. It writes CURRENT_TIMESTAMP as
   CURRENT_DATETIME('America/Los_Angeles') and adds days, weeks, months,
   quarters and years to it. An INTERVAL string
   names at most days, and DATEADD names any unit. Nothing is added to a value
@@ -398,9 +397,9 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
-- A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days can be an
-  hour off across a daylight saving change. Snowflake adds a day in its default
-  time zone, America/Los_Angeles, where BigQuery adds 24 hours.
+- A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days or weeks
+  can be an hour off across a daylight saving change. Snowflake adds a day in
+  its default time zone, America/Los_Angeles, where BigQuery adds 24 hours.
 - A MySQL TIMESTAMP column plus or minus a unit of a week or less gives a
   DATETIME in MySQL and a TIMESTAMP in BigQuery, with the same value in UTC.
 - MySQL's NOW() counts whole seconds and SQL Server's GETDATE() counts 1/300 of

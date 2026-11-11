@@ -544,7 +544,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "d::date + INTERVAL '1 {u}'", 'CAST(d AS DATE)', [], UNITS.filter(u => u !== 'QUARTER')],
     ['POSTGRES', "d::date + INTERVAL '1 hour' + INTERVAL '1 {u}'", 'CAST(d AS DATE) + INTERVAL 1 HOUR', [], UNITS.filter(u => u !== 'QUARTER')],
     ['POSTGRES', "NOW() + INTERVAL '1 {u}'", 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK'], {utc: ['MONTH', 'YEAR']}],
-    ['SNOWFLAKE', 'DATEADD({u}, 1, d)', 'd', ['DAY', 'MONTH', 'QUARTER', 'YEAR'], SUB_DAY],
+    ['SNOWFLAKE', 'DATEADD({u}, 1, d)', 'd', ['DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR'], SUB_DAY, {weekDays: true}],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_DATE)', "CURRENT_DATE('America/Los_Angeles')", DAY_OR_LONGER, SUB_DAY],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_TIMESTAMP)', "CURRENT_DATETIME('America/Los_Angeles')", DAY_OR_LONGER, []],
     ['DATABRICKS', 'd + INTERVAL 1 {U}', 'd', ['DAY', 'WEEK', 'MONTH', 'YEAR'], [], {weekDays: true}],

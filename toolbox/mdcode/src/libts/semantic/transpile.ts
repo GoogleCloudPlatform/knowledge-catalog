@@ -957,7 +957,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // lacks the day may differ from DATEADD's, so an interval string names a day
   // or less. An INTERVAL that names its unit outside its string is of another
   // type, which gives a timestamp for a DATE plus a day. Snowflake adds a whole
-  // number to a DATE as days and rejects it beside a timestamp. Its current
+  // number to a DATE as days and rejects it beside a timestamp. A week is 7
+  // days, so a column gets weeks as days. Its current
   // timestamp is a TIMESTAMP_LTZ, which the repairs write as the DATETIME in
   // America/Los_Angeles. Snowflake adds a day to it in local time, as BigQuery
   // adds one to a DATETIME. Import adds no hour, minute or second to it, which
@@ -977,7 +978,10 @@ const DATE_TABLES: Record<string, DateTable> = {
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP,
-        units: {...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
+        units: {
+          ...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column'),
+          ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ'),
+        },
         days: {form: '+', gives: 'column'},
       },
       DATE: {
