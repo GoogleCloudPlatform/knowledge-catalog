@@ -923,9 +923,10 @@ carries the write rather than a pointer to whoever performs it:
   unquoted ` #` as the start of a comment, so push refuses an unquoted
   statement with a comment on the same line or on a line indented under it.
   In a flow list, it refuses a comment line between an unquoted statement and
-  the next `,` or `]`. Push also refuses a statement whose lines YAML joins
-  into one when a SQL comment before the last line would cover the lines after
-  it.
+  the next `,` or `]`. YAML also joins the lines of an unquoted or quoted
+  statement, and of a `>` block, so push refuses such a statement when a line
+  before the last holds `--` or `/*`, or `#` on BigQuery or Spanner. It looks
+  for these anywhere on the line, inside a string too.
 - **Every `@name` a statement binds has to resolve** to a parameter your
   action declares. Anything you write another way is left alone — a literal
   passes, and so does a SQL function. Nothing is interpolated into the

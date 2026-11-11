@@ -930,9 +930,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   Together those are what let every value be bound instead of interpolated, so
   an argument cannot reach the store as SQL. Push also refuses a statement
   that YAML reads differently from how it is written: an unquoted statement
-  with a comment on the same line or on a line indented under it, and a
-  statement whose lines YAML joins into one when a SQL comment before the last
-  line would cover the lines after it. Where the key of an inserted row
+  with a comment on the same line or on a line indented under it, or in a
+  flow list on a line before the next `,` or `]`, and a statement whose lines
+  YAML joins into one when a line before the last holds `--` or `/*`, or `#`
+  on BigQuery or Spanner. Where the key of an inserted row
   comes from is the statement's own business: a SQL function such as
   `GENERATE_UUID()`, a declared parameter, or a key column left out where it has
   a default. `affects` has no bearing on it. A declared parameter hands the key

@@ -381,12 +381,21 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           "has a comment on the same line, so YAML reads the statement as " +
           "'UPDATE customer SET doc = doc'. If the text after ' #' is part of " +
           'the statement, write the statements as a block list')],
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['[UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k]'])},
+      errors: [has(
+          'has a SQL comment on a line YAML joins to the next one, so the ' +
+          'comment also covers the lines after it. Write the statements as a ' +
+          "block list, with this one as a block scalar with '|', which keeps " +
+          'its line breaks.')],
     }],
   },
   {
-    // With no deployment, only `--` is a SQL comment. On BigQuery `#` is one
-    // too, and on AlloyDB it is an operator.
-    name: 'refuses a SQL comment on a line YAML joins to the next one, as the statement\'s database reads it',
+    // `--` and `/*` are SQL comment markers everywhere. `#` is one on
+    // BigQuery, and an operator on AlloyDB. A marker counts anywhere on a line
+    // but the last, inside a string too.
+    name: 'refuses a SQL comment marker on a line YAML joins to the next one, as the statement\'s database reads it',
     files: {'commerce.yaml': modelWriting(
         ['- UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
     errors: [err(
@@ -395,26 +404,25 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         'next one, so the comment also covers the lines after it. Write it ' +
         "as a block scalar with '|', which keeps its line breaks.")],
     then: [{
-      files: {'commerce.yaml': modelWriting([
-        '- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
-        // A line break written as '\' joins the name back together.
-        '- "UPDATE cust\\', '  omer SET doc = doc WHERE c_key = @k"',
-      ])},
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
       code: 0,
     }, {
       files: {'commerce.yaml': modelWriting([
         '- "UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k"',
         "- 'UPDATE customer SET doc = doc -- every row?", "  WHERE c_key = @k'",
-        '- "UPDATE customer SET doc = doc -- every row? \\', '  WHERE c_key = @k"',
-        // The comment covers the opening quote or '/*' of text on a later line.
-        '- >', '  UPDATE customer SET doc = doc -- every row?', "  WHERE doc = 'a", '', "  b' AND c_key = @k",
-        '- >', '  UPDATE customer SET doc = doc -- every row?', '  /* a', '', '  b */ WHERE c_key = @k',
+        '- >', '  UPDATE customer SET doc = doc /* every row? */', '  WHERE c_key = @k',
+        "- UPDATE customer SET note = 'a -- b'", '  WHERE c_key = @k',
+        '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k',
+        '- UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
       ])},
-      errors: [1, 2, 3, 4, 5].map(n => has(`statement ${n} has a SQL comment`)),
+      errors: [1, 2, 3, 4].map(n => has(`statement ${n} has a SQL comment`)),
     }, {
       files: {'commerce.yaml': modelWriting([
         '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',
         '- UPDATE customer SET doc = doc#every row?', '  WHERE c_key = @k',
+        // A YAML comment on a '>' block's header is not part of the statement.
+        '- > # a note', '  UPDATE customer SET doc = doc WHERE c_key = @k',
       ], {deployments: ['g']})},
       errors: [has('statement 1 has a SQL comment'), has('statement 2 has a SQL comment')],
     }, {
