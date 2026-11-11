@@ -55,9 +55,10 @@ export interface GraphElement {
   // node's table they read. Empty for a node table.
   references: Array<{entity: string; columns: string[]}>;
   // Each field property the table lists under any of its labels, once, with
-  // the text the DDL writes for it, such as `dept AS code`, and the field's
-  // datatype.
-  properties: Array<{name: string; text: string; type?: DataType}>;
+  // the text the DDL writes for it, such as `dept AS code`, the SQL it reads
+  // in the table, such as `dept`, and the field's datatype.
+  properties:
+      Array<{name: string; text: string; sql: string; type?: DataType}>;
 }
 
 // What the generator knows about the graph when it hands the model's metrics
@@ -465,6 +466,7 @@ function renderNodeTable(
     properties: boundFields.map(f => ({
       name: f.name,
       text: renderFieldPropertyCore(f, entity, engine),
+      sql: localSql(f, entity, engine),
       type: f.type,
     })),
   });
@@ -594,6 +596,14 @@ function renderFieldPropertyCore(
   // the value.
   const local = quoteColumnIfReserved(sql.sql);
   return local === alias ? alias : `${local} AS ${alias}`;
+}
+
+// The SQL a field property reads, local to its table: what fieldSql gives, or
+// the field's name when it has no SQL.
+function localSql(
+    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+  const sql = fieldSql(field, owner, engine);
+  return 'sql' in sql ? sql.sql : field.name;
 }
 
 
@@ -804,6 +814,7 @@ function renderAssociationEdge(
     properties: listed.map(f => ({
       name: f.name,
       text: renderFieldPropertyCore(f, owner, engine),
+      sql: localSql(f, owner, engine),
       type: f.type,
     })),
   });

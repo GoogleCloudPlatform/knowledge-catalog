@@ -3891,8 +3891,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const table = (t: string) =>
         SPANNER_TARGET.replace(/graphs\/g$/, `tables/${t}`);
     // Entities employee and purchase on tables employees and Order, each with
-    // a field of the name and datatype `fields` gives, in a graph named
-    // `graph`.
+    // a field of the name, datatype and expression `fields` gives, in a graph
+    // named `graph`. The expression is `c` unless given.
     const graphOf =
         (graph: string, fields = [['code', 'String'], ['code', 'String']]) =>
             check(loadOne('commerce', `    deployments:
@@ -3903,7 +3903,8 @@ ${['employee', 'purchase'].map((e, i) => `      - name: ${e}
         primary_key: [id]
         fields:
           - { name: id, datatype: Integer, expression: id }
-          - { name: ${fields[i][0]}, datatype: ${fields[i][1]}, expression: c }
+          - { name: ${fields[i][0]}, datatype: ${fields[i][1]}, expression: ${
+              JSON.stringify(fields[i][2] ?? 'c')} }
 `).join('')}`));
     const IN = (problem: string) =>
         `model 'commerce' (commerce) deployment 'sp' targets Spanner${problem}`;
@@ -3941,6 +3942,27 @@ ${['employee', 'purchase'].map((e, i) => `      - name: ${e}
              [['code', 'String'], ['kind', 'Integer']],
            ]) {
         expect(graphOf('g', fields)).toEqual([]);
+      }
+    });
+
+    test('refuses a property expression that holds a subquery', () => {
+      const subquery = (owners: string) => IN(
+          `, where property 'code' of ${owners} holds a subquery, which ` +
+          'Spanner refuses in a property expression; write the expression ' +
+          'without a subquery.');
+      for (const [expression, other, errors] of [
+             ['(SELECT MAX(c) FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['EXISTS (SELECT 1 FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['c IN (SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['ARRAY(SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             // A property of one SQL in two tables is reported once.
+             ['(SELECT 1)', '(SELECT 1)',
+              [subquery("entity 'employee' and entity 'purchase'")]],
+             ['c IN (1, 2)', 'c', []],
+           ] as Array<[string, string, string[]]>) {
+        expect({expression, errors: graphOf('g', [
+                  ['code', 'String', expression], ['code', 'String', other],
+                ])}).toEqual({expression, errors});
       }
     });
   });
