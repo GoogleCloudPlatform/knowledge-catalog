@@ -239,7 +239,9 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'CAST(ds AS DATE) = CAST(GETDATE() AS DATE)', {sql: "CAST(ds AS DATE) = CAST(CURRENT_DATETIME('UTC') AS DATE)"}],
     ['POSTGRES', "DATE_TRUNC('month', \"order date\") = CURRENT_DATE AND t = NOW()", {sql: 'DATE_TRUNC(`order date`, MONTH) = CURRENT_DATE AND t = CURRENT_TIMESTAMP()'}],
     ['SNOWFLAKE', 'DATE_TRUNC(week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
-    ['DATABRICKS', "date_trunc('QUARTER', d)", {error: 'kcmd does not translate DATE_TRUNC'}],
+    ['DATABRICKS', "date_trunc('QUARTER', d)", {sql: 'TIMESTAMP_TRUNC(TIMESTAMP(d), QUARTER)'}],
+    ['DATABRICKS', 'date_trunc(MONTH, d)', {error: "kcmd does not translate DATE_TRUNC with part 'MONTH'"}],
+    ['DATABRICKS', "date_trunc('month', d) < current_date()", {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['POSTGRES', "date_part('year', d) * EXTRACT(MINUTE FROM t)", {sql: 'EXTRACT(YEAR FROM d) * EXTRACT(MINUTE FROM t)'}],
     ['SQLSERVER', 'DATEPART(month, d) - 1', {sql: 'EXTRACT(MONTH FROM d) - 1'}],
     ['SQLSERVER', 't >= GETDATE() OR d + 1 > d', {sql: "t >= CURRENT_DATETIME('UTC') OR d + 1 > d"}],
@@ -751,6 +753,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     }, w => `now() + INTERVAL '1 ${w}'`, u => `CURRENT_TIMESTAMP() + INTERVAL 1 ${u}`),
     ...spelled('DATABRICKS', {MONTH: ['month', 'months'], YEAR: ['year', 'years']},
                w => `current_date() + INTERVAL '1 ${w}'`, u => `DATE_ADD(CURRENT_DATE, INTERVAL 1 ${u})`),
+    ...spelled('DATABRICKS', {
+      YEAR: ['YEAR', 'yyyy', 'yy'], QUARTER: ['quarter'], MONTH: ['Month', 'mm', 'mon'], 'WEEK(MONDAY)': ['week'],
+      DAY: ['day', 'dd'], HOUR: ['hour'], MINUTE: ['minute'], SECOND: ['second'], MILLISECOND: ['millisecond'],
+      MICROSECOND: ['microsecond'],
+    }, w => `date_trunc('${w}', d)`, u => `TIMESTAMP_TRUNC(TIMESTAMP(d), ${u})`),
     ...spelled('SQLSERVER', {
       SECOND: ['second', 'ss', 's'], MINUTE: ['minute', 'mi', 'n'], HOUR: ['hour', 'hh'],
       DAY: ['day', 'dd', 'd', 'dayofyear', 'dy', 'y', 'weekday', 'dw', 'w'], WEEK: ['week', 'wk', 'ww'],

@@ -636,7 +636,7 @@ const FUNCTIONS: Record<string, [string[], number, number]> = {
   NULLIF: [except('spanner'), 2, 2],
   CONCAT: [['mysql', 'snowflake', 'databricks'], 1, Infinity],
   ROUND: [['tsql', 'snowflake'], 1, 2],
-  DATE_TRUNC: [['postgresql', 'snowflake'], 2, 2],
+  DATE_TRUNC: [['postgresql', 'snowflake', 'databricks'], 2, 2],
   DATE_PART: [['postgresql', 'snowflake', 'tsql'], 2, 2],
   DATEDIFF: [['tsql'], 3, 3],
 };
@@ -692,6 +692,22 @@ const PARTS = lookup({
 // DATE_TRUNC also takes a week, which starts on Monday in PostgreSQL and
 // Snowflake, as BigQuery's ISOWEEK does.
 const TRUNC_PARTS = lookup({...PARTS, week: 'ISOWEEK'});
+
+// The units of Databricks' date_trunc, by the string that names them in lower
+// case, as BigQuery's TIMESTAMP_TRUNC names them. A week starts on Monday.
+const DATABRICKS_TRUNC = lookup({
+  year: 'YEAR', yyyy: 'YEAR', yy: 'YEAR', quarter: 'QUARTER', month: 'MONTH', mm: 'MONTH', mon: 'MONTH',
+  week: 'WEEK(MONDAY)', day: 'DAY', dd: 'DAY', hour: 'HOUR', minute: 'MINUTE', second: 'SECOND',
+  millisecond: 'MILLISECOND', microsecond: 'MICROSECOND',
+});
+
+// BigQuery's name for the unit `part` names as DATE_TRUNC's first argument in
+// the engine's dialect `read`, or undefined. Databricks names it in a string.
+function truncUnit(part: any, read: string): string|undefined {
+  if (read !== 'databricks') return TRUNC_PARTS[String(partName(part)).toLowerCase()];
+  const literal = bare(part)?.literal;
+  return literal?.literal_type === 'string' ? DATABRICKS_TRUNC[String(literal.value).toLowerCase()] : undefined;
+}
 
 // `entries` as a lookup that inherits no keys, so that a name in a source
 // text, such as 'constructor', finds nothing.
@@ -1992,8 +2008,8 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 // when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
 // literal, a cast on the list, the current date or timestamp, date arithmetic
 // import translates, by its row in DATE_TABLES, PostgreSQL's DATE_TRUNC of a
-// DATE, or the first such value that MAX, COALESCE or a similar function
-// returns. A SPANNER text's current timestamp is a TIMESTAMP.
+// DATE, Databricks' date_trunc, or the first such value that MAX, COALESCE or
+// a similar function returns. A SPANNER text's current timestamp is a TIMESTAMP.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
@@ -2002,6 +2018,8 @@ function timeType(node: any, read: string): string|undefined {
   if (read === 'postgresql' && String(fn?.name).toUpperCase() === 'DATE_TRUNC' && isDate(fn.args?.[1])) {
     return 'TIMESTAMP';
   }
+  // Databricks truncates any value as a TIMESTAMP.
+  if (read === 'databricks' && String(fn?.name).toUpperCase() === 'DATE_TRUNC') return 'TIMESTAMP';
   const table = DATE_TABLES[read];
   const found = table && operandRow(b, read, table);
   if (typeof found === 'object') return table.rows[found.row].type;
@@ -2076,6 +2094,10 @@ function exactForm(node: any, read: string): any {
     const day = ['DAY', ...SUB_DAY].includes(unit);
     return unit && formCall(day ? 'TIMESTAMP(_1)' : `TIMESTAMP(DATE_TRUNC(_1, ${unit}))`, [args[1]]);
   }
+  // Databricks truncates a DATE, a TIMESTAMP or a TIMESTAMP_NTZ as a TIMESTAMP
+  // in UTC, as BigQuery truncates TIMESTAMP(x).
+  const unit = read === 'databricks' && name === 'DATE_TRUNC' && args.length === 2 && truncUnit(args[0], read);
+  if (unit) return formCall(`TIMESTAMP_TRUNC(TIMESTAMP(_1), ${unit})`, [args[1]]);
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   const pairs: [any[], string, boolean][] =
@@ -2179,10 +2201,8 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
   }
   const part = (arg: any) => String(partName(arg) ?? '?');
   if (name === 'DATE_TRUNC' || name === 'DATE_PART' || name === 'DATEDIFF') {
-    const parts = name === 'DATE_TRUNC' ? TRUNC_PARTS : PARTS;
-    if (!parts[part(args[0]).toLowerCase()]) {
-      return `${name} with part '${part(args[0])}'`;
-    }
+    const unit = name === 'DATE_TRUNC' ? truncUnit(args[0], read) : PARTS[part(args[0]).toLowerCase()];
+    if (!unit) return `${name} with part '${part(args[0])}'`;
     const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
   }
