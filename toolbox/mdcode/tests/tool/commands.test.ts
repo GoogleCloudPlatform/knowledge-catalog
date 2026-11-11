@@ -1788,6 +1788,33 @@ semantic_model:
              .not.toBe(PROFILE);
        });
 
+  // A writer other than push may leave a profile that binds a field the
+  // catalog's model lacks. The local profile file is the catalog's beside the
+  // local model file, but it does not load beside the catalog's.
+  test('writes a profile file whole when the catalog\'s profile binds a ' +
+           'field its model lacks',
+       async () => {
+         await pushed(BOTH(LARGER, LARGER_PROFILE));
+         const {models: [model]} = await pullKc.pullKnowledgeCatalog(
+             new CatalogClient(CTX),
+             {project: 'test-project', location: 'us',
+              entryGroup: 'commerce_eg'});
+         pulled({
+           ...model,
+           entities: model.entities.map(e => e.name !== 'Customer' ? e : {
+             ...e, fields: e.fields.filter(f => f.name !== 'since'),
+           }),
+         });
+
+         expect(await pull()).toBe(0);
+         expect(messages(console.warn as Mock<any>)).toContain(
+             'Warning: pull cannot change only the values that differ in ' +
+             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
+             'from the catalog.');
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .not.toContain('# Production bindings.');
+       });
+
   // A vanilla model's GOOGLE block profile names every metric in its
   // `metrics_exclude`. The catalog adds metric `buyers` and excludes it there.
   test('adds the metric the catalog adds to a vanilla profile\'s ' +
