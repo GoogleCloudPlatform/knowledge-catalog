@@ -334,9 +334,13 @@ names microseconds.
   plus hours, minutes or seconds.
 - Databricks: days, weeks, months and years to a column and to a DATE.
   date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
-  Three-argument dateadd and date_add, such as `dateadd(HOUR, 3, d)`, add
-  every unit to a DATE or the current timestamp, which they read as a
-  TIMESTAMP, and nothing to a column, which can keep its TIMESTAMP_NTZ type.
+  timestampadd, and three-argument dateadd and date_add, such as
+  `dateadd(HOUR, 3, d)`, add every unit to a DATE or the current timestamp,
+  which they read as a TIMESTAMP, and nothing to a column, which can keep its
+  TIMESTAMP_NTZ type. timestampdiff counts days and smaller units, and weeks
+  of 7 days, as BigQuery's TIMESTAMP_DIFF does between TIMESTAMP(x) values.
+  Databricks counts months, quarters and years by the calendar, so those stay
+  untranslated.
   Seconds, minutes and hours go to TIMESTAMP(x) of a DATE, its midnight in
   UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
   hours, days and weeks to the current timestamp, a TIMESTAMP, and months and

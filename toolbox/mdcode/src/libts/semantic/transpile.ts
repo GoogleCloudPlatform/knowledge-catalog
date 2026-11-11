@@ -639,6 +639,7 @@ const FUNCTIONS: Record<string, [string[], number, number]> = {
   DATE_TRUNC: [['postgresql', 'snowflake', 'databricks'], 2, 2],
   DATE_PART: [['postgresql', 'snowflake', 'tsql'], 2, 2],
   DATEDIFF: [['tsql'], 3, 3],
+  TIMESTAMPDIFF: [['databricks'], 3, 3],
 };
 
 // The parts of a node, by its kind, that import does not translate, each with
@@ -700,6 +701,25 @@ const DATABRICKS_TRUNC = lookup({
   week: 'WEEK(MONDAY)', day: 'DAY', dd: 'DAY', hour: 'HOUR', minute: 'MINUTE', second: 'SECOND',
   millisecond: 'MILLISECOND', microsecond: 'MICROSECOND',
 });
+
+// BigQuery's SQL for Databricks' timestampdiff(unit, _1, _2), by the unit's
+// name in lower case. Databricks counts the whole units from _1 to _2, toward
+// zero, reading a DATE as midnight UTC, as BigQuery's TIMESTAMP_DIFF counts
+// them between TIMESTAMP(x) values. A week is 7 days. Databricks counts months,
+// quarters and years by the calendar day and time, which TIMESTAMP_DIFF does
+// not take.
+const TIMESTAMP_DIFFS = lookup({
+  ...Object.fromEntries(['microsecond', 'millisecond', 'second', 'minute', 'hour', 'day'].map(
+      u => [u, `TIMESTAMP_DIFF(TIMESTAMP(_2), TIMESTAMP(_1), ${u.toUpperCase()})`])),
+  week: 'DIV(TIMESTAMP_DIFF(TIMESTAMP(_2), TIMESTAMP(_1), DAY), 7)',
+});
+
+// The SQL in TIMESTAMP_DIFFS for `part`, the unit of Databricks'
+// timestampdiff, which is a name, or undefined.
+function diffSql(part: any): string|undefined {
+  const name = bare(part)?.column?.name;
+  return name && !name.quoted ? TIMESTAMP_DIFFS[String(name.name).toLowerCase()] : undefined;
+}
 
 // BigQuery's name for the unit `part` names as DATE_TRUNC's first argument in
 // the engine's dialect `read`, or undefined. Databricks names it in a string.
@@ -787,7 +807,8 @@ interface DateTable {
   // The unit each word names, in lower case, in an INTERVAL string such as
   // '2 days' and as DATEADD's part.
   words: Record<string, Unit>;
-  // The unit each word names as the part of a `days or part` function.
+  // The unit each word names as the part of a `part` or `days or part`
+  // function, where the part's words differ from `words`.
   parts?: Record<string, Unit>;
   // The row a `days or part` function with a part reads its operand as, and
   // the rows of the operands it reads so.
@@ -1002,13 +1023,13 @@ const DATE_TABLES: Record<string, DateTable> = {
   // smaller units is of seconds, so a DATE plus it is a TIMESTAMP. It adds a
   // whole number to a DATE as days. Its current timestamp is a TIMESTAMP, and
   // a day there is 24 hours in UTC. It adds a month or a year to it in UTC.
-  // Its three-argument dateadd and date_add, whose part is a name, read a DATE
-  // as a TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of
+  // Its timestampadd, and its three-argument dateadd and date_add, whose part
+  // is a name, read a DATE as a TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of
   // a TIMESTAMP_NTZ, which a column may be, so a column gets no part. They add
   // a quarter, which an INTERVAL does not name.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
-    functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part'},
+    functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part', TIMESTAMPADD: 'part'},
     words: named({
       MICROSECOND: ['microseconds'], MILLISECOND: ['milliseconds'], SECOND: ['seconds'], MINUTE: ['minutes'],
       HOUR: ['hours'], DAY: ['days'], WEEK: ['weeks'], MONTH: ['months'], YEAR: ['years'],
@@ -1171,7 +1192,7 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   const spelling = byPart ? `${name} with part '${partName(part) ?? '?'}'` : name;
   // A part is a name, or a string where the dialect takes one.
   const named = !bare(part)?.column?.name?.quoted && (table.quotedParts !== false || !bare(part)?.literal);
-  const words = how === 'days or part' ? table.parts! : table.words;
+  const words = table.parts ?? table.words;
   const unit = !byPart ? 'DAY' : named ? words[String(partName(part)).toLowerCase()] : undefined;
   if (!unit) return spelling;
   const as = byDays ? {row: table.date, rows: Object.keys(table.rows)} : byPart ? table.partReads : undefined;
@@ -1543,6 +1564,7 @@ const DATE_FUNCTIONS = new Set(Object.values(DATE_TABLES).flatMap(t => Object.ke
 // DATEDIFF(end, start) take two dates.
 const PART_FUNCTIONS: Record<string, string[]> = {
   DATE_TRUNC: DIALECTS, DATE_PART: DIALECTS, DATEPART: DIALECTS, DATEDIFF: except('mysql', 'databricks'),
+  TIMESTAMPDIFF: ['databricks'],
 };
 
 // The functions written only with parentheses. Without them, quoted or not,
@@ -2039,7 +2061,7 @@ function returned(node: any): any[] {
 const NOT_TEXT = new Set([
   ...BOOLEANS, 'neg', 'add', 'sub', 'mul', 'div', 'sum', 'count', 'avg', 'abs', 'floor',
   'ceil', 'length', 'extract', ...Object.keys(PARTS), ...CURRENT, ...DATE_FUNCTIONS, 'ROUND',
-  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF',
+  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF',
 ]);
 
 // The message for `op`, || or CONCAT in the engine's dialect `read`, when one
@@ -2171,6 +2193,9 @@ function exactForm(node: any, read: string): any {
   // in UTC, as BigQuery truncates TIMESTAMP(x).
   const unit = read === 'databricks' && name === 'DATE_TRUNC' && args.length === 2 && truncUnit(args[0], read);
   if (unit) return formCall(`TIMESTAMP_TRUNC(TIMESTAMP(_1), ${unit})`, [args[1]]);
+  // Databricks' timestampdiff counts whole units (see TIMESTAMP_DIFFS).
+  const diff = read === 'databricks' && name === 'TIMESTAMPDIFF' && args.length === 3 && diffSql(args[0]);
+  if (diff) return formCall(diff, args.slice(1));
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   const pairs: [any[], string, boolean][] =
@@ -2273,8 +2298,9 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return typeof exact === 'string' ? exact : args;
   }
   const part = (arg: any) => String(partName(arg) ?? '?');
-  if (name === 'DATE_TRUNC' || name === 'DATE_PART' || name === 'DATEDIFF') {
-    const unit = name === 'DATE_TRUNC' ? truncUnit(args[0], read) : PARTS[part(args[0]).toLowerCase()];
+  if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF'].includes(name)) {
+    const unit = name === 'DATE_TRUNC' ? truncUnit(args[0], read) :
+        name === 'TIMESTAMPDIFF' ? diffSql(args[0]) : PARTS[part(args[0]).toLowerCase()];
     if (!unit) return `${name} with part '${part(args[0])}'`;
     const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
