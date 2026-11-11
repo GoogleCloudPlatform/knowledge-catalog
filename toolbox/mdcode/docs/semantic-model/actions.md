@@ -837,9 +837,11 @@ blast radius naming something it can't resolve.
 
 `kcmd push --validate-only` runs the checks a push runs, apart from the
 Knowledge Catalog checks on the entry group and the custom types, and deploys
-nothing. It loads your model, checks each action against the ontology that same
-model declares, asks your store about any DML those actions carry, and prints
-every error it finds. A push clears the same gate before it writes anything, so
+nothing. It loads your model and checks each action against the ontology that
+same model declares. Once those checks pass, it asks BigQuery or Spanner to plan
+any DML those actions carry for each deployment the push selects, and prints
+every error it finds. Push sends an AlloyDB deployment's DML nowhere, so no
+store checks it. A push clears the same gate before it writes anything, so
 whatever this reports would have stopped your deploy:
 
 ```bash
