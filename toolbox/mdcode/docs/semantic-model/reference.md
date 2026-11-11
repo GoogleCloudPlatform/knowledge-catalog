@@ -1015,7 +1015,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   index, sequence, change stream, schema, role, constraint or model of the
   database, ignoring case. It refuses a node or edge table whose key columns
   hold neither the table's primary key nor the columns of a unique index. Push
-  stops when it cannot open a session on the database.
+  does not check the key of a view. Spanner accepts a view's key only when it
+  is the primary key of the one table the view reads, or the view's `GROUP BY`
+  or `SELECT DISTINCT` columns. Push stops when it cannot open a session on
+  the database.
   *(live — needs query access to the database)*
 * **Every `sql` executor statement is accepted by the store it will run
   against.** Each statement is sent to the bound store with the request that
