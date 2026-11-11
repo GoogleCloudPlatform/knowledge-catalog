@@ -2247,8 +2247,9 @@ describe('a pull', () => {
 
   // A local model file that holds the catalog's model under another name is
   // kept by renaming it and its profile files, unless a file the rename
-  // writes is there already or an earlier file is renamed to it. The refusal
-  // names what to do, and writes nothing.
+  // writes is there already, an earlier file is renamed to it, or two of its
+  // files would be renamed to one. The refusal names what to do, and writes
+  // nothing.
   const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
   test.each([
     ['the rename that keeps it', ['mysales.yaml'],
@@ -2260,6 +2261,19 @@ describe('a pull', () => {
          "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
          "'commerce.profile.prod.yaml' to keep them, or re-run with " +
          "--force-remove to delete them and pull the catalog's.", 'commerce'],
+    ['the rename of each file in the older profile directory',
+     ['mysales.yaml', 'mysales.profiles/prod.yaml'],
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' and 'mysales.profiles/prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or re-run with " +
+         "--force-remove to delete them and pull the catalog's.", 'commerce'],
+    ['no two renames onto one profile file',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'mysales.profiles/prod.yaml'],
+     holds + "and its profile 'prod' is in both 'mysales.profile.prod.yaml' " +
+         "and 'mysales.profiles/prod.yaml'. Delete one of them, or re-run " +
+         "with --force-remove to delete 'mysales.yaml', " +
+         "'mysales.profile.prod.yaml' and 'mysales.profiles/prod.yaml' and " +
+         "pull the catalog's.", 'commerce'],
     ['no rename onto the catalog model\'s file',
      ['commerce.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'],
      holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
@@ -2303,7 +2317,8 @@ describe('a pull', () => {
        writeRoundTripWorkspace();
        for (const f of fs.readdirSync(entryGroupDir())) fs.rmSync(local(f));
        for (const f of files) {
-         fs.writeFileSync(local(f), f.includes('.profile.') ?
+         fs.mkdirSync(path.dirname(local(f)), {recursive: true});
+         fs.writeFileSync(local(f), f.includes('.profile') ?
              ROUND_TRIP_PROFILE :
              ROUND_TRIP_MODEL.replace('name: commerce', `name: ${
                  typeof declares === 'string' ? declares : declares[f]}`));
@@ -2312,7 +2327,10 @@ describe('a pull', () => {
 
        expect(await pull()).toBe(1);
        expect(messages(console.error)).toBe(error);
-       expect(fs.readdirSync(entryGroupDir()).sort()).toEqual([...files].sort());
+       const left = fs.readdirSync(
+           entryGroupDir(), {encoding: 'utf8', recursive: true});
+       expect(left.filter(f => f.endsWith('.yaml')).sort())
+           .toEqual([...files].sort());
      });
 
   test('under --dry-run nothing is written or deleted', async () => {

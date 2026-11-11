@@ -1858,16 +1858,28 @@ async function pullSemanticModel(
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
   let removed = 0;
   if (staleLocal.length) {
+    // A local model's files: its model file, then each of its profile files
+    // with its profile name, which a file in the older `<model>.profiles/`
+    // directory takes from its file name. --force-remove deletes these files
+    // for a stale model, and the advice below names the same files.
+    const localFiles = (name: string) => [
+      {path: layout.modelPath(name), profileName: undefined},
+      ...layout.localProfileFiles(name).map(f => ({
+        path: f.path,
+        profileName: f.profileName ?? path.basename(f.path, '.yaml'),
+      })),
+    ];
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
       // kept by renaming it and its profile files to the files pull writes,
-      // unless one of those files is already there or an earlier file is
-      // renamed to it. The advice to delete either model file names its
-      // profile files too.
-      const file = (name: string) => path.basename(layout.modelPath(name));
+      // unless one of those files is already there, an earlier file is
+      // renamed to it, or two of its files would be renamed to one. The
+      // advice to delete either model file names its profile files too.
+      const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
+      // A file by its path in the entry group directory.
+      const shown = (p: string) => path.relative(groupDir, p);
+      const file = (name: string) => shown(layout.modelPath(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
-      const profileFilesOf = (name: string) =>
-          layout.localProfileFiles(name).filter(f => f.profileName !== undefined);
       const errors: string[] = [];
       const others: string[] = [];
       // Each model an earlier rename keeps, and the model file that holds it.
@@ -1876,16 +1888,15 @@ async function pullSemanticModel(
         const declared = layout.declaredModelName(name);
         if (declared !== undefined &&
             catalogPaths.has(layout.modelPath(declared))) {
-          const profileFiles = profileFilesOf(name);
-          const own =
-              [file(name), ...profileFiles.map(f => path.basename(f.path))];
+          const files = localFiles(name);
+          const own = files.map(f => shown(f.path));
           const stem = file(declared).replace(/\.yaml$/, '');
-          const targets = [
-            file(declared),
-            ...profileFiles.map(f => `${stem}.profile.${f.profileName}.yaml`),
-          ];
-          const dir = path.dirname(layout.modelPath(declared));
-          const taken = targets.filter(t => fs.existsSync(path.join(dir, t)));
+          const targets = files.map(
+              f => f.profileName === undefined ?
+                  file(declared) :
+                  `${stem}.profile.${f.profileName}.yaml`);
+          const taken = [...new Set(targets)].filter(
+              t => fs.existsSync(path.join(groupDir, t)));
           // The catalog's model file when it holds this model too, else an
           // earlier file renamed to it.
           const holder = layout.declaredModelName(stem) === declared ?
@@ -1895,8 +1906,8 @@ async function pullSemanticModel(
             // The other model file, if any, that the advice may delete.
             const other =
                 holder ?? (taken.includes(file(declared)) ? stem : undefined);
-            const withProfiles = profileFiles.length ||
-                (other !== undefined && profileFilesOf(other).length);
+            const withProfiles = files.length > 1 ||
+                (other !== undefined && localFiles(other).length > 1);
             errors.push(
                 `local model file '${file(name)}' holds model '${declared}', ` +
                 (holder !== undefined ?
@@ -1910,13 +1921,25 @@ async function pullSemanticModel(
                 `pull the catalog's.`);
             continue;
           }
+          // A sibling profile file and a file in the older directory with
+          // the same profile name would be renamed to one file.
+          const dup = targets.findIndex((t, i) => targets.indexOf(t) < i);
+          if (dup >= 0) {
+            const both = own.filter((_, i) => targets[i] === targets[dup]);
+            errors.push(
+                `local model file '${file(name)}' holds model '${declared}', ` +
+                `and its profile '${files[dup].profileName}' is in both ${
+                    quoted(both)}. Delete one of them, or re-run with ` +
+                `--force-remove to delete ${quoted(own)} and pull the ` +
+                `catalog's.`);
+            continue;
+          }
           claimed.set(declared, name);
           const renames = [
             `the file to '${targets[0]}'`,
-            ...profileFiles.map(
-                (f, i) => `'${path.basename(f.path)}' to '${targets[i + 1]}'`),
+            ...own.slice(1).map((f, i) => `'${f}' to '${targets[i + 1]}'`),
           ];
-          const them = profileFiles.length ? 'them' : 'it';
+          const them = files.length > 1 ? 'them' : 'it';
           errors.push(
               `local model file '${file(name)}' holds model '${declared}', ` +
               `which pull writes as '${file(declared)}'. Rename ${
@@ -1944,10 +1967,7 @@ async function pullSemanticModel(
     for (const name of staleLocal) {
       // Its profile files go too, since push refuses a profile file with no
       // model beside it.
-      const paths = [
-        layout.modelPath(name),
-        ...layout.localProfileFiles(name).map(f => f.path),
-      ];
+      const paths = localFiles(name).map(f => f.path);
       if (!options.dryRun) {
         layout.removeModelDocument(name);
         for (const p of paths.slice(1)) {
