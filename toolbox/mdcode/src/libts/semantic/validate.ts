@@ -1215,13 +1215,22 @@ function joinedLineMarker(statement: yaml.Scalar, text: string,
                     .split(/\r?\n/)
                     // A '>' block's first line is its header.
                     .slice(folded ? 1 : 0);
-  const indent = (line: string) => /^[ \t]*/.exec(line)![0].length;
-  // A '>' block's indent is its first line's.
-  const blockIndent = indent(lines.find(line => line.trim()) ?? '');
+  // YAML reads a line of spaces and tabs only as blank. A no-break space is
+  // text.
+  const blank = (line: string) => /^[ \t]*$/.test(line);
+  // A '>' block's indent is the spaces before its first line's text, and a
+  // line with a space or tab after them is more indented.
+  const blockIndent = /^ */.exec(lines.find(line => !blank(line)) ?? '')![0]
+                          .length;
   const kept = (line: string) =>
-      !line.trim() || (folded && indent(line) > blockIndent);
+      blank(line) || (folded && /^[ \t]/.test(line.slice(blockIndent)));
+  // A double-quoted line that ends in an escaped line break also joins the
+  // line after one blank line, as the yaml library reads it.
+  const escaped = (line: string) =>
+      statement.type === 'QUOTE_DOUBLE' && /(?<!\\)(\\\\)*\\$/.test(line);
   for (let i = 0; i + 1 < lines.length; i++) {
-    if (kept(lines[i]) || kept(lines[i + 1])) continue;
+    const next = escaped(lines[i]) && blank(lines[i + 1]) ? i + 2 : i + 1;
+    if (kept(lines[i]) || next >= lines.length || kept(lines[next])) continue;
     const found = marker.exec(lines[i]);
     if (found) return found[0];
   }

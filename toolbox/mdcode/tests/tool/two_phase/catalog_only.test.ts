@@ -461,8 +461,16 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         '- >', '  UPDATE customer SET doc = doc -- every row?', '    WHERE c_key = @k',
         // The first marker on the line is named.
         '- >', '  UPDATE customer SET doc = doc /* -- */', '  WHERE c_key = @k',
+        // A line holding only a no-break space is text, which YAML joins.
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '  \u00a0', '  WHERE c_key = @k',
+        // A tab after the indent makes a '>' block's first line more
+        // indented.
+        '- >', '  \tUPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
+        // The yaml library joins a double-quoted line that ends in an escaped
+        // line break to the line after one blank line.
+        '- "UPDATE customer SET doc = doc -- every row?\\', '', '  WHERE c_key = @k"',
       ])},
-      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*']].map(
+      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--']].map(
           ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
     }, {
       files: {'commerce.yaml': modelWriting([
