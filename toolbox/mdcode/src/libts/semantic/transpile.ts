@@ -479,8 +479,9 @@ function transpileWith(
 function engineTranslation(
     engine: PolyglotEngine, text: string, dialect: string, read: string,
     write: string): {sql: string}|{error: string} {
-  const sql = write === 'bigquery' && EXTRACT_FIRST.has(read) ?
-      withExtract(engine, text, dialect, read) : text;
+  const prepared = write === 'bigquery' ? forBigQuery(engine, text, dialect, read) : {sql: text};
+  if ('error' in prepared) return prepared;
+  const sql = prepared.sql;
   // The engine reads some expressions only after SELECT, such as one that
   // starts with `((`. T-SQL reads `SELECT a = b` as an alias, so the engine
   // reads the expression alone first. After SELECT, the engine writes the
@@ -608,11 +609,10 @@ const KINDS: Record<string, string[]> = Object.fromEntries([
 // Server's CONCAT skip a NULL, where BigQuery's gives NULL. PostgreSQL and
 // MySQL round a FLOAT halfway between two numbers to the even one, and
 // Databricks rounds a DOUBLE through its shortest decimal text. Databricks'
-// date_sub of a timestamp gives a DATE, which the engine does not write.
-// Databricks' date_trunc, dateadd and three-argument date_add give a
-// TIMESTAMP, where BigQuery gives a DATE or a DATETIME. An ANSI_SQL ROUND of
-// a FLOAT rounds to the even number on PostgreSQL tables.
-// SPANNER_FUNCTIONS below lists Spanner's.
+// date_trunc, dateadd and three-argument date_add give a TIMESTAMP, where
+// BigQuery gives a DATE or a DATETIME. An ANSI_SQL ROUND of a FLOAT rounds to
+// the even number on PostgreSQL tables. DATE_TABLES gives what DATEADD,
+// DATE_ADD and DATE_SUB add. SPANNER_FUNCTIONS below lists Spanner's.
 const FUNCTIONS: Record<string, [string[], number, number]> = {
   NULLIF: [except('spanner'), 2, 2],
   CONCAT: [['mysql', 'snowflake', 'databricks'], 1, Infinity],
@@ -626,7 +626,7 @@ const FUNCTIONS: Record<string, [string[], number, number]> = {
   DATE_PART: [['postgresql', 'snowflake', 'tsql'], 2, 2],
   DATEADD: [['snowflake', 'tsql'], 3, 3],
   DATE_ADD: [['mysql', 'databricks'], 2, 2],
-  DATE_SUB: [['mysql'], 2, 2],
+  DATE_SUB: [['mysql', 'databricks'], 2, 2],
   DATEDIFF: [['tsql'], 3, 3],
 };
 
@@ -685,57 +685,399 @@ const TRUNC_PARTS: Record<string, string> = {...PARTS, week: 'ISOWEEK'};
 // kcmd cannot see a column's type, so it adds them only to a DATE it can see.
 const MONTH_PARTS = new Set(['month', 'quarter', 'year']);
 
-// The one shape of `+` and `-` with an INTERVAL that import translates from a
-// dialect: a column, a cast to DATE, a DATE literal or a call of one of its
-// `functions`, plus or minus INTERVAL n unit with a whole number n. A `+` may
-// name the INTERVAL first. The repairs write a unit in `dateAdd` as DATE_ADD or
-// DATE_SUB, which keep a DATE a DATE, as the source does. They keep the `+` or
-// `-` of a unit in `operator`, which gives a DATETIME for a DATE, where the
-// source gives a timestamp without time zone. `notes` says why a unit is not
-// translated. With `days`, the dialect reads a whole number n in place of the
-// INTERVAL as INTERVAL n DAY, and the repairs write DATE_ADD or DATE_SUB for a
-// call of one of its `functions` plus or minus n. A cast to DATE or a DATE
-// literal plus or minus n keeps the `+` or `-`, which BigQuery also reads as
-// days.
-interface IntervalShape {
-  functions: string[];
-  dateAdd: string[];
-  operator: string[];
-  notes?: Record<string, string>;
-  days?: boolean;
+// --- Date arithmetic ------------------------------------------------------------
+//
+// Import translates a date or time plus or minus a whole number of one unit
+// only as its dialect's table in DATE_TABLES gives. Each spelling of the same
+// arithmetic reads as one operand, amount and unit, and so finds the same row:
+// MySQL's `x - INTERVAL 7 DAY` and DATE_SUB(x, INTERVAL 7 DAY), or Snowflake's
+// `x - INTERVAL '7 days'` and DATEADD(day, -7, x). A `+` may name the INTERVAL
+// first. The row gives the BigQuery SQL, which import writes itself (see
+// dateSql), since the engine writes some units as another unit, such as
+// Snowflake's DATEADD(m, 1, x), where m is a minute.
+
+// The units import adds, as BigQuery names them.
+const UNITS = ['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR'] as const;
+type Unit = typeof UNITS[number];
+
+// What import writes for an amount added to an operand: BigQuery's DATE_ADD or
+// DATE_SUB, or its `+` or `-`, and the row of the result in the same table.
+interface Addition {
+  form: 'DATE_ADD'|'+';
+  gives: string;
 }
 
-// The IntervalShape of each dialect. SQL Server has no INTERVAL. An ANSI_SQL
-// text runs by the rules of its tables' database, and the databases add a unit
-// to a DATE as different types. SPANNER arithmetic is BigQuery's.
-// PostgreSQL, Snowflake and Databricks add a whole number to a DATE as days
-// and give a DATE, as BigQuery's DATE_ADD does, and reject a timestamp plus a
-// number. MySQL reads a date plus a number as a number, and SQL Server's
-// result depends on the date's type.
-const INTERVAL_SHAPES: Record<string, IntervalShape> = {
+// One row of a dialect's table: an operand of one type in the source.
+interface DateRow {
+  // The operand's type in BigQuery. A column has none, since import cannot see
+  // its type.
+  type?: 'DATE'|'DATETIME'|'TIMESTAMP';
+  // How a message names the operand.
+  name: string;
+  // The units import adds to the operand.
+  units: Partial<Record<Unit, Addition>>;
+  // What import writes for a whole number n added, which the dialect adds as n
+  // days: DATE_ADD or DATE_SUB with INTERVAL n DAY, or the sum as the source
+  // writes it, which BigQuery also adds as days to a DATE and rejects beside a
+  // timestamp, as the source does.
+  days?: Addition;
+}
+
+// The date arithmetic table of one dialect.
+interface DateTable {
+  // The rows, by the operand's type in the source. The row `column` is a
+  // column, whose type import cannot see.
+  rows: Record<string, DateRow>;
+  // The row of a cast to DATE, a DATE literal and the current date.
+  date: string;
+  // The functions that give the current timestamp, and their row.
+  now: {functions: string[]; row: string};
+  // The functions that add a unit, by name, each with how it names the amount:
+  // `interval` for MySQL's DATE_ADD(x, INTERVAL n unit), `part` for
+  // DATEADD(part, n, x), and `days` for Databricks' date_add(x, n), which reads
+  // x as a DATE and adds n days.
+  functions: Record<string, 'interval'|'part'|'days'>;
+  // The unit each word names, in lower case, in an INTERVAL string such as
+  // '2 days' and as DATEADD's part.
+  words: Record<string, Unit>;
+  // False when an INTERVAL may not name its unit outside its string, as in
+  // INTERVAL 1 DAY or INTERVAL '1' DAY.
+  keywords?: false;
+  // The units an INTERVAL may name, when the dialect documents fewer than for
+  // its function.
+  intervals?: Unit[];
+  // Why import adds a unit to no operand, or to the operands of some rows, by
+  // unit, for a message.
+  notes?: Partial<Record<Unit, string>>;
+}
+
+// `units`, each added in `form`, giving the row `gives`.
+function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
+    Partial<Record<Unit, Addition>> {
+  return Object.fromEntries(units.map(u => [u, {form, gives}]));
+}
+
+// The unit each word in `words` names, by the word in lower case.
+function named(words: Partial<Record<Unit, string[]>>): Record<string, Unit> {
+  return Object.fromEntries(Object.entries(words).flatMap(
+      ([unit, list]) => [unit.toLowerCase(), ...list!].map(w => [w, unit as Unit])));
+}
+
+const SUB_DAY: Unit[] = ['SECOND', 'MINUTE', 'HOUR'];
+const DAY_OR_LONGER: Unit[] = ['DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR'];
+const MAY_BE_TIMESTAMP = 'a value that may be a TIMESTAMP';
+
+// The date arithmetic table of each dialect, by the engine's name. Each
+// dialect runs under its default settings: PostgreSQL, MySQL, SQL Server and
+// Databricks in UTC, and Snowflake in America/Los_Angeles, with TIMESTAMP read
+// as TIMESTAMP_NTZ. A column may be a DATE, a DATETIME or a TIMESTAMP in
+// BigQuery, so its row holds only the units that give the source's value and
+// type for each. BigQuery's DATE_ADD adds no hour, minute or second to a DATE,
+// and no week, month, quarter or year to a TIMESTAMP. Its `+` gives a DATETIME
+// for a DATE plus any INTERVAL, and adds no month, quarter or year to a
+// TIMESTAMP. An ANSI_SQL text runs by the rules of its tables' database, and
+// the databases add a unit to a DATE as different types. A SPANNER text keeps
+// its arithmetic, which is BigQuery's.
+const DATE_TABLES: Record<string, DateTable> = {
+  // MySQL gives a DATE for a DATE plus a day or longer, and a DATETIME for a
+  // DATE plus an hour, a minute or a second, as BigQuery's DATE_ADD and `+`
+  // do. Its current timestamp is a DATETIME, which the repairs write as
+  // CURRENT_DATETIME('UTC'). It reads a date plus a number as a number.
   mysql: {
-    functions: ['CURRENT_DATE', 'CURDATE', 'DATE_ADD', 'DATE_SUB'],
-    dateAdd: ['day', 'week', 'month', 'quarter', 'year'], operator: ['hour', 'minute', 'second'],
+    date: 'DATE', now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'DATETIME'},
+    functions: {DATE_ADD: 'interval', DATE_SUB: 'interval'}, words: {},
+    rows: {
+      column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
+      DATE: {
+        type: 'DATE', name: 'a DATE',
+        units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'DATETIME')},
+      },
+      DATETIME: {type: 'DATETIME', name: 'a DATETIME', units: adds(UNITS, 'DATE_ADD', 'DATETIME')},
+    },
   },
+  // PostgreSQL gives a timestamp without time zone for a date plus any
+  // INTERVAL, as BigQuery's `+` gives a DATETIME, and a date for a date plus a
+  // whole number. Its current timestamp is a timestamptz, a TIMESTAMP in
+  // BigQuery, and a day there is 24 hours in UTC. It has no INTERVAL of a
+  // quarter.
   postgresql: {
-    functions: ['CURRENT_DATE'], dateAdd: [],
-    operator: ['day', 'week', 'month', 'year', 'hour', 'minute', 'second'], days: true,
+    date: 'date', now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'timestamptz'},
+    functions: {},
+    words: named({
+      SECOND: ['seconds', 'sec', 'secs', 's'], MINUTE: ['minutes', 'min', 'mins', 'm'],
+      HOUR: ['hours', 'h', 'hr', 'hrs'], DAY: ['days', 'd'], WEEK: ['weeks', 'w'],
+      MONTH: ['months', 'mon', 'mons'], YEAR: ['years', 'y', 'yr', 'yrs'],
+    }),
+    rows: {
+      column: {
+        name: MAY_BE_TIMESTAMP, units: adds(['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK'], '+', 'column'),
+        days: {form: '+', gives: 'column'},
+      },
+      date: {
+        type: 'DATE', name: 'a DATE',
+        units: adds(['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'timestamp'),
+        days: {form: 'DATE_ADD', gives: 'date'},
+      },
+      timestamp: {type: 'DATETIME', name: 'a timestamp', units: {}},
+      timestamptz: {
+        type: 'TIMESTAMP', name: 'a timestamptz',
+        units: adds(['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK'], '+', 'timestamptz'),
+      },
+    },
   },
+  // Snowflake's DATEADD gives a DATE for a DATE plus a day or longer, and a
+  // TIMESTAMP_NTZ for a DATE plus an hour, a minute or a second. A month that
+  // lacks the day gives its last day, as in BigQuery. An interval string such
+  // as '1 day' also gives a DATE for a DATE, but its rule for a month that
+  // lacks the day may differ from DATEADD's, so an interval string names a day
+  // or less. An INTERVAL that names its unit outside its string is of another
+  // type, which gives a timestamp for a DATE plus a day. Snowflake adds a whole
+  // number to a DATE as days and rejects it beside a timestamp. Its current
+  // timestamp is a TIMESTAMP_LTZ, which the repairs write as the DATETIME in
+  // America/Los_Angeles. Snowflake adds a day to it in local time, as BigQuery
+  // adds one to a DATETIME. Import adds no hour, minute or second to it, which
+  // Snowflake may add as elapsed time, unlike a DATETIME near a daylight saving
+  // change.
   snowflake: {
-    functions: ['CURRENT_DATE', 'DATEADD'], dateAdd: ['day'], operator: ['hour', 'minute'], days: true,
+    date: 'DATE', now: {functions: ['CURRENT_TIMESTAMP'], row: 'TIMESTAMP_LTZ'},
+    functions: {DATEADD: 'part'}, keywords: false, intervals: [...SUB_DAY, 'DAY'],
+    words: named({
+      SECOND: ['s', 'sec', 'seconds', 'secs'], MINUTE: ['m', 'mi', 'min', 'minutes', 'mins'],
+      HOUR: ['h', 'hh', 'hr', 'hours', 'hrs'], DAY: ['d', 'dd', 'days', 'dayofmonth'],
+      WEEK: ['w', 'wk', 'weekofyear', 'woy', 'wy'], MONTH: ['mm', 'mon', 'mons', 'months'],
+      QUARTER: ['q', 'qtr', 'qtrs', 'quarters'], YEAR: ['y', 'yy', 'yyy', 'yyyy', 'yr', 'years', 'yrs'],
+    }),
+    rows: {
+      column: {
+        name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')},
+        days: {form: '+', gives: 'column'},
+      },
+      DATE: {
+        type: 'DATE', name: 'a DATE',
+        units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
+        days: {form: 'DATE_ADD', gives: 'DATE'},
+      },
+      TIMESTAMP_NTZ: {type: 'DATETIME', name: 'a TIMESTAMP_NTZ', units: {}},
+      TIMESTAMP_LTZ: {type: 'DATETIME', name: 'a TIMESTAMP_LTZ', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'TIMESTAMP_LTZ')},
+    },
   },
+  // Databricks gives a DATE for a DATE plus an INTERVAL of days, weeks, months
+  // or years and for date_add(x, n) and date_sub(x, n), and a TIMESTAMP for a
+  // DATE plus an hour, a minute or a second. It adds a whole number to a DATE
+  // as days. Its current timestamp is a TIMESTAMP, and a day there is 24 hours
+  // in UTC.
   databricks: {
-    functions: ['CURRENT_DATE', 'DATE_ADD'], dateAdd: ['day', 'week', 'month', 'year'], operator: [],
-    days: true,
-    notes: Object.fromEntries(['hour', 'minute'].map(
+    date: 'DATE', now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
+    functions: {DATE_ADD: 'days', DATE_SUB: 'days'},
+    words: named({
+      SECOND: ['seconds'], MINUTE: ['minutes'], HOUR: ['hours'], DAY: ['days'], WEEK: ['weeks'],
+      MONTH: ['months'], YEAR: ['years'],
+    }),
+    notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
+    rows: {
+      column: {name: MAY_BE_TIMESTAMP, units: adds(['DAY'], 'DATE_ADD', 'column'), days: {form: '+', gives: 'column'}},
+      DATE: {
+        type: 'DATE', name: 'a DATE', units: adds(['DAY', 'WEEK', 'MONTH', 'YEAR'], 'DATE_ADD', 'DATE'),
+        days: {form: 'DATE_ADD', gives: 'DATE'},
+      },
+      TIMESTAMP: {
+        type: 'TIMESTAMP', name: 'a TIMESTAMP',
+        units: adds(['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK'], '+', 'TIMESTAMP'),
+      },
+    },
   },
-  tsql: {functions: [], dateAdd: [], operator: []},
+  // SQL Server's DATEADD gives the type of its date, and a month that lacks
+  // the day gives its last day, as in BigQuery. Its dayofyear and weekday parts
+  // add days. GETDATE() and CURRENT_TIMESTAMP give a datetime, which the
+  // repairs write as CURRENT_DATETIME('UTC'). It has no INTERVAL, and its date
+  // plus a number depends on the date's type.
+  tsql: {
+    date: 'date', now: {functions: ['GETDATE', 'CURRENT_TIMESTAMP'], row: 'datetime'},
+    functions: {DATEADD: 'part'}, intervals: [],
+    words: named({
+      SECOND: ['ss', 's'], MINUTE: ['mi', 'n'], HOUR: ['hh'],
+      DAY: ['dd', 'd', 'dayofyear', 'dy', 'y', 'weekday', 'dw', 'w'], WEEK: ['wk', 'ww'],
+      MONTH: ['mm', 'm'], QUARTER: ['qq', 'q'], YEAR: ['yy', 'yyyy'],
+    }),
+    rows: {
+      column: {name: 'a value that may be a date or a TIMESTAMP', units: adds(['DAY'], 'DATE_ADD', 'column')},
+      date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
+      datetime: {type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime')},
+    },
+  },
   generic: {
-    functions: [], dateAdd: [], operator: [],
-    notes: {day: 'which gives a DATE in some databases and a timestamp in others'},
+    date: 'DATE', now: {functions: ['CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
+    functions: {}, words: {},
+    notes: {DAY: 'which gives a DATE in some databases and a timestamp in others'},
+    rows: {
+      column: {name: MAY_BE_TIMESTAMP, units: {}},
+      DATE: {type: 'DATE', name: 'a DATE', units: {}},
+      TIMESTAMP: {type: 'TIMESTAMP', name: 'a TIMESTAMP', units: {}},
+    },
   },
 };
+
+// One date arithmetic in a source text: `operand` plus or minus `amount`, a
+// whole number of `unit`, and what its row gives. A whole number added as days
+// that import writes as the source does has no unit. The INTERVAL may come
+// `first`. A `call` is a function, such as DATEADD. With `asDate`, the source
+// reads an operand that is not a DATE as a DATE first.
+interface DateSum {
+  operand: any;
+  amount: any;
+  unit?: Unit;
+  subtract: boolean;
+  first?: boolean;
+  call?: boolean;
+  asDate?: boolean;
+  addition: Addition;
+}
+
+// The date arithmetic `node`, a source node in the engine's dialect `read`,
+// is, a message when import does not translate it, or undefined when `node` is
+// no date arithmetic. A sum of a column and a number is no date arithmetic,
+// since import cannot see whether the column is a date.
+function dateSum(node: any, read: string): DateSum|string|undefined {
+  const table = DATE_TABLES[read];
+  const kind = kindOf(node);
+  if (!table || !kind) return undefined;
+  if (kind === 'add' || kind === 'sub') return operatorSum(kind, node[kind], read, table);
+  const name = String(node.function?.name).toUpperCase();
+  return kind === 'function' && table.functions[name] ?
+      functionSum(name, node.function.args ?? [], read, table) : undefined;
+}
+
+// The date arithmetic of `value`, a `+` or `-` of `kind`, as dateSum gives it.
+function operatorSum(kind: string, value: any, read: string, table: DateTable):
+    DateSum|string|undefined {
+  const op = OPERATORS[kind];
+  const sides = [value.left, value.right].map(s => intervalOf(s, read));
+  if (sides[0] || sides[1]) {
+    const first = !!sides[0];
+    const added = sides[first ? 0 : 1];
+    if (first && kind === 'sub') return `- with INTERVAL ${intervalText(added)} first`;
+    const parsed = readInterval(added, table);
+    if (typeof parsed === 'string') return parsed;
+    return sumOn(table, read, {
+      operand: first ? value.right : value.left, ...parsed, subtract: kind === 'sub', first,
+      name: op, spelling: `${op} INTERVAL ${intervalText(added)}`, unitText: `INTERVAL ${intervalText(added)}`,
+    });
+  }
+  // A whole number added to a date, which some dialects add as days.
+  const [operand, amount] = dayOperands(kind, value);
+  if (!/^-?\d+$/.test(numberText(amount) ?? '') || bare(operand)?.column) return undefined;
+  const found = operandRow(operand, read, table);
+  if (typeof found === 'string') return found;
+  const days = found && table.rows[found.row].days;
+  if (!days) return undefined;
+  const unit = days.form === 'DATE_ADD' ? 'DAY' : undefined;
+  return {operand, amount: wholeNumber(numberText(amount)!), unit, subtract: kind === 'sub', addition: days};
+}
+
+// The date arithmetic of a call of `name` with `args`, a function in the
+// `functions` of `table`, as dateSum gives it.
+function functionSum(name: string, args: any[], read: string, table: DateTable): DateSum|string {
+  const how = table.functions[name];
+  const subtract = name.endsWith('_SUB');
+  if (how === 'interval') {
+    const added = args.length === 2 ? bare(args[1])?.interval : undefined;
+    if (!added) return name;
+    const parsed = readInterval(added, table);
+    if (typeof parsed === 'string') return `${name} with ${parsed}`;
+    const spelling = `${name} with INTERVAL ${intervalText(added)}`;
+    return sumOn(table, read, {operand: args[0], ...parsed, subtract, call: true, name, spelling, unitText: spelling});
+  }
+  const [part, amount, operand] = how === 'part' ? args : [undefined, args[1], args[0]];
+  if (args.length !== (how === 'part' ? 3 : 2) || bare(amount)?.interval) return name;
+  const written = numberText(amount);
+  if (written === undefined) return `${name} by ${valueName(bare(amount))}`;
+  if (!/^-?\d+$/.test(written)) return `${name} of a fraction`;
+  const whole = wholeNumber(written);
+  const spelling = how === 'part' ? `${name} with part '${partName(part) ?? '?'}'` : name;
+  const unit = how === 'part' ? table.words[String(partName(part)).toLowerCase()] : 'DAY';
+  if (!unit) return spelling;
+  return sumOn(table, read, {
+    operand, amount: whole, unit, subtract, call: true, asDate: how === 'days', name, spelling, unitText: spelling,
+  });
+}
+
+// The amount and the unit of `added`, an engine interval, in `table`'s
+// dialect, or a message. The amount is a whole number.
+function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}|string {
+  const text = `INTERVAL ${intervalText(added)}`;
+  const written = intervalAmount(added);
+  if (written === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
+  if (added.unit === null) {
+    const [, amount, word] = /^\s*([+-]?\d+)\s*([a-z]+)\s*$/i.exec(written) ?? [];
+    const unit = word && table.words[word.toLowerCase()];
+    if (!unit || (table.intervals && !table.intervals.includes(unit))) return text;
+    return {amount: wholeNumber(amount), unit};
+  }
+  const unit = String(added.unit?.unit).toUpperCase() as Unit;
+  if (added.unit?.type !== 'simple' || table.keywords === false || !UNITS.includes(unit) ||
+      !/^\s*[+-]?\d+\s*$/.test(written) || (table.intervals && !table.intervals.includes(unit))) {
+    return text;
+  }
+  return {amount: wholeNumber(written), unit};
+}
+
+// `text`, a whole number with an optional sign, as an engine number literal.
+function wholeNumber(text: string): unknown {
+  const number = {literal: {literal_type: 'number', value: text.trim().replace(/^[+-]/, '')}};
+  return text.trim().startsWith('-') ? {neg: {this: number}} : number;
+}
+
+// The interval `node`, a side of a `+` or `-` in the engine's dialect `read`,
+// is, or undefined. PostgreSQL also casts a string to an INTERVAL.
+function intervalOf(node: any, read: string): any {
+  const b = bare(node);
+  if (b?.interval) return b.interval;
+  const cast = read === 'postgresql' && b?.cast;
+  return cast && castType(cast.to) === 'interval' && bare(cast.this)?.literal?.literal_type === 'string' ?
+      {this: cast.this, unit: null} : undefined;
+}
+
+// The date arithmetic `operand` plus or minus `amount` `unit` in `table`, the
+// table of the engine's dialect `read`, or a message. `name` names the
+// arithmetic for a message about its operand, `unitText` for one about its
+// unit, and `spelling` for one about the unit on the operand.
+function sumOn(table: DateTable, read: string, sum: {
+  operand: any; amount: any; unit: Unit; subtract: boolean; first?: boolean; call?: boolean;
+  asDate?: boolean; name: string; spelling: string; unitText: string;
+}): DateSum|string {
+  const note = table.notes?.[sum.unit];
+  if (!Object.values(table.rows).some(r => r.units[sum.unit])) {
+    return note ? `${sum.spelling}, ${note}` : sum.unitText;
+  }
+  const found = operandRow(sum.operand, read, table);
+  if (typeof found === 'string') return found;
+  if (!found) return `${sum.name} of ${valueName(bare(sum.operand))}`;
+  const asDate = sum.asDate && found.row !== table.date;
+  const addition = table.rows[sum.asDate ? table.date : found.row].units[sum.unit];
+  if (!addition) return note ? `${sum.spelling}, ${note}` : `${sum.spelling} on ${found.name}`;
+  const {operand, amount, unit, subtract, first, call} = sum;
+  return {operand, amount, unit, subtract, first, call, asDate, addition};
+}
+
+// The row in `table`, the table of the engine's dialect `read`, of `node`, a
+// source value import adds a unit to, with the name a message gives it: a
+// column, a cast to DATE, a DATE literal, the current date or timestamp, or a
+// date arithmetic import translates, whose row is the one its addition gives.
+// Otherwise a message about the date arithmetic in `node`, or undefined.
+function operandRow(node: any, read: string, table: DateTable):
+    {row: string; name: string}|string|undefined {
+  const b = bare(node);
+  if (b?.column) return {row: 'column', name: table.rows.column.name};
+  if (isDate(b)) return {row: table.date, name: valueName(b)};
+  const name = String(b?.function?.name).toUpperCase();
+  if (b?.function && !b.function.args?.length && table.now.functions.includes(name)) {
+    return {row: table.now.row, name};
+  }
+  const sum = dateSum(b, read);
+  if (typeof sum !== 'object') return sum;
+  return {row: sum.addition.gives, name: table.rows[sum.addition.gives].name};
+}
 
 // The functions that give the current date or time.
 const CURRENT = new Set(['CURRENT_DATE', 'CURDATE', 'CURRENT_TIMESTAMP', 'NOW', 'GETDATE']);
@@ -1107,25 +1449,25 @@ function article(noun: string): string {
 // BigQuery when import cannot see the operands' types: PostgreSQL's date minus
 // date is a number of days, where BigQuery gives an INTERVAL. So import
 // translates `+` and `-`, and `*` in MySQL and SQL Server, only beside a number
-// literal or a SUM, COUNT or AVG, or in the one shape INTERVAL_SHAPES gives for
-// an INTERVAL. MySQL and SQL Server read a date beside a number as a number or a
-// count of days, and every source reads a string beside a number as a number.
-// So import refuses a value it can see is a date or a time in any other
-// arithmetic, also when MAX, COALESCE or a similar function returns it, except
-// in the one shape daysAdded gives for a whole number of days. A date column is
-// not visible, so a date column plus a number is translated as written, which
-// in BigQuery adds days to a DATE. MySQL gives a number there.
+// literal or a SUM, COUNT or AVG, or as date arithmetic its dialect's table in
+// DATE_TABLES holds. MySQL and SQL Server read a date beside a number as a
+// number or a count of days, and every source reads a string beside a number as
+// a number. So import refuses a value it can see is a date or a time in any
+// other arithmetic, also when MAX, COALESCE or a similar function returns it. A
+// date column is not visible, so a date column plus a number is translated as
+// written, which in BigQuery adds days to a DATE. MySQL gives a number there.
 // SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
   const added = kind !== 'mul' && sides.find(s => s?.interval)?.interval;
-  if (added && read !== 'spanner') return intervalShape(kind, value, read);
-  if (added) {
+  if (added && read === 'spanner') {
     const untranslated = sides.find(s => s?.interval && !interval(s.interval));
     return untranslated ? `INTERVAL ${intervalText(untranslated.interval)}` :
                           sides.map(s => s.interval ? s.interval.this : s);
   }
+  const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
+  if (sum) return typeof sum === 'string' ? sum : [sum.operand, sum.amount];
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
   // DATE_ADD, DATE_SUB, DATEADD, DATE_TRUNC and a sum or difference with an
@@ -1135,69 +1477,16 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
       dates.includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval ||
                                                    date(v.left) || date(v.right)));
-  if (sides.some(date)) return daysAdded(kind, value, INTERVAL_SHAPES[read]) ?? `${op} of a date`;
+  if (sides.some(date)) return `${op} of a date`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
-}
-
-// The operand and the amount of `value`, a `+` or `-` of `kind` with an
-// INTERVAL, to check next, or a message, by the entry in INTERVAL_SHAPES of the
-// engine's dialect `read`. Any other value beside the INTERVAL may be a number,
-// a string or another INTERVAL, such as MySQL's `d + 1`, which is a number.
-// BigQuery adds no month, quarter or year to a TIMESTAMP, and its DATE_ADD adds
-// no week, so import adds one only to a DATE it can see.
-function intervalShape(kind: string, value: any, read: string): unknown[]|string {
-  const shape = INTERVAL_SHAPES[read];
-  const op = OPERATORS[kind];
-  const first = kind === 'add' && !!value.left?.interval;
-  const [operand, added] = first ? [value.right, value.left.interval] :
-                                   [value.left, value.right?.interval];
-  if (!added) return `${op} with INTERVAL ${intervalText(value.left.interval)} first`;
-  if (intervalAmount(added) === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
-  const unit = wholeUnit(added);
-  if (!unit || ![...shape.dateAdd, ...shape.operator].includes(unit)) {
-    const note = unit && shape.notes?.[unit];
-    return note ? `${op} INTERVAL ${intervalText(added)}, ${note}` :
-                  `INTERVAL ${intervalText(added)}`;
-  }
-  const b = bare(operand);
-  if (!b?.column && !isDate(b) && !shape.functions.includes(String(b?.function?.name).toUpperCase())) {
-    return `${op} of ${valueName(b)}`;
-  }
-  const timestampless = MONTH_PARTS.has(unit) || (unit === 'week' && shape.dateAdd.includes(unit));
-  if (timestampless && timeType(operand, read) !== 'DATE') {
-    return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
-  }
-  return [operand, added.this];
 }
 
 // The amount of `added`, an engine interval, as written, or undefined when it
 // is not a number or a string.
 function intervalAmount(added: any): string|undefined {
   return numberText(added?.this) ?? literalText(bare(added?.this)?.literal);
-}
-
-// The unit of `added`, an engine interval, in lower case, when its amount is a
-// whole number, such as `day` for INTERVAL 1 DAY or PostgreSQL's INTERVAL '1
-// day'. Otherwise undefined.
-function wholeUnit(added: any): string|undefined {
-  const amount = intervalAmount(added);
-  return added.unit === null ? stringUnit(amount)?.unit :
-      added.unit?.type === 'simple' && /^-?\d+$/.test(amount ?? '') ?
-      String(added.unit.unit).toLowerCase() : undefined;
-}
-
-// The operands of `value`, a `+` or `-` of `kind`, to check next, when it is a
-// cast to DATE, a DATE literal or a call of one of the `functions` of `shape`,
-// plus or minus a whole number literal, and the dialect counts that number as
-// days. Otherwise undefined. A column is not a date import can see, so its sum
-// with a number does not reach this check.
-function daysAdded(kind: string, value: any, shape: IntervalShape|undefined): unknown[]|undefined {
-  const [operand, count] = dayOperands(kind, value);
-  const call = String(bare(operand)?.function?.name).toUpperCase();
-  return shape?.days && kind !== 'mul' && /^-?\d+$/.test(numberText(count) ?? '') &&
-      (shape.functions.includes(call) || isDate(operand)) ? [operand, count] : undefined;
 }
 
 // The date and the number of days in `value`, a `+` or `-` of `kind`. A `+`
@@ -1259,31 +1548,16 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 
 // BigQuery's type for `node`, a source value in the engine's dialect `read`,
 // when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
-// literal, a cast on the list, the current date or time, or a date function or
-// a sum import translates of one of these. The repairs write Snowflake's
-// CURRENT_TIMESTAMP as a DATETIME. Databricks' DATE_ADD(d, n) gives a DATE. A
-// DATE plus a unit in `operator` in INTERVAL_SHAPES gives a DATETIME, and the
-// other date functions and sums give the type of the date they read.
+// literal, a cast on the list, the current date or timestamp, or date
+// arithmetic import translates, by its row in DATE_TABLES. A SPANNER text's
+// current timestamp is a TIMESTAMP.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
-  const fn = b?.function;
-  const name = String(fn?.name).toUpperCase();
-  if (CURRENT.has(name)) return read === 'snowflake' ? 'DATETIME' : 'TIMESTAMP';
-  if (['DATE_ADD', 'DATE_SUB', 'DATEADD'].includes(name) && Array.isArray(functionArgs(fn, read))) {
-    const date = fn.args[name === 'DATEADD' ? 2 : 0];
-    return read === 'databricks' && fn.args.length === 2 ? 'DATE' : timeType(date, read);
-  }
-  const sum = b?.add ?? b?.sub;
-  const shape = INTERVAL_SHAPES[read];
-  if (sum && shape) {
-    const kind = b.add ? 'add' : 'sub';
-    const added = sum.left?.interval ?? sum.right?.interval;
-    const operands = added ? intervalShape(kind, sum, read) : daysAdded(kind, sum, shape);
-    const date = Array.isArray(operands) ? timeType(operands[0], read) : undefined;
-    return date === 'DATE' && added && shape.operator.includes(wholeUnit(added)!) ?
-        'DATETIME' : date;
-  }
+  const table = DATE_TABLES[read];
+  const found = table && operandRow(b, read, table);
+  if (typeof found === 'object') return table.rows[found.row].type;
+  if (!table && CURRENT.has(String(b?.function?.name).toUpperCase())) return 'TIMESTAMP';
   const type = castType((b?.cast ?? b?.try_cast ?? b?.safe_cast)?.to);
   const types: Record<string, string> = {
     timestamp: read === 'spanner' ? 'TIMESTAMP' : 'DATETIME', TIMESTAMPNTZ: 'DATETIME',
@@ -1313,31 +1587,11 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
   }
-  // DATEADD(day, 1, d), Databricks' DATE_ADD(d, 1), which adds days, and
-  // MySQL's DATE_ADD(d, INTERVAL 1 DAY). BigQuery adds no hours or minutes to a
-  // DATE, where the sources give a timestamp. Databricks' DATE_ADD(d, n) gives
-  // a DATE, which the engine writes only when n is a number or negated.
-  if (['DATEADD', 'DATE_ADD', 'DATE_SUB'].includes(name)) {
-    const added = args.length === 2 ? args[1].interval : undefined;
-    if (args.length === 2 && !added === (read === 'mysql')) return undefined;
-    const [count, value] = args.length === 3 ? [args[1], args[2]] :
-        [added ? added.this : args[1], args[0]];
-    const unit = args.length === 3 ? part(args[0]).toLowerCase() :
-        added ? interval(added, true) : 'day';
-    if (!unit || !PARTS[unit] || unit === 'hour' || unit === 'minute') {
-      return `${name} with ${args.length === 3 ? `part '${part(args[0])}'` :
-                                                  `INTERVAL ${intervalText(added)}`}`;
-    }
-    if (/\./.test(numberText(count) ?? '')) return `${name} of a fraction`;
-    if (MONTH_PARTS.has(unit) && timeType(value, read) !== 'DATE') {
-      return `${name} of a ${unit} to a value that may be a TIMESTAMP`;
-    }
-    if (read === 'databricks' && args.length === 2 && numberText(count) === undefined &&
-        !bare(count)?.neg && !isDate(value)) {
-      return `${name} of a value that may be a TIMESTAMP`;
-    }
-    const values = dateValue(name, value);
-    return typeof values === 'string' ? values : [count, ...values];
+  // DATEADD(day, 1, d), MySQL's DATE_ADD(d, INTERVAL 1 DAY) and Databricks'
+  // date_add(d, 1), by the dialect's table in DATE_TABLES.
+  if (DATE_TABLES[read]?.functions[name]) {
+    const sum = dateSum({function: fn}, read);
+    return typeof sum === 'object' ? [sum.operand, sum.amount] : sum;
   }
   return args;
 }
@@ -1366,16 +1620,15 @@ function valueName(node: any): string {
       'an expression';
 }
 
-// The unit of `value`, an engine interval such as INTERVAL '1' DAY or
-// PostgreSQL's INTERVAL '1 day', in lower case, when import translates it: a
-// whole number of days, hours or minutes. An interval of months is translated
-// only in a function that adds it, with `adds`.
-function interval(value: any, adds = false): string|undefined {
+// The unit of `value`, an engine interval in a SPANNER text such as INTERVAL
+// '1' DAY, in lower case, when import translates it: a whole number of days,
+// hours or minutes.
+function interval(value: any): string|undefined {
   const text = intervalAmount(value);
   const unit = value?.unit === null ? stringUnit(text)?.unit :
       value?.unit?.type === 'simple' && (text === undefined || /^\s*[+-]?\d+\s*$/.test(text)) ?
       String(value.unit.unit).toLowerCase() : undefined;
-  return unit && PARTS[unit] && (adds || !MONTH_PARTS.has(unit)) ? unit : undefined;
+  return unit && PARTS[unit] && !MONTH_PARTS.has(unit) ? unit : undefined;
 }
 
 // `value`, an engine interval, as the source writes it after INTERVAL, for a
@@ -1494,20 +1747,51 @@ function constructName(engine: PolyglotEngine, node: any, read: string): string 
 // writes them to BigQuery with `d` left in the source dialect.
 const EXTRACT_FIRST = new Set(['mysql', 'snowflake', 'databricks', 'tsql']);
 
-// `sql`, in the engine's dialect `read`, with YEAR(d) and the other functions
-// of PARTS written as EXTRACT, whose argument the engine translates.
-function withExtract(
-    engine: PolyglotEngine, sql: string, dialect: string, read: string): string {
+// The name of the call that stands for a date arithmetic in the text the
+// engine translates. The engine keeps a call it does not know and translates
+// its arguments, and dateSql writes the arithmetic in its place. A source
+// text that calls it is refused, since it is no function on the lists.
+const DATE_CALL = 'KCMD_DATE_ARITHMETIC';
+
+// `sql`, in the engine's dialect `read`, ready for the engine to translate to
+// BigQuery, or an error. Each date arithmetic in DATE_TABLES with a unit is a
+// DATE_CALL of its operand, its amount, its unit and BigQuery's form (see
+// dateSql). A whole number of days added is kept, since the engine writes it as
+// written. In a dialect of EXTRACT_FIRST, YEAR(d) and the other functions of
+// PARTS are written as EXTRACT, whose argument the engine translates.
+function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read: string):
+    {sql: string}|{error: string} {
   let changed = false;
-  const tree = mapTree(sqlExpressionTree(sql, dialect), node => {
-    const kind = Object.keys(PARTS).find(k => node[k]?.this);
-    if (!kind) return undefined;
+  // A sum written for a function call is in parentheses, unless it is the
+  // whole text.
+  const rewrite = (node: any, whole = false): any => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(n => rewrite(n));
+    const sum = isNode(node) ? dateSum(node, read) : undefined;
+    if (typeof sum === 'object' && sum.unit) {
+      changed = true;
+      const op = sum.first ? 'INTERVAL +' : sum.subtract ? '-' : '+';
+      const how = sum.addition.form === 'DATE_ADD' ? (sum.subtract ? 'DATE_SUB' : 'DATE_ADD') :
+          sum.call && !whole ? `(${op})` : op;
+      const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
+      const text = (value: string) => ({literal: {literal_type: 'string', value}});
+      // An operand of DATE_ADD needs no parentheses.
+      let operand = sum.operand;
+      while (sum.addition.form === 'DATE_ADD' && operand?.paren) operand = operand.paren.this;
+      const args = [rewrite(operand), sum.amount, text(sum.unit), text(how)];
+      return {function: {...call, args: sum.asDate ? [...args, text('DATE')] : args}};
+    }
+    const out: any = Object.fromEntries(Object.entries(node).map(([k, v]) => [k, rewrite(v)]));
+    const part = EXTRACT_FIRST.has(read) && Object.keys(PARTS).find(k => out[k]?.this);
+    if (!part) return out;
     changed = true;
-    return {extract: {this: node[kind].this, field: extractField(kind)}};
-  });
-  if (!changed) return sql;
+    return {extract: {this: out[part].this, field: extractField(part)}};
+  };
+  const tree = rewrite(sqlExpressionTree(sql, dialect), true);
+  if (!changed) return {sql};
   const written = engine.generate([tree], read);
-  return written.success && written.sql?.length === 1 ? written.sql[0] : sql;
+  return written.success && written.sql?.length === 1 ? {sql: written.sql[0]} :
+      {error: written.error ?? 'the text could not be written for the engine'};
 }
 
 // The engine's EXTRACT field for `part`, a key of PARTS, such as `Year`.
@@ -1529,14 +1813,14 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 //
 // The engine (@polyglot-sql/sdk 0.9.1, and still 0.13.4) reads DATE_TRUNC and
 // DATE_PART as functions it does not know and writes them to BigQuery as they
-// were. It also keeps an interval string such as `INTERVAL '1 day'`, the name
-// of Snowflake's TIMESTAMP_NTZ, and a comparison, IS NULL, LIKE, IN or BETWEEN
-// of another without parentheses. BigQuery rejects each of these, and the
-// engine reports success.
+// were. It also keeps the name of Snowflake's TIMESTAMP_NTZ, and a comparison,
+// IS NULL, LIKE, IN or BETWEEN of another without parentheses. BigQuery
+// rejects each of these, and the engine reports success.
 // It keeps TRIM(s), a decimal number such as 0.29, Snowflake's current date and
-// time, Snowflake's division and average, and a value plus an INTERVAL of days
-// or longer, which give another value or type in BigQuery. So the adapter reads
-// the engine's BigQuery output back and rewrites them.
+// timestamp, MySQL's and SQL Server's current timestamp, and Snowflake's
+// division and average, which give another value or type in BigQuery. So the
+// adapter reads the engine's BigQuery output back and rewrites them. It also
+// writes each date arithmetic in place of its DATE_CALL (see dateSql).
 
 // The types BigQuery has for Snowflake's TIMESTAMP_NTZ, a wall-clock time.
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
@@ -1575,12 +1859,10 @@ function repairNode(node: any, read: string): unknown {
   const fn = node.function;
   const args: any[] = fn?.args ?? [];
   const name = String(fn?.name).toUpperCase();
-  // Snowflake reads the current date and time in the session time zone,
-  // America/Los_Angeles by default. A TIMESTAMP_NTZ column, its default, is
-  // compared with the current time as a wall-clock time there.
-  if (read === 'snowflake' && fn && !args.length && SNOWFLAKE_NOW[name]) {
-    return sqlExpressionTree(SNOWFLAKE_NOW[name], 'BIGQUERY');
+  if (fn && !args.length && CURRENT_TIME[read]?.[name]) {
+    return sqlExpressionTree(CURRENT_TIME[read][name], 'BIGQUERY');
   }
+  if (name === DATE_CALL) return dateSql(args);
   // Snowflake divides and averages a NUMBER, and PostgreSQL averages an
   // integer or a NUMERIC, as an exact decimal, and BigQuery as a FLOAT64 unless
   // a value is a NUMERIC. A Snowflake FLOAT or PostgreSQL double precision
@@ -1625,24 +1907,6 @@ function repairNode(node: any, read: string): unknown {
   if (node.data_type === 'custom' && SNOWFLAKE_TYPES[node.name]) {
     return SNOWFLAKE_TYPES[node.name];
   }
-  // A value plus or minus an INTERVAL of a unit in the dialect's `dateAdd` in
-  // INTERVAL_SHAPES, and from a dialect with `days`, a current date, DATE_ADD or
-  // DATE_SUB plus or minus a whole number of days. A sum may name the INTERVAL
-  // or the number first.
-  const shape: IntervalShape|undefined = INTERVAL_SHAPES[read];
-  const sum = node.add ?? node.sub;
-  const dated = (n: any) => !!shape?.dateAdd.includes(String(n?.interval?.unit?.unit).toLowerCase());
-  const [date, count] = sum ? dayOperands(node.add ? 'add' : 'sub', sum) : [];
-  const days = shape?.days && /^-?\d+$/.test(numberText(count) ?? '') &&
-      ['CURRENT_DATE', 'DATE_ADD', 'DATE_SUB'].includes(String(bare(date)?.function?.name).toUpperCase());
-  const day = {type: 'simple', unit: 'Day', use_plural: false};
-  const operands = !sum ? undefined : dated(sum.right) ? [sum.left, sum.right] :
-      node.add && dated(sum.left) ? [sum.right, sum.left] :
-      days ? [date, {interval: {this: bare(count), unit: day}}] : undefined;
-  if (operands) {
-    const call = sqlExpressionTree(node.add ? 'DATE_ADD(x, y)' : 'DATE_SUB(x, y)', 'BIGQUERY');
-    return {function: {...call.function, args: operands}};
-  }
   // BigQuery's TRIM(s) removes every kind of whitespace, and the sources' TRIM
   // only spaces.
   if (node.trim && node.trim.characters === null) {
@@ -1658,20 +1922,35 @@ function repairNode(node: any, read: string): unknown {
     const big = decimal[1].replace(/^0+/, '').length > 29 || decimal[2].length > 9;
     return {var: {this: `${big ? 'BIGNUMERIC' : 'NUMERIC'} '${node.literal.value}'`}};
   }
-  // An interval string such as '2 weeks', which BigQuery reads only as
-  // INTERVAL 2 WEEK.
-  const text = node.interval?.unit === null &&
-      node.interval.this?.literal?.literal_type === 'string' &&
-      stringUnit(node.interval.this.literal.value);
-  if (text && shape && [...shape.dateAdd, ...shape.operator].includes(text.unit)) {
-    return {
-      interval: {
-        this: {literal: {literal_type: 'number', value: text.amount}},
-        unit: {type: 'simple', unit: extractField(text.unit), use_plural: false},
-      },
-    };
-  }
   return undefined;
+}
+
+// BigQuery's SQL for a DATE_CALL whose arguments are `args`, engine nodes of
+// BigQuery SQL: the operand, the amount, the unit and BigQuery's form, and
+// 'DATE' when the source reads the operand as a DATE first. A form in
+// parentheses puts the sum in parentheses, since it stands where the source
+// calls a function. BigQuery's CAST(CAST(x AS DATETIME) AS DATE) gives the
+// date of a DATE, a DATETIME, a TIMESTAMP in UTC, or a string with or without a
+// time of day, as Databricks' date_add does.
+function dateSql(args: any[]): unknown {
+  const [operand, amount, unit, form, asDate] = args;
+  const text = (n: any) => String(bare(n)?.literal?.value);
+  const cast = sqlExpressionTree('CAST(CAST(x AS DATETIME) AS DATE)', 'BIGQUERY');
+  const date = asDate ? {cast: {...cast.cast, this: {cast: {...cast.cast.this.cast, this: operand}}}} : operand;
+  const name = text(unit);
+  const added = {
+    interval: {this: amount, unit: {type: 'simple', unit: name[0] + name.slice(1).toLowerCase(), use_plural: false}},
+  };
+  const how = text(form);
+  if (how === 'DATE_ADD' || how === 'DATE_SUB') {
+    const call = sqlExpressionTree(`${how}(x, y)`, 'BIGQUERY');
+    return {function: {...call.function, args: [date, added]}};
+  }
+  const op = how.replace(/^\((.*)\)$/, '$1');
+  const kind = op === '-' ? 'sub' : 'add';
+  const template = sqlExpressionTree(op === '-' ? 'x - y' : 'x + y', 'BIGQUERY')[kind];
+  const sum = {[kind]: {...template, ...(op === 'INTERVAL +' ? {left: added, right: date} : {left: date, right: added})}};
+  return op === how ? sum : {paren: {this: sum}};
 }
 
 // `node`, an engine node of BigQuery SQL, with each cast of a date string to
@@ -1707,10 +1986,19 @@ function withPlainDates(node: any): unknown {
   };
 }
 
-// BigQuery's SQL for Snowflake's current date and time, by function name.
-const SNOWFLAKE_NOW: Record<string, string> = {
-  CURRENT_DATE: "CURRENT_DATE('America/Los_Angeles')",
-  CURRENT_TIMESTAMP: "CURRENT_DATETIME('America/Los_Angeles')",
+// BigQuery's SQL for the current date and timestamp the engine writes, by the
+// engine's dialect and the name the engine writes. Snowflake reads them in its
+// default time zone, America/Los_Angeles, and its TIMESTAMP_NTZ column, its
+// default, is compared with the current timestamp as a wall-clock time there.
+// MySQL's NOW() and CURRENT_TIMESTAMP and SQL Server's GETDATE() and
+// CURRENT_TIMESTAMP give a DATETIME, in UTC by default.
+const CURRENT_TIME: Record<string, Record<string, string>> = {
+  snowflake: {
+    CURRENT_DATE: "CURRENT_DATE('America/Los_Angeles')",
+    CURRENT_TIMESTAMP: "CURRENT_DATETIME('America/Los_Angeles')",
+  },
+  mysql: {CURRENT_TIMESTAMP: "CURRENT_DATETIME('UTC')"},
+  tsql: {CURRENT_TIMESTAMP: "CURRENT_DATETIME('UTC')"},
 };
 
 // `node`, an engine node of BigQuery SQL, cast to NUMERIC.
