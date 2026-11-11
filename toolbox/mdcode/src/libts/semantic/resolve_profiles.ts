@@ -1447,10 +1447,12 @@ export function importCommand(
   return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
-// Whether push refuses metric `m` of `model` for want of an anchor: `m` names
-// no entity, and its SQL reaches no declared entity or several. `read` gives
-// the columns a text reads, undefined when it cannot read the text. It
-// defaults to reading the text in the dialect the model's sources imply.
+// Whether push refuses metric `m` of `model` for want of an anchor. It does
+// when `m` names no entity and either kcmd reads every text of its SQL and
+// finds no column, or the columns it finds reach more than one declared entity.
+// `read` gives the columns a text reads, undefined when it cannot read the
+// text. It defaults to reading the text in the dialect the model's sources
+// imply.
 export function lacksAnchor(
     m: Parameters<typeof textsFor>[0]&Pick<Metric, 'authoredEntity'>,
     model: Pick<SemanticModel, 'entities'>,
