@@ -1042,14 +1042,16 @@ export function yamlChangedStatementErrors(
     base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
   const {document, model} = base;
   // What to do with `what` when it belongs to the statement and when it is a
-  // YAML comment. A flow list has no '-' column and cannot hold a block
-  // scalar.
-  const advice = (what: string, flow: boolean) => flow ?
+  // YAML comment, where `holder` holds the statement. A flow list has no '-'
+  // column and cannot hold a block scalar.
+  const advice = (what: string, holder?: Holder) =>
+      holder?.kind === 'flow list' ?
       `If ${what} is part of the statement, write the statements as a block ` +
           `list, with this one as a block scalar with '|'. If it is a YAML ` +
           `comment, move it after the ',' or ']' that follows the statement.` :
       `If ${what} is part of the statement, write it as a block scalar with ` +
-          `'|'. If it is a YAML comment, move it to the '-' column.`;
+          `'|'. If it is a YAML comment, move it to the ${
+              holder?.kind === 'block mapping' ? "key's" : "'-'"} column.`;
   const errors: string[] = [];
   // The model file holds the inline bindings and goes by its document name,
   // as in the other action messages.
@@ -1058,11 +1060,13 @@ export function yamlChangedStatementErrors(
          ...profileDocs(document),
        ]) {
     const dialects = statementDialects(model, file.name);
-    for (const {action, index, statement, dashColumn} of
+    for (const {action, index, statement, anchor, holder} of
              writtenStatements(file.text)) {
+      // An alias names its anchor, which is where the author edits.
       const at = `action '${action}' in model '${model.name}' (${
-          file.fileName}) has a sql executor whose statement ${index + 1}`;
-      const flow = dashColumn === undefined;
+          file.fileName}) has a sql executor whose statement ${index + 1}${
+          anchor ? `, written at '&${anchor}',` : ''}`;
+      const flow = holder?.kind === 'flow list';
       const after = file.text.slice(statement.range![1]);
       // The indent of a comment line after the statement, past blank lines.
       const commentIndent =
@@ -1072,14 +1076,14 @@ export function yamlChangedStatementErrors(
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
             `statement as '${statement.value}'. ${
-                advice("the text after ' #'", flow)}`);
-      } else if (statement.type === 'PLAIN' &&
-                 commentIndent > (dashColumn ?? -1)) {
+                advice("the text after ' #'", holder)}`);
+      } else if (statement.type === 'PLAIN' && holder &&
+                 commentIndent > (flow ? -1 : holder.column)) {
         errors.push(
             `${at} is followed by a comment line ${
                 flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
             `so YAML reads the statement as '${statement.value}'. ${
-                advice('the comment line', flow)}`);
+                advice('the comment line', holder)}`);
       } else if (marker) {
         errors.push(
             `${at} has '${marker}' on a line YAML joins to the next one, so ` +
@@ -1094,15 +1098,22 @@ export function yamlChangedStatementErrors(
   return errors;
 }
 
+// The collection a statement is written in: a block list or a block mapping,
+// with the column of its '-' or of its keys, or a flow list.
+type Holder = {kind: 'block list'|'block mapping'; column: number}|
+    {kind: 'flow list'};
+
 // One `sql` executor statement in a model or profile file.
 interface WrittenStatement {
   action: string;
   // 0-based position in the executor's `statements` list.
   index: number;
   statement: yaml.Scalar;
-  // The column of the list's '-', or undefined for a flow list, which has
-  // none.
-  dashColumn?: number;
+  // The name of the anchor the list item is an alias of.
+  anchor?: string;
+  // Where `statement` is written, which for an alias is where its anchor is.
+  // Undefined anywhere else, such as in a flow mapping.
+  holder?: Holder;
 }
 
 // Each `sql` executor statement in the model or profile file `text`. A model
@@ -1128,16 +1139,20 @@ function writtenStatements(text: string): WrittenStatement[] {
         .flatMap(m => listAt(m, 'actions')),
     ...listAt(doc.contents, 'actions'),
   ];
-  // The '-' column of the list that holds each node, or undefined for a node
-  // in a flow list.
-  const dashColumns = new Map<unknown, number|undefined>();
+  // The collection that holds each node.
+  const holders = new Map<unknown, Holder>();
+  const column = (node: yaml.Node) =>
+      node.range![0] - text.lastIndexOf('\n', node.range![0] - 1) - 1;
   yaml.visit(doc, {
     Seq(_, seq) {
-      const start = seq.range![0];
-      const dashColumn = seq.flow ?
-          undefined :
-          start - text.lastIndexOf('\n', start - 1) - 1;
-      for (const item of seq.items) dashColumns.set(item, dashColumn);
+      const holder: Holder = seq.flow ? {kind: 'flow list'} :
+                                        {kind: 'block list', column: column(seq)};
+      for (const item of seq.items) holders.set(item, holder);
+    },
+    Map(_, map) {
+      if (map.flow) return;
+      const holder: Holder = {kind: 'block mapping', column: column(map)};
+      for (const pair of map.items) holders.set(pair.value, holder);
     },
   });
   return actions.flatMap(action => {
@@ -1146,13 +1161,12 @@ function writtenStatements(text: string): WrittenStatement[] {
     const name = nodeAt(action, 'name');
     return statements.items.flatMap((item, index) => {
       const statement = resolved(item);
-      // An alias takes the column of the list its anchored statement is in.
-      const written = dashColumns.has(statement) ? statement : item;
       return yaml.isScalar(statement) ? [{
         action: yaml.isScalar(name) ? String(name.value) : '',
         index,
         statement,
-        dashColumn: dashColumns.get(written),
+        anchor: yaml.isAlias(item) ? item.source : undefined,
+        holder: holders.get(statement),
       }] : [];
     });
   });
@@ -1160,13 +1174,17 @@ function writtenStatements(text: string): WrittenStatement[] {
 
 // The dialects of the stores where binding profile `profile` runs
 // statements: one for each deployment that uses it, named after its engine.
-// Empty when no deployment uses it, or when a deployment's target is in no
-// accepted form, which localChecks reports.
+// A deployment whose target is in no accepted form, which localChecks
+// reports, adds none.
 function statementDialects(model: SemanticModel, profile: string): string[] {
-  const deployments = resolveModelDeployments(model);
-  if ('error' in deployments) return [];
-  return [...new Set(deployments.deployments.filter(d => d.profile === profile)
-                         .map(d => d.engine.toUpperCase()))];
+  const engines = (model.deployments ?? []).flatMap(d => {
+    if ((d.profile ?? DEFAULT_PROFILE) !== profile) return [];
+    const resolved = resolveModelDeployments(model, [d.name]);
+    return 'error' in resolved ?
+        [] :
+        resolved.deployments.map(r => r.engine.toUpperCase());
+  });
+  return [...new Set(engines)];
 }
 
 // The deployment dialects in which `#` starts a SQL comment. `--` and `/*`
@@ -1184,7 +1202,10 @@ function joinedLineMarker(statement: yaml.Scalar, text: string,
   if (!joins.includes(statement.type ?? '')) return undefined;
   const markers = ['--', '/*'];
   if (dialects.some(d => HASH_COMMENT_DIALECTS.has(d))) markers.push('#');
-  const lines = text.slice(statement.range![0], statement.range![1])
+  // A quoted statement's lines, without its quotes.
+  const quoted = statement.type!.startsWith('QUOTE');
+  const lines = text.slice(statement.range![0] + (quoted ? 1 : 0),
+                           statement.range![1] - (quoted ? 1 : 0))
                     .split(/\r?\n/)
                     // A '>' block's first line is its header.
                     .slice(statement.type === 'BLOCK_FOLDED' ? 1 : 0)

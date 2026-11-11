@@ -246,6 +246,12 @@ const withStatementLines = (text: string, ...lines: string[]) => {
 const modelWriting = (lines: string[], scope: Scope = {}) => withStatementLines(
     modelFile({...scope, actions: [purge(ONE_STATEMENT)]}), ...lines);
 const COMMENTED = "UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
+// A model file whose action purge has the description DESCRIPTION, written
+// before its one statement.
+const DESCRIBED = modelFile({actions: [{
+  name: 'purge', description: 'DESCRIPTION', parameters: [{name: 'k', type: 'Integer'}],
+  executor: ONE_STATEMENT,
+}]});
 
 scenarios('push --no-deployment refuses a scope before any network call', [
   {
@@ -321,7 +327,8 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1")],
     }, {
       files: {'commerce.yaml': modelWriting([`- &cut ${COMMENTED}`, '- *cut'])},
-      errors: [has('whose statement 1 has a comment'), has('whose statement 2 has a comment')],
+      errors: [has('whose statement 1 has a comment'),
+               has("whose statement 2, written at '&cut', has a comment")],
     }],
     report: {code: 1, rejects: {'': [pushed()], 'no profiles': []}},
   },
@@ -351,7 +358,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         "  #- '{draft}' WHERE c_key = @k", '- *cut',
       ]).replace(/\n/g, '\r\n')},
       errors: [has('statement 1 is followed by a comment line'),
-               has('statement 2 is followed by a comment line')],
+               has("statement 2, written at '&cut', is followed by a comment line")],
     }, {
       // The alias reads the comment line against the list its anchor is in.
       files: {'commerce.yaml': withStatementLines(withStatementLines(
@@ -360,6 +367,25 @@ scenarios('push --no-deployment refuses a scope before any network call', [
             {...purge({sql: {statements: ['STATEMENT']}}), name: 'archive'},
           ]}),
           '- &kept DELETE FROM customer WHERE c_key = @k', '# reused below'), '[*kept]')},
+      code: 0,
+    }, {
+      // An anchor in a mapping reads a comment line against its key's column.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED
+              .replace('description: DESCRIPTION',
+                       "description: &cut UPDATE customer SET doc = doc\n          #- '{draft}' WHERE c_key = @k"),
+          '- *cut', '- DELETE FROM customer WHERE c_key = @k')},
+      errors: [has(
+          "statement 1, written at '&cut', is followed by a comment line indented " +
+          "under it, so YAML reads the statement as 'UPDATE customer SET doc = doc'. " +
+          "If the comment line is part of the statement, write it as a block scalar " +
+          "with '|'. If it is a YAML comment, move it to the key's column.")],
+    }, {
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED
+              .replace('description: DESCRIPTION',
+                       'description: &kept DELETE FROM customer WHERE c_key = @k\n        # a note'),
+          '[*kept]')},
       code: 0,
     }],
   },
@@ -427,6 +453,8 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k',
         '- UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
         '- >', '  UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
+        // The closing quote alone on a line ends no SQL line.
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  "',
       ])},
       errors: ['--', '--', '/*', '--'].map(
           (m, i) => has(`statement ${i + 1} has '${m}' on a line YAML joins`)),
@@ -442,6 +470,13 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       files: {'commerce.yaml': modelWriting(
           ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
           {deployments: [{name: 's', target: spannerGraph('s')}]})},
+      errors: [has("statement 1 has '#' on a line")],
+    }, {
+      // Another profile's deployment target, in no accepted form, does not
+      // hide the BigQuery deployment's reading.
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
+          {deployments: ['g', {name: 'bad', target: 'not-a-target', profile: 'p'}]})},
       errors: [has("statement 1 has '#' on a line")],
     }, {
       // Profile p deploys to AlloyDB alone.
