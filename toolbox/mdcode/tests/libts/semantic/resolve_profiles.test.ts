@@ -1174,15 +1174,21 @@ describe('validateProfileCompleteness', () => {
         .toEqual([]);
   });
 
-  test('a metric reaching an excluded field is named with the field', () => {
+  // The expression of metric avg_lifetime_value, anchored on Customer. A name
+  // without an entity reads a field of the metric's entity.
+  test.each(['AVG(Customer.lifetimeValue)', 'AVG(lifetimeValue)'])(
+      'a metric over %s reaching an excluded field is named with the field', expression => {
+    const m = irModel();
+    Object.assign(m.metrics!.find(x => x.name === 'avg_lifetime_value')!,
+                  {expression, authoredEntity: 'Customer'});
     const entities = [CUSTOMER_WITHOUT_LTV, profile().entities[1]];
-    const errors = validateProfileCompleteness(irModel(), profile({entities}));
+    const errors = validateProfileCompleteness(m, profile({entities}));
     expect(errors).toEqual([
       "profile 'prod': metric 'avg_lifetime_value' reaches " +
       "'Customer.lifetimeValue', which this profile excludes; add " +
       "'avg_lifetime_value' to 'metrics_exclude'",
     ]);
-    expect(validateProfileCompleteness(irModel(), profile({
+    expect(validateProfileCompleteness(m, profile({
       entities, metricsExclude: ['avg_lifetime_value'],
     }))).toEqual([]);
   });

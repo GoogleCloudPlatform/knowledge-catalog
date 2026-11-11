@@ -1917,15 +1917,23 @@ export function validateProfileCompleteness(
       `which depends on '${dangling.get(target)}', an excluded field`;
   if (profile.metricsExclude !== '*') {
     const metricExcluded = new Set(profile.metricsExclude ?? []);
-    for (const m of baseModel.metrics ?? []) {
+    // The profile's metrics, each with its entity as this profile's sources
+    // infer it.
+    for (const m of profiled.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
+      // An unqualified name that is a field of the metric's entity reads
+      // that field.
+      const ownFields = m.entity ? fieldsOf.get(m.entity) : undefined;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
       for (const text of textsFor(m as Field, dialect)) {
         // A text with no SQL has nothing to read.
         if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
         if (columns) {
-          read.push(columns);
+          read.push(columns.map(
+              c => c.qualifier === undefined && ownFields?.has(c.name) ?
+                  {...c, qualifier: m.entity} :
+                  c));
         } else {
           unreadable.add(metricLabel(m.name));
           noteUnread(metricLabel(m.name), m, text);
