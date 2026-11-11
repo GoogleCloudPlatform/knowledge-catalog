@@ -2004,20 +2004,20 @@ function runsDialect(
 
 // The warning `item` gives on `table`, the table of `entity`:
 // expressionWarning's when the load knows the table's dialect, or one saying
-// the table has no text to run. With `profiled`, the second is given only on a
-// Cloud SQL, Spanner or third-party table no lookup has read. On a table of the
-// `preferred` dialect, expressionWarning's warning already says so.
+// the table has no text to run. With `textChecked`, the second is given only
+// on a Cloud SQL, Spanner or third-party table no lookup has read. On a table
+// of the `preferred` dialect, expressionWarning's warning already says so.
 function tableWarning(
     item: Pick<
         Field,
         'expression'|'dialects'|'stringForm'|'importedExpression'|
         'importedDialect'>,
     subject: Subject, table: TableDialects, entity: string, preferred: string,
-    profiled: boolean): string|undefined {
+    textChecked: boolean): string|undefined {
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || (profiled && !table.unread && !table.guessed) ||
+  if (w || (textChecked && !table.unread && !table.guessed) ||
       !noTextFor(item, table.dialects)) {
     return w;
   }
@@ -2030,11 +2030,11 @@ function tableWarning(
 // tableDialects gives. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
 function fieldWarnings(
-    model: SemanticModel, preferred: string, profiled: boolean): string[] {
+    model: SemanticModel, preferred: string, textChecked: boolean): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
                f, {ctx: `field '${e.name}.${f.name}'`, metric: false, model},
-               table, e.name, preferred, profiled))
+               table, e.name, preferred, textChecked))
       .filter((w): w is string => w !== undefined);
 }
 
