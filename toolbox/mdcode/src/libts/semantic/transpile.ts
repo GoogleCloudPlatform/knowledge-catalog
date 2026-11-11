@@ -677,16 +677,24 @@ const MONTH_PARTS = new Set(['month', 'quarter', 'year']);
 // a DATE, as the source does. They keep the `+` or `-` of a unit in
 // `operator`, which gives a DATETIME for a DATE, where the source gives a
 // timestamp without time zone. `notes` says why a unit is not translated.
+// With `days`, the dialect reads a whole number n in place of the INTERVAL as
+// INTERVAL n DAY, and the repairs write DATE_ADD or DATE_SUB for a call of one
+// of its `functions` plus or minus n.
 interface IntervalShape {
   functions: string[];
   dateAdd: string[];
   operator: string[];
   notes?: Record<string, string>;
+  days?: boolean;
 }
 
 // The IntervalShape of each dialect. SQL Server has no INTERVAL. An ANSI_SQL
 // text runs by the rules of its tables' database, and the databases add a unit
 // to a DATE as different types. SPANNER arithmetic is BigQuery's.
+// PostgreSQL, Snowflake and Databricks add a whole number to a DATE as days
+// and give a DATE, as BigQuery's DATE_ADD does, and reject a timestamp plus a
+// number. MySQL reads a date plus a number as a number, and SQL Server's
+// result depends on the date's type.
 const INTERVAL_SHAPES: Record<string, IntervalShape> = {
   mysql: {
     functions: ['CURRENT_DATE', 'CURDATE', 'DATE_ADD', 'DATE_SUB'],
@@ -694,11 +702,14 @@ const INTERVAL_SHAPES: Record<string, IntervalShape> = {
   },
   postgresql: {
     functions: ['CURRENT_DATE'], dateAdd: [],
-    operator: ['day', 'week', 'month', 'year', 'hour', 'minute', 'second'],
+    operator: ['day', 'week', 'month', 'year', 'hour', 'minute', 'second'], days: true,
   },
-  snowflake: {functions: ['CURRENT_DATE', 'DATEADD'], dateAdd: ['day'], operator: ['hour', 'minute']},
+  snowflake: {
+    functions: ['CURRENT_DATE', 'DATEADD'], dateAdd: ['day'], operator: ['hour', 'minute'], days: true,
+  },
   databricks: {
     functions: ['CURRENT_DATE', 'DATE_ADD'], dateAdd: ['day', 'week', 'month', 'year'], operator: [],
+    days: true,
     notes: Object.fromEntries(['hour', 'minute'].map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
   },
@@ -1083,8 +1094,10 @@ function article(noun: string): string {
 // an INTERVAL. MySQL and SQL Server read a date beside a number as a number or a
 // count of days, and every source reads a string beside a number as a number.
 // So import refuses a value it can see is a date or a time in any other
-// arithmetic, also when MAX, COALESCE or a similar function returns it. A date
-// column is not visible, so a MySQL date column plus a number is translated.
+// arithmetic, also when MAX, COALESCE or a similar function returns it, except
+// in the one shape daysAdded gives for a whole number of days. A date column is
+// not visible, so a date column plus a number is translated as written, which
+// in BigQuery adds days to a DATE. MySQL gives a number there.
 // SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
@@ -1099,12 +1112,13 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
   // DATE_ADD, DATE_SUB, DATEADD, DATE_TRUNC and a sum or difference with an
-  // INTERVAL are dates or times, as is a function that returns one.
+  // INTERVAL or a date are dates or times, as is a function that returns one.
   const dates = [...CURRENT, 'DATE_ADD', 'DATE_SUB', 'DATEADD', 'DATE_TRUNC'];
   const date = (s: any): boolean => isDate(s) || returned(s).some(date) ||
       dates.includes(String(bare(s)?.function?.name).toUpperCase()) ||
-      [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval));
-  if (sides.some(date)) return `${op} of a date`;
+      [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval ||
+                                                   date(v.left) || date(v.right)));
+  if (sides.some(date)) return daysAdded(kind, value, INTERVAL_SHAPES[read]) ?? `${op} of a date`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
@@ -1141,6 +1155,25 @@ function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[
     return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
   }
   return [operand];
+}
+
+// The operands of `value`, a `+` or `-` of `kind`, to check next, when it is a
+// call of one of the `functions` of `shape` plus or minus a whole number
+// literal, and the dialect counts that number as days. Otherwise undefined. A
+// column is not a date import can see, so its sum with a number does not reach
+// this check.
+function daysAdded(kind: string, value: any, shape: IntervalShape|undefined): unknown[]|undefined {
+  const [operand, count] = dayOperands(kind, value);
+  const call = String(bare(operand)?.function?.name).toUpperCase();
+  return shape?.days && kind !== 'mul' && /^-?\d+$/.test(numberText(count) ?? '') &&
+      shape.functions.includes(call) ? [operand, count] : undefined;
+}
+
+// The date and the number of days in `value`, a `+` or `-` of `kind`. A `+`
+// may name the number first.
+function dayOperands(kind: string, value: any): [any, any] {
+  return kind === 'add' && numberText(value.left) !== undefined ? [value.right, value.left] :
+                                                                  [value.left, value.right];
 }
 
 // The operands whose value `node`, a source value, can give as its own: the
@@ -1544,12 +1577,19 @@ function repairNode(node: any, read: string): unknown {
     return SNOWFLAKE_TYPES[node.name];
   }
   // A value plus or minus an INTERVAL of a unit in the dialect's `dateAdd` in
-  // INTERVAL_SHAPES. A sum may name the INTERVAL first.
+  // INTERVAL_SHAPES, and from a dialect with `days`, a current date, DATE_ADD or
+  // DATE_SUB plus or minus a whole number of days. A sum may name the INTERVAL
+  // or the number first.
   const shape: IntervalShape|undefined = INTERVAL_SHAPES[read];
   const sum = node.add ?? node.sub;
   const dated = (n: any) => !!shape?.dateAdd.includes(String(n?.interval?.unit?.unit).toLowerCase());
+  const [date, count] = sum ? dayOperands(node.add ? 'add' : 'sub', sum) : [];
+  const days = shape?.days && /^-?\d+$/.test(numberText(count) ?? '') &&
+      ['CURRENT_DATE', 'DATE_ADD', 'DATE_SUB'].includes(String(bare(date)?.function?.name).toUpperCase());
+  const day = {type: 'simple', unit: 'Day', use_plural: false};
   const operands = !sum ? undefined : dated(sum.right) ? [sum.left, sum.right] :
-      node.add && dated(sum.left) ? [sum.right, sum.left] : undefined;
+      node.add && dated(sum.left) ? [sum.right, sum.left] :
+      days ? [date, {interval: {this: bare(count), unit: day}}] : undefined;
   if (operands) {
     const call = sqlExpressionTree(node.add ? 'DATE_ADD(x, y)' : 'DATE_SUB(x, y)', 'BIGQUERY');
     return {function: {...call.function, args: operands}};
