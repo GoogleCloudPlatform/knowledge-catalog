@@ -147,7 +147,7 @@ export class CatalogManifest {
       type === Sources.KB
         ? new OfflineKnowledgeBaseSource(type, name, eg)
         : new OfflineEntryGroupSource(type, name, eg);
-    const aspects = [...source.defaultAspects];
+    const aspects = layout === 'okf' ? [] : [...source.defaultAspects];
     return new CatalogManifest(
       source,
       aspects.length ? { aspects } : undefined,

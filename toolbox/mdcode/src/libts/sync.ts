@@ -23,6 +23,21 @@ export interface PullSyncOptions {
   forceRemove?: boolean;
 }
 
+export interface PushSyncOptions {
+  force?: boolean;
+  validateOnly?: boolean;
+  /**
+   * Maximum milliseconds to wait for Dataplex link IAM permissions on a newly
+   * created EntryGroup (default: 120_000; 0 disables waiting).
+   */
+  propagationTimeoutMs?: number;
+  /**
+   * Base retry delay in milliseconds for link rate-limit and propagation
+   * backoff (default: 500; 0 skips backoff sleep in unit tests).
+   */
+  retryDelayMs?: number;
+}
+
 export interface ValidationResult {
   valid: boolean;
 }
@@ -33,6 +48,39 @@ export interface StatusResult {
 
 const READ_CONCURRENCY = 8;
 const BATCH_MAX_CHANGES = 250;
+const CLOCK_SKEW_ALLOWANCE_MS = 60_000;
+// Workaround for Dataplex new-EntryGroup IAM lag: `getEntryGroup`,
+// `listEntries`, and `batchChangeMetadata` honor IAM on a newly created
+// context-set EntryGroup immediately, while `:lookupEntryLinks` and
+// `entryLinks` writes can return 403 ("... (or it may not exist)") or
+// transient 404 for ~1-2+ minutes (Google Cloud IAM documents up to 7+ minutes
+// in worst cases). Remove once Dataplex `entryLinks` honors new-group IAM
+// immediately.
+const NEW_ENTRY_GROUP_WINDOW_MS = 180_000;
+const DEFAULT_LINK_PROPAGATION_TIMEOUT_MS = 120_000;
+const DEFAULT_LINK_RETRY_DELAY_MS = 500;
+const MIN_PROPAGATION_SLEEP_MS = 250;
+const MAX_LINK_RETRY_DELAY_MS = 5_000;
+const PROPAGATION_PROGRESS_INTERVAL_MS = 10_000;
+const ENTRY_GROUP_RESOURCE_RE = /\/entryGroups\/([^/'"\s)]+)/g;
+// Substring observed in Dataplex 403 errors while new-EntryGroup IAM
+// propagates, e.g.: `Permission 'dataplex.entryGroups.useRelatedEntryLink'
+// denied on resource '//dataplex.googleapis.com/projects/p/locations/us/entryGroups/g'
+// (or it may not exist).`
+const IAM_MAY_NOT_EXIST_HINT = 'or it may not exist';
+
+function createdWithin(
+  createTime: string | undefined,
+  windowMs: number,
+  now = Date.now(),
+): boolean {
+  const created = createTime ? Date.parse(createTime) : NaN;
+  return (
+    Number.isFinite(created) &&
+    now - created >= -CLOCK_SKEW_ALLOWANCE_MS &&
+    now - created < windowMs
+  );
+}
 
 export async function mapConcurrent<T, R>(
   items: readonly T[],
@@ -400,21 +448,198 @@ async function fetchEntryLinks(
   return [...byKey.values()];
 }
 
-async function withLinkRateLimitRetry<T extends { status: number }>(
+function extractNamedEntryGroups(res: {
+  message?: string;
+  body?: string;
+}): string[] {
+  const texts: string[] = [];
+  if (res.message) texts.push(res.message);
+  if (res.body) {
+    try {
+      const error = JSON.parse(res.body)?.error;
+      if (typeof error?.message === 'string') texts.push(error.message);
+      if (Array.isArray(error?.details)) {
+        for (const detail of error.details) {
+          if (typeof detail?.resourceName === 'string') {
+            texts.push(detail.resourceName);
+          }
+          if (typeof detail?.metadata?.resource === 'string') {
+            texts.push(detail.metadata.resource);
+          }
+        }
+      }
+    } catch {
+      // Non-JSON error body; res.message already holds the extracted text.
+    }
+  }
+  const named = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(ENTRY_GROUP_RESOURCE_RE)) {
+      named.add(match[1]);
+    }
+  }
+  return [...named];
+}
+
+function isGroupPropagationError(
+  res: { status: number; message?: string; body?: string },
+  groupId: string,
+  allow404 = false,
+): boolean {
+  if (res.status !== 403 && !(allow404 && res.status === 404)) return false;
+  const named = extractNamedEntryGroups(res);
+  // Do not retry 403/404 naming any external or sibling entry group (for
+  // example `/entryGroups/<groupId>_archive` or `@bigquery`).
+  if (named.some((g) => g !== groupId)) return false;
+  if (named.includes(groupId)) return true;
+  return (
+    res.status === 403 &&
+    (res.message ?? '').includes(IAM_MAY_NOT_EXIST_HINT)
+  );
+}
+
+function jitteredLinkDelay(delayMs: number): number {
+  return delayMs > 0 ? Math.round(delayMs * (0.5 + Math.random() * 0.5)) : 0;
+}
+
+async function withRateLimitRetry<T extends { status: number }>(
   fn: () => Promise<T>,
+  baseDelayMs = DEFAULT_LINK_RETRY_DELAY_MS,
 ): Promise<T> {
-  const baseDelay =
-    process.env.GCP_RETRY_DELAY_MS !== undefined
-      ? Math.max(0, Number(process.env.GCP_RETRY_DELAY_MS) || 0)
-      : 500;
-  let delay = baseDelay;
+  let delay = baseDelayMs;
+  let attempts = 0;
   let res = await fn();
-  for (let attempt = 1; attempt < 4 && res.status === 429; attempt++) {
-    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-    delay = Math.min(delay * 2, 5000);
+  while (res.status === 429 && attempts < 3) {
+    attempts++;
+    const sleepMs = jitteredLinkDelay(delay);
+    if (sleepMs > 0) {
+      await new Promise((r) => setTimeout(r, sleepMs));
+    }
+    delay =
+      baseDelayMs === 0 ? 0 : Math.min(delay * 2, MAX_LINK_RETRY_DELAY_MS);
     res = await fn();
   }
   return res;
+}
+
+interface LinkReadinessOptions {
+  groupId: string;
+  startedAt: number;
+  deadline: number;
+  timeoutMs: number;
+  baseDelayMs: number;
+  allow404?: boolean;
+}
+
+interface LinkReadinessResult<T> {
+  response: T;
+  timedOut: boolean;
+}
+
+function propagationTimeoutHint(groupId: string, timeoutMs: number): string {
+  const secs = Math.round(timeoutMs / 1000);
+  const elapsed = secs > 0 ? ` after ${secs}s` : '';
+  return (
+    `links not written yet: permissions on new context set '${groupId}' ` +
+    `are still propagating${elapsed}; re-run 'kcmd push' in ~2 minutes ` +
+    `(or pass '--propagation-timeout <seconds>').`
+  );
+}
+
+/**
+ * Probes a single link operation with jittered exponential backoff and visible
+ * stderr progress until new-EntryGroup IAM permissions propagate or the shared
+ * timeout budget runs out.
+ */
+async function awaitLinkReadiness<
+  T extends { status: number; message?: string; body?: string },
+>(
+  probe: () => Promise<T>,
+  options: LinkReadinessOptions,
+): Promise<LinkReadinessResult<T>> {
+  const { groupId, startedAt, deadline, timeoutMs, baseDelayMs, allow404 } =
+    options;
+  let delay =
+    baseDelayMs === 0 ? 0 : Math.max(MIN_PROPAGATION_SLEEP_MS, baseDelayMs);
+  let rateLimitAttempts = 0;
+  let waited = false;
+  let lastProgressAt = 0;
+
+  const retryReason = (r: T): 'rate-limit' | 'propagation' | undefined => {
+    if (r.status === 429 && rateLimitAttempts < 3) return 'rate-limit';
+    if (
+      timeoutMs > 0 &&
+      isGroupPropagationError(r, groupId, allow404) &&
+      Date.now() < deadline
+    ) {
+      return 'propagation';
+    }
+    return undefined;
+  };
+
+  let res = await probe();
+  for (let reason = retryReason(res); reason; reason = retryReason(res)) {
+    if (reason === 'rate-limit') {
+      rateLimitAttempts++;
+      const sleepMs = jitteredLinkDelay(baseDelayMs);
+      if (sleepMs > 0) {
+        await new Promise((r) => setTimeout(r, sleepMs));
+      }
+    } else {
+      const now = Date.now();
+      if (!waited || now - lastProgressAt >= PROPAGATION_PROGRESS_INTERVAL_MS) {
+        const elapsedSec = Math.max(0, Math.round((now - startedAt) / 1000));
+        const totalSec = Math.max(1, Math.round(timeoutMs / 1000));
+        console.error(
+          `Waiting for Dataplex permissions on new context set '${groupId}' ` +
+            `(${elapsedSec}s / ${totalSec}s)...`,
+        );
+        lastProgressAt = now;
+      }
+      waited = true;
+      const remaining = Math.max(0, deadline - Date.now());
+      const sleepMs =
+        baseDelayMs === 0
+          ? Math.min(2, remaining)
+          : Math.min(
+              Math.max(MIN_PROPAGATION_SLEEP_MS, jitteredLinkDelay(delay)),
+              remaining,
+            );
+      if (sleepMs > 0) {
+        await new Promise((r) => setTimeout(r, sleepMs));
+      }
+      delay =
+        baseDelayMs === 0 ? 0 : Math.min(delay * 2, MAX_LINK_RETRY_DELAY_MS);
+    }
+    res = await probe();
+  }
+
+  if (isGroupPropagationError(res, groupId, allow404)) {
+    return { response: res, timedOut: true };
+  }
+  if (waited) {
+    const waitedSec = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.error(
+      `Dataplex permissions on '${groupId}' ready after ${waitedSec}s.`,
+    );
+  }
+  return { response: res, timedOut: false };
+}
+
+interface ReconcileLinksOptions {
+  /** True when the target EntryGroup was created within the IAM propagation window. */
+  isRecentEntryGroup?: boolean;
+  /** Skip `:lookupEntryLinks` when a newly created EntryGroup has no prior entries. */
+  skipInitialLookup?: boolean;
+  /** Maximum milliseconds to wait for IAM propagation on a new EntryGroup. */
+  propagationTimeoutMs?: number;
+  /** Base retry delay in milliseconds (0 in unit tests). */
+  retryDelayMs?: number;
+}
+
+interface ReconcileLinksResult {
+  failed: number;
+  details?: string;
 }
 
 /** Reconciles `bundle/_links.yaml` against the entry group's EntryLinks. */
@@ -424,7 +649,8 @@ async function reconcileLinks(
   desiredLinks: gcp.EntryLink[],
   entries: gcp.Entry[],
   existingEntries: Map<string, gcp.Entry>,
-): Promise<number> {
+  options: ReconcileLinksOptions = {},
+): Promise<ReconcileLinksResult> {
   const existingLinks = new Map<string, gcp.EntryLink>();
   const allEntryNames = [
     ...new Set([...entries.map((e) => e.name), ...existingEntries.keys()]),
@@ -433,54 +659,100 @@ async function reconcileLinks(
   const managesSchemaJoin = desiredLinks.some(
     (l) => shortenLinkType(l.entryLinkType) === 'schema-join',
   );
+  const timeoutMs =
+    options.propagationTimeoutMs ?? DEFAULT_LINK_PROPAGATION_TIMEOUT_MS;
+  const baseDelayMs = options.retryDelayMs ?? DEFAULT_LINK_RETRY_DELAY_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
 
-  let lookupFailed = false;
-  const lookedUp = await mapConcurrent(allEntryNames, READ_CONCURRENCY, async (entryName) => {
-    try {
-      const res = await catalog.lookupEntryLinks(target.project, target.location, {
-        entry: entryName,
-      });
-      // A brand-new entry created milliseconds earlier in batchChangeMetadata
-      // can return 403 ("or it may not exist") during regional read-after-create
-      // IAM propagation and has no pre-existing links to delete.
-      if (
-        res.status === 404 ||
-        res.status === 501 ||
-        (res.status === 403 && !existingEntries.has(entryName))
-      ) {
-        return [] as gcp.EntryLink[];
-      }
-      if (res.status !== 200) {
-        console.error(
-          `  lookupEntryLinks(${entryName}): HTTP ${res.status} ${res.message ?? ''}`,
+  if (!options.skipInitialLookup) {
+    const preflightLookup = new Map<string, gcp.ApiResult<gcp.EntryLink[]>>();
+    // On a recently created group with existing entries, probe a single entry
+    // sequentially before fanning out so concurrent workers do not retry in
+    // lockstep while IAM propagates.
+    if (options.isRecentEntryGroup && existingEntries.size > 0) {
+      const firstEntry = existingEntries.keys().next().value;
+      if (firstEntry !== undefined) {
+        const ready = await awaitLinkReadiness(
+          () =>
+            catalog.lookupEntryLinks(target.project, target.location, {
+              entry: firstEntry,
+            }),
+          {
+            groupId: target.groupId,
+            startedAt,
+            deadline,
+            timeoutMs,
+            baseDelayMs,
+          },
         );
-        lookupFailed = true;
-        return [] as gcp.EntryLink[];
+        if (ready.timedOut) {
+          const hint = propagationTimeoutHint(target.groupId, timeoutMs);
+          console.error(`  ${hint}`);
+          return { failed: 1, details: hint };
+        }
+        preflightLookup.set(firstEntry, ready.response);
       }
-      return res.result ?? [];
-    } catch (err: any) {
-      if (String(err?.message || err).includes('a test made a network call')) {
-        return [] as gcp.EntryLink[];
-      }
-      console.error(`  lookupEntryLinks(${entryName}): ${err.message || err}`);
-      lookupFailed = true;
-      return [] as gcp.EntryLink[];
     }
-  });
-  if (lookupFailed) return 1;
 
-  for (const list of lookedUp) {
-    for (const link of list) {
-      if (link.name && !link.name.includes(groupSegment)) continue;
-      if (
-        !managesSchemaJoin &&
-        shortenLinkType(link.entryLinkType) === 'schema-join'
-      ) {
-        continue;
-      }
-      const id = entryLinkId(link);
-      if (id && !existingLinks.has(id)) {
-        existingLinks.set(id, link);
+    let lookupFailed = false;
+    const lookedUp = await mapConcurrent(
+      allEntryNames,
+      READ_CONCURRENCY,
+      async (entryName) => {
+        try {
+          const cached = preflightLookup.get(entryName);
+          const res =
+            cached ??
+            (await withRateLimitRetry(
+              () =>
+                catalog.lookupEntryLinks(target.project, target.location, {
+                  entry: entryName,
+                }),
+              baseDelayMs,
+            ));
+          // A brand-new entry created milliseconds earlier in batchChangeMetadata
+          // can return 403 ("or it may not exist") during regional read-after-create
+          // IAM propagation and has no pre-existing links to delete.
+          if (
+            res.status === 404 ||
+            res.status === 501 ||
+            (res.status === 403 && !existingEntries.has(entryName))
+          ) {
+            return [] as gcp.EntryLink[];
+          }
+          if (res.status !== 200) {
+            console.error(
+              `  lookupEntryLinks(${entryName}): HTTP ${res.status} ${res.message ?? ''}`,
+            );
+            lookupFailed = true;
+            return [] as gcp.EntryLink[];
+          }
+          return res.result ?? [];
+        } catch (err: any) {
+          console.error(
+            `  lookupEntryLinks(${entryName}): ${err.message || err}`,
+          );
+          lookupFailed = true;
+          return [] as gcp.EntryLink[];
+        }
+      },
+    );
+    if (lookupFailed) return { failed: 1 };
+
+    for (const list of lookedUp) {
+      for (const link of list) {
+        if (link.name && !link.name.includes(groupSegment)) continue;
+        if (
+          !managesSchemaJoin &&
+          shortenLinkType(link.entryLinkType) === 'schema-join'
+        ) {
+          continue;
+        }
+        const id = entryLinkId(link);
+        if (id && !existingLinks.has(id)) {
+          existingLinks.set(id, link);
+        }
       }
     }
   }
@@ -489,13 +761,44 @@ async function reconcileLinks(
     desiredLinks.map((link) => [entryLinkId(link), link]),
   );
   let failed = 0;
+  let writeConfirmedReady = !options.isRecentEntryGroup;
+
+  const runLinkWrite = async <
+    T extends { status: number; message?: string; body?: string },
+  >(
+    fn: () => Promise<T>,
+    allow404 = false,
+  ): Promise<LinkReadinessResult<T>> => {
+    if (writeConfirmedReady) {
+      return {
+        response: await withRateLimitRetry(fn, baseDelayMs),
+        timedOut: false,
+      };
+    }
+    const ready = await awaitLinkReadiness(fn, {
+      groupId: target.groupId,
+      startedAt,
+      deadline,
+      timeoutMs,
+      baseDelayMs,
+      allow404,
+    });
+    if (
+      !ready.timedOut &&
+      ((ready.response.status >= 200 && ready.response.status < 300) ||
+        ready.response.status === 409)
+    ) {
+      writeConfirmedReady = true;
+    }
+    return ready;
+  };
 
   // Delete orphaned or stale links first so recreated links or links with new
   // deterministic IDs do not collide on duplicate endpoints.
   for (const [id, prev] of existingLinks) {
     const desired = desiredById.get(id);
     if (!desired || isStaleEntryLink(prev, desired)) {
-      const del = await withLinkRateLimitRetry(() =>
+      const del = await runLinkWrite(() =>
         catalog.deleteEntryLink(
           target.project,
           target.location,
@@ -503,8 +806,15 @@ async function reconcileLinks(
           id,
         ),
       );
-      if (del.status !== 200 && del.status !== 404) {
-        console.error(`  ${id}: HTTP ${del.status} ${del.message ?? ''}`);
+      if (del.timedOut) {
+        const hint = propagationTimeoutHint(target.groupId, timeoutMs);
+        console.error(`  ${hint}`);
+        return { failed: failed + 1, details: hint };
+      }
+      if (del.response.status !== 200 && del.response.status !== 404) {
+        console.error(
+          `  ${id}: HTTP ${del.response.status} ${del.response.message ?? ''}`,
+        );
         failed++;
       } else if (desired) {
         existingLinks.delete(id);
@@ -516,33 +826,45 @@ async function reconcileLinks(
     const id = entryLinkId(link);
     const prev = existingLinks.get(id);
     if (!prev) {
-      const res = await withLinkRateLimitRetry(() =>
-        catalog.createEntryLink(
-          target.project,
-          target.location,
-          target.groupId,
-          id,
-          link,
-        ),
-      );
-      if (res.status === 409) {
-        const del = await withLinkRateLimitRetry(() =>
-          catalog.deleteEntryLink(
+      const created = await runLinkWrite(
+        () =>
+          catalog.createEntryLink(
             target.project,
             target.location,
             target.groupId,
             id,
+            link,
           ),
-        );
-        if (del.status === 200 || del.status === 404) {
-          const retry = await withLinkRateLimitRetry(() =>
-            catalog.createEntryLink(
+        true,
+      );
+      if (created.timedOut) {
+        const hint = propagationTimeoutHint(target.groupId, timeoutMs);
+        console.error(`  ${hint}`);
+        return { failed: failed + 1, details: hint };
+      }
+      const res = created.response;
+      if (res.status === 409) {
+        const del = await withRateLimitRetry(
+          () =>
+            catalog.deleteEntryLink(
               target.project,
               target.location,
               target.groupId,
               id,
-              link,
             ),
+          baseDelayMs,
+        );
+        if (del.status === 200 || del.status === 404) {
+          const retry = await withRateLimitRetry(
+            () =>
+              catalog.createEntryLink(
+                target.project,
+                target.location,
+                target.groupId,
+                id,
+                link,
+              ),
+            baseDelayMs,
           );
           if (retry.status !== 200) {
             console.error(
@@ -561,20 +883,24 @@ async function reconcileLinks(
     } else if (
       JSON.stringify(prev.aspects ?? {}) !== JSON.stringify(link.aspects ?? {})
     ) {
-      const upd = await withLinkRateLimitRetry(() =>
-        catalog.updateEntryLink(
-          link,
-          Object.keys(link.aspects ?? {}),
-        ),
+      const upd = await runLinkWrite(() =>
+        catalog.updateEntryLink(link, Object.keys(link.aspects ?? {})),
       );
-      if (upd.status !== 200) {
-        console.error(`  ${id}: HTTP ${upd.status} ${upd.message ?? ''}`);
+      if (upd.timedOut) {
+        const hint = propagationTimeoutHint(target.groupId, timeoutMs);
+        console.error(`  ${hint}`);
+        return { failed: failed + 1, details: hint };
+      }
+      if (upd.response.status !== 200) {
+        console.error(
+          `  ${id}: HTTP ${upd.response.status} ${upd.response.message ?? ''}`,
+        );
         failed++;
       }
     }
   }
 
-  return failed;
+  return { failed };
 }
 
 
@@ -688,7 +1014,7 @@ export class CatalogSync {
   // `validateOnly` the entries are still walked and the pre-flight lookups run,
   // but no create or update is issued -- mirroring the dry-run contract the
   // semantic-model legs honor, so the flag behaves the same on every scope.
-  async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
+  async push(options?: PushSyncOptions): Promise<SyncResult> {
     if (this._snapshot.layout instanceof OkfLayout) {
       try {
         return await this._pushOkf(this._snapshot.layout, options ?? {});
@@ -860,7 +1186,7 @@ export class CatalogSync {
 
   private async _pushOkf(
     layout: OkfLayout,
-    options: { force?: boolean; validateOnly?: boolean },
+    options: PushSyncOptions,
   ): Promise<SyncResult> {
     const {
       project,
@@ -1012,17 +1338,46 @@ export class CatalogSync {
     }
 
     let linkFailed = 0;
+    let linkDetails: string | undefined;
     if (hasLinksConfig) {
-      const survivingExisting = new Map(
-        [...existing.entries()].filter(([k]) => !deletedNames.has(k)),
-      );
-      linkFailed = await reconcileLinks(
-        this._catalog,
-        { project, location, groupId },
-        links,
-        entries,
-        survivingExisting,
-      );
+      if (failed > 0) {
+        console.error(
+          'Skipping entry link reconciliation because entry changes failed.',
+        );
+      } else {
+        // Exclude the synthetic `entryTypes/entrygroup` (`<groupId>_entry`) entry
+        // Dataplex creates automatically on every group, so a brand-new group is
+        // not treated as having a pre-existing concept entry.
+        const survivingExisting = new Map(
+          remoteEntries
+            .filter((e) => !deletedNames.has(e.name))
+            .map((e) => [e.name, e]),
+        );
+        const windowMs = Math.max(
+          NEW_ENTRY_GROUP_WINDOW_MS,
+          options.propagationTimeoutMs ?? DEFAULT_LINK_PROPAGATION_TIMEOUT_MS,
+        );
+        const isRecentEntryGroup = createdWithin(
+          this._snapshot.manifest.source.entryGroupCreateTime,
+          windowMs,
+        );
+        const reconciled = await reconcileLinks(
+          this._catalog,
+          { project, location, groupId },
+          links,
+          entries,
+          survivingExisting,
+          {
+            isRecentEntryGroup,
+            skipInitialLookup:
+              isRecentEntryGroup && survivingExisting.size === 0,
+            propagationTimeoutMs: options.propagationTimeoutMs,
+            retryDelayMs: options.retryDelayMs,
+          },
+        );
+        linkFailed = reconciled.failed;
+        linkDetails = reconciled.details;
+      }
     }
 
     console.log(
@@ -1032,7 +1387,9 @@ export class CatalogSync {
     if (linkFailed) {
       console.error(`${linkFailed} entry link change(s) failed.`);
     }
-    return failed || linkFailed ? { success: false } : { success: true };
+    return failed || linkFailed
+      ? { success: false, ...(linkDetails ? { details: linkDetails } : {}) }
+      : { success: true };
   }
 
   async validate(): Promise<ValidationResult> {
