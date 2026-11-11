@@ -1856,21 +1856,16 @@ export function validateExpressionReferences(
 
     const entityOfMetric =
         new Map((model.metrics ?? []).map(m => [m.name, m.entity]));
-    const fieldNames =
-        new Set([...fieldsByEntity.values()].flatMap(fields => [...fields]));
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
       // Whether `name`, read where a field belongs, names another metric of
-      // the model: qualified with `on`, that metric's entity, or unqualified
-      // and no field's name. A metric cannot read another metric, so each
-      // such metric gets one message, with no advice on how to name a field.
+      // the model: unqualified, or qualified with `on`, that metric's entity.
+      // A metric cannot read another metric, so each such metric gets one
+      // message, with no advice on how to name a field.
       const metricsRead = new Set<string>();
       const readsMetric = (name: string, on?: string) => {
         if (name === metric.name || !entityOfMetric.has(name)) return false;
-        if (on === undefined ? fieldNames.has(name) :
-                               entityOfMetric.get(name) !== on) {
-          return false;
-        }
+        if (on !== undefined && entityOfMetric.get(name) !== on) return false;
         if (!metricsRead.has(name)) {
           metricsRead.add(name);
           errors.push(

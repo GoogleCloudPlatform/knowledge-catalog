@@ -1795,22 +1795,24 @@ ${metricBlock}`).models[0];
       ['avg_order', 'orders.revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, ` +
        'and a metric over other metrics is not supported in this version; write the ' +
        "expression of 'revenue' in its place."],
+      // A bare metric name reads that metric, even when it is also a field.
+      ['avg_order', 'SUM(amount) / COUNT(*)', `${at('avg_order')}: 'amount' is a metric, and a ` +
+       'metric over other metrics is not supported in this version; write the expression ' +
+       "of 'amount' in its place."],
       // A metric that reads its own name reads a column or a missing field.
       ['total', 'SUM(total)', `${at('total')}: 'total' must be written as 'entity.field'; a ` +
        'metric reads fields, never columns.'],
       ['total', 'SUM(orders.total)', `${at('total')}: expression references 'orders.total', ` +
        "but entity 'orders' has no field 'total'; metric expressions must reference declared " +
        'fields, not physical columns.'],
-      // A metric's name on another entity, under an unknown qualifier, or
-      // shared with a field is no read of that metric.
+      // A metric's name on another entity or under an unknown qualifier is
+      // no read of that metric.
       ['avg_order', 'SUM(orders.net_amount) / SUM(customer.revenue)', `${at('avg_order')}: ` +
        "expression references 'customer.revenue', but entity 'customer' has no field " +
        "'revenue'; metric expressions must reference declared fields, not physical columns."],
       ['avg_order', 'ordrs.revenue / COUNT(*)', `${at('avg_order')}: 'ordrs.revenue' has ` +
        "qualifier 'ordrs', which is not a declared entity in model 'm'; write 'entity.field' " +
        'starting with a declared entity.'],
-      ['avg_order', 'SUM(amount) / COUNT(*)', `${at('avg_order')}: 'amount' must be written as ` +
-       "'entity.field'; a metric reads fields, never columns."],
       ['avg_order', 'SUM(orders.net_amount) / COUNT(*)', undefined],
     ])('a metric %s over %s gets the message for what it reads', (name, expression, message) => {
       const m = model({
