@@ -108,7 +108,9 @@ export class BigQueryClient extends api.ApiClient {
   // (`INT64`, `STRING`, ...) and is only useful with `dryRun`: a dry run
   // resolves an unbound `@name` on its own, so the types are not required to
   // make one pass -- supplying them is what makes BigQuery type-check each
-  // parameter against the column it is used with. The values sent are empty
+  // parameter against the column it is used with. BigQuery infers parameters
+  // only when the request declares none: once one is declared, every `@name`
+  // the statement reads must be declared too. The values sent are empty
   // (`parameterValue: {}`, an unset value), because a dry run never evaluates
   // them.
   async query(project: string, sql: string, location?: string, dryRun?: boolean, namedParameterTypes?: Record<string, string>): Promise<api.ApiResult<QueryResponse>> {

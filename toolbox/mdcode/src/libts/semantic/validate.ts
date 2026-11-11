@@ -2919,7 +2919,9 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 // those whose declared type maps to a store type we can state. An `Opaque` type
 // is exactly the case we cannot: it means the model does not know the type, so
 // asserting one would invent a constraint the author never wrote. Those are
-// left out and the store resolves them from context, which both backends do.
+// left out and the store resolves them from context. Spanner does that for
+// each parameter left out. BigQuery does it only when the request declares no
+// parameters, so its arm sends none for a statement that reads one.
 //
 // Sending the types at all is optional -- a statement with no parameter types
 // passes either backend's dry run. It is worth doing because it turns the
@@ -3043,9 +3045,15 @@ export async function validateBigQueryActionStatements(
     const project = billingProject(loaded.model, defaultProject);
     const store = `BigQuery (project '${project}')`;
     for (const pending of statements) {
+      // Once a request declares one parameter, BigQuery answers "Query
+      // parameter 'x' not found" for every other one the statement reads. So
+      // a statement reading an untyped parameter declares none, and BigQuery
+      // infers them all.
+      const types = statementParameterTypes(pending.action, pending.sql);
+      const untyped = referencedParameters(pending.sql)
+                          .some(name => !Object.hasOwn(types, name));
       const res = await bq.query(
-          project, pending.sql, undefined, true,
-          statementParameterTypes(pending.action, pending.sql));
+          project, pending.sql, undefined, true, untyped ? {} : types);
       if (res.status === 200) continue;
       errors.push(rejectedStatement(
           pending, store, storeMessage(res.message, res.status)));

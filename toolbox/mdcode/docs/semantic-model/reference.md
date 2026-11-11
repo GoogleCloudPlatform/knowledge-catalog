@@ -1047,7 +1047,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `account_id`?*), a placeholder or a function from the wrong dialect, and a
   parameter whose declared type does not match the column it is compared with:
   the parameter types the action declares are sent with the statement, unbound,
-  which is what turns them into a claim the store checks. The database a
+  which is what turns them into a claim the store checks. BigQuery infers
+  parameter types only when a request declares none, so a statement that reads
+  an `Opaque` parameter is sent to BigQuery with no types. The database a
   statement is planned against is the one the profile deploys the graph to, so
   which store answers is the profile's choice, not the statement's. Failing to
   reach the store at all fails the push rather than skipping the check — a push

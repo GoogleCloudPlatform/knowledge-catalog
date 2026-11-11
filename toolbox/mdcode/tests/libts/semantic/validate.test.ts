@@ -617,6 +617,19 @@ describe('action statement pre-flight', () => {
           .toEqual([{id: 'INT64'}, {id: 'INT64'}, {id: 'INT64'}]);
     });
 
+    // BigQuery infers a parameter only when the request declares none, so
+    // declaring `id` alone would fail with "Query parameter 'note' not found".
+    test('sends no types for a statement that reads an Opaque parameter',
+         async () => {
+           const bq = new BigQueryClientMock();
+           bq.dmlSchema = mockSchema({account: ['account_id', 'memo']});
+           await validateBigQueryActionStatements(
+               [bqModel([sqlAction(
+                   ['UPDATE account SET memo = @note WHERE account_id = @id'])])],
+               bq, 'p');
+           expect(bq.dryRunDml[0].parameterTypes).toEqual({});
+         });
+
     test('checks every statement of every action', async () => {
       const bq = new BigQueryClientMock();
       bq.dmlSchema = mockSchema(ACCOUNT);
