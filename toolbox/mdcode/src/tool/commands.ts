@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, profileFilesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -565,23 +565,21 @@ async function scopeTranspileOutcomes(
 // of those checks: it refuses or deletes another model's file, and the
 // engine reads each profile file beside the model. With `pull.texts`, the
 // import reads the texts of `docs` and of their profile files in place of
-// the files on disk. With `pull.profileDirGone`, it takes the older profile
-// directory beside the model as gone.
+// the files on disk, with each other profile file on disk that pull leaves.
+// With `pull.forceRemove`, pull deletes the older profile directory beside
+// the model and each profile file push reads that it does not write.
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
-    dialects: SourceDialects, pull?: {texts: boolean; profileDirGone: boolean}):
+    dialects: SourceDialects, pull?: {texts: boolean; forceRemove: boolean}):
     Promise<Map<string, string|null>> {
   const outcomes = new Map<string, string|null>();
   for (const doc of docs) {
     const model = transpilingModel(doc, profileDocs, load);
     if (!model) continue;
-    const source = pull?.texts ? {
-      text: doc.text,
-      profileFiles: profileDocs(doc.name).map(
-          p => ({fileName: path.basename(p.path), content: p.text})),
-    } :
-                               undefined;
+    const source = pull?.texts ?
+        {text: doc.text, profileFiles: pulledProfileFiles(doc.name)} :
+        undefined;
     const plan = await planImport(
         layout.modelPath(doc.name), {
           flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
@@ -593,11 +591,43 @@ async function transpileOutcomes(
           source,
           readDialects: async () => dialects,
           api: () => ctx,
-          withoutProfileDir: pull?.profileDirGone,
+          withoutProfileDir: pull?.forceRemove,
         });
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
   return outcomes;
+
+  // The profile files beside model `name` once pull has written its own:
+  // those it writes and each other one it leaves, in the order the import
+  // reads them (see profileFileNamesBeside).
+  function pulledProfileFiles(name: string): SerializedFile[] {
+    const dir = path.dirname(layout.modelPath(name));
+    const stem = path.basename(layout.modelPath(name), '.yaml');
+    const written = profileDocs(name).map(
+        p => ({fileName: path.basename(p.path), content: p.text}));
+    const gone = new Set([
+      ...written.map(f => f.fileName),
+      ...pull!.forceRemove ?
+          layout.localProfileFiles(name).map(f => path.basename(f.path)) :
+          [],
+    ]);
+    const left =
+        profileFileNamesBeside(dir, stem)
+            .filter(f => !gone.has(f))
+            .map(f => ({
+                   fileName: f,
+                   content: fs.readFileSync(path.join(dir, f), 'utf8'),
+                 }));
+    const named = new Set(
+        profileFilesBeside(dir, stem).map(p => path.basename(p.path)));
+    const profileOf = (f: SerializedFile) =>
+        f.fileName.slice(`${stem}.profile.`.length, -'.yaml'.length);
+    return [
+      ...left.filter(f => !named.has(f.fileName)),
+      ...[...left.filter(f => named.has(f.fileName)), ...written].sort(
+          (a, b) => profileOf(a).localeCompare(profileOf(b))),
+    ];
+  }
 }
 
 // The dialect of each source the files `texts` write, read with the clients
@@ -2222,8 +2252,10 @@ async function pullSemanticModel(
 // writing nothing, and that import reads no table's dialect either. The
 // import reads the files on disk, which pull has written, unless given
 // `overviews`, which pull gives under --dry-run. It then reads `doc` and
-// `profiles`. With `forceRemove`, it takes the older profile directory as
-// gone, since pull --force-remove deletes it.
+// `profiles`, and each other profile file on disk that pull leaves. With
+// `forceRemove`, it leaves out what pull --force-remove deletes: the older
+// profile directory, and each profile file push reads that pull does not
+// write.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
@@ -2239,7 +2271,7 @@ async function pushRefusal(
     readWithoutDialect: true,
     transpileOutcomes: await transpileOutcomes(
         ctx, docs, profileDocs, layout, {}, noDialects,
-        {texts: overviews !== undefined, profileDirGone: forceRemove}),
+        {texts: overviews !== undefined, forceRemove}),
   };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load, overviews,

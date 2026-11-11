@@ -2164,17 +2164,21 @@ describe('a pull', () => {
                "declared entity in model 'commerce'; write 'entity.field' " +
                'starting with a declared entity.'));
 
-  // After writing, pull runs that import on the files in the entry group, so
-  // its warning names an error in a profile file pull leaves there.
-  test('names the error the import stops on in a profile file pull leaves',
-       async () => {
-         fs.mkdirSync(entryGroupDir(), {recursive: true});
-         fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
-         expect(await pullModel(snowflakeCode())).toBe(0);
-         expect(messages(console.warn)).toEndWith(
-             "after fixing this: [commerce.profile.dev.yaml] profile 'dev': " +
-             "entity 'Order' has no source in this profile.");
-       });
+  // Pull runs that import on the files in the entry group once it has written
+  // its own, so its warning names an error in a profile file pull leaves
+  // there. A dry run reads that file too.
+  for (const dryRun of [false, true]) {
+    test('names the error the import stops on in a profile file pull leaves' +
+             (dryRun ? ', under --dry-run' : ''),
+         async () => {
+           fs.mkdirSync(entryGroupDir(), {recursive: true});
+           fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
+           expect(await pullModel(snowflakeCode(), {dryRun})).toBe(0);
+           expect(messages(console.warn)).toEndWith(
+               "after fixing this: [commerce.profile.dev.yaml] profile 'dev': " +
+               "entity 'Order' has no source in this profile.");
+         });
+  }
 
   // Under --dry-run --force-remove, that import leaves out the files the pull
   // would delete: another model's file and the older profile directory.
