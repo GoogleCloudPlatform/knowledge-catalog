@@ -504,10 +504,16 @@ NODE TABLES (
     const model = modelOf('shop', [
       entity('customer', 'Customer', ['id'],
              {id: 'id', name: 'full_name', email: 'email'}),
-      entity('vip_customer', 'VipCustomer', ['id'], {id: 'id', tier: 'tier'},
+      entity('vip_customer', 'VipCustomer', ['id'],
+             {id: 'id', tier: 'tier', name: 'full_name', email: 'email'},
              {extends: ['customer']}),
-      entity('gold_customer', 'GoldCustomer', ['id'], {id: 'id', perk: 'perk'},
-             {extends: ['vip_customer']}),
+      entity('gold_customer', 'GoldCustomer', ['id'], {
+        id: 'id',
+        perk: 'perk',
+        tier: 'tier',
+        name: 'full_name',
+        email: 'email',
+      }, {extends: ['vip_customer']}),
     ]);
     for (const [engine, generate, q] of ENGINES) {
       const {ddl, warnings} = generate(model);
@@ -544,7 +550,8 @@ NODE TABLES (
   });
 
   // A parent whose only descendants form no node table has no table to carry
-  // its label. With no leaf table at all there is no graph.
+  // its label, and neither has an abstract entity above it. With no leaf table
+  // at all there is no graph.
   test('a concrete parent with no descendant node table produces no graph element', () => {
     const noKey = (e: string) => `entity '${e}': empty KEY (no primary key); ` +
         `node table skipped, as a graph node requires a KEY`;
@@ -561,6 +568,20 @@ NODE TABLES (
             `table, and no entity with a node table extends it, so it ` +
             `produces no graph element`,
       ]);
+      const party = entity('party', '', [], {}, {abstract: true});
+      const partyCustomer = entity('customer', 'Customer', ['id'], {id: 'id'},
+                                   {extends: ['party']});
+      expect(generate(modelOf('shop', [party, partyCustomer, vip, orders]))
+                 .warnings,
+             engine)
+          .toEqual([
+            noKey('vip_customer'),
+            `abstract entity 'party' has no table, and no entity with a node ` +
+                `table extends it, so it produces no graph element`,
+            `entity 'customer' is extended by another entity, so it has no ` +
+                `node table, and no entity with a node table extends it, so ` +
+                `it produces no graph element`,
+          ]);
       expect(() => generate(modelOf('shop', [customer, vip])), engine)
           .toThrow('cannot generate a property graph: every concrete leaf ' +
                    'entity was skipped because it has no primary key');
@@ -574,6 +595,20 @@ NODE TABLES (
     }
   });
 
+  // An abstract entity is skipped for being abstract, not for a missing key, so
+  // when every other entity lacks a key the error names the leaves.
+  test('the no-node-table error beside an abstract entity says every concrete leaf lacks a key', () => {
+    const model = modelOf('shop', [
+      entity('party', '', [], {}, {abstract: true}),
+      entity('drafts', 'Drafts', [], {id: 'id'}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      expect(() => generate(model), engine)
+          .toThrow('cannot generate a property graph: every concrete leaf ' +
+                   'entity was skipped because it has no primary key');
+    }
+  });
+
   // BigQuery requires every table that carries a label to declare the same
   // properties under it. A live test with two leaves under `customer`, one
   // leaving out `email`, failed with "The label 'customer' is defined with
@@ -584,7 +619,8 @@ NODE TABLES (
       entity('customer', 'Customer', ['id'],
              {id: 'id', name: 'full_name', email: 'email'}),
       entity('retail_customer', 'RetailCustomer', ['id'],
-             {id: 'id', name: 'shopper_name'}, {extends: ['customer']}),
+             {id: 'id', name: 'shopper_name', email: 'email'},
+             {extends: ['customer']}),
       entity('wholesale_customer', 'WholesaleCustomer', ['id'],
              {id: 'id', name: 'company_name', terms: 'payment_terms'},
              {extends: ['customer'], excludedFields: ['email']}),
@@ -650,7 +686,8 @@ NODE TABLES (
     const model = modelOf('shop', [
       entity('customer', 'Customer', ['id'],
              {id: 'id', name: 'full_name', email: 'email', phone: 'phone'}),
-      entity('vip_customer', 'VipCustomer', ['id'], {id: 'id', tier: 'tier'},
+      entity('vip_customer', 'VipCustomer', ['id'],
+             {id: 'id', tier: 'tier', name: 'full_name', email: 'email'},
              {extends: ['customer'], excludedFields: ['phone']}),
     ]);
     for (const [engine, generate] of ENGINES) {
@@ -664,6 +701,27 @@ NODE TABLES (
     )
 );
 `);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  // A profile exclusion on a parent excludes nothing from the graph, since the
+  // parent has no node table: its label lists every field the leaves bind.
+  test('a field a parent excludes stays under its label on every leaf', () => {
+    const model = modelOf('shop', [
+      entity('customer', 'Customer', ['id'], {id: 'id', email: 'email'},
+             {excludedFields: ['email']}),
+      entity('retail_customer', 'RetailCustomer', ['id'],
+             {id: 'id', email: 'email'}, {extends: ['customer']}),
+      entity('wholesale_customer', 'WholesaleCustomer', ['id'],
+             {id: 'id', email: 'email'}, {extends: ['customer']}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(
+          ddl.match(/LABEL customer\n    PROPERTIES\(\n      id,\n      email\n    \)/g),
+          engine)
+          .toHaveLength(2);
       expect(warnings, engine).toEqual([]);
     }
   });
@@ -689,9 +747,8 @@ NODE TABLES (
     for (const [engine, generate] of ENGINES) {
       expect(generate(shop).warnings, engine).toEqual([
         noKey('drafts'),
-        `abstract entity 'party' is not a supertype of any concrete entity; ` +
-            `it has no table and no descendant to label, so it produces no ` +
-            `graph element`,
+        `abstract entity 'party' has no table, and no entity with a node ` +
+            `table extends it, so it produces no graph element`,
         ...engine === 'Spanner' ?
             [`metric 'revenue' is not emitted: Spanner Graph has no MEASURE, ` +
              `so model-level metrics have no home in it`] :

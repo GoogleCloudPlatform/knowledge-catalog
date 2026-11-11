@@ -12,7 +12,7 @@
 # Customer and Manager form node tables: Person and Employee are extended, so
 # their labels ride on their descendants instead. The `livesIn` edge starts at
 # Customer, a leaf: a relationship may attach only to a concrete leaf entity,
-# since an edge on Person would join Person's own rows and miss its subtypes'.
+# since Person has no node table for an edge to attach to.
 # Customer and Manager gain the Person LABEL and its fields. Each subclass
 # restates the fields it inherits with a column of its own table, since a
 # parent's expressions read the parent's table. `extends` is a deliberate

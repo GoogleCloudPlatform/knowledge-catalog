@@ -254,7 +254,7 @@ NODE TABLES (
   });
 
   test('placeMetrics sees the graph as the shared code built it', () => {
-    let seen: {skipped: string[]; ancestorsUsed: string[]; entities: string[]}|
+    let seen: {skipped: string[]; parents: string[]; entities: string[]}|
         undefined;
     const model: SemanticModel = {
       ...MODEL,
@@ -288,7 +288,7 @@ NODE TABLES (
       placeMetrics: (_metrics, input) => {
         seen = {
           skipped: [...input.skipped].sort(),
-          ancestorsUsed: [...input.ancestorsUsed].sort(),
+          parents: [...input.parents].sort(),
           entities: [...input.entityByName.keys()].sort(),
         };
         return new Map();
@@ -296,7 +296,7 @@ NODE TABLES (
     });
     expect(seen).toEqual({
       skipped: ['keyless', 'member', 'party'],
-      ancestorsUsed: ['member', 'party'],
+      parents: ['member', 'party'],
       entities: ['customers', 'keyless', 'member', 'orders', 'party', 'vip'],
     });
   });

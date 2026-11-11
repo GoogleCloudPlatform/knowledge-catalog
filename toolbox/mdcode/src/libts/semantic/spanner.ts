@@ -28,8 +28,9 @@ export type {GenerateResult};
  * mapping the IR (e.g. metrics dropped because Spanner Graph has no measure).
  *
  * Throws when the model yields no valid node table -- it declares no entities,
- * or every entity lacks a KEY -- since a property graph with an empty NODE
- * TABLES block is invalid DDL that Spanner would reject.
+ * every entity is abstract or extended by another, or every leaf lacks a KEY
+ * -- since a property graph with an empty NODE TABLES block is invalid DDL
+ * that Spanner would reject.
  */
 export function generateSpannerPropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {

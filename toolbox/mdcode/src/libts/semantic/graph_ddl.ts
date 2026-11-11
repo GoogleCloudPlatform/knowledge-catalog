@@ -43,7 +43,7 @@ export interface MetricPlacementInput {
   // or no KEY).
   skipped: ReadonlySet<string>;
   // Entities another entity extends. None of them forms a node table.
-  ancestorsUsed: ReadonlySet<string>;
+  parents: ReadonlySet<string>;
   // The SQL `field` of `entity` renders from on the node table (see fieldSql).
   // When it has none there, `reads` is what a warning says it reads, as in
   // "field 'net', which reads field 'gross', which has no 'BIGQUERY' or
@@ -197,9 +197,8 @@ export function generateGraphDdl(
       }
     } else if (abstractNames.has(name)) {
       warnings.push(
-          `abstract entity '${name}' is not a supertype of any concrete ` +
-          `entity; it has no table and no descendant to label, so it produces ` +
-          `no graph element`);
+          `abstract entity '${name}' has no table, and no entity with a node ` +
+          `table extends it, so it produces no graph element`);
     } else if (parentNames.has(name)) {
       warnings.push(
           `entity '${name}' is extended by another entity, so it has no node ` +
@@ -227,8 +226,10 @@ export function generateGraphDdl(
       reason = 'every entity is abstract or extended by another entity (only ' +
           'a concrete leaf forms a node table)';
     } else {
-      reason = `every ${parentNames.size ? 'concrete leaf ' : ''}entity was ` +
-          'skipped because it has no primary key (a graph node requires a KEY)';
+      const leaf =
+          parentNames.size || abstractNames.size ? 'concrete leaf ' : '';
+      reason = `every ${leaf}entity was skipped because it has no primary ` +
+          'key (a graph node requires a KEY)';
     }
     throw new Error(
         `cannot generate a property graph: ${reason}; a graph requires at ` +
@@ -251,7 +252,7 @@ export function generateGraphDdl(
       metrics, {
         entityByName,
         skipped,
-        ancestorsUsed: parentNames,
+        parents: parentNames,
         renderedFieldSql: (entity, field) =>
             readOf(entity, fieldSql(field, entity, engine), [field.name]),
         localSql: (entity, sql) => readOf(
@@ -272,9 +273,9 @@ export function generateGraphDdl(
   // (its profile excludes it, or this engine has no SQL for it) is left out of
   // that label on every leaf, while each leaf's DEFAULT LABEL keeps all it
   // binds. Each leaf reads the properties from its own binding: the engines
-  // match a shared label by property name and type, not by column. The type
-  // comes from the field's datatype, which the ancestor defines, so the leaves
-  // agree on it.
+  // match a shared label by property name and type, not by column. The type is
+  // that of each leaf's column, so the engine rejects a graph whose leaves bind
+  // one property to columns of different types.
   const ancestorProperties = new Map<string, string[]>();
   for (const name of labelled) {
     const leaves = validEntities.filter(e => e.extends?.includes(name));

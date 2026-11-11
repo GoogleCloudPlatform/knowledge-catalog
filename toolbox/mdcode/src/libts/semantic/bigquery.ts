@@ -42,8 +42,9 @@ export type {GenerateResult};
  * mapping the IR (e.g. metrics that could not be placed on a single table).
  *
  * Throws when the model yields no valid node table -- it declares no entities,
- * or every entity lacks a KEY -- since a property graph with an empty NODE
- * TABLES block is invalid DDL that BigQuery would reject.
+ * every entity is abstract or extended by another, or every leaf lacks a KEY
+ * -- since a property graph with an empty NODE TABLES block is invalid DDL
+ * that BigQuery would reject.
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
@@ -174,7 +175,7 @@ function placeMetric(
     metric: Metric, input: MetricPlacementInput,
     metricNames: ReadonlySet<string>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
-  const {entityByName, skipped, ancestorsUsed} = input;
+  const {entityByName, skipped, parents} = input;
   // A measure is emitted from the metric's BigQuery SQL (see
   // metricExpression). A metric with SQL only for other engines is skipped
   // with a warning naming the dialects it lacks, rather than emitting that
@@ -250,7 +251,7 @@ function placeMetric(
   // before generation; this guard covers a caller that generates DDL without
   // validating first. A supertype is also in `skipped`, so this must precede
   // the no-KEY message below to stay accurate.
-  if (ancestorsUsed.has(entityName)) {
+  if (parents.has(entityName)) {
     warnings.push(
         `metric '${metric.name}' targets entity '${entityName}', which is not ` +
         `a leaf type (another entity extends it); a measure is allowed only on ` +

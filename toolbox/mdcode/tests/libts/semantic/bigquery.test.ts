@@ -1735,7 +1735,8 @@ describe('inherited property rendering (shared-label consistency)', () => {
                name: 'Customer', dataSource: 'proj.ds.customer', keys: ['id'],
                extends: ['Person'],
                fields: [{name: 'id', expression: 'id'},
-                        {name: 'loyalty', expression: 'loyalty'}],
+                        {name: 'loyalty', expression: 'loyalty'},
+                        {name: 'email', expression: 'email'}],
              },
            ],
            relationships: [],
@@ -1922,8 +1923,7 @@ describe('a comment in a field expression', () => {
 
   test('on an inherited field is read in its own dialect, even when a vendor entry holds the same text', () => {
     // Read as PostgreSQL, where `#` is an operator, the apostrophe opens a
-    // string, the subtype's copy keeps `base.second`, and the generator warns
-    // that the subtype remaps a property it only inherits.
+    // string and the subtype's property keeps `base.second`.
     const text = "base.first # base's first\n|| base.second || ' '";
     const inherited: SemanticModel = {
       name: 'm',

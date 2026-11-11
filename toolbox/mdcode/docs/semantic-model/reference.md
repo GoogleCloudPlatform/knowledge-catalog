@@ -429,11 +429,11 @@ The boundaries:
 - **Fields flow down; edges and keys do not.** A subclass gains its supertypes'
   fields but **not** their relationships or their key: an edge stays bound to the
   exact node table it was declared on, and each subclass keeps its own `KEY` (a
-  node table is identified by its own grain, never its supertype's). An edge
-  declared on a supertype would join only the supertype's own rows and miss
-  every subtype, so push rejects a relationship that connects an abstract
-  entity or one that another entity extends. Declare such an edge on each
-  concrete leaf, for example `Customer —livesIn→ City`.
+  node table is identified by its own grain, never its supertype's). A
+  supertype has no node table, so an edge declared on one has no node to attach
+  to, and push rejects a relationship that connects an abstract entity or one
+  that another entity extends. Declare such an edge on each concrete leaf, for
+  example `Customer —livesIn→ City`.
 - **The subclass's `source` must physically expose every inherited column.** The
   flattened `name` above is read from `proj.ds.customer`, so that table (or a view
   over it) must include the column that `Customer`'s `name` field binds. A
@@ -461,9 +461,9 @@ rejects an abstract entity that declares a `source`, a `primary_key`, a
 `unique_keys` entry or a field expression. Its field names still flatten
 down, and each concrete subtype supplies the column for each of those names, so
 the shared label's signature is present on every subtype table. An abstract
-entity that no concrete entity extends has nothing to attach to and is dropped
-with a warning. `abstract` is an explicit marker: a non-abstract entity with no
-`source` is treated as a binding error and fails the push, never
+entity that no entity with a node table extends has nothing to attach to and
+is dropped with a warning. `abstract` is an explicit marker: a non-abstract
+entity with no `source` is treated as a binding error and fails the push, never
 silently dropped as if it were table-less. In Knowledge Catalog, every entity
 gets an entry, abstract or not, and a `reference` link runs from each entity to
 each parent it extends.

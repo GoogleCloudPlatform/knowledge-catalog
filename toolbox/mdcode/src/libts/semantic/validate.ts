@@ -590,7 +590,10 @@ function graphNameProblems(
         `compared ignoring case; rename one.`);
   }
   if (engine === 'spanner') return problems;
-  const tables = resolvedEntities(model).filter(e => e.keys.length > 0);
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const tables = resolvedEntities(model).filter(
+      e => e.keys.length > 0 && !extended.has(e.name));
   for (const m of model.metrics ?? []) {
     const owner = m.authoredEntity ?? m.entity;
     for (const e of tables.filter(e => e.name !== owner)) {
@@ -665,10 +668,12 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           check(
               kind, x.name, elementDescription(x.description),
               x.aiContext?.synonyms, aiExtensions(x.aiContext));
-  const tables = resolvedEntities(model).filter(e => e.keys.length > 0);
-  const extended = new Set(tables.flatMap(e => e.extends ?? []));
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const tables = resolvedEntities(model).filter(
+      e => e.keys.length > 0 && !extended.has(e.name));
   for (const e of tables) {
-    if (!extended.has(e.name)) element('entity', e);
+    element('entity', e);
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
       check(

@@ -3489,7 +3489,9 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     });
 
     // An abstract entity has no node table, a label another entity extends
-    // carries no OPTIONS, and a field with no BigQuery text is left out.
+    // carries no OPTIONS, and a field with no BigQuery text is left out. An
+    // entity another extends has no node table even when its only subtype is
+    // abstract, so neither its description nor its fields reach the graph.
     test('passes values at the limits and elements the graph writes no OPTIONS for', () => {
       expect(errorsAfter(m => {
         m.relationships[0].description = x(1024);
@@ -3498,7 +3500,17 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         m.entities.push({
           name: 'party', abstract: true, dataSource: '', keys: [], fields: [],
           description: x(2000), aiContext: {instructions: x(1025)},
-        }, {...m.entities[0], name: 'vip', extends: ['customer']});
+        }, {...m.entities[0], name: 'vip', extends: ['customer']}, {
+          name: 'region', dataSource: 'p.d.region', keys: ['id'],
+          description: x(2000), aiContext: {instructions: x(1025)},
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'revenue', expression: 'revenue', description: x(2000)},
+          ],
+        }, {
+          name: 'area', abstract: true, dataSource: '', keys: [], fields: [],
+          extends: ['region'],
+        });
         m.entities[0].description = x(2000);
         m.entities[0].aiContext = {instructions: x(1025)};
         m.entities[1].fields.push({
