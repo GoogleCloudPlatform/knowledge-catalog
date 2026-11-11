@@ -8,6 +8,8 @@
 // against the schema -- because these are deployment requirements, not schema
 // rules.
 
+import * as yaml from 'yaml';
+
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {SpannerClient, SpannerType} from '../gcp/spanner';
@@ -28,6 +30,7 @@ import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
+import {YAML_OPTIONS} from './yaml_options';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -1019,6 +1022,55 @@ function sqlExecutorErrors(
       }
     }
   });
+  return errors;
+}
+
+/**
+ * The errors for the `sql` executor statements in the model or profile file
+ * `text` that have a YAML comment on the same line. YAML reads ` #` after an
+ * unquoted value as the start of a comment and drops the rest of the line, so
+ * the statement it reads can be shorter than the one written. A
+ * quoted statement and a block scalar keep ` #` as text, and a comment on its
+ * own line cuts nothing, so those pass. `file` and `model` name the file and
+ * its model in each message. Empty for text with a YAML error, which the load
+ * reports.
+ */
+export function commentCutStatementErrors(
+    text: string, file: string, model: string): string[] {
+  const doc = yaml.parseDocument(text, YAML_OPTIONS);
+  if (doc.errors.length) return [];
+  const node = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
+  const items = (n: unknown) => {
+    const seq = node(n);
+    return yaml.isSeq(seq) ? seq.items : [];
+  };
+  const get = (n: unknown, key: string) => {
+    const map = node(n);
+    return yaml.isMap(map) ? map.get(key, true) : undefined;
+  };
+  // A model file lists actions under each model, and a profile file at its
+  // top level.
+  const actions = [
+    ...items(get(doc.contents, 'semantic_model'))
+        .flatMap(m => items(get(m, 'actions'))),
+    ...items(get(doc.contents, 'actions')),
+  ];
+  const errors: string[] = [];
+  for (const action of actions) {
+    const name = node(get(action, 'name'));
+    const statements = get(get(get(action, 'executor'), 'sql'), 'statements');
+    items(statements).forEach((item, i) => {
+      const s = node(item);
+      if (!yaml.isScalar(s) || s.type !== 'PLAIN' || !s.range) return;
+      if (!/^[ \t]+#/.test(text.slice(s.range[1]))) return;
+      errors.push(
+          `action '${yaml.isScalar(name) ? name.value : ''}' in model '${
+              model}' (${file}) has a sql executor whose statement ${
+              i + 1} has a comment on the same line, so YAML reads the ` +
+          `statement as '${s.value}'. Put the statement in quotes, or ` +
+          `write it as a block scalar with '|'.`);
+    });
+  }
   return errors;
 }
 

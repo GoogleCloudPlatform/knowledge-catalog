@@ -354,6 +354,9 @@ and its fields' `expression` keys bind it to.
 `@parameter` references are the exception: they name an argument bound at call
 time rather than anything in your database.
 
+A statement with ` #` in it must be in quotes or written as a block scalar with
+`|`, since YAML reads an unquoted ` #` as the start of a comment.
+
 Push checks those names for you, against the store itself. Before anything is
 published, every statement in a `sql` executor is sent to the database the
 profile binds — Spanner plans it, BigQuery dry-runs it — which parses it,

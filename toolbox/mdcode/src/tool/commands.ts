@@ -38,7 +38,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles} from '../libts/semantic/validate';
+import {commentCutStatementErrors, DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1185,11 +1185,18 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    if (scope.pulled) continue;
+    // No unquoted action statement in them has a comment on the same line.
+    // Pull writes its files as UTF-8, so their bytes are not checked.
+    const cut: string[] = [];
     for (const file of [modelFile, ...profileDocs(base.document)]) {
-      const error = checkUtf8(file.path, file.fileName, file.text);
+      const error = scope.pulled ?
+          undefined :
+          checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
+      cut.push(...commentCutStatementErrors(
+          file.text, file.fileName, base.model.name));
     }
+    if (cut.length) return fail(...cut);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;

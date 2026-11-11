@@ -9,7 +9,7 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -231,6 +231,18 @@ const sameAsRuntime = (c: Case): Case => ({
       expect(r.errors).toEqual([`Error: ${await runtimeError(c)}`]),
 });
 
+// Action purge, with the sql executor `executor` when it is set.
+const purge = (executor?: object) => ({
+  name: 'purge', parameters: [{name: 'k', type: 'Integer'}], executor,
+});
+const SQL = {sql: {statements: ['STATEMENT']}};
+// `text` with its one statement replaced by `lines`, written as is.
+const writing = (text: string, ...lines: string[]) => {
+  const [line, indent] = /^( *)- STATEMENT$/m.exec(text)!;
+  return text.replace(line, lines.map(l => indent + l).join('\n'));
+};
+const CUT = "- UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
+
 scenarios('push --no-deployment refuses a scope before any network call', [
   {
     name: '--no-deployment refuses a target a vanilla GOOGLE block lists twice',
@@ -279,5 +291,29 @@ scenarios('push --no-deployment refuses a scope before any network call', [
     name: '--no-deployment refuses a model file that does not load',
     entities: [{...CUSTOMER, colour: 'red'}],
     errors: [has('Semantic model load error')],
+  },
+  {
+    name: 'refuses an unquoted action statement with a comment on the same line, in a model file or a profile file, and accepts a comment on its own line, a quoted statement and a block scalar',
+    files: {'commerce.yaml': writing(modelFile({actions: [purge(SQL)]}), CUT)},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce.yaml) has a sql " +
+        'executor whose statement 1 has a comment on the same line, so ' +
+        "YAML reads the statement as 'UPDATE customer SET doc = doc'. Put " +
+        "the statement in quotes, or write it as a block scalar with '|'.")],
+    then: [{
+      files: {'commerce.yaml': writing(
+          modelFile({actions: [purge(SQL)]}),
+          '- UPDATE customer SET doc = doc WHERE c_key = @k',
+          '  # a comment on its own line',
+          `- "${CUT.slice(2)}"`,
+          '- |', `  ${CUT.slice(2)}`)},
+      code: 0,
+    }, {
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': writing(
+          profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: SQL}]}),
+          CUT)},
+      errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1")],
+    }],
   },
 ], {flags: {deployment: false}, code: 1, noNetwork: true});
