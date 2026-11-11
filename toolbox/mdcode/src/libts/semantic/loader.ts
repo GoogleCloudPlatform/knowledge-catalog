@@ -3225,7 +3225,8 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 //   - ANSI_SQL is the AI-first format's default expression language (ANSI
 //     SQL:2003 core), chosen to be valid across targets, BigQuery included.
 //     Using it as `expression` is the intended authoring path, so it draws no
-//     message.
+//     message unless it double-quotes a name that the target reads as text
+//     (see expressionWarning).
 //   - When neither the target nor ANSI_SQL is present, `expression` is left
 //     unset and only `importedExpression` is populated. That text needs
 //     translating, so expressionWarning warns about it for each field and
