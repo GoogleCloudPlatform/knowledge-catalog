@@ -379,7 +379,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           "statement 1, written at '&cut', is followed by a comment line indented " +
           "under it, so YAML reads the statement as 'UPDATE customer SET doc = doc'. " +
           "If the comment line is part of the statement, write it as a block scalar " +
-          "with '|'. If it is a YAML comment, move it to the key's column.")],
+          "with '|'. If it is a YAML comment, move it to the column of 'description'.")],
     }, {
       files: {'commerce.yaml': withStatementLines(
           DESCRIBED

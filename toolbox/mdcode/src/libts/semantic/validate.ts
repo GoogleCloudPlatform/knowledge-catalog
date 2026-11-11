@@ -1032,9 +1032,9 @@ function sqlExecutorErrors(
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
 //   2. An unquoted statement followed, after any blank lines, by a comment
-//      line: in a block list one indented past the list's '-', and in a flow
-//      list any before the next ',' or ']'. YAML ends the statement there
-//      too.
+//      line: in a block list one indented past the list's '-', in a block
+//      mapping one indented past its keys, and in a flow list any before the
+//      next ',' or ']'. YAML ends the statement there too.
 //   3. A statement whose YAML style joins its lines into one, with a SQL
 //      comment marker on a line before the last. Joined, a comment there also
 //      covers the lines after it.
@@ -1051,7 +1051,8 @@ export function yamlChangedStatementErrors(
           `comment, move it after the ',' or ']' that follows the statement.` :
       `If ${what} is part of the statement, write it as a block scalar with ` +
           `'|'. If it is a YAML comment, move it to the ${
-              holder?.kind === 'block mapping' ? "key's" : "'-'"} column.`;
+              holder?.kind === 'block mapping' ? `column of '${holder.key}'` :
+                                                 "'-' column"}.`;
   const errors: string[] = [];
   // The model file holds the inline bindings and goes by its document name,
   // as in the other action messages.
@@ -1098,10 +1099,11 @@ export function yamlChangedStatementErrors(
   return errors;
 }
 
-// The collection a statement is written in: a block list or a block mapping,
-// with the column of its '-' or of its keys, or a flow list.
-type Holder = {kind: 'block list'|'block mapping'; column: number}|
-    {kind: 'flow list'};
+// The collection a statement is written in: a block list with the column of
+// its '-', a block mapping with the column of its keys and the statement's
+// key, or a flow list.
+type Holder = {kind: 'block list'; column: number}|
+    {kind: 'block mapping'; column: number; key: string}|{kind: 'flow list'};
 
 // One `sql` executor statement in a model or profile file.
 interface WrittenStatement {
@@ -1151,8 +1153,13 @@ function writtenStatements(text: string): WrittenStatement[] {
     },
     Map(_, map) {
       if (map.flow) return;
-      const holder: Holder = {kind: 'block mapping', column: column(map)};
-      for (const pair of map.items) holders.set(pair.value, holder);
+      for (const pair of map.items) {
+        holders.set(pair.value, {
+          kind: 'block mapping',
+          column: column(map),
+          key: yaml.isScalar(pair.key) ? String(pair.key.value) : '',
+        });
+      }
     },
   });
   return actions.flatMap(action => {
