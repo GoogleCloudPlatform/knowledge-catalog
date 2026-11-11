@@ -157,7 +157,7 @@ leaves declaration alone.
 | an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them, and a profile a BigQuery or Spanner deployment uses must give every concrete leaf entity a `primary_key` | |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself, and which on a BigQuery deployment must join on exactly the target's `primary_key` columns | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
-| whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source`; `deployments` and deployment targets |
+| whether metrics are excluded (`metrics_exclude`) | any `metric` definition; any `ai_context` / synonyms; `deployments` and deployment targets |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. Key and join columns name physical
@@ -254,8 +254,9 @@ logical model below binds nothing inline, so the operational profile binds
 `availableCredit` and excludes `lifetimeValue`, and the analytical profile does
 the reverse. A metric that reaches an excluded field has to be named in the
 profile's `metrics_exclude`. When the source table a profile binds is missing or
-inaccessible, validation fails and names it; a mistyped column name resolves to a
-real table and so surfaces at deploy, when BigQuery rejects the generated graph.
+inaccessible, validation fails and names it. When the push deploys a BigQuery
+deployment that uses the profile, its validation phase dry-runs the graph DDL,
+so a mistyped column name fails the push before anything is written.
 
 ## File layout
 
@@ -635,9 +636,9 @@ writes nothing.
   `default` is unbound when it declares one. `kcmd profiles` prints it under
   the `default` binding.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
-  dry run; a table that is missing or inaccessible fails and names it. Column
-  names are not probed here — a mistyped column resolves to a real table and is
-  caught at deploy, when BigQuery rejects the generated graph.
+  dry run; a table that is missing or inaccessible fails and names it. Push's
+  validation phase also dry-runs the graph DDL of each BigQuery deployment it
+  deploys, so a mistyped column fails before anything is written.
 - **Rejected DML** — where a deployment targets Spanner or BigQuery, every
   statement in an action's `sql` executor is planned against that store without
   running it, and a store that refuses one fails the push and quotes back why.
@@ -666,7 +667,11 @@ writes nothing.
 native key for it; there `deployments` and `profiles` ride in a `GOOGLE`
 `custom_extensions` block instead. The two are the same declarations written two
 ways, chosen by the document's `version` (see [model
-spec](model_spec.md#1-status-and-baseline)).
+spec](model_spec.md#1-status-and-baseline)). This page keeps the bindings in
+profile files and leaves the model file logical. That layout needs the Google
+flavor, because a vanilla model binds every source, field expression and join
+column inline. [A complete vanilla
+model](model_spec.md#appendix-a-complete-vanilla-model) shows the vanilla form.
 
 **Bare-string and per-dialect expressions.** A profile field's `expression` can
 take any form a model field expression can: a bare column name (`expression: c_name`),

@@ -32,8 +32,9 @@ top-level `version` (see [Version handling](#1-status-and-baseline)):
   strip the `GOOGLE` extension blocks and it is a plain Ossie document.
 - **`0.2.0.dev0/google`** — the **extended profile**. The same additions are
   first-class native keys (`entities`, `deployments`, `extends`,
-  `abstract`); the `custom_extensions` carrier is not accepted, because there is
-  nothing left for it to carry. This profile is readable, but not a vanilla-Ossie
+  `abstract`). A `GOOGLE` `custom_extensions` block is not accepted, because
+  there is nothing left for it to carry. Another vendor's block is carried as
+  in vanilla. This profile is readable, but not a vanilla-Ossie
   document — an Ossie-only reader knows neither its version nor its native keys.
 
 For a model that avoids the `/google`-only constructs, the two are the same model
@@ -108,7 +109,7 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
     constraints: [ … ]         # optional; /google only (§5)
     description: "…"           # optional
     ai_context: { … }          # optional (§2.4)
-    custom_extensions: [ … ]   # vanilla only (§6); rejected under /google
+    custom_extensions: [ … ]   # optional (§6); a GOOGLE block is vanilla only
     deployments: [ … ]         # /google only (§5, §7); vanilla carries it in a GOOGLE block
 ```
 
@@ -120,10 +121,9 @@ tell two objects of the same name apart.
 
 Objects are **closed**: an unknown sibling key inside a validated object is a
 **hard error**, not silently dropped (agreed with Dmitri). This is what makes the
-version gate bite — a native key under vanilla, or a `custom_extensions` block
-under `/google`, is an unknown key for that version and is rejected
-([§6](#6-the-extension-mechanism)). Setting both `entities` and `datasets` is
-likewise an error ([§5](#5-extensions)).
+version gate bite: a native key under vanilla is an unknown key for that version
+and is rejected ([§6](#6-the-extension-mechanism)). Setting both `entities` and
+`datasets` is likewise an error ([§5](#5-extensions)).
 
 The remaining subsections define each object. Names throughout are **logical
 business vocabulary** — `order_id`, `placed_by` — never physical column names; the
@@ -174,9 +174,9 @@ keeps that spelling in a Google-flavor file, and `kcmd pull` writes the
 canonical one.
 
 `Date`, `Time`, `DateTime`, and `DateTimeTz` are the temporal subset (they default
-`dimension.is_time`). A value outside this set is not authorable directly; a type
-`kcmd` cannot express natively is represented as `Opaque` plus a `custom_extensions`
-block that carries the real type.
+`dimension.is_time`). A value outside this set is not authorable.
+`datatype: Opaque` means the same as no `datatype`, and pull returns such a field
+with none.
 
 A field's `expression` is its binding; a field with no `expression` is **unbound**
 (no column under this binding). There is no separate `unbound` flag — absence is
@@ -246,10 +246,9 @@ requires them (see [§4](#4-narrowings-and-relaxations)). Like `source` and a fi
 `expression`, join columns are a binding: a profile may supply or override them,
 and a named profile states them itself ([§7](#7-the-binding-layer)).
 
-> **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
-> exists in `kcmd`'s internal representation but has **no YAML syntax** in
-> `0.2.0.dev0`. It cannot be authored today and is reserved for a future format
-> extension. Direct-FK relationships (1:1, 1:N) are the authorable forms.
+> **Many-to-many is not authorable.** A bridge-table (M:N) relationship has
+> **no YAML syntax** in `0.2.0.dev0` and may be added in a later version of
+> the format. Direct-FK relationships (N:1 and 1:1) are the authorable forms.
 
 ### 2.3. Metric
 
@@ -342,7 +341,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
-| relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
+| relationship M:N | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and reads fields only inside aggregates · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | stricter; adds names | accepts 9 SQL dialects and rejects non-SQL dialects · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
@@ -350,7 +349,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | field `expression` (column binding) | required (`dialects` object) | optional; bare-string sugar in `/google` and profiles | model before binding; each named profile binds or excludes it · [§2.5](#25-expressions), [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
 | `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same | [§2.4](#24-ai_context) |
-| `custom_extensions` (`vendor_name`, `data`) | the extension carrier | rejected | `/google` uses native keys; nothing to carry · [§6](#6-the-extension-mechanism) |
+| `custom_extensions` (`vendor_name`, `data`) | the extension carrier | same for other vendors; a `GOOGLE` block is rejected | another vendor's block is carried verbatim; `/google` writes `kcmd`'s additions as native keys · [§6](#6-the-extension-mechanism) |
 | `deployments` | — | added | OSI omits deployment; vanilla carries it in `custom_extensions` · [§5](#5-extensions), [§7.2](#72-deployments-and-deployment-targets) |
 | binding profiles | — | added | one model, many stores · [§7.3](#73-binding-profiles) |
 | multiple models per document | a list (many) | exactly one | entry group = model's identity · [§4.1](#41-narrowings-stricter-than-ossie) |
@@ -403,7 +402,7 @@ Each rule and its reason:
   query it.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
-  target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
+  target, every relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.
 
 - **A graph-bound concrete leaf dataset MUST declare a `primary_key`.** For a
@@ -417,7 +416,7 @@ Each rule and its reason:
   not it declares a `primary_key`.
 
 - **A BigQuery graph-bound relationship MUST join on its target's primary key.**
-  For a BigQuery target, a non-M:N relationship's `to_columns` MUST name
+  For a BigQuery target, a relationship's `to_columns` MUST name
   exactly the `primary_key` columns of the `to` dataset, in any order: not a
   unique key, and not a superset of the primary key. *Why:* BigQuery accepts the
   DDL, but treats an edge as ambiguous when querying measures unless it joins on
@@ -426,8 +425,9 @@ Each rule and its reason:
 
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
-  gate, this is how a native key under vanilla — or a `custom_extensions` block
-  under `/google` — is caught ([§6](#6-the-extension-mechanism)).
+  gate, this is how a native key under vanilla is caught. A `GOOGLE`
+  `custom_extensions` block is rejected under `/google`, and on a field under
+  vanilla ([§6](#6-the-extension-mechanism)).
 
 - **Duplicate names are rejected.** A dataset, field, relationship, or metric name
   repeated within its scope is a hard load error; the generated element would be
@@ -544,12 +544,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
   normalize to the same thing. Every `concept` MUST resolve to an entity or a
   relationship the same model declares; the two are named the same way, because
   the model already records which one a name is. `operation` is drawn from one
-  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is: a
-  many-to-many relationship is backed by a junction table with fields of its
-  own, so an edge is modified exactly as an entity is. `fields` MUST name fields
-  of the concept and MUST NOT accompany a `delete`, which takes the whole
-  instance. A repeated concept-and-operation pair is a **hard load error**.
-  Accepted only under
+  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is.
+  `fields` MUST name fields of the concept. A relationship declares no fields of
+  its own, so an entry on a relationship names no `fields`. `fields` MUST NOT
+  accompany a `delete`, which takes the whole instance. A repeated
+  concept-and-operation pair is a **hard load error**. Accepted only under
   `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor,
   so `affects` is the author's declaration and nothing verifies it against what
   the executor does. See [Modeling write operations](actions.md).
@@ -654,14 +653,15 @@ reads the document ([§6](#6-the-extension-mechanism)).
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
 
 One construct is reserved rather than added. `0.2.0.dev0` has **no authorable
-M:N `association` syntax**. The construct is under consideration for a future
+M:N relationship syntax**. The construct is under consideration for a future
 version and is not part of the format today.
 
 ## 6. The extension mechanism
 
 The `version` selects **one** of two mutually exclusive extension surfaces (agreed
-with Dmitri). A document uses the carrier *or* the native keys, never both — which
-surface applies is a property of the version, not a per-key choice.
+with Dmitri). A document writes `kcmd`'s extensions in `GOOGLE`
+`custom_extensions` blocks *or* as native keys, never both. Which surface applies
+is a property of the version, not a per-key choice.
 
 **Vanilla `0.2.0.dev0` — the `custom_extensions` carrier.** Under vanilla Ossie
 every `kcmd` extension rides in Ossie's own `custom_extensions` field. An entry is:
@@ -675,14 +675,19 @@ custom_extensions:
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
 and a metric. `data` is opaque to Ossie. `kcmd` reads a `GOOGLE` block's payload
 into the model when it parses the document, and carries any other vendor's block
-verbatim. `vendor_name` matches `GOOGLE` in any letter case, so `Google` and
-`google` name the same vendor. A model file that pull rebuilds from the catalog
-metadata writes the vendor name as `GOOGLE`.
+verbatim. A `GOOGLE` block MUST NOT appear on a field, because `kcmd` defines no
+field-level extension. Another vendor's block MAY appear on a field. One object
+MAY carry more than one `GOOGLE` block. `kcmd` merges their keys, and rejects a
+key that two of them set. `vendor_name` matches `GOOGLE` in any letter case, so
+`Google` and `google` name the same vendor. A model file that pull rebuilds from
+the catalog metadata writes the vendor name as `GOOGLE`.
 An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
 not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
 a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
 model's deployments and profiles ride here as a `GOOGLE` block carrying
 `{"deployments": [{"name": "…", "target": "…", "profile": "…"}], "profiles": […]}`.
+[Appendix: a complete vanilla model](#appendix-a-complete-vanilla-model) shows
+one.
 The native keys (`entities`, `deployments`, `extends`, `abstract`, metric
 `entity`, relationship `description`) are **not accepted** under vanilla — each
 is rejected with a message naming the `GOOGLE` `custom_extensions` block or
@@ -693,9 +698,11 @@ is rejected with a message naming the `GOOGLE` `custom_extensions` block or
 information is written as first-class keys — `entities`, `deployments`,
 `extends`, `abstract` — and sibling `<model>.profile.<name>.yaml` files, read
 directly, with no `data` string to encode. There is
-therefore nothing left for the carrier to carry, and a `custom_extensions` block is
-**not accepted** under `/google` (also an unknown key). This is the profile `kcmd`'s
-own tools emit: readable, but no longer a vanilla-Ossie document.
+therefore nothing left for a `GOOGLE` block to carry, and one is **not accepted**
+under `/google`. Another vendor's block is accepted on the model, a dataset, a
+field, a relationship and a metric, as under vanilla, and carried verbatim. This
+is the profile `kcmd`'s own tools emit: readable, but no longer a vanilla-Ossie
+document.
 
 **Converting between the two** is the `version` plus a mechanical fold between
 vanilla `GOOGLE` blocks and `/google` native keys or profile files:
@@ -835,7 +842,8 @@ The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 [profile file rules](profiles.md#file-layout).
 
 A vanilla `0.2.0.dev0` model lists its profiles instead in a `GOOGLE` block on
-the model, as `{"profiles": [...]}`, each with the keys a profile file takes.
+the model, as `{"profiles": [...]}`, each with the keys a profile file takes
+([Appendix: a complete vanilla model](#appendix-a-complete-vanilla-model)).
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).
 
@@ -860,9 +868,9 @@ The full merge behavior and worked examples are in
   `entities` spelling) are simply unavailable there — a model that needs them
   uses `0.2.0.dev0/google`.
 
-- **Reserved constructs.** `association` (M:N) is reserved. It is under
-  consideration for a future version and cannot be authored today, so a document
-  MUST NOT rely on it in `0.2.0.dev0`.
+- **Reserved constructs.** A many-to-many (M:N) relationship is reserved. It is
+  under consideration for a future version and cannot be authored today, so a
+  document MUST NOT rely on it in `0.2.0.dev0`.
 
 ## Appendix: annotated example
 
@@ -925,3 +933,90 @@ relationships:
     from_columns: [o_cust_id]
     to_columns: [c_id]
 ```
+
+## Appendix: a complete vanilla model
+
+This appendix writes the annotated example's model in vanilla `0.2.0.dev0`, as
+one file, and adds a Spanner deployment. A vanilla model binds every `source`,
+field `expression` and join column inline, as Ossie requires. Those inline
+bindings are the `default` profile. Here they bind the BigQuery tables, so the
+`analytical` deployment names no profile. The `GOOGLE` block on the model
+carries the `analytical` and `operational` deployments and the `operational`
+profile, which binds Spanner tables and excludes every metric. Its `data` is a
+JSON string. A field in a profile in the `GOOGLE` block may take a bare column
+name as its `expression`, as in a profile file.
+
+```yaml
+# catalog/EntryGroups/sales/sales.yaml
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders
+        primary_key: [o_id]
+        fields:
+          - name: order_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_id }] }
+          - name: customer_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_cust_id }] }
+          - name: net_amount
+            datatype: Decimal
+            label: "Net amount"
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_net }] }
+      - name: customer
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer
+        primary_key: [c_id]
+        fields:
+          - name: customer_id
+            datatype: Integer
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: c_id }] }
+          - name: name
+            datatype: String
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: c_name }] }
+        ai_context:
+          synonyms: [client, account]
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customer
+        from_columns: [o_cust_id]
+        to_columns: [c_id]
+    metrics:
+      - name: revenue
+        expression:
+          dialects:
+            - { dialect: ANSI_SQL, expression: "SUM(orders.net_amount)" }
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: >-
+          {"deployments": [
+             {"name": "analytical",
+              "target": "bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/sales"},
+             {"name": "operational",
+              "target": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/graphs/sales",
+              "profile": "operational"}],
+           "profiles": [
+             {"name": "operational",
+              "entities": [
+                {"name": "orders",
+                 "source": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/tables/Orders",
+                 "primary_key": ["OrderId"],
+                 "fields": [{"name": "order_id", "expression": "OrderId"},
+                            {"name": "customer_id", "expression": "CustomerId"},
+                            {"name": "net_amount", "expression": "NetAmount"}]},
+                {"name": "customer",
+                 "source": "spanner.googleapis.com/projects/acme/instances/ops/databases/sales/tables/Customers",
+                 "primary_key": ["CustomerId"],
+                 "fields": [{"name": "customer_id", "expression": "CustomerId"},
+                            {"name": "name", "expression": "FullName"}]}],
+              "relationships": [{"name": "placed_by",
+                                 "from_columns": ["CustomerId"],
+                                 "to_columns": ["CustomerId"]}],
+              "metrics_exclude": "*"}]}
+```
+
+The annotated example keeps its bindings in a profile file, so it needs
+`0.2.0.dev0/google`.

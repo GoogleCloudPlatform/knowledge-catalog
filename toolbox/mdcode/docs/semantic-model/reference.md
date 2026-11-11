@@ -327,7 +327,7 @@ becomes one part of that graph:
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. A measure over a field that reads another column also adds that column as a property, and a measure over other SQL adds a property named `<metric>_input`. A column whose name another property in the graph already has goes through a `<metric>_input` property too. |
-| Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | `MEASURE` on a node table | must resolve to a single entity and read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; BigQuery's built-in scalar SQL may combine them, as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a user-defined function may not (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down; a supertype forms no node table of its own (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
@@ -342,6 +342,29 @@ see [Validation](#validation)); add `--print` to see the generated DDL.
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Reading metrics with `GRAPH_EXPAND`
+
+A query reads a metric by flattening the graph with `GRAPH_EXPAND` and wrapping
+the measure in `AGG()`, as the
+[codelab](codelab.md#query-semantic-model-metrics) shows. `GRAPH_EXPAND` reads
+the graph from one root table, the node table of an entity that no relationship
+names as its `to`. It joins every other table to the root with LEFT JOINs, so it
+reads only the rows that some root row reaches. A metric on another entity
+counts only the rows of that entity the root reaches. A graph with more than one
+root needs a `start_node`.
+
+When the graph reaches one table by two paths, a query that names a column of
+that table as `<entity>_<field>`, measures included, fails with "Unrecognized
+name". The column still appears in the output of `BQ.SHOW_GRAPH_EXPAND_SCHEMA`.
+Instead, name the column as `<relationship>_<entity>_<field>`, where
+`<relationship>` is one of the relationships whose `to` is the table. BigQuery's
+error suggests that name. That name reads the table along the path through that
+relationship. Or pass `start_node => '<entity>'` to read the graph from another
+table, such as one that reaches the table by one path. The function then reads
+only the rows that table reaches, which changes what each metric counts. BigQuery's
+[graph measures](https://docs.cloud.google.com/bigquery/docs/graph-measures)
+page gives the full rules.
 
 ### Class hierarchies (`extends` → labels)
 
@@ -512,7 +535,7 @@ differs from BigQuery Graph in five ways:
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
 | Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
-| Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | — dropped | Spanner has no `MEASURE`, so a Spanner deployment uses a profile that excludes every metric, and push rejects one that leaves a metric available |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
@@ -648,9 +671,9 @@ pushed a first generation, with dotted entity and metric ids
 over that entry group deletes those entries and links. Pull rebuilds no model
 pushed with the first-generation types, and warns about it instead.
 
-Each relationship other than a many-to-many association has an entry of its
-own. Entry ids are `<model>`, `<model>/entities/<entity>`,
-`<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
+Each relationship has an entry of its own. Entry ids are `<model>`,
+`<model>/entities/<entity>`, `<model>/metrics/<metric>` and
+`<model>/relationships/<relationship>`.
 
 A `semantic-link` joins each ordered pair of related entities. Built-in
 `reference` links run from each relationship's entry to the entries of its
@@ -706,9 +729,13 @@ broken — and links to the definition it enforces:
 Before these checks even run, the document must **load**, and the loader is strict:
 `version` is required and must be `0.2.0.dev0` (vanilla Ossie) or
 `0.2.0.dev0/google` (the extended profile); every object is closed, so an unknown
-key — including a native key under vanilla, or a `custom_extensions` block under
-`/google` — is rejected; names must be unique within their scope; every
-`extends` must name an entity defined in the model; every dialect entry must use
+key, including a native key under vanilla, is rejected. A `GOOGLE`
+`custom_extensions` block is rejected under `/google` and on a field under
+vanilla. Another vendor's block is accepted on the model, a dataset, a field, a
+relationship and a metric in both flavors. The `GOOGLE` blocks on one object are
+merged, and a key that two of them set is rejected. Names must be unique within
+their scope; every `extends` must name an entity defined in the model; every
+dialect entry must use
 one of the supported SQL dialects ([model spec §2.5](model_spec.md#25-expressions));
 a plain-string `expression` is allowed in a model file
 only under `0.2.0.dev0/google` (while a profile binding accepts a plain-string
@@ -844,51 +871,50 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   — projecting the same field, or sharing a declared type — must each carry
   their own `description`. Each executor must carry its coordinates (an `mcp`
   server + tool, a `rest` endpoint + method, a `grpc` service + method, or at
-  least one non-blank `sql` statement) with no blank field. A coordinate omitted altogether is rejected earlier, when the
-  model is parsed. An action with *no* executor is not an error at all: the
-  executor is a physical binding, so an action no binding performs here is still
-  a declaration worth publishing. Each name in the
-  action's `guards` must resolve to a constraint that the same model declares. A
-  guard resolving to nothing leaves the author believing the write is checked
-  when nothing checks it. Every `concept` in the action's `affects` must
-  likewise resolve to an entity or a relationship the same model declares, and
-  its `fields` must be fields of that concept — for a relationship, the
-  properties of the junction table backing a many-to-many edge, so a plain
-  foreign-key edge has none. Naming fields beside a `delete` is rejected,
-  because a `delete` takes the whole instance. An affected concept that resolves
-  to nothing is reported and then left alone, since every later check about it
-  is meaningless; undeclared fields do not chain that way, so a concept that
-  does resolve reports every field it does not have. Everything that reads the
-  ontology — the concept check and the field check both — stands down on a
-  profile push, because pruning drops whole entities and whole relationships as
-  well as unbound fields, and an action reaches no graph in any case. Pruning
-  now drops an action that names a dropped *concept*, so for the concept check
-  the offending action is gone before the check would run; it does not drop one
-  whose `affects` names a pruned *field*, so a blast radius can still name a
-  field the published entity no longer carries, and nothing reports it. The
-  fields-beside-a-`delete` check reads only the entry, so it still applies. A `sql` executor is checked further, because it carries the
+  least one non-blank `sql` statement) with no blank field. A coordinate omitted
+  altogether is rejected earlier, when the model is parsed. An action with *no*
+  executor is not an error at all: the executor is a physical binding, so an
+  action no binding performs here is still a declaration worth publishing. Each
+  name in the action's `guards` must resolve to a constraint that the same model
+  declares. A guard resolving to nothing leaves the author believing the write
+  is checked when nothing checks it. Every `concept` in the action's `affects`
+  must likewise resolve to an entity or a relationship the same model declares,
+  and its `fields` must be fields of that concept. A relationship declares no
+  fields of its own, so a field named on one is rejected. Naming fields beside a
+  `delete` is rejected, because a `delete` takes the whole instance. An affected
+  concept that resolves to nothing is reported and then left alone, since every
+  later check about it is meaningless; undeclared fields do not chain that way,
+  so a concept that does resolve reports every field it does not have.
+  The concept check and the field check both read the ontology, and both stand
+  down on a profile push, because pruning drops whole entities and
+  whole relationships as well as unbound fields, and an action reaches no graph
+  in any case. Pruning now drops an action that names a dropped *concept*, so
+  for the concept check the offending action is gone before the check would run;
+  it does not drop one whose `affects` names a pruned *field*, so a blast radius
+  can still name a field the published entity no longer carries, and nothing
+  reports it. The fields-beside-a-`delete` check reads only the entry, so it
+  still applies. A `sql` executor is checked further, because it carries the
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares.
   Together those are what let every value be bound instead of interpolated, so
   an argument cannot reach the store as SQL. Where the key of an inserted row
   comes from is the statement's own business: a SQL function such as
-  `GENERATE_UUID()`, a declared parameter, or a key column left out where it
-  has a default. `affects` has no bearing on it. A declared parameter hands the
-  key to the caller, and since the verb check reads only a statement's first
-  word, an upsert passes and overwrites the row that key names. Four further
-  rules are enforced at parse time: exactly one executor kind (`executor
-  requires exactly one kind, but 2 given (mcp, rest)`),
-  the closed `create` / `modify` / `delete` vocabulary for `operation`, the
-  rejection of a repeated guard name, and the rejection of a repeated
-  concept-and-operation pair in `affects`. Every check named so far is static —
-  it reads the document alone — so it runs on every push, regardless of
-  destination. What the *names* in a statement mean is settled live instead, by
-  the store the profile binds: see the DML pre-flight under
-  [Validation](#validation). Note that actions themselves
-  deploy **only** through the Knowledge Catalog leg (BigQuery and Spanner graph
-  deployments warn that actions are not deployed to the graph). *(static, plus a
-  live pre-flight for a `sql` executor)*
+  `GENERATE_UUID()`, a declared parameter, or a key column left out where it has
+  a default. `affects` has no bearing on it. A declared parameter hands the key
+  to the caller, and since the verb check reads only a statement's first word,
+  an upsert passes and overwrites the row that key names. Four further rules are
+  enforced at parse time: exactly one executor kind (`executor requires exactly
+  one kind, but 2 given (mcp, rest)`), the closed `create` / `modify` / `delete`
+  vocabulary for `operation`, the rejection of a repeated guard name, and the
+  rejection of a repeated concept-and-operation pair in `affects`. Every check
+  named so far is static. It reads the document alone, so it runs on every
+  push, whatever the destination. What the *names* in a statement mean is
+  settled live instead, by the store the profile binds: see the DML pre-flight
+  under [Validation](#validation). Note that actions themselves deploy **only**
+  through the Knowledge Catalog leg (BigQuery and Spanner graph deployments warn
+  that actions are not deployed to the graph). *(static, plus a live pre-flight
+  for a `sql` executor)*
 * **Every constraint states its rule as a judgment.** A constraint has one
   body, `judgment`, and it must be non-empty; one declaring no judgment states
   no rule at all, and the error names it. `expression` is a reserved key: a
