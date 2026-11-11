@@ -91,9 +91,14 @@ describe('init --context-set', () => {
       'creates a context-set entry group, awaits LRO, provisions custom types, and scaffolds catalog/ and bundle/',
       async () => {
         let polls = 0;
+        const logs: string[] = [];
+        spyOn(console, 'log').mockImplementation((...args: any[]) => {
+          logs.push(args.join(' '));
+        });
         const createGroup =
             spyOn(CatalogClient.prototype, 'createEntryGroup')
                 .mockImplementation(async () => ok({name: OP, done: false} as any));
+        const getGroup = spyOn(CatalogClient.prototype, 'getEntryGroup');
         spyOn(CatalogClient.prototype, 'getOperation')
             .mockImplementation(async (name: string) => {
               polls++;
@@ -112,12 +117,16 @@ describe('init --context-set', () => {
           'cs',
           {type: 'context-set'} as any,
         ]);
+        expect(getGroup).not.toHaveBeenCalled();
         expect(polls).toBeGreaterThanOrEqual(2);
         expect(createAspect).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
         expect(createEntry).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
         expect(fs.existsSync(path.join(dir, 'catalog', 'EntryGroups', 'cs')))
             .toBe(true);
         expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(true);
+        expect(logs.join('\n')).toContain("Note: 'proj.us.cs' is a new context set.");
+        expect(logs.join('\n')).toContain(
+            'gcloud dataplex entry-groups add-iam-policy-binding cs --project=proj --location=us --member=<principal> --role=roles/dataplex.contentEditor');
         const manifestText = fs.readFileSync(path.join(dir, 'catalog.yaml'), 'utf8');
         expect(manifestText).toContain('scope: context-set.proj.us.cs');
         expect(manifestText).toContain('dataplex-types.global.overview');
@@ -135,13 +144,15 @@ describe('init --context-set', () => {
         spyOn(CatalogClient.prototype, 'getEntryGroup')
             .mockImplementation(async () => {
               groupReads++;
-              return ok({name: GROUP, type: 'context-set'});
+              return ok(
+                  groupReads >= 2 ? {name: GROUP, type: 'context-set'} :
+                                    {name: GROUP});
             });
 
         const code = await init({contextSet: 'proj.us.cs'});
 
         expect(code).toBe(0);
-        expect(groupReads).toBeGreaterThanOrEqual(2);
+        expect(groupReads).toBe(2);
         expect(fs.existsSync(path.join(dir, 'catalog.yaml'))).toBe(true);
       });
 
@@ -202,6 +213,23 @@ describe('init --context-set', () => {
         expect(fs.existsSync(path.join(dir, 'catalog.yaml'))).toBe(false);
         expect(errors.join('\n')).toContain('roles/dataplex.contentCreator');
         expect(errors.join('\n')).toContain('roles/dataplex.contentEditor');
+      });
+
+  test(
+      'does not append roles advice when create fails for a non-permission reason (e.g. 500)',
+      async () => {
+        spyOn(CatalogClient.prototype, 'createEntryGroup')
+            .mockImplementation(async () => err(500, 'Internal error'));
+        const errors: string[] = [];
+        spyOn(console, 'error').mockImplementation((...args: any[]) => {
+          errors.push(args.join(' '));
+        });
+
+        const code = await init({contextSet: 'proj.us.cs'});
+
+        expect(code).toBe(1);
+        expect(errors.join('\n')).toContain("creating context set 'proj.us.cs': Internal error");
+        expect(errors.join('\n')).not.toContain('roles/dataplex.contentCreator');
       });
 
   test('rejects --format okf on --context-set', async () => {
@@ -468,5 +496,28 @@ A customer with at least one order in the past 90 days.
           process.chdir(dir);
           fs.rmSync(pullDir, {recursive: true, force: true});
         }
+      });
+
+  test(
+      'warns naming the tried entries and last status when updating the context-set overview fails',
+      async () => {
+        writeContextSetManifest();
+        fs.mkdirSync(path.join(dir, 'bundle'), {recursive: true});
+        fs.writeFileSync(
+            path.join(dir, 'bundle', 'index.md'),
+            '---\nokf_version: "0.2"\n---\n# Commerce\n\nOverview body.\n');
+        spyOn(CatalogSync.prototype, 'push').mockResolvedValue({success: true});
+        spyOn(CatalogClient.prototype, 'updateEntry')
+            .mockImplementation(async () => err(404, 'Entry not found'));
+        const warnings: string[] = [];
+        spyOn(console, 'warn').mockImplementation((...args: any[]) => {
+          warnings.push(args.join(' '));
+        });
+
+        expect(await push({})).toBe(0);
+
+        expect(warnings.join('\n')).toContain(
+            `Warning: could not update context set overview on '${GROUP}/entries/cs_entry'`);
+        expect(warnings.join('\n')).toContain('404 (Entry not found)');
       });
 });

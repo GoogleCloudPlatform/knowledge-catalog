@@ -29,9 +29,9 @@ export class SplitSource implements CatalogSource {
   readonly location: string;
   readonly entryGroup: string;
 
-  private readonly _group: dataplex.EntryGroup;
+  private readonly _groupName: string;
 
-  constructor(type: string, name: string, group: dataplex.EntryGroup) {
+  constructor(type: string, name: string, group?: dataplex.EntryGroup) {
     const parts = name.split('.');
     const [project, location, entryGroup] = parts;
     if (!project || !location || !entryGroup || parts.length !== 3) {
@@ -44,16 +44,13 @@ export class SplitSource implements CatalogSource {
     this.project = project;
     this.location = location;
     this.entryGroup = entryGroup;
-    this._group = group;
+    this._groupName =
+        group?.name ?? dataplex.catalogContainer(project, location, entryGroup);
   }
 
   /** The full entry-group resource name the OKF half spells its names against. */
   get groupName(): string {
-    return this._group.name;
-  }
-
-  get entryGroupCreateTime(): string|undefined {
-    return this._group?.createTime;
+    return this._groupName;
   }
 
   // Every entry of the context set except the semantic model's own, which the
@@ -76,6 +73,6 @@ export class SplitSource implements CatalogSource {
   }
 
   serviceName(localName: string): string {
-    return `${this._group.name}/entries/${localName}`;
+    return `${this._groupName}/entries/${localName}`;
   }
 }

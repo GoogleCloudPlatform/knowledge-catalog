@@ -237,13 +237,14 @@ export async function init(options: InitOptions): Promise<number> {
     const created =
         await dataplex.createContextSet(catalog, project, location, entryGroup);
     if (created.error) {
-      if (created.existing) {
-        console.error(`Error: ${created.error}`);
-      } else {
+      if (!created.existing &&
+          /\b403\b|permission.*denied/i.test(created.error)) {
         console.error(
             `Error: ${created.error}. Creating a context set needs ` +
             `roles/dataplex.contentCreator on the project (and ` +
             `roles/dataplex.contentEditor on the group for teammates and CI).`);
+      } else {
+        console.error(`Error: ${created.error}`);
       }
       return 1;
     }
@@ -259,6 +260,15 @@ export async function init(options: InitOptions): Promise<number> {
     fs.mkdirSync(
         path.join('catalog', 'EntryGroups', entryGroup), {recursive: true});
     fs.mkdirSync('bundle', {recursive: true});
+    if (created.created) {
+      console.log(
+          `Note: '${options.contextSet}' is a new context set. To let others ` +
+          `push or pull it, grant them roles/dataplex.contentEditor on it: ` +
+          `gcloud dataplex entry-groups add-iam-policy-binding ${entryGroup} ` +
+          `--project=${project} --location=${location} --member=<principal> ` +
+          `--role=roles/dataplex.contentEditor. A pull or push in the next ` +
+          `minute can fail with a permission error; run it again after that.`);
+    }
   } else {
     console.error(
         'Error: Must provide --entry-group, --bigquery-dataset, --kb, --semantic-model, or --context-set');
@@ -629,8 +639,13 @@ async function publishContextSetOverview(
   groupId: string,
   overviewContent: string,
   createdEg = false,
-): Promise<void> {
-  const pnum = await crm.projectNumber(project, ctx);
+): Promise<{written: boolean; entries: string[]; lastStatus?: string}> {
+  let pnum: string | undefined;
+  try {
+    pnum = await crm.projectNumber(project, ctx);
+  } catch {
+    // Fall back to `<groupId>_entry` when project number lookup fails.
+  }
   const repCandidates: string[] = [];
   if (pnum) {
     repCandidates.push(
@@ -643,35 +658,44 @@ async function publishContextSetOverview(
   );
   const ovKey = 'dataplex-types.global.overview';
   const maxAttempts = createdEg ? 5 : 2;
-  let patchedRep = false;
-  for (let attempt = 0; attempt < maxAttempts && !patchedRep; attempt++) {
+  let lastStatus: string | undefined;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     for (const repName of repCandidates) {
-      const res = await catalog.updateEntry(
-        {
-          name: repName,
-          entryType:
-            'projects/dataplex-types/locations/global/entryTypes/entrygroup',
-          aspects: {
-            [ovKey]: {
-              data: {
-                content: overviewContent,
-                contentType: 'MARKDOWN',
+      let res: {status: number; message?: string};
+      try {
+        res = await catalog.updateEntry(
+          {
+            name: repName,
+            entryType:
+              'projects/dataplex-types/locations/global/entryTypes/entrygroup',
+            aspects: {
+              [ovKey]: {
+                data: {
+                  content: overviewContent,
+                  contentType: 'MARKDOWN',
+                },
               },
             },
           },
-        },
-        ['aspects'],
-        [ovKey],
-      );
-      if (res.status === 200) {
-        patchedRep = true;
-        break;
+          ['aspects'],
+          [ovKey],
+        );
+      } catch (err: any) {
+        lastStatus = String(err?.message || err);
+        continue;
       }
+      if (res.status === 200) {
+        return {written: true, entries: repCandidates};
+      }
+      lastStatus = res.message
+        ? `${res.status} (${res.message})`
+        : `${res.status}`;
     }
-    if (!patchedRep && attempt < maxAttempts - 1) {
+    if (attempt < maxAttempts - 1) {
       await new Promise((r) => setTimeout(r, 600));
     }
   }
+  return {written: false, entries: repCandidates, lastStatus};
 }
 
 // The error for each flag `options` carries that push no longer takes, naming
@@ -857,9 +881,15 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     if (!options.validateOnly && rootMeta.overviewContent) {
-      await publishContextSetOverview(
+      const ov = await publishContextSetOverview(
           catalog, ctx, project, location, groupId, rootMeta.overviewContent,
           createdEg);
+      if (!ov.written) {
+        console.warn(
+            `Warning: could not update context set overview on ` +
+            `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
+            `(last status: ${ov.lastStatus ?? 'unknown'}).`);
+      }
     }
     return 0;
   }
@@ -902,9 +932,15 @@ export async function push(options: PushOptions): Promise<number> {
         snapshot.basePath || '.', source.project, source.location,
         source.entryGroup);
     if (!options.validateOnly && rootMeta.overviewContent) {
-      await publishContextSetOverview(
+      const ov = await publishContextSetOverview(
           catalog, ctx, source.project, source.location, source.entryGroup,
           rootMeta.overviewContent);
+      if (!ov.written) {
+        console.warn(
+            `Warning: could not update context set overview on ` +
+            `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
+            `(last status: ${ov.lastStatus ?? 'unknown'}).`);
+      }
     }
     return 0;
   }

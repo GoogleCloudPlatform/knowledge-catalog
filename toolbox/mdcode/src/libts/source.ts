@@ -101,8 +101,7 @@ export async function createSource(type: string, name: string,
     case Sources.SEMANTIC_MODEL:
       return new SemanticModelSource(Sources.SEMANTIC_MODEL, name);
     case Sources.CONTEXT_SET:
-      const contextSet = await getEntryGroup(name, ctx);
-      return new SplitSource(Sources.CONTEXT_SET, name, contextSet);
+      return new SplitSource(Sources.CONTEXT_SET, name);
     default:
       throw new Error(`Unknown source type: ${type}`);
   }

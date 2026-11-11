@@ -161,17 +161,19 @@ describe('manifest & snapshot integration', () => {
     expect(split.semantic.modelDocuments().map(d => d.name)).toEqual(['commerce']);
   });
 
-  test('initWithContextSet records defaultAspects and rejects layout: in catalog.yaml', async () => {
-    const getGroup = spyOn(gcp.CatalogClient.prototype, 'getEntryGroup')
-      .mockImplementation(async () => ({status: 200, result: group()}));
+  test('initWithContextSet records defaultAspects without calling getEntryGroup and rejects layout: in catalog.yaml', async () => {
+    const getGroup = spyOn(gcp.CatalogClient.prototype, 'getEntryGroup');
     try {
       const manifest = await CatalogManifest.initWithContextSet(SCOPE, TEST_API_CONTEXT);
+      expect(getGroup).not.toHaveBeenCalled();
       expect(manifest.source).toBeInstanceOf(SplitSource);
+      expect((manifest.source as SplitSource).groupName).toBe(GROUP_NAME);
       expect(manifest.snapshotConfig?.aspects).toEqual([md.OVERVIEW_ASPECT]);
 
       const manifestPath = path.join(root, 'catalog.yaml');
       manifest.save(manifestPath);
       const snapshot = await CatalogSnapshot.fromPath(root, TEST_API_CONTEXT);
+      expect(getGroup).not.toHaveBeenCalled();
       expect(snapshot.layout).toBeInstanceOf(SplitLayout);
 
       fs.writeFileSync(
