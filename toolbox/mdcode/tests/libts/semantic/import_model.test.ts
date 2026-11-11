@@ -456,55 +456,44 @@ describe('profile translation', () => {
     expect(res.warnings).not.toContain("Converted 'retail.profile.prod.yaml' to YAML.");
   });
 
-  // A GOOGLE block whose profile binds order_id to the JSON `dialects`, over
-  // several lines or on one line, beside another vendor's block.
-  const lines = (dialects: string) => `    custom_extensions:
-      - vendor_name: GOOGLE
-        data: |
-          {
-            "profiles": [
-              {
-                "name": "prod",
-                "entities": [
-                  {
-                    "name": "orders",
-                    "source": "${BQ_PREFIX}/tables/orders_prod",
-                    "primary_key": ["order_id"],
-                    "fields": [
-                      {
-                        "name": "order_id",
-                        "expression": {
-                          "dialects": [
-                            ${dialects}
-                          ]
-                        }
-                      }
-                    ]
-                  }
+  // Profile prod as JSON, with order_id bound to the JSON `dialects`.
+  const prodJson = (dialects: string) => `{
+  "profiles": [
+    {
+      "name": "prod",
+      "entities": [
+        {
+          "name": "orders",
+          "source": "${BQ_PREFIX}/tables/orders_prod",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {
+                "dialects": [
+                  ${dialects}
                 ]
               }
-            ]
-          }
-      - vendor_name: ACME
-        data: '{"x":   1}'
-`;
-  const line = (dialects: string) => `    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"profiles": [{"name": "prod", "entities": [{"name": "orders", "source": "${
-      BQ_PREFIX}/tables/orders_prod", "primary_key": ["order_id"], "fields": [{"name": "order_id", "expression": {"dialects": [${
-      dialects}]}}]}]}]}'
-`;
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
   const SF_JSON = '{ "dialect": "SNOWFLAKE", "expression": "NVL(order_id, 0)" }';
   const BQ_JSON = '{ "dialect": "BIGQUERY", "expression": "COALESCE(order_id, 0)" }';
-  const DIALECTS = `${SF_JSON},\n                            ${BQ_JSON}`;
+  // [layout, the GOOGLE block's `data` written for its JSON text]
   test.each([
-    ['over several lines', lines, DIALECTS],
-    ['over lines indented deeper than the file', (d: string) => lines(d).replace(/^ {10}/gm, '              '), DIALECTS],
-    ['on one line', line, `${SF_JSON}, ${BQ_JSON}`],
-  ])('writes only the translated entry into a GOOGLE block written %s', async (_, block, dialects) => {
-    const res = await importSemanticModelYaml(ossieDoc({extra: block(SF_JSON)}), ossie);
+    ['over several lines', (json: string) => `|\n${json.replace(/^/gm, ' '.repeat(10))}`],
+    ['over lines indented deeper than the file', (json: string) => `|\n${json.replace(/^/gm, ' '.repeat(14))}`],
+    ['on one line', (json: string) => `'${json.replace(/\n */g, ' ')}'`],
+  ])('writes only the translated entry into a GOOGLE block written %s, beside another vendor\'s block', async (_, data) => {
+    const extra = (dialects: string) => '    custom_extensions:\n      - vendor_name: GOOGLE\n' +
+        `        data: ${data(prodJson(dialects))}\n      - vendor_name: ACME\n        data: '{"x":   1}'\n`;
+    const res = await importSemanticModelYaml(ossieDoc({extra: extra(SF_JSON)}), ossie);
     expect(res.errors).toEqual([]);
-    expect(res.files[0].content).toBe(ossieDoc({extra: block(dialects)}));
+    expect(res.files[0].content).toBe(ossieDoc({extra: extra(`${SF_JSON},\n${' '.repeat(18)}${BQ_JSON}`)}));
   });
 
   // A profile file that changes is written as YAML, as a model file is. One
