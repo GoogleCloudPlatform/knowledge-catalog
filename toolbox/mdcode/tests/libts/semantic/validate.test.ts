@@ -374,11 +374,15 @@ describe('action statement pre-flight', () => {
 
     // Sending the types is what makes the action's DECLARED parameter types a
     // claim the store checks, rather than a comment.
-    test('sends the declared type of each referenced parameter', async () => {
+    test.each([
+      ['each referenced parameter', GOOD],
+      ['parameters written with a space or in backticks',
+       'UPDATE account SET balance = @ amount WHERE account_id = @`id`'],
+    ])('sends the declared type of %s', async (_, statement) => {
       const spanner = new SpannerClientMock();
       spanner.schema = mockSchema(ACCOUNT);
       await validateSpannerActionStatements(
-          [spannerModel([sqlAction([GOOD])])], spanner);
+          [spannerModel([sqlAction([statement])])], spanner);
       expect(spanner.planned[0].paramTypes)
           .toEqual({amount: {code: 'FLOAT64'}, id: {code: 'INT64'}});
     });
@@ -619,6 +623,9 @@ describe('action statement pre-flight', () => {
       ['TIMESTAMP for a DateTimeTz parameter',
        'UPDATE account SET memo = @tz WHERE account_id = @id',
        {tz: 'TIMESTAMP', id: 'INT64'}],
+      ['the types of parameters written with a space or in backticks',
+       'UPDATE account SET balance = @ amount WHERE account_id = @`id`',
+       {amount: 'FLOAT64', id: 'INT64'}],
     ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();
       bq.dmlSchema = mockSchema(ACCOUNT);

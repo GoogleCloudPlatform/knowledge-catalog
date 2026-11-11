@@ -621,6 +621,19 @@ describe('validatePushRequirements gates actions', () => {
     expect(errs[0]).toContain('binds \'@orderId\'');
   });
 
+  // GoogleSQL reads `@ note` and `` @`note` `` as the parameter `note`.
+  test.each([
+    ['UPDATE orders SET note = @ note WHERE id = @id', ['binds \'@note\'']],
+    ['UPDATE orders SET note = @`note` WHERE id = @id', ['binds \'@note\'']],
+  ])('reads the parameters of %p as GoogleSQL does', (statement, binds) => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [statement]}},
+      parameters: [{name: 'id', type: 'Integer'}],
+    }])]);
+    expect(errs).toEqual(binds.map(b => expect.stringContaining(b)));
+  });
+
   test('an @ inside a string literal is not read as a binding', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'A',

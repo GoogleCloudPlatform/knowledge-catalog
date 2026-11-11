@@ -252,11 +252,19 @@ function endOfTripleQuoted(text: string, from: number): number {
 // PostgreSQL.
 export const SQL_CODE_DIALECTS = ['SPANNER', 'POSTGRES'] as const;
 
+// Whether a statement in `dialect` is read as PostgreSQL. Any other is read as
+// GoogleSQL.
+function readsPostgres(dialect?: string|null): boolean {
+  return dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+}
+
 // `text` with each comment and each quoted string or identifier replaced by a
 // space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
 // `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).
-function sqlCode(text: string, dialect?: string|null): string {
-  const postgres = dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+// With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept.
+function sqlCode(
+    text: string, dialect?: string|null, quotedNames = false): string {
+  const postgres = readsPostgres(dialect);
   const identCont =
       postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   let out = '';
@@ -281,7 +289,8 @@ function sqlCode(text: string, dialect?: string|null): string {
     } else if (c === '\'' || c === '"') {
       i = skip(i, endOfQuoted(text, i, !postgres, postgres));
     } else if (!postgres && c === '`') {
-      i = skip(i, endOfQuoted(text, i, true, false));
+      const end = endOfQuoted(text, i, true, false);
+      i = quotedNames ? end - 1 : skip(i, end);
     } else if (postgres && c === '$') {
       DOLLAR_QUOTE_TAG.lastIndex = i;
       const m = DOLLAR_QUOTE_TAG.exec(text);
@@ -308,17 +317,29 @@ function sqlCode(text: string, dialect?: string|null): string {
   return start === 0 ? text : out + text.slice(start);
 }
 
+// A GoogleSQL parameter: `@`, any spaces or comments, and a name, which may be
+// quoted in backticks. An identifier quoted elsewhere is matched whole, so an
+// `@` inside it is not read.
+const GOOGLE_SQL_PARAMETER =
+    /`(?:[^`\\]|\\.)*`?|@@+|@\s*(?:([A-Za-z_]\w*)|`((?:[^`\\]|\\.)*)`)/g;
+// A PostgreSQL parameter: `@` and a name, with nothing between them.
+const POSTGRES_PARAMETER = /@@+|@([A-Za-z_]\w*)/g;
+
 // The distinct `@name` references in a SQL statement, ignoring comments and
 // quoted strings or identifiers so prose or a literal containing an '@' is not
 // read as a binding. `#` starts a line comment in GoogleSQL (the default), and
-// stays an operator (`#>`, `#-`) on PostgreSQL/AlloyDB. Used to check that
-// every parameter a statement reads is one the caller will bind, and to bind
-// only the parameters a statement actually reads.
+// stays an operator (`#>`, `#-`) on PostgreSQL/AlloyDB. GoogleSQL also reads
+// `@ name` and `` @`name` `` as the parameter `name`. Used to check that every
+// parameter a statement reads is one the caller will bind, and to bind only
+// the parameters a statement actually reads.
 export function referencedParameters(
     text: string, dialect?: string|null): string[] {
+  const googleSql = !readsPostgres(dialect);
   const names = new Set<string>();
-  for (const m of sqlCode(text, dialect).matchAll(/@@+|@([A-Za-z_]\w*)/g)) {
-    if (m[1]) names.add(m[1]);
+  for (const m of sqlCode(text, dialect, googleSql)
+           .matchAll(googleSql ? GOOGLE_SQL_PARAMETER : POSTGRES_PARAMETER)) {
+    const name = m[1] ?? m[2];
+    if (name) names.add(name);
   }
   return [...names];
 }
