@@ -2814,8 +2814,10 @@ async function planImport(
         (io.readDialects ?? (t => readDialects(api(), t)))(texts),
   };
   // A third-party import that writes its files over its input names import
-  // commands that read the files it writes. An import that stops writes
-  // nothing, so it runs again and names commands that read its input.
+  // commands that read the files it writes. It writes over its input only
+  // when every file has a place (see placeFiles). An import that stops on an
+  // error found after that writes nothing, so it runs again and names
+  // commands that read its input.
   let readsWritten = false;
   const plan = await planOneImport(file, options, {
     ...once,
@@ -2830,8 +2832,8 @@ async function planImport(
 }
 
 // One run of planImport's import. `io.overwrites` is told whether the import
-// writes its model file over its input, and gives the answer its messages
-// assume.
+// writes its files with the model file over its input, and gives the answer
+// its messages assume.
 async function planOneImport(
     file: string, options: ImportCommandOptions,
     io: ImportIo&Required<Pick<ImportIo, 'api'|'readDialects'>>&
@@ -2875,20 +2877,88 @@ async function planOneImport(
   // The workspace's layout, read once, when the files go into it.
   let layoutRead: Promise<SemanticModelLayout|string>|undefined;
   const layoutOf = () => layoutRead ??= workspaceLayout(api);
-  // Where the model file `fileName` goes, when it has a place.
-  const modelTarget = async (fileName: string) => {
-    if (options.out) {
-      return YAML_FILE.test(options.out) ? options.out :
-                                           path.join(options.out, fileName);
+  // Where the import writes each of `files`, the model file first, or the
+  // errors that stop it before it writes any. Every target is found before
+  // anything is written, so a file that has none writes nothing.
+  const placeFiles = async (files: SerializedFile[]):
+      Promise<{targets: string[]}|{errors: string[]}> => {
+    let targets: Array<{path: string}|undefined>;
+    if (options.out && YAML_FILE.test(options.out)) {
+      if (files.length > 1) {
+        return {
+          errors: [
+            `--out '${options.out}' names a file, but the import gives ${
+                files.length} files (${
+                files.map(f => f.fileName).join(', ')}); name a directory ` +
+                `instead.`,
+          ],
+        };
+      }
+      targets = [{path: options.out}];
+    } else if (options.out) {
+      const out = options.out;
+      targets = files.map(f => ({path: path.join(out, f.fileName)}));
+    } else {
+      const layout = await layoutOf();
+      if (typeof layout === 'string') return {errors: [layout]};
+      // The engine's first file is the model file, `<model>.yaml`; the rest
+      // are its profile files, which pull's mapping writes beside it.
+      const model = files[0].fileName.replace(YAML_FILE, '');
+      targets =
+          files.map(f => pulledFileTarget(layout, model, f.fileName, false));
+      // The input itself may be in the entry group under another name.
+      const {inputThere, error} = otherModelFiles(layout, model, file);
+      const refusals = error ? [error] : [];
+      if (inputThere) {
+        refusals.push(
+            `the input file ${file} sits in the entry group, so the import ` +
+            `would leave this model in two files there, ${file} and ${
+                layout.modelPath(model)}. Move the input${
+                profileFiles.length ? ' and its profile files' : ''} out of ` +
+            `the entry group and import it from there, or pass --out ` +
+            `<path> to write elsewhere.`);
+      }
+      if (refusals.length) return {errors: refusals};
+      // Refuse to leave behind a profile file this import does not write,
+      // whatever its profile name. Push rejects one beside a vanilla model,
+      // and one whose name breaks its rule, and reads any other beside a
+      // Google model as that model's profile. A Google model file re-imported
+      // in place with no sibling profile file for the import to write keeps
+      // its other ones.
+      const inPlace = profileFiles.length === 0 && flavor === 'google' &&
+          files.length === 1 &&
+          path.resolve(file) === path.resolve(layout.modelPath(model));
+      if (!inPlace) {
+        const kept = new Set(targets.map(t => t && path.resolve(t.path)));
+        const left = layout.profileFilePaths(model).filter(
+            p => !kept.has(path.resolve(p)));
+        if (left.length) {
+          return {
+            errors: [
+              `the import does not write ${left.join(', ')}, which would ` +
+              `stay beside the model; pass --out <path> to write elsewhere, ` +
+              `or first remove any the model no longer uses.`,
+            ],
+          };
+        }
+      }
     }
-    const layout = await layoutOf();
-    return typeof layout === 'string' ?
-        undefined :
-        layout.modelPath(fileName.replace(YAML_FILE, ''));
+    const unplaced = files.filter((_, i) => !targets[i]);
+    if (unplaced.length) {
+      return {
+        errors: unplaced.map(
+            f => `the import gives '${f.fileName}', which has no place in ` +
+                `the semantic-model layout.`),
+      };
+    }
+    return {targets: targets.map(t => t!.path)};
   };
-  const overwritesInput = async (fileName: string) => {
-    const target = await modelTarget(fileName);
-    return !!target && path.resolve(target) === path.resolve(file);
+  // Whether the import writes `files` with the model file over its input. It
+  // writes nothing when a file has no place.
+  const overwritesInput = async (files: SerializedFile[]) => {
+    const placed = await placeFiles(files);
+    return 'targets' in placed &&
+        path.resolve(placed.targets[0]) === path.resolve(file);
   };
   // The profile files beside the input once the import writes the profile
   // files `written` beside it, each in place of one of the same name.
@@ -2912,8 +2982,8 @@ async function planOneImport(
             new dataplex.CatalogClient(api()).listEntries(
                 project, location, entryGroup),
         readDialects: readDialectsOnce,
-        overwritesInput: async fileName =>
-            io.overwrites(await overwritesInput(fileName)),
+        overwritesInput: async files =>
+            io.overwrites(await overwritesInput(files)),
         // The advice names the first error of the import it suggests: this
         // import again with `--transpile`, of the files this import writes
         // when it writes them over its input, and with `--input first-party`
@@ -2937,74 +3007,12 @@ async function planOneImport(
       });
   warnings.push(...result.warnings);
   if (!result.ok) return fail(...result.errors);
-
-  // Every target is found before anything is written, so a file that has
-  // none writes nothing.
-  let targets: Array<{path: string}|undefined>;
-  if (options.out && YAML_FILE.test(options.out)) {
-    if (result.files.length > 1) {
-      return fail(
-          `--out '${options.out}' names a file, but the import gives ${
-              result.files.length} files (${
-              result.files.map(f => f.fileName).join(', ')}); name a ` +
-          `directory instead.`);
-    }
-    targets = [{path: options.out}];
-  } else if (options.out) {
-    const out = options.out;
-    targets = result.files.map(f => ({path: path.join(out, f.fileName)}));
-  } else {
-    const layout = await layoutOf();
-    if (typeof layout === 'string') return fail(layout);
-    // The engine's first file is the model file, `<model>.yaml`; the rest are
-    // its profile files, which pull's mapping writes beside it.
-    const model = result.files[0].fileName.replace(YAML_FILE, '');
-    targets = result.files.map(
-        f => pulledFileTarget(layout, model, f.fileName, false));
-    // The input itself may be in the entry group under another name.
-    const {inputThere, error} = otherModelFiles(layout, model, file);
-    const refusals = error ? [error] : [];
-    if (inputThere) {
-      refusals.push(
-          `the input file ${file} sits in the entry group, so the import ` +
-          `would leave this model in two files there, ${file} and ${
-              layout.modelPath(model)}. Move the input${
-              profileFiles.length ? ' and its profile files' : ''} out of ` +
-          `the entry group and import it from there, or pass --out <path> ` +
-          `to write elsewhere.`);
-    }
-    if (refusals.length) return fail(...refusals);
-    // Refuse to leave behind a profile file this import does not write,
-    // whatever its profile name. Push rejects one beside a vanilla model, and
-    // one whose name breaks its rule, and reads any other beside a Google
-    // model as that model's profile. A Google model file re-imported in place
-    // with no sibling profile file for the import to write keeps its other
-    // ones.
-    const inPlace = profileFiles.length === 0 && flavor === 'google' &&
-        result.files.length === 1 &&
-        path.resolve(file) === path.resolve(layout.modelPath(model));
-    if (!inPlace) {
-      const kept = new Set(targets.map(t => t && path.resolve(t.path)));
-      const left = layout.profileFilePaths(model).filter(
-          p => !kept.has(path.resolve(p)));
-      if (left.length) {
-        return fail(
-            `the import does not write ${left.join(', ')}, which would stay ` +
-            `beside the model; pass --out <path> to write elsewhere, or ` +
-            `first remove any the model no longer uses.`);
-      }
-    }
-  }
-  const unplaced = result.files.filter((_, i) => !targets[i]);
-  if (unplaced.length) {
-    return fail(...unplaced.map(
-        f => `the import gives '${f.fileName}', which has no place in the ` +
-            `semantic-model layout.`));
-  }
+  const placed = await placeFiles(result.files);
+  if ('errors' in placed) return fail(...placed.errors);
   return {
     warnings,
     writes: result.files.map(
-        (f, i) => ({fileName: targets[i]!.path, content: f.content})),
+        (f, i) => ({fileName: placed.targets[i], content: f.content})),
   };
 }
 

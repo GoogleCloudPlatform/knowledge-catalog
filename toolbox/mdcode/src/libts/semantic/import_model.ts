@@ -66,14 +66,14 @@ export interface ImportSemanticModelOptions {
    */
   fileName?: string;
   /**
-   * Whether the import writes the model file `fileName` over the input file.
-   * An import that stops writes nothing over it. A third-party import asks.
-   * When it writes over its input, the import that the advice to add a
-   * BigQuery text suggests reads the files it writes. When the written file
-   * also has a `GOOGLE` block, a message that names an import command names
-   * one with `--input first-party`, which reads that file.
+   * Whether the import writes `files`, the model file first, with the model
+   * file over the input file. An import that stops writes nothing over it.
+   * A third-party import asks. When it writes over its input, the import
+   * that the advice to add a BigQuery text suggests reads `files`. When the
+   * written file also has a `GOOGLE` block, a message that names an import
+   * command names one with `--input first-party`, which reads that file.
    */
-  overwritesInput?: (fileName: string) => Promise<boolean>;
+  overwritesInput?: (files: SerializedFile[]) => Promise<boolean>;
   /**
    * The first error the import that the advice to add a BigQuery text
    * suggests would stop on, or null when it would write its files. That
@@ -1956,7 +1956,7 @@ async function validateOutputDocument(
   // model its input holds, so the import its advice suggests reads the input.
   let overwrote: Promise<boolean>|undefined;
   const overwrites = () => overwrote ??=
-      (async () => !doc.strict && !!await opts.overwritesInput?.(fileName))();
+      (async () => !doc.strict && !!await opts.overwritesInput?.(files))();
   // Third-party import refuses a file with a GOOGLE block, so a command that
   // reads such a file written over the input takes --input first-party.
   const thirdPartyImport = !doc.strict &&

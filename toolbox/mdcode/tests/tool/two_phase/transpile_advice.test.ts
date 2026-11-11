@@ -197,7 +197,8 @@ semantic_model:
   // A third-party import over its input that stops writes nothing, so its
   // advice names that import with --transpile. One that writes names the
   // import of the file it writes, with the profile files beside it, and with
-  // --input first-party when that file has a GOOGLE block.
+  // --input first-party when that file has a GOOGLE block. Each runs the
+  // import engine once, and once more for the import its advice suggests.
   test.each([
     ['an in-place import a leftover profile file stops', {flavor: 'ossie'}, 1,
      "'kcmd import <file> --flavor ossie --transpile'",
@@ -226,7 +227,9 @@ semantic_model:
         });
         spyOn(console, 'error').mockImplementation(() => {});
         spyOn(console, 'log').mockImplementation(() => {});
+        const imports = spyOn(engine, 'importSemanticModelYaml');
         expect(await importModel(VANILLA, options)).toBe(code);
+        expect(imports).toHaveBeenCalledTimes(2);
         expect(warnings).toContain("Warning: field 'Customer.code': no 'BIGQUERY' or " +
             "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; " +
             `give it one, or add one with ${command} after fixing this: ${error}`);
