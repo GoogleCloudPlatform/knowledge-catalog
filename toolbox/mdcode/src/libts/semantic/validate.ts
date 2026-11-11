@@ -2667,26 +2667,18 @@ export async function validateSpannerGraph(
     // Push reports why the graph cannot be generated.
     return [];
   }
-  const database =
-      `spanner/${target.project}/${target.instance}/${target.database}`;
+  const name = `${target.project}/${target.instance}/${target.database}`;
   // Each table of the target database the graph reads, which push has
   // checked are all its tables.
-  const tables = elements.filter(e => databaseOf(e.dataSource) === database);
-  const name = `${target.project}/${target.instance}/${target.database}`;
+  const tables =
+      elements.filter(e => databaseOf(e.dataSource) === `spanner/${name}`);
+  const failed = (what: string, res: {message?: string; status: number}) =>
+      `${at}: could not ${what} Spanner database ${name} to check the graph ` +
+      `before anything is written: ${storeMessage(res.message, res.status)}`;
   const opened = await spanner.createSession(
       target.project, target.instance, target.database);
   const session = opened.result?.name;
-  if (!session) {
-    return [
-      `${at}: could not open a session on Spanner database ${name} to ` +
-      `check the graph before anything is written: ${
-          storeMessage(opened.message, opened.status)}`,
-    ];
-  }
-  const unreadable = (res: {message?: string; status: number}) =>
-      `${at}: could not read the schema of Spanner database ${name} to ` +
-      `check the graph before anything is written: ${
-          storeMessage(res.message, res.status)}`;
+  if (!session) return [failed('open a session on', opened)];
   const label = (e: GraphElement) => e.kind === 'node' ?
       `the node table of entity '${e.name}'` :
       `the edge table of relationship '${e.name}'`;
@@ -2696,7 +2688,7 @@ export async function validateSpannerGraph(
       params: {graph: target.graphName},
       paramTypes: {graph: {code: 'STRING'}},
     });
-    if (named.status !== 200) return [unreadable(named)];
+    if (named.status !== 200) return [failed('read the schema of', named)];
     for (const [kind, found] of named.result?.rows ?? []) {
       errors.push(
           `${at}: Spanner database ${name} already has ${
@@ -2705,22 +2697,20 @@ export async function validateSpannerGraph(
           `database, compared ignoring case; rename the graph in the target.`);
     }
 
-    // The table each element reads, as its schema and name in lower case.
+    // The table each element reads as written, its name, and its schema and
+    // name, in lower case.
     const tableOf = (e: GraphElement) => {
-      const parts = boundTable(e.dataSource, [], '', t => t).split('.');
-      return {
-        written: parts.join('.'),
-        key: parts.length > 1 ? `${storedName(parts[0])}.${
-                                    storedName(parts[parts.length - 1])}` :
-                                `.${storedName(parts[0])}`,
-        name: storedName(parts[parts.length - 1]),
-      };
+      const written = boundTable(e.dataSource, [], '', t => t);
+      const parts = written.split('.').map(storedName);
+      const table = parts[parts.length - 1];
+      const key = `${parts.length > 1 ? parts[0] : ''}.${table}`;
+      return {written, name: table, key};
     };
     const keys = await spanner.executeQuery(session, SPANNER_UNIQUE_KEYS_SQL, {
       params: {tables: [...new Set(tables.map(e => tableOf(e).name))]},
       paramTypes: {tables: {code: 'ARRAY', arrayElementType: {code: 'STRING'}}},
     });
-    if (keys.status !== 200) return [unreadable(keys)];
+    if (keys.status !== 200) return [failed('read the schema of', keys)];
     // The columns of each unique index, by table and index.
     const unique = new Map<string, Map<string, Set<string>>>();
     for (const [schema, table, index, column] of keys.result?.rows ?? []) {
@@ -2777,9 +2767,10 @@ export async function validateSpannerGraph(
     };
     const planned = new Map<GraphElement, Map<string, SpannerType|undefined>>();
     for (const e of tables) {
-      const types = await plan(
-          label(e), e.table,
-          [...e.properties.map(p => p.text), ...e.key, ...e.endpointColumns]);
+      const types = await plan(label(e), e.table, [
+        ...e.properties.map(p => p.text), ...e.key,
+        ...e.references.flatMap(r => r.from),
+      ]);
       if (!types) continue;
       planned.set(e, types);
       for (const p of e.properties) {
@@ -2790,10 +2781,7 @@ export async function validateSpannerGraph(
       }
       // Each SOURCE KEY and DESTINATION KEY column of an edge has the type of
       // the column it references, read by that node's own query when it can.
-      let offset = 0;
-      for (const {entity, columns} of e.references) {
-        const joined =
-            e.endpointColumns.slice(offset, offset += columns.length);
+      for (const {entity, from: joined, columns} of e.references) {
         const node = tables.find(n => n.kind === 'node' && n.name === entity);
         if (!node) continue;
         const own = planned.get(node);

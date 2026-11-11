@@ -39,21 +39,18 @@ export interface GenerateResult {
 // One node or edge table of the graph. Each column and property text is
 // written as the DDL writes it.
 export interface GraphElement {
-  // A node table belongs to an entity, and an edge table to a relationship.
+  // A node table belongs to the entity `name` names, and an edge table to the
+  // relationship. The table is read from `dataSource`.
   kind: 'node'|'edge';
-  // The name of the entity or relationship.
   name: string;
-  // The `dataSource` the table is read from, and the table as the DDL names
-  // it.
   dataSource: string;
   table: string;
   // The KEY columns.
   key: string[];
-  // An edge's SOURCE KEY and DESTINATION KEY columns. Empty for a node table.
-  endpointColumns: string[];
-  // Each node an edge's REFERENCES clauses name, with the columns of that
-  // node's table they read. Empty for a node table.
-  references: Array<{entity: string; columns: string[]}>;
+  // An edge's SOURCE KEY and then DESTINATION KEY clause: the node it
+  // references, the edge table's columns, and the node table's columns they
+  // reference. Empty for a node table.
+  references: Array<{entity: string; from: string[]; columns: string[]}>;
   // Each field property the table lists under any of its labels, once, with
   // the text the DDL writes for it, such as `dept AS code`, and the SQL it
   // reads in the table, such as `dept`.
@@ -460,13 +457,8 @@ function renderNodeTable(
     dataSource: entity.dataSource,
     table,
     key,
-    endpointColumns: [],
     references: [],
-    properties: boundFields.map(f => ({
-      name: f.name,
-      text: renderFieldPropertyCore(f, entity, engine),
-      sql: localSql(f, entity, engine),
-    })),
+    properties: boundFields.map(f => propertyOf(f, entity, engine)),
   });
   return lines.join('\n');
 }
@@ -596,12 +588,15 @@ function renderFieldPropertyCore(
   return local === alias ? alias : `${local} AS ${alias}`;
 }
 
-// The SQL a field property reads, local to its table: what fieldSql gives, or
-// the field's name when it has no SQL.
-function localSql(
-    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+// A field property as GraphElement lists it. A field with no SQL reads the
+// column of its name.
+function propertyOf(field: Field, owner: FieldOwner, engine: GraphEngine) {
   const sql = fieldSql(field, owner, engine);
-  return 'sql' in sql ? sql.sql : field.name;
+  return {
+    name: field.name,
+    text: renderFieldPropertyCore(field, owner, engine),
+    sql: 'sql' in sql ? sql.sql : field.name,
+  };
 }
 
 
@@ -657,7 +652,6 @@ function renderEdgeTable(
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
   let sourceKey: string[];
-  let dataSource = rel.source.entity;
   if (!sourceEntity) {
     // Only hand-built IR gets here: the loader rejects a relationship whose
     // endpoint is not one of the model's entities. Name the table after the
@@ -669,7 +663,6 @@ function renderEdgeTable(
   } else {
     backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
     sourceKey = nodeKey(sourceEntity);
-    dataSource = sourceEntity.dataSource;
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
@@ -687,13 +680,12 @@ function renderEdgeTable(
   elements.push({
     kind: 'edge',
     name: rel.name,
-    dataSource,
+    dataSource: sourceEntity?.dataSource ?? rel.source.entity,
     table: backing,
     key: keyColumns,
-    endpointColumns: [...keyColumns, ...fkColumns],
     references: [
-      {entity: rel.source.entity, columns: keyColumns},
-      {entity: rel.destination.entity, columns: refColumns},
+      {entity: rel.source.entity, from: keyColumns, columns: keyColumns},
+      {entity: rel.destination.entity, from: fkColumns, columns: refColumns},
     ],
     properties: [],
   });
@@ -785,17 +777,19 @@ function renderAssociationEdge(
   // The junction's own non-key fields are the edge's properties. They name
   // each other under the relationship's name.
   const owner: FieldOwner = {name: rel.name, fields: assoc.fields ?? []};
-  const listed = owner.fields.filter(f => {
-    const sql = fieldSql(f, owner, engine);
-    if ('sql' in sql || !isFieldBound(f)) return true;
-    warnings.push(
-        `relationship '${rel.name}': field '${f.name}' ` +
-        ('through' in sql ?
-             `reads ${missingSibling(sql.through, owner, engine)}` :
-             `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
-        `; omitted from the edge table`);
-    return false;
-  });
+  const listed =
+      owner.fields
+          .filter(f => {
+            const sql = fieldSql(f, owner, engine);
+            if ('sql' in sql || !isFieldBound(f)) return true;
+            warnings.push(
+                `relationship '${rel.name}': field '${f.name}' ` +
+                ('through' in sql ?
+                     `reads ${missingSibling(sql.through, owner, engine)}` :
+                     `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
+                `; omitted from the edge table`);
+            return false;
+          });
   lines.push(propertiesClause(
       listed.map(f => renderFieldProperty(f, owner, engine))));
   elements.push({
@@ -804,16 +798,15 @@ function renderAssociationEdge(
     dataSource: assoc.dataSource,
     table: backing,
     key,
-    endpointColumns: [...sourceColumns, ...destinationColumns],
     references: [
-      {entity: rel.source.entity, columns: sourceRef},
-      {entity: rel.destination.entity, columns: destinationRef},
+      {entity: rel.source.entity, from: sourceColumns, columns: sourceRef},
+      {
+        entity: rel.destination.entity,
+        from: destinationColumns,
+        columns: destinationRef,
+      },
     ],
-    properties: listed.map(f => ({
-      name: f.name,
-      text: renderFieldPropertyCore(f, owner, engine),
-      sql: localSql(f, owner, engine),
-    })),
+    properties: listed.map(f => propertyOf(f, owner, engine)),
   });
 
   return lines.join('\n');
