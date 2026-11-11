@@ -441,6 +441,13 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', '(a = b) <=> c', {error: 'kcmd does not translate <=>'}],
     ['POSTGRES', 'd::date < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['POSTGRES', 'd::date NOT BETWEEN a AND now()', {error: 'kcmd does not translate NOT BETWEEN on a DATE and a TIMESTAMP'}],
+    ['MYSQL', 'CURDATE() - INTERVAL 1 QUARTER < NOW()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['POSTGRES', "t::timestamptz >= CURRENT_DATE - INTERVAL '1 month'", {error: 'kcmd does not translate >= on a DATETIME and a TIMESTAMP'}],
+    ['POSTGRES', 'CURRENT_DATE - 7 < NOW()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['MYSQL', 'DATE_SUB(CURDATE(), INTERVAL 1 MONTH) < NOW()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['SQLSERVER', 'DATEADD(day, 1, CAST(d AS DATE)) < GETDATE()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['DATABRICKS', 'date_add(d, 1) < current_timestamp()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
+    ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) < NOW()', {error: 'kcmd does not translate DATE_ADD with INTERVAL 1 HOUR'}],
     // Date, format and conversion functions off the list.
     ['SQLSERVER', 'DATEADD(month, -1, GETDATE())', {error: 'kcmd does not translate DATEADD of a month to a value that may be a TIMESTAMP'}],
     ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],

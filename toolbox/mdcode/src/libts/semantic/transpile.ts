@@ -1136,11 +1136,8 @@ function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[
   const [operand, added] = first ? [value.right, value.left.interval] :
                                    [value.left, value.right?.interval];
   if (!added) return `${op} with INTERVAL ${intervalText(value.left.interval)} first`;
-  const amount = numberText(added.this) ?? literalText(bare(added.this)?.literal);
-  if (amount === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
-  const unit = added.unit === null ? stringUnit(amount)?.unit :
-      added.unit?.type === 'simple' && /^-?\d+$/.test(amount) ?
-      String(added.unit.unit).toLowerCase() : undefined;
+  if (intervalAmount(added) === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
+  const unit = wholeUnit(added);
   if (!unit || ![...shape.dateAdd, ...shape.operator].includes(unit)) {
     const note = unit && shape.notes?.[unit];
     return note ? `${op} INTERVAL ${intervalText(added)}, ${note}` :
@@ -1155,6 +1152,22 @@ function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[
     return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
   }
   return [operand];
+}
+
+// The amount of `added`, an engine interval, as written, or undefined when it
+// is not a number or a string.
+function intervalAmount(added: any): string|undefined {
+  return numberText(added?.this) ?? literalText(bare(added?.this)?.literal);
+}
+
+// The unit of `added`, an engine interval, in lower case, when its amount is a
+// whole number, such as `day` for INTERVAL 1 DAY or PostgreSQL's INTERVAL '1
+// day'. Otherwise undefined.
+function wholeUnit(added: any): string|undefined {
+  const amount = intervalAmount(added);
+  return added.unit === null ? stringUnit(amount)?.unit :
+      added.unit?.type === 'simple' && /^-?\d+$/.test(amount ?? '') ?
+      String(added.unit.unit).toLowerCase() : undefined;
 }
 
 // The operands of `value`, a `+` or `-` of `kind`, to check next, when it is a
@@ -1228,13 +1241,31 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 
 // BigQuery's type for `node`, a source value in the engine's dialect `read`,
 // when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
-// literal, a cast on the list, or the current date or time. The repairs write
-// Snowflake's CURRENT_TIMESTAMP as a DATETIME.
+// literal, a cast on the list, the current date or time, or a date function or
+// a sum import translates of one of these. The repairs write Snowflake's
+// CURRENT_TIMESTAMP as a DATETIME. Databricks' DATE_ADD(d, n) gives a DATE. A
+// DATE plus a unit in `operator` in INTERVAL_SHAPES gives a DATETIME, and the
+// other date functions and sums give the type of the date they read.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
-  const name = String(b?.function?.name).toUpperCase();
+  const fn = b?.function;
+  const name = String(fn?.name).toUpperCase();
   if (CURRENT.has(name)) return read === 'snowflake' ? 'DATETIME' : 'TIMESTAMP';
+  if (['DATE_ADD', 'DATE_SUB', 'DATEADD'].includes(name) && Array.isArray(functionArgs(fn, read))) {
+    const date = fn.args[name === 'DATEADD' ? 2 : 0];
+    return read === 'databricks' && fn.args.length === 2 ? 'DATE' : timeType(date, read);
+  }
+  const sum = b?.add ?? b?.sub;
+  const shape = INTERVAL_SHAPES[read];
+  if (sum && shape) {
+    const kind = b.add ? 'add' : 'sub';
+    const added = sum.left?.interval ?? sum.right?.interval;
+    const operands = added ? intervalShape(kind, sum, shape) : daysAdded(kind, sum, shape);
+    const date = Array.isArray(operands) ? timeType(operands[0], read) : undefined;
+    return date === 'DATE' && added && shape.operator.includes(wholeUnit(added)!) ?
+        'DATETIME' : date;
+  }
   const type = castType((b?.cast ?? b?.try_cast ?? b?.safe_cast)?.to);
   const types: Record<string, string> = {
     timestamp: read === 'spanner' ? 'TIMESTAMP' : 'DATETIME', TIMESTAMPNTZ: 'DATETIME',
@@ -1323,7 +1354,7 @@ function valueName(node: any): string {
 // whole number of days, hours or minutes. An interval of months is translated
 // only in a function that adds it, with `adds`.
 function interval(value: any, adds = false): string|undefined {
-  const text = numberText(value?.this) ?? literalText(bare(value?.this)?.literal);
+  const text = intervalAmount(value);
   const unit = value?.unit === null ? stringUnit(text)?.unit :
       value?.unit?.type === 'simple' && (text === undefined || /^\s*[+-]?\d+\s*$/.test(text)) ?
       String(value.unit.unit).toLowerCase() : undefined;
@@ -1334,7 +1365,7 @@ function interval(value: any, adds = false): string|undefined {
 // message. Its unit is a name, such as DAY, a node, such as DAY(9), or a span
 // of two of either, such as HOUR TO MINUTE.
 function intervalText(value: any): string {
-  const text = numberText(value?.this) ?? literalText(bare(value?.this)?.literal) ?? '?';
+  const text = intervalAmount(value) ?? '?';
   const spec = value?.unit;
   const unit = !spec ? undefined : spec.type === 'simple' ? unitName(spec.unit) :
       spec.type === 'expr' ? unitName(spec) :
