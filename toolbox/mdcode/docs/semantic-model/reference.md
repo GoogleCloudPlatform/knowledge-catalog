@@ -879,8 +879,7 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   BigQuery entry for a text it can translate. Before a message suggests that
   command, kcmd runs the import it names, writing nothing. When that import
   would stop, the message also names the first error it would stop on. Every
-  push
-  runs this check, whether or not a deployment uses those bindings. When a
+  push runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
   the field or metric, since those databases read that token as text.
