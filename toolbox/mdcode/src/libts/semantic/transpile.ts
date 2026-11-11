@@ -670,10 +670,44 @@ const TRUNC_PARTS: Record<string, string> = {...PARTS, week: 'ISOWEEK'};
 // kcmd cannot see a column's type, so it adds them only to a DATE it can see.
 const MONTH_PARTS = new Set(['month', 'quarter', 'year']);
 
-// The dialects that add an INTERVAL of days to a DATE as a DATE, where
-// BigQuery's + gives a DATETIME. The repairs write DATE_ADD or DATE_SUB, which
-// keep the type of a DATE, a DATETIME and a TIMESTAMP alike.
-const DATE_DAYS = new Set(['mysql', 'snowflake', 'databricks']);
+// The one shape of `+` and `-` with an INTERVAL that import translates from a
+// dialect: a column or a call of one of its `functions`, plus or minus
+// INTERVAL n unit with a whole number n. A `+` may name the INTERVAL first. The
+// repairs write a unit in `dateAdd` as DATE_ADD or DATE_SUB, which keep a DATE
+// a DATE, as the source does. They keep the `+` or `-` of a unit in
+// `operator`, which gives a DATETIME for a DATE, where the source gives a
+// timestamp without time zone. `notes` says why a unit is not translated.
+interface IntervalShape {
+  functions: string[];
+  dateAdd: string[];
+  operator: string[];
+  notes?: Record<string, string>;
+}
+
+// The IntervalShape of each dialect. SQL Server has no INTERVAL. An ANSI_SQL
+// text runs by the rules of its tables' database, and the databases add a unit
+// to a DATE as different types. SPANNER arithmetic is BigQuery's.
+const INTERVAL_SHAPES: Record<string, IntervalShape> = {
+  mysql: {
+    functions: ['CURRENT_DATE', 'CURDATE', 'DATE_ADD', 'DATE_SUB'],
+    dateAdd: ['day', 'week', 'month', 'quarter', 'year'], operator: ['hour', 'minute', 'second'],
+  },
+  postgresql: {
+    functions: ['CURRENT_DATE'], dateAdd: [],
+    operator: ['day', 'week', 'month', 'year', 'hour', 'minute', 'second'],
+  },
+  snowflake: {functions: ['CURRENT_DATE', 'DATEADD'], dateAdd: ['day'], operator: ['hour', 'minute']},
+  databricks: {
+    functions: ['CURRENT_DATE', 'DATE_ADD'], dateAdd: ['day', 'week', 'month', 'year'], operator: [],
+    notes: Object.fromEntries(['hour', 'minute'].map(
+        unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
+  },
+  tsql: {functions: [], dateAdd: [], operator: []},
+  generic: {
+    functions: [], dateAdd: [], operator: [],
+    notes: {day: 'which gives a DATE in some databases and a timestamp in others'},
+  },
+};
 
 // The functions that give the current date or time.
 const CURRENT = new Set(['CURRENT_DATE', 'CURDATE', 'CURRENT_TIMESTAMP', 'NOW', 'GETDATE']);
@@ -1045,72 +1079,78 @@ function article(noun: string): string {
 // BigQuery when import cannot see the operands' types: PostgreSQL's date minus
 // date is a number of days, where BigQuery gives an INTERVAL. So import
 // translates `+` and `-`, and `*` in MySQL and SQL Server, only beside a number
-// literal or a SUM, COUNT or AVG, or with an INTERVAL of days, hours or minutes.
-// MySQL and SQL Server read a date beside a number as a number or a count of
-// days, and every source reads a string beside a number as a number. A date
+// literal or a SUM, COUNT or AVG, or in the one shape INTERVAL_SHAPES gives for
+// an INTERVAL. MySQL and SQL Server read a date beside a number as a number or a
+// count of days, and every source reads a string beside a number as a number.
+// So import refuses a value it can see is a date or a time in any other
+// arithmetic, also when MAX, COALESCE or a similar function returns it. A date
 // column is not visible, so a MySQL date column plus a number is translated.
-// A sum or difference of intervals is an interval and is translated as written.
-// A DATE plus an INTERVAL of days is a DATE in DATE_DAYS, and the repairs
-// write DATE_ADD, which keeps the type of a DATE, a DATETIME and a TIMESTAMP.
-// Those dialects read a string or a number beside the interval as a date, and
-// BigQuery rejects it or reads another way, so import refuses one. MySQL reads
-// a sum or difference without an INTERVAL as a number, also when MAX, COALESCE
-// or a similar function returns it, so import refuses that beside the interval
-// as well. The sum is a timestamp in PostgreSQL, so an ANSI_SQL text with one
-// is not translated.
-// A Databricks DATE plus an INTERVAL of hours or minutes is a TIMESTAMP, where
-// BigQuery gives a DATETIME, so import translates that sum only from the other
-// dialects. SPANNER arithmetic is BigQuery's.
+// SPANNER arithmetic is BigQuery's.
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
   const added = kind !== 'mul' && sides.find(s => s?.interval)?.interval;
+  if (added && read !== 'spanner') return intervalShape(kind, value, INTERVAL_SHAPES[read]);
   if (added) {
     const untranslated = sides.find(s => s?.interval && !interval(s.interval));
-    if (untranslated) return `INTERVAL ${intervalText(untranslated.interval)}`;
-    if (sides.every(isInterval)) return sides.map(s => s.interval ? s.interval.this : s);
-    const unit = interval(added);
-    if (unit === 'day' && DATE_DAYS.has(read)) {
-      const other = sides.find(s => !s?.interval);
-      const b = bare(other);
-      const sum = (s: any): boolean => returned(s).some(sum) ||
-          [bare(s)?.add, bare(s)?.sub].some(v => v && !v.left?.interval && !v.right?.interval);
-      const number = numberText(other) !== undefined || (read === 'mysql' && sum(other));
-      if (number || (b?.literal && b.literal.literal_type !== 'date')) {
-        return `${op} of ${valueName(b)}`;
-      }
-      return [other, added.this];
-    }
-    if (unit === 'day' && read === 'generic') {
-      return `${op} INTERVAL ${intervalText(added)}, which gives a DATE in some ` +
-          'databases and a timestamp in others';
-    }
-    if (read === 'databricks' && unit !== 'day') {
-      return `${op} INTERVAL ${intervalText(added)}, which gives a TIMESTAMP for a DATE ` +
-          'in Databricks and a DATETIME in BigQuery';
-    }
-    return sides.map(s => s.interval ? s.interval.this : s);
+    return untranslated ? `INTERVAL ${intervalText(untranslated.interval)}` :
+                          sides.map(s => s.interval ? s.interval.this : s);
   }
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
-  // DATE_ADD, DATE_SUB, DATEADD and a sum or difference with an INTERVAL are
-  // dates or times, as is a function that returns one.
-  const dates = [...CURRENT, 'DATE_ADD', 'DATE_SUB', 'DATEADD'];
+  if (read === 'spanner') return sides;
+  // DATE_ADD, DATE_SUB, DATEADD, DATE_TRUNC and a sum or difference with an
+  // INTERVAL are dates or times, as is a function that returns one.
+  const dates = [...CURRENT, 'DATE_ADD', 'DATE_SUB', 'DATEADD', 'DATE_TRUNC'];
   const date = (s: any): boolean => isDate(s) || returned(s).some(date) ||
       dates.includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (v.left?.interval || v.right?.interval));
-  if (CONVERTING.has(read) && sides.some(date)) return `${op} of a date`;
-  if ((kind === 'mul' && !CONVERTING.has(read)) || read === 'spanner') return sides;
+  if (sides.some(date)) return `${op} of a date`;
+  if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
 }
 
+// The operand of `value`, a `+` or `-` of `kind` with an INTERVAL, to check
+// next, or a message, by `shape`, the dialect's entry in INTERVAL_SHAPES. Any
+// other value beside the INTERVAL may be a number, a string or another
+// INTERVAL, such as MySQL's `d + 1`, which is a number. BigQuery adds no month,
+// quarter or year to a TIMESTAMP, and its DATE_ADD adds no week, so import adds
+// one only to a DATE it can see.
+function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[]|string {
+  const op = OPERATORS[kind];
+  const first = kind === 'add' && !!value.left?.interval;
+  const [operand, added] = first ? [value.right, value.left.interval] :
+                                   [value.left, value.right?.interval];
+  if (!added) return `${op} with INTERVAL ${intervalText(value.left.interval)} first`;
+  const amount = numberText(added.this) ?? literalText(bare(added.this)?.literal);
+  if (amount === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
+  const unit = added.unit === null ? stringUnit(amount)?.unit :
+      added.unit?.type === 'simple' && /^-?\d+$/.test(amount) ?
+      String(added.unit.unit).toLowerCase() : undefined;
+  if (!unit || ![...shape.dateAdd, ...shape.operator].includes(unit)) {
+    const note = unit && shape.notes?.[unit];
+    return note ? `${op} INTERVAL ${intervalText(added)}, ${note}` :
+                  `INTERVAL ${intervalText(added)}`;
+  }
+  const b = bare(operand);
+  if (!b?.column && !shape.functions.includes(String(b?.function?.name).toUpperCase())) {
+    return `${op} of ${valueName(b)}`;
+  }
+  const timestampless = MONTH_PARTS.has(unit) || (unit === 'week' && shape.dateAdd.includes(unit));
+  if (timestampless && !isDate(operand)) {
+    return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
+  }
+  return [operand];
+}
+
 // The operands whose value `node`, a source value, can give as its own: the
-// operand of MIN or MAX, each operand of COALESCE or IFNULL, each result of IF
-// or CASE, and the first operand of NULLIF. The other nodes import translates
-// from MySQL or SQL Server compute a new value.
+// operand of MIN or MAX, each operand of COALESCE, IFNULL or NVL, each result of
+// IF or CASE, and the first operand of NULLIF. The other nodes import translates
+// compute a new value.
 function returned(node: any): any[] {
   const b = bare(node);
   return b?.min ? [b.min.this] : b?.max ? [b.max.this] : b?.coalesce ? b.coalesce.expressions :
+      b?.nvl ? [b.nvl.this, b.nvl.expression] :
       b?.if_func ? [b.if_func.true_value, b.if_func.false_value] :
       b?.case ? [...b.case.whens.map((w: any[]) => w[1]), b.case.else_] :
       String(b?.function?.name).toUpperCase() === 'NULLIF' ? [b.function.args[0]] : [];
@@ -1240,7 +1280,8 @@ function valueName(node: any): string {
   if (type) return `${article(type)} ${type}`;
   if (kind === 'cast' || kind === 'try_cast') return `a cast to ${typeName(castType(value.to), '')}`;
   if (kind === 'function') return String(value.name).toUpperCase();
-  return {column: 'a column', add: 'a sum', sub: 'a difference'}[kind] ?? 'an expression';
+  return {column: 'a column', add: 'a sum', sub: 'a difference', interval: 'an INTERVAL'}[kind] ??
+      'an expression';
 }
 
 // The unit of `value`, an engine interval such as INTERVAL '1' DAY or
@@ -1313,14 +1354,6 @@ function numberText(node: any): string|undefined {
 function isNumber(node: any): boolean {
   const b = bare(node);
   return numberText(b) !== undefined || !!(b?.sum ?? b?.count ?? b?.avg);
-}
-
-// Whether `node`, a source value, is an INTERVAL: an interval, or a sum or
-// difference of two.
-function isInterval(node: any): boolean {
-  const b = bare(node);
-  const sum = b?.add ?? b?.sub;
-  return !!b?.interval || (!!sum && isInterval(sum.left) && isInterval(sum.right));
 }
 
 // Whether `node`, a source value, is a DATE: CURRENT_DATE, CURDATE, a DATE
@@ -1420,8 +1453,8 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 // engine reports success.
 // It keeps TRIM(s), a decimal number such as 0.29, Snowflake's current date and
 // time, Snowflake's division and average, and a value plus an INTERVAL of days
-// from DATE_DAYS, which give another value or type in BigQuery. So the adapter
-// reads the engine's BigQuery output back and rewrites them.
+// or longer, which give another value or type in BigQuery. So the adapter reads
+// the engine's BigQuery output back and rewrites them.
 
 // The types BigQuery has for Snowflake's TIMESTAMP_NTZ, a wall-clock time.
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
@@ -1510,14 +1543,13 @@ function repairNode(node: any, read: string): unknown {
   if (node.data_type === 'custom' && SNOWFLAKE_TYPES[node.name]) {
     return SNOWFLAKE_TYPES[node.name];
   }
-  // A value plus or minus an INTERVAL of days, from a dialect in DATE_DAYS. A
-  // sum may name the INTERVAL first. A sum or difference of intervals is an
-  // interval.
-  const sum = DATE_DAYS.has(read) ? node.add ?? node.sub : undefined;
-  const days = (n: any) => String(n?.interval?.unit?.unit).toLowerCase() === 'day';
-  const operands = !sum || (isInterval(sum.left) && isInterval(sum.right)) ? undefined :
-      days(sum.right) ? [sum.left, sum.right] :
-      node.add && days(sum.left) ? [sum.right, sum.left] : undefined;
+  // A value plus or minus an INTERVAL of a unit in the dialect's `dateAdd` in
+  // INTERVAL_SHAPES. A sum may name the INTERVAL first.
+  const shape: IntervalShape|undefined = INTERVAL_SHAPES[read];
+  const sum = node.add ?? node.sub;
+  const dated = (n: any) => !!shape?.dateAdd.includes(String(n?.interval?.unit?.unit).toLowerCase());
+  const operands = !sum ? undefined : dated(sum.right) ? [sum.left, sum.right] :
+      node.add && dated(sum.left) ? [sum.right, sum.left] : undefined;
   if (operands) {
     const call = sqlExpressionTree(node.add ? 'DATE_ADD(x, y)' : 'DATE_SUB(x, y)', 'BIGQUERY');
     return {function: {...call.function, args: operands}};
@@ -1537,10 +1569,12 @@ function repairNode(node: any, read: string): unknown {
     const big = decimal[1].replace(/^0+/, '').length > 29 || decimal[2].length > 9;
     return {var: {this: `${big ? 'BIGNUMERIC' : 'NUMERIC'} '${node.literal.value}'`}};
   }
+  // An interval string such as '2 weeks', which BigQuery reads only as
+  // INTERVAL 2 WEEK.
   const text = node.interval?.unit === null &&
       node.interval.this?.literal?.literal_type === 'string' &&
       stringUnit(node.interval.this.literal.value);
-  if (text && PARTS[text.unit]) {
+  if (text && shape && [...shape.dateAdd, ...shape.operator].includes(text.unit)) {
     return {
       interval: {
         this: {literal: {literal_type: 'number', value: text.amount}},
