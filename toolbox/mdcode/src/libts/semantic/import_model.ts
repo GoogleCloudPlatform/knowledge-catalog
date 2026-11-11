@@ -66,10 +66,11 @@ export interface ImportSemanticModelOptions {
    */
   fileName?: string;
   /**
-   * Whether writing the model file `fileName` replaces the input file. When
-   * it does and the written file has a `GOOGLE` block, a message in a
-   * third-party import that names an import command names one with
-   * `--input first-party`, which reads that file.
+   * Whether the import writes the model file `fileName` over the input file.
+   * An import that stops writes nothing over it. When it does and the written
+   * file has a `GOOGLE` block, a message in a third-party import that names
+   * an import command names one with `--input first-party`, which reads that
+   * file.
    */
   overwritesInput?: (fileName: string) => Promise<boolean>;
   /**

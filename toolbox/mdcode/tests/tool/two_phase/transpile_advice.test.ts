@@ -12,9 +12,9 @@ import * as path from 'node:path';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import * as engine from '../../../src/libts/semantic/import_model';
-import {importModel, profiles} from '../../../src/tool/commands';
+import {ImportCommandOptions, importModel, profiles} from '../../../src/tool/commands';
 
-import {bqTable, CTX, CUSTOMER, runPush, Scope, SPANNER_CUSTOMER, writeScope} from './harness';
+import {bqTable, CTX, CUSTOMER, runPush, Scope, SPANNER, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const snowflake = (text: string) =>
     ({dialects: [{dialect: 'SNOWFLAKE', expression: text}]});
@@ -167,13 +167,81 @@ describe('the advice to add a BigQuery text', () => {
         expect([...after.errors, ...after.warnings].join('\n')).not.toContain(COMMAND);
       });
 
-  // Runs `kcmd profiles` with `flags`. Gives its exit code, the lines it
-  // prints and how many times it ran the import engine.
-  const report = async (flags: Parameters<typeof profiles>[0]) => {
+  // A vanilla model file in the entry group, whose relationship description
+  // import moves into a GOOGLE block, and whose field code has only
+  // Snowflake SQL. A profile file sits beside it.
+  const VANILLA = 'catalog/EntryGroups/commerce_eg/commerce.yaml';
+  const SIBLING = 'catalog/EntryGroups/commerce_eg/commerce.profile.prod.yaml';
+  const vanilla = () => writeScope(dir, {noModel: true, files: {
+    'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: Customer
+        source: ${bqTable('customer')}
+        primary_key: [key]
+        fields:
+          - {name: key, expression: {dialects: [{dialect: BIGQUERY, expression: c_key}]}}
+          - {name: code, expression: {dialects: [{dialect: SNOWFLAKE, expression: 'IFF(TRUE, c_key, 0)'}]}}
+      - name: Orders
+        source: ${bqTable('orders')}
+        primary_key: [id]
+        fields:
+          - {name: id, expression: {dialects: [{dialect: BIGQUERY, expression: o_id}]}}
+          - {name: cust, expression: {dialects: [{dialect: BIGQUERY, expression: o_cust}]}}
+    relationships:
+      - {name: placed, from: Orders, to: Customer, from_columns: [cust], to_columns: [key], description: d}
+`,
+    'commerce.profile.prod.yaml': 'name: prod\n',
+  }});
+  // A third-party import over its input that stops writes nothing, so its
+  // advice names that import with --transpile. One that writes names the
+  // import of the file it writes, with the profile files beside it.
+  test.each([
+    ['an in-place import a leftover profile file stops', {flavor: 'ossie'}, 1,
+     "'kcmd import <file> --flavor ossie --transpile'",
+     `the import does not write ${SIBLING}, which would stay beside the model; pass --out ` +
+         '<path> to write elsewhere, or first remove any the model no longer uses',
+     {flavor: 'ossie', transpile: true}],
+    ['an import over its input beside a profile file', {flavor: 'ossie', out: VANILLA}, 0,
+     "'kcmd import <file> --input first-party --flavor ossie --transpile'",
+     "Profile file 'commerce.profile.prod.yaml' sits beside 'commerce.yaml', which is a " +
+         '0.2.0.dev0 document; sibling profile files are Google-flavor only, and a ' +
+         '0.2.0.dev0 model keeps its profiles in its GOOGLE block',
+     {flavor: 'ossie', input: 'first-party', transpile: true, out: VANILLA}],
+  ] as Array<[string, ImportCommandOptions, number, string, string, ImportCommandOptions]>)(
+      '%s names the command that works once the error is fixed',
+      async (_, options, code, command, error, suggested) => {
+        vanilla();
+        const warnings: string[] = [];
+        spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+          warnings.push(a.join(' '));
+        });
+        spyOn(console, 'error').mockImplementation(() => {});
+        spyOn(console, 'log').mockImplementation(() => {});
+        expect(await importModel(VANILLA, options)).toBe(code);
+        expect(warnings).toContain("Warning: field 'Customer.code': no 'BIGQUERY' or " +
+            "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; " +
+            `give it one, or add one with ${command} after fixing this: ${error}`);
+        mock.restore();
+        fs.rmSync(path.join(dir, SIBLING));
+        spyOn(console, 'warn').mockImplementation(() => {});
+        spyOn(console, 'log').mockImplementation(() => {});
+        expect(await importModel(VANILLA, suggested)).toBe(0);
+        mock.restore();
+        const after = await runPush({}, {validateOnly: true});
+        expect(after.code).toBe(0);
+        expect([...after.errors, ...after.warnings].join('\n')).not.toContain('kcmd import');
+      });
+
+  // Runs `kcmd profiles` with `flags`, where reading a Spanner database
+  // answers `status`. Gives its exit code, the lines it prints and how many
+  // times it ran the import engine.
+  const report = async (flags: Parameters<typeof profiles>[0], status = 200) => {
     mock.restore();
     spyOn(ApiContext, 'default').mockReturnValue(CTX);
     spyOn(SpannerClient.prototype, 'getDatabase').mockResolvedValue(
-        {status: 200, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
+        {status, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
     const imports = spyOn(engine, 'importSemanticModelYaml');
     const lines: string[] = [];
     for (const stream of ['error', 'warn', 'log'] as const) {
@@ -187,12 +255,24 @@ describe('the advice to add a BigQuery text', () => {
     return {code, lines, runs};
   };
 
-  test('names the same error in kcmd profiles --print-store', async () => {
-    writeScope(dir, BINDING_TEXT);
-    const {code, lines} = await report({printStore: true, profile: 'prod'});
-    expect(code).toBe(1);
-    expect(lines).toContain(BINDING_TEXT_ERROR);
-  });
+  // --print-store reads on past a Spanner database it cannot read, as the
+  // import does.
+  test.each([
+    ['', BINDING_TEXT, 200],
+    [' beside a Spanner database it cannot read',
+     {...BINDING_TEXT, profiles: {...BINDING_TEXT.profiles, ops: {entities: {
+       Customer: {...CUSTOMER, source: SPANNER_CUSTOMER,
+                  fields: [...CUSTOMER.fields, {name: 'code', expression: 'c_code'}]},
+       Orders: {...ORDERS, source: `${SPANNER}/tables/Orders`},
+     }}}},
+     404],
+  ] as Array<[string, Scope, number]>)(
+      'names the same error in kcmd profiles --print-store%s', async (_, scope, status) => {
+        writeScope(dir, scope);
+        const {code, lines} = await report({printStore: true, profile: 'prod'}, status);
+        expect(code).toBe(1);
+        expect(lines).toContain(BINDING_TEXT_ERROR);
+      });
 
   // Only a message about a BigQuery table gives the advice, so a command runs
   // the import only for a model file with a BigQuery table.

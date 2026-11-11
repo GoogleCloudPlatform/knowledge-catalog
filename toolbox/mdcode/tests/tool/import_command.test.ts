@@ -131,7 +131,9 @@ describe('kcmd import', () => {
           [[model(), {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
             listEntries: expect.any(Function), readDialects: expect.any(Function),
-            overwritesInput: expect.any(Function), transpileOutcome: expect.any(Function),
+            overwritesInput: expect.any(Function),
+            // An import with --transpile runs no second import for its advice.
+            ...options.transpile ? {} : {transpileOutcome: expect.any(Function)},
           }]]);
       expect(ApiContext.default).not.toHaveBeenCalled();
     });
@@ -256,36 +258,6 @@ describe('kcmd import', () => {
     expect(warnings).toContainEqual(
         expect.stringContaining("add one with 'kcmd import <file> --flavor google --transpile'"));
     expect(warnings.join('\n')).not.toContain('--input first-party');
-  });
-
-  // An in-place import that a leftover profile file stops names that error in
-  // its advice, since the import the advice suggests reads the file this one
-  // would write. Once the file is gone, the import writes, and following the
-  // advice clears it.
-  test('an in-place import a leftover profile file stops names that error in its advice', async () => {
-    workspace();
-    const input = path.join(GROUP, 'retail.yaml');
-    const leftover = path.join(GROUP, 'retail.profile.prod.yaml');
-    write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') + DESCRIBED);
-    write(leftover, 'name: prod\n');
-    const refusal = `the import does not write ${leftover}, which would stay beside the ` +
-        'model; pass --out <path> to write elsewhere, or first remove any the model no ' +
-        'longer uses';
-    const advice = "Warning: field 'orders.order_id': no 'BIGQUERY' or 'ANSI_SQL' dialect, " +
-        "so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
-        "one with 'kcmd import <file> --input first-party --flavor ossie --transpile'";
-    expect(await importModel(input, {flavor: 'ossie'})).toBe(1);
-    expect(warnings).toContain(`${advice} after fixing this: ${refusal}`);
-    expect(errors).toEqual([`Error: ${refusal}.`]);
-    fs.rmSync(path.join(dir, leftover));
-    warnings = [];
-    expect(await importModel(input, {flavor: 'ossie'})).toBe(0);
-    expect(warnings).toContain(advice);
-    expect(await importModel(input, {flavor: 'ossie', input: 'first-party', transpile: true}))
-        .toBe(0);
-    warnings = [];
-    expect(await importModel(input, {flavor: 'ossie', input: 'first-party'})).toBe(0);
-    expect(warnings.join('\n')).not.toContain("field 'orders.order_id': no 'BIGQUERY'");
   });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');

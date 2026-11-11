@@ -524,8 +524,9 @@ function transpilingModel(
 }
 
 // What transpileOutcomes gives for each model document of the semantic-model
-// scope `snapshot`, or undefined for another scope or when a table's dialect
-// cannot be read, which the caller reports.
+// scope `snapshot`, or undefined for another scope. The import reads each
+// table's dialect as `kcmd import` does, so a table whose dialect cannot be
+// read gives the error or warning the import gives.
 async function scopeTranspileOutcomes(
     ctx: context.ApiContext,
     snapshot: kcmd.CatalogSnapshot): Promise<Map<string, string|null>|undefined> {
@@ -546,7 +547,6 @@ async function scopeTranspileOutcomes(
     }
   }
   const read = await readDialects(ctx, texts);
-  if (read.errors.length) return undefined;
   return transpileOutcomes(
       ctx, docs, profileDocs, layout,
       {sourceDialects: read.dialects, sourceDatabases: read.databases}, read);
@@ -2723,10 +2723,12 @@ const YAML_FILE = /\.ya?ml$/i;
 // Writes nothing when the engine reports an error. Returns a process exit code.
 export async function importModel(
     file: string, options: ImportCommandOptions = {}): Promise<number> {
-  const plan = await planImport(file, options, {
-    // The advice to add a BigQuery text names the first error the import it
-    // suggests would stop on: this import again with `--transpile`, or, of
-    // the file this import writes over its input, `--input first-party`.
+  // The advice to add a BigQuery text names the first error the import it
+  // suggests would stop on: this import again with `--transpile`, or, of
+  // the file this import writes over its input, `--input first-party`. An
+  // import with `--transpile` has given every text it can translate a
+  // BigQuery text, so it runs no second import.
+  const plan = await planImport(file, options, options.transpile ? {} : {
     transpileOutcome: async (written, readDialects, api) => {
       const followed = await planImport(
           file,
@@ -2744,6 +2746,30 @@ export async function importModel(
   return 0;
 }
 
+// The input of `kcmd import` held in memory: the text of the model file and
+// its profile files.
+interface ImportSource {
+  text: string;
+  profileFiles: SerializedFile[];
+}
+
+// What planImport reads, and the import it runs for the advice to add a
+// BigQuery text.
+interface ImportIo {
+  source?: ImportSource;
+  api?: () => context.ApiContext;
+  readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  transpileOutcome?:
+      (written: ImportSource|undefined,
+       readDialects: (texts: string[]) => Promise<SourceDialects>,
+       api: () => context.ApiContext) => Promise<string|null>;
+}
+
+// The warnings `kcmd import` prints, then the errors it stops on, or each
+// file it writes, where.
+type ImportPlan = {warnings: string[]; errors: string[]}|
+                  {warnings: string[]; writes: SerializedFile[]};
+
 // What `kcmd import <file>` with `options` does, writing nothing: the warnings
 // it prints, then the errors it stops on, or each file it writes, where.
 // `io.source` reads the input from memory in place of `file`: the text of
@@ -2751,18 +2777,46 @@ export async function importModel(
 // calls services with, by default one made when first needed. `io.readDialects`
 // reads each table's dialect. `io.transpileOutcome` gives the first error the
 // import with `--transpile` would stop on, of the input or, given, of the
-// file this import writes, for the advice to add a BigQuery text.
+// file this import writes and the profile files beside it then, for the
+// advice to add a BigQuery text.
 async function planImport(
-    file: string, options: ImportCommandOptions, io: {
-      source?: {text: string; profileFiles: SerializedFile[]};
-      api?: () => context.ApiContext;
-      readDialects?: (texts: string[]) => Promise<SourceDialects>;
-      transpileOutcome?:
-          (written: {text: string; profileFiles: SerializedFile[]}|undefined,
-           readDialects: (texts: string[]) => Promise<SourceDialects>,
-           api: () => context.ApiContext) => Promise<string|null>;
-    } = {}): Promise<{warnings: string[]; errors: string[]}|
-                     {warnings: string[]; writes: SerializedFile[]}> {
+    file: string, options: ImportCommandOptions,
+    io: ImportIo = {}): Promise<ImportPlan> {
+  // One context, made on first use, and each table's dialect read once for
+  // the command.
+  let ctx: context.ApiContext|undefined;
+  const api = io.api ?? (() => ctx ??= context.ApiContext.default());
+  let dialectsRead: Promise<SourceDialects>|undefined;
+  const once = {
+    ...io,
+    api,
+    readDialects: (texts: string[]) => dialectsRead ??=
+        (io.readDialects ?? (t => readDialects(api(), t)))(texts),
+  };
+  // A third-party import that writes a GOOGLE block over its input names
+  // import commands that read the file it writes. An import that stops
+  // writes nothing, so it runs again and names commands that read its input.
+  let readsWritten = false;
+  const plan = await planOneImport(file, options, {
+    ...once,
+    overwrites: over => {
+      readsWritten ||= over;
+      return over;
+    },
+  });
+  return 'errors' in plan && readsWritten ?
+      planOneImport(file, options, {...once, overwrites: () => false}) :
+      plan;
+}
+
+// One run of planImport's import. `io.overwrites` is told whether the import
+// writes its model file over its input, and gives the answer its messages
+// assume.
+async function planOneImport(
+    file: string, options: ImportCommandOptions,
+    io: ImportIo&Required<Pick<ImportIo, 'api'|'readDialects'>>&
+    {overwrites: (over: boolean) => boolean}): Promise<ImportPlan> {
+  const {api, readDialects: readDialectsOnce} = io;
   const warnings: string[] = [];
   const fail = (...errors: string[]) => ({warnings, errors});
   const {input = 'third-party', flavor} = options;
@@ -2798,9 +2852,6 @@ async function planImport(
                  fileName: f,
                  content: fs.readFileSync(path.join(dir, f), 'utf8'),
                }));
-  // One context, made on first use.
-  let ctx: context.ApiContext|undefined;
-  const api = io.api ?? (() => ctx ??= context.ApiContext.default());
   // The workspace's layout, read once, when the files go into it.
   let layoutRead: Promise<SemanticModelLayout|string>|undefined;
   const layoutOf = () => layoutRead ??= workspaceLayout(api);
@@ -2819,10 +2870,12 @@ async function planImport(
     const target = await modelTarget(fileName);
     return !!target && path.resolve(target) === path.resolve(file);
   };
-  // Each table's dialect is read once for the run.
-  let dialectsRead: Promise<SourceDialects>|undefined;
-  const readDialectsOnce = (texts: string[]) => dialectsRead ??=
-      (io.readDialects ?? (t => readDialects(api(), t)))(texts);
+  // The profile files beside the input once the import writes the profile
+  // files `written` beside it, each in place of one of the same name.
+  const besideWritten = (written: SerializedFile[]) => [
+    ...profileFiles.map(f => written.find(w => w.fileName === f.fileName) ?? f),
+    ...written.filter(w => !profileFiles.some(f => f.fileName === w.fileName)),
+  ];
   const result = await importSemanticModelYaml(
       io.source?.text ?? fs.readFileSync(file, 'utf8'), {
         flavor: flavor as 'ossie' | 'google',
@@ -2839,11 +2892,13 @@ async function planImport(
             new dataplex.CatalogClient(api()).listEntries(
                 project, location, entryGroup),
         readDialects: readDialectsOnce,
-        overwritesInput,
+        overwritesInput: async fileName =>
+            io.overwrites(await overwritesInput(fileName)),
         // The advice names the first error of the import it suggests: this
         // import again with `--transpile`, or, when the advice reads the file
         // this import writes over its input, that file with `--input
-        // first-party`.
+        // first-party`. That import reads the profile files beside it once
+        // this one writes its own.
         ...io.transpileOutcome ?
             {
               transpileOutcome:
@@ -2851,7 +2906,7 @@ async function planImport(
                       io.transpileOutcome!(
                           readsWritten ? {
                             text: files[0].content,
-                            profileFiles: files.slice(1),
+                            profileFiles: besideWritten(files.slice(1)),
                           } :
                                          undefined,
                           readDialectsOnce, api),
