@@ -83,18 +83,20 @@ export function catalogForm(
  * builds for it from the catalog. Each part `base` and `pulled` agree on keeps
  * its local text, comments and form, and so does each part they both leave
  * out. Each part that changes is written in pull's form, except inside the
- * JSON `data` of a GOOGLE block, which keeps its layout (see `updatedJson`).
- * The local file must parse.
+ * JSON `data` of a GOOGLE block, which keeps its layout (see `updatedJson`)
+ * when `jsonLayout` is set, or else is the catalog's when it changes. The local
+ * file must parse.
  */
 export function updatedText(
-    local: string, base: string, pulled: string): string {
+    local: string, base: string, pulled: string, jsonLayout = true): string {
   const {document, text} = parseForUpdate(local);
   // A plain copy, so that an alias and its anchor are two values.
   const value = plainCopy(document.toJS());
   const links = linkNodes(value, document.contents);
   const parse = (t: string) => yaml.parse(t, YAML_OPTIONS);
   return updateText(
-      text, document, merged(value, parse(base), parse(pulled)), links);
+      text, document, merged(value, parse(base), parse(pulled), jsonLayout),
+      links);
 }
 
 // The JSON object or list `value` holds when it is a string, or undefined.
@@ -112,12 +114,15 @@ function jsonIn(value: unknown): object|undefined {
 // the yaml library reads `text` as another value, as with a lone carriage
 // return. Each part whose value stays keeps its text, and a changed scalar is
 // written in place. A removed key or item goes with its comma. A new one goes
-// after the entry it follows in `value`, with its container's separator, and
-// is written like the entry beside it: over lines as `JSON.stringify` indents
-// it when that entry is written so, and on one line otherwise. A list whose
-// entries change order is written again in the new order, each entry keeping
-// its own text. A container whose entries cannot be matched one to one, or
-// that loses every entry, is written again, as is a value that changes shape.
+// after the entry it follows in `value`, with its container's separator. A
+// new item copies the text of the item beside it: its brackets and the gaps
+// between its entries, with each nested value written like that item's value
+// at the same key, or like its first item. A new key takes the gap after the
+// key beside it. A list whose entries change order is
+// written again in the new order, each entry keeping its own text. A container
+// whose entries cannot be matched one to one, or that loses every entry, is
+// written again, as is a value that changes shape. An empty list or object
+// that gains entries takes its container's layout.
 function updatedJson(text: string, value: unknown): string|undefined {
   const doc = yaml.parseDocument(text);
   if (doc.errors.length || !isDeepStrictEqual(doc.toJS(), JSON.parse(text))) {
@@ -125,86 +130,152 @@ function updatedJson(text: string, value: unknown): string|undefined {
   }
   const edits: Array<[number, number, string]> = [];
   const rangeOf = (node: yaml.Node) => node.range!;
-  // The separators the text writes between a key and its value, and between
-  // two entries on one line: those of the first pair and the first one-line
-  // gap between two entries.
+  // Where an entry's text starts and ends: a pair's key and value, or an item.
+  const startOf = (item: unknown) =>
+      rangeOf((yaml.isPair(item) ? item.key : item) as yaml.Node)[0];
+  const endOf = (item: unknown) =>
+      rangeOf((yaml.isPair(item) ? item.value : item) as yaml.Node)[1];
+  // The separators the text writes between a key and its value, between two
+  // entries on one line, and inside the brackets of a list or object on one
+  // line: those of the first pair written on one line, the first one-line gap
+  // between two entries, and the first one-line list and object.
   let colon: string|undefined;
   let comma: string|undefined;
+  const pad: {map?: string, seq?: string} = {};
   yaml.visit(doc, {
     Pair: (_, {key, value}) => {
-      if (yaml.isNode(key) && yaml.isNode(value)) {
-        colon ??= text.slice(rangeOf(key)[1], rangeOf(value)[0]);
-      }
+      if (!yaml.isNode(key) || !yaml.isNode(value)) return;
+      const gap = text.slice(rangeOf(key)[1], rangeOf(value)[0]);
+      if (!gap.includes('\n')) colon ??= gap;
     },
-    Collection: (_, {items}) => {
-      const at = (item: unknown, end: 0|1) => rangeOf(
-          (yaml.isPair(item) ? (end ? item.value : item.key) : item) as
-          yaml.Node)[end];
+    Collection: (_, node) => {
+      const {items} = node;
       for (let i = 1; i < items.length && comma === undefined; i++) {
-        const gap = text.slice(at(items[i - 1], 1), at(items[i], 0));
+        const gap = text.slice(endOf(items[i - 1]), startOf(items[i]));
         if (!gap.includes('\n')) comma = gap;
+      }
+      if (items.length && !spansLines(text, node)) {
+        pad[yaml.isMap(node) ? 'map' : 'seq'] ??=
+            text.slice(rangeOf(node)[0] + 1, startOf(items[0]));
       }
     },
   });
-  const [kv, sep1] = [colon ?? ': ', comma ?? ', '];
+  const kv = colon ?? ': ';
+  const sep1 = comma ?? (kv === ':' ? ',' : ', ');
   const flat = (v: unknown): string => Array.isArray(v) ?
-      `[${v.map(flat).join(sep1)}]` :
+      (v.length ? `[${pad.seq ?? ''}${v.map(flat).join(sep1)}${pad.seq ?? ''}]` :
+                  '[]') :
       isRecord(v) ?
-      `{${Object.entries(v).map(([k, x]) => JSON.stringify(k) + kv + flat(x))
-              .join(sep1)}}` :
+      (Object.keys(v).length ?
+           `{${pad.map ?? ''}${
+               Object.entries(v)
+                   .map(([k, x]) => JSON.stringify(k) + kv + flat(x))
+                   .join(sep1)}${pad.map ?? ''}}` :
+           '{}') :
       JSON.stringify(v);
   const indentAt = (at: number) => {
     const start = text.lastIndexOf('\n', at - 1) + 1;
     return {column: at - start, indent: /^[ \t]*/.exec(text.slice(start))![0]};
   };
-  // `v` written over lines as `JSON.stringify` indents it by `step`, from
-  // column `col`, when `lines` is set, or else on one line.
-  const json = (v: unknown, col: number, step: number, lines: boolean) =>
+  // `v` written over lines as `JSON.stringify` indents it by `step`, after
+  // the indentation `indent`, when `lines` is set, or else on one line.
+  const json = (v: unknown, indent: string, step: string, lines: boolean) =>
       lines && typeof v === 'object' && v !== null ?
-      JSON.stringify(v, null, step).replace(/\n/g, `\n${' '.repeat(col)}`) :
+      JSON.stringify(v, null, step).replace(/\n/g, `\n${indent}`) :
       flat(v);
   // The indentation of the line `node` starts on, the indent step of its
   // entries, and whether `node` is written as `JSON.stringify` indents it.
   const layout = (node: yaml.Node) => {
     const [from, to] = rangeOf(node);
-    const indent = indentAt(from).indent.length;
+    const {indent} = indentAt(from);
     const items = yaml.isCollection(node) ? node.items : [];
-    const first = yaml.isPair(items[0]) ? items[0].key : items[0];
-    const step = yaml.isNode(first) ?
-        Math.max(indentAt(rangeOf(first)[0]).column - indent, 1) :
-        2;
+    const child = items.length ? indentAt(startOf(items[0])) : undefined;
+    const step = child && child.column === child.indent.length &&
+            child.indent.startsWith(indent) &&
+            child.indent.length > indent.length ?
+        child.indent.slice(indent.length) :
+        '  ';
     const lines = spansLines(text, node) &&
         text.slice(from, to) === json(node.toJS(doc), indent, step, true);
     return {indent, step, lines};
   };
-  // `node` written again to hold `v`.
-  const write = (node: yaml.Node, v: unknown) => {
-    const {indent, step} = layout(node);
-    edits.push([...rangeOf(node).slice(0, 2) as [number, number],
-                json(v, indent, step, spansLines(text, node))]);
+  // `x` written like the list or object `near`: its brackets, and the gaps
+  // after its opening bracket, between its entries, after each key and before
+  // its closing bracket. Each nested value is written like `near`'s value at
+  // the same key, or like its first item. Undefined when `near` is not a list
+  // or object with entries, of the kind `x` is.
+  const like = (x: unknown, near: yaml.Node|undefined): string|undefined => {
+    const isMap = yaml.isMap(near) && isRecord(x);
+    if (!near || !isMap && !(yaml.isSeq(near) && Array.isArray(x))) {
+      return undefined;
+    }
+    const items = (near as yaml.YAMLMap|yaml.YAMLSeq).items as unknown[];
+    if (!items.length) return undefined;
+    const [from, to] = rangeOf(near);
+    const open = text.slice(from + 1, startOf(items[0]));
+    const close = text.slice(endOf(items[items.length - 1]), to - 1);
+    const sep = items.length > 1 ? text.slice(endOf(items[0]), startOf(items[1])) :
+        open.includes('\n')      ? `,${open}` :
+                                   sep1;
+    const nested = (v: unknown, n: yaml.Node|undefined) => like(v, n) ??
+        (open.includes('\n') ?
+             json(v, indentAt(startOf(items[0])).indent, layout(near).step,
+                  layout(near).lines) :
+             flat(v));
+    const pairs = items as yaml.Pair[];
+    const entries = isMap ?
+        Object.entries(x).map(([k, v]) => {
+          const pair = pairs.find(
+              p => String((p.key as yaml.Scalar).value) === k) ?? pairs[0];
+          const gap = text.slice(
+              rangeOf(pair.key as yaml.Node)[1],
+              rangeOf(pair.value as yaml.Node)[0]);
+          return JSON.stringify(k) + gap +
+              nested(v, pair === pairs[0] &&
+                                String((pair.key as yaml.Scalar).value) !== k ?
+                         undefined :
+                         pair.value as yaml.Node);
+        }) :
+        (x as unknown[]).map(v => nested(v, items[0] as yaml.Node));
+    const [l, r] = isMap ? ['{', '}'] : ['[', ']'];
+    return entries.length ? l + open + entries.join(sep) + close + r : l + r;
   };
-  const edit = (node: yaml.Node, v: unknown): void => {
+  // `node` written again to hold `v`. An empty list or object takes the
+  // layout of `parent`, its container.
+  const write = (node: yaml.Node, v: unknown, parent?: yaml.Node) => {
+    const empty = yaml.isCollection(node) && !node.items.length;
+    const {indent, step, lines} = layout(empty && parent ? parent : node);
+    edits.push([
+      ...rangeOf(node).slice(0, 2) as [number, number],
+      json(v, empty ? indentAt(rangeOf(node)[0]).indent : indent, step,
+           empty && parent ? lines : spansLines(text, node)),
+    ]);
+  };
+  const edit = (node: yaml.Node, v: unknown, parent?: yaml.Node): void => {
     if (isDeepStrictEqual(node.toJS(doc), v)) return;
     const isMap = yaml.isMap(node) && isRecord(v);
     if (!isMap && !(yaml.isSeq(node) && Array.isArray(v))) {
-      return write(node, v);
+      return write(node, v, parent);
     }
     // Each entry of the node, with its key, where its text starts and ends,
-    // and its value's node.
+    // its value's node, and the gap after its key.
     const items = (node as yaml.YAMLMap|yaml.YAMLSeq).items.map(item => {
       const n = (isMap ? (item as yaml.Pair).value : item) as yaml.Node;
       return {
         key: isMap ? String(((item as yaml.Pair).key as yaml.Scalar).value) :
                      itemKey(n.toJS(doc)),
-        from: rangeOf(isMap ? (item as yaml.Pair).key as yaml.Node : n)[0],
+        from: startOf(item),
         to: rangeOf(n)[1],
         node: n,
+        gap: isMap ? text.slice(rangeOf((item as yaml.Pair).key as yaml.Node)[1],
+                                rangeOf(n)[0]) :
+                     '',
       };
     });
     const entries: Array<[string, unknown]> = isMap ?
         Object.entries(v) :
         (v as unknown[]).map(x => [itemKey(x), x]);
-    if (!items.length || !entries.length) return write(node, v);
+    if (!items.length || !entries.length) return write(node, v, parent);
     const keys = entries.map(([k]) => k);
     const {indent, step, lines} = layout(node);
     // The first entry's line, which it starts when the entries are on their
@@ -213,12 +284,15 @@ function updatedJson(text: string, value: unknown): string|undefined {
     const sep = items.length > 1 ? text.slice(items[0].to, items[1].from) :
         first.column === first.indent.length ? `,\n${first.indent}` :
                                                sep1;
-    // `x` as a new entry, written like the entry `near` beside it.
-    const fresh = (k: string, x: unknown, near: yaml.Node) => {
-      const like = layout(near);
-      return (isMap ? JSON.stringify(k) + kv : '') +
-          (like.lines ? json(x, like.indent, like.step, true) :
-                        json(x, indent + step, step, lines));
+    // `x` as a new entry. A new item is written like the item `near` beside
+    // it. A new key takes the gap after `near`'s key, and its value, which
+    // `near` lacks, is written like its container.
+    const fresh = (k: string, x: unknown, near: (typeof items)[number]) => {
+      const nearby = layout(near.node);
+      return (isMap ? JSON.stringify(k) + near.gap : '') +
+          ((isMap ? undefined : like(x, near.node)) ??
+           (nearby.lines ? json(x, nearby.indent, nearby.step, true) :
+                           json(x, indent + step, step, lines)));
     };
     const kept = items.filter(i => keys.includes(i.key));
     const unique = (ks: string[]) => new Set(ks).size === ks.length;
@@ -230,9 +304,9 @@ function updatedJson(text: string, value: unknown): string|undefined {
       // keeping its own text with its changes made.
       const texts = entries.map(([k, x]) => {
         const item = matched ? items.find(i => i.key === k) : undefined;
-        if (!item) return fresh(k, x, items[0].node);
+        if (!item) return fresh(k, x, items[0]);
         const mark = edits.length;
-        edit(item.node, x);
+        edit(item.node, x, node);
         return spliced(
             text.slice(item.from, item.to),
             edits.splice(mark).map(
@@ -257,11 +331,11 @@ function updatedJson(text: string, value: unknown): string|undefined {
     for (const [k, x] of entries) {
       const item = items.find(i => i.key === k);
       if (item) {
-        edit(item.node, x);
+        edit(item.node, x, node);
         after = item;
         continue;
       }
-      const entry = fresh(k, x, (after ?? items[0]).node);
+      const entry = fresh(k, x, after ?? items[0]);
       edits.push(after ? [after.to, after.to, sep + entry] :
                          [items[0].from, items[0].from, entry + sep]);
     }
@@ -277,19 +351,25 @@ function updatedJson(text: string, value: unknown): string|undefined {
 //
 // `json` marks the `data` of a GOOGLE block, the JSON string that holds a
 // vanilla model's deployments and profiles, which pull writes from its value.
-// Any other string, such as another vendor's `data`, comes back as the catalog
-// holds it.
+// It keeps its layout when `jsonLayout` is set. Any other string, such as
+// another vendor's `data`, comes back as the catalog holds it.
 function merged(
-    local: unknown, base: unknown, pulled: unknown, json = false): unknown {
+    local: unknown, base: unknown, pulled: unknown, jsonLayout: boolean,
+    json = false): unknown {
   if (isDeepStrictEqual(base, pulled)) return local;
   const [l, b, p] = [local, base, pulled].map(jsonIn);
   if (json && l !== undefined && b !== undefined && p !== undefined) {
-    return updatedJson(local as string, merged(l, b, p)) ?? pulled;
+    // A string that ends in a blank line is written double-quoted, since a
+    // `|+` block would take the blank lines after it, so a changed `data`
+    // ends in one line break and stays a block.
+    return updatedJson(local as string, merged(l, b, p, jsonLayout))
+               ?.replace(/\n\s*$/, '\n') ??
+        pulled;
   }
   if (isRecord(local) && isRecord(base) && isRecord(pulled)) {
     const entries = mergedEntries(
         Object.entries(local), Object.entries(base), Object.entries(pulled),
-        false, isGoogleVendor(local.vendor_name));
+        false, jsonLayout, jsonLayout && isGoogleVendor(local.vendor_name));
     return Object.fromEntries(entries!);
   }
   if (Array.isArray(local) && Array.isArray(base) && Array.isArray(pulled)) {
@@ -302,8 +382,8 @@ function merged(
       const keys = itemKeys(items, repeated);
       return items.map((v, i) => [keys[i], v] as const);
     };
-    const entries =
-        mergedEntries(keyed(local), keyed(base), keyed(pulled), true);
+    const entries = mergedEntries(
+        keyed(local), keyed(base), keyed(pulled), true, jsonLayout);
     return entries ? entries.map(([, v]) => v) : pulled;
   }
   return pulled;
@@ -326,7 +406,7 @@ function mergedEntries<K>(
     local: ReadonlyArray<readonly [K, unknown]>,
     base: ReadonlyArray<readonly [K, unknown]>,
     pulled: ReadonlyArray<readonly [K, unknown]>, isList: boolean,
-    googleBlock = false): Array<[K, unknown]>|undefined {
+    jsonLayout: boolean, googleBlock = false): Array<[K, unknown]>|undefined {
   const [l, b, p] = [local, base, pulled].map(e => new Map(e));
   if (isList &&
       (l.size < local.length || b.size < base.length ||
@@ -354,6 +434,7 @@ function mergedEntries<K>(
     !l.has(k)              ? p.get(k) :
         !b.has(k) && !p.has(k) ? l.get(k) :
                                  merged(l.get(k), b.get(k), p.get(k),
+                                        jsonLayout,
                                         googleBlock && k === 'data'),
   ]);
 }

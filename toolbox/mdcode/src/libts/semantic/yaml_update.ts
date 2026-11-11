@@ -424,7 +424,12 @@ function setScalar(
   const [from, to, lead] = rangeOf(u, node);
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
-  let s = scalarText(u, value, slot.col, slot.flow, type);
+  // A double-quoted string that writes its line breaks as `\n` escapes on one
+  // line, as PyYAML does, keeps writing them so.
+  const written = u.text.slice(node.range![0], node.range![1]);
+  const escaped = type === 'QUOTE_DOUBLE' && written.includes('\\n') &&
+      !written.includes('\n');
+  let s = scalarText(u, value, slot.col, slot.flow, type, escaped);
   // A value of several lines in place of a plain or double-quoted scalar is
   // double-quoted. As a block scalar it would take the comment after it into
   // its text. A single-quoted one stays single-quoted.
@@ -634,7 +639,6 @@ function readsInBlock(text: string, value: unknown): boolean {
   }
 }
 
-/** Whether the text of `node` holds a line break. */
 /** Whether the text of `node`, in `text`, spans lines. */
 export function spansLines(text: string, node: yaml.Node): boolean {
   return text.slice(node.range![0], node.range![1]).includes('\n');
@@ -642,9 +646,9 @@ export function spansLines(text: string, node: yaml.Node): boolean {
 
 /**
  * `text` with each of `edits` made: each replaces the text from one offset to
- * another. Edits are made in offset order, and two at one offset in the order
- * given. Throws when two overlap, since one would write part of the text
- * twice.
+ * another. Edits are made in offset order. At one offset, an insertion comes
+ * before a replacement, and two insertions keep the order given. Throws when
+ * two overlap, since one would write part of the text twice.
  */
 export function spliced(
     text: string, edits: ReadonlyArray<readonly [number, number, string]>):
@@ -680,12 +684,12 @@ function indentOf(line: string): number {
 
 /**
  * `value` written as a scalar or flow collection. Each line after the first
- * that is not empty is indented under column `col`. In a flow collection, a
- * string of several lines is one double-quoted line.
+ * that is not empty is indented under column `col`. In a flow collection, or
+ * when `oneLine` is set, a double-quoted string of several lines is one line.
  */
 function scalarText(
     u: Update, value: unknown, col: number, flow: boolean,
-    type?: yaml.Scalar.Type): string {
+    type?: yaml.Scalar.Type, oneLine = false): string {
   if (flow && isFull(value)) {
     release(u, value);
     const seq = Array.isArray(value);
@@ -703,7 +707,7 @@ function scalarText(
     compat: 'yaml-1.1',
     indent: u.step,
     lineWidth: 0,
-    doubleQuotedMinMultiLineLength: flow ? Infinity : undefined,
+    doubleQuotedMinMultiLineLength: flow || oneLine ? Infinity : undefined,
     flowCollectionPadding: false,
     collectionStyle: flow ? 'flow' : 'any',
   });

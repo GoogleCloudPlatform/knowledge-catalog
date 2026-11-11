@@ -220,22 +220,34 @@ metrics:
 // value that stays keeps its text, and the block keeps its layout. Pull writes
 // `data` as compact JSON.
 describe('updatedText in a JSON data string', () => {
+  // A binding of entity `name` to table `t/<table>`, with a field per column.
+  const binding = (name: string, table: string, ...columns: string[]) => ({
+    name,
+    source: `t/${table}`,
+    fields: columns.map(c => ({name: c, expression: c})),
+  });
   const DATA = {
     deployments: [{name: 'default', target: 'g/main'}],
     profiles: [{
       name: 'prod',
       entities: [
-        {name: 'Order', source: 't/orders'},
-        {name: 'Customer', source: 't/customer'},
+        binding('Order', 'orders', 'id', 'total'),
+        binding('Customer', 'customer', 'id'),
       ],
     }],
   };
-  // Two layouts: as `JSON.stringify` indents it, and by hand, with each
-  // innermost list or object on one line.
+  const ITEM = binding('Item', 'item', 'id', 'qty');
+  // Three layouts: as `JSON.stringify` indents it, by hand, with each
+  // innermost list or object on one line, and indented by tabs.
   const indented = (data: unknown) => JSON.stringify(data, null, 2);
   const hand = (data: unknown) => indented(data).replace(
       /[{[][^{}[\]]*[}\]]/g,
       s => s.replace(/\n\s*/g, ' ').replace(/([{[]) | ([}\]])/g, '$1$2'));
+  const LAYOUTS = {
+    indented,
+    'by hand': hand,
+    'with tabs': (data: unknown) => JSON.stringify(data, null, '\t'),
+  };
   // `data` as a hand-written block over several lines, and as pull writes it.
   const block = (text: string) => `custom_extensions:
   - vendor_name: GOOGLE   # bindings
@@ -262,14 +274,12 @@ ${text.replace(/^/gm, '      ')}
     ],
     [
       'adds an item after the one it follows',
-      changed(d => d.profiles[0].entities.splice(
-                  1, 0, {name: 'Item', source: 't/item'})),
+      changed(d => d.profiles[0].entities.splice(1, 0, ITEM)),
     ],
     [
       'adds two items after one, in order',
       changed(d => d.profiles[0].entities.splice(
-                  1, 0, {name: 'A', source: 't/a'},
-                  {name: 'B', source: 't/b'})),
+                  1, 0, binding('A', 'a', 'id'), binding('B', 'b', 'x', 'y'))),
     ],
     [
       'drops an item the catalog no longer has, with its comma',
@@ -277,8 +287,7 @@ ${text.replace(/^/gm, '      ')}
     ],
     [
       'adds an item before the first one',
-      changed(d => d.profiles[0].entities.unshift(
-                  {name: 'Item', source: 't/item'})),
+      changed(d => d.profiles[0].entities.unshift(ITEM)),
     ],
     [
       'drops the first item, with its comma',
@@ -286,12 +295,11 @@ ${text.replace(/^/gm, '      ')}
     ],
     [
       'replaces the last item',
-      changed(
-          d => d.profiles[0].entities[1] = {name: 'Item', source: 't/item'}),
+      changed(d => d.profiles[0].entities[1] = ITEM),
     ],
     [
       'writes a list again when every item goes',
-      changed(d => d.profiles[0].entities = [{name: 'Item', source: 't/item'}]),
+      changed(d => d.profiles[0].entities = [ITEM]),
     ],
     [
       'adds a key after the one it follows',
@@ -313,31 +321,75 @@ ${text.replace(/^/gm, '      ')}
       }),
     ],
   ] as const) {
-    for (const layout of [indented, hand]) {
-      test(`${what}, ${layout === hand ? 'by hand' : 'indented'}`, () => {
+    for (const [name, layout] of Object.entries(LAYOUTS)) {
+      test(`${what}, ${name}`, () => {
         expect(updatedText(block(layout(DATA)), BASE, pulled(data)))
             .toBe(block(layout(data)));
       });
     }
   }
 
-  test('writes a new item like the one beside it after a bracket', () => {
-    const deployments = (more = '') => block(`{
+  for (const [what, local, base, data, want] of [
+    [
+      'writes a new item like the one beside it after a bracket',
+      `{
   "deployments": [{
     "name": "default",
     "target": "g/main"
-  }${more}]
-}`);
-    const {deployments: [main]} = DATA;
-    const dev = {name: 'dev', target: 'g/dev'};
-    expect(updatedText(
-               deployments(), pulled({deployments: [main]}),
-               pulled({deployments: [main, dev]})))
-        .toBe(deployments(`, {
+  }]
+}`,
+      {deployments: DATA.deployments},
+      {deployments: [...DATA.deployments, {name: 'dev', target: 'g/dev'}]},
+      `{
+  "deployments": [{
+    "name": "default",
+    "target": "g/main"
+  }, {
     "name": "dev",
     "target": "g/dev"
-  }`));
-  });
+  }]
+}`,
+    ],
+    [
+      'writes the items an empty list gains in its container\'s layout',
+      indented({deployments: []}),
+      {deployments: []},
+      {deployments: DATA.deployments},
+      indented({deployments: DATA.deployments}),
+    ],
+    [
+      'writes a new object with the colon of a pair on one line',
+      '{"a":\n[1],\n"b": 2}',
+      {a: [1], b: 2},
+      {a: [1], b: 2, c: {d: 3}},
+      '{"a":\n[1],\n"b": 2,\n"c": {"d": 3}}',
+    ],
+  ] as const) {
+    test(what, () => {
+      expect(updatedText(block(local), pulled(base), pulled(data)))
+          .toBe(block(want));
+    });
+  }
+
+  // `data` written in another style changes in that style.
+  for (const [what, local, want] of [
+    [
+      'keeps the escaped line breaks of a double-quoted string',
+      '"{\\n  \\"a\\": [1]\\n}"\n', '"{\\n  \\"a\\": [1, 2]\\n}"\n',
+    ],
+    [
+      'keeps a `|+` block that ends in a blank line a block',
+      '|+\n      {\n        "a": [1]\n      }\n\n',
+      '|\n      {\n        "a": [1, 2]\n      }\n',
+    ],
+  ] as const) {
+    test(what, () => {
+      const google = (data: string) =>
+          `custom_extensions:\n  - vendor_name: GOOGLE\n    data: ${data}`;
+      expect(updatedText(google(local), pulled({a: [1]}), pulled({a: [1, 2]})))
+          .toBe(google(want));
+    });
+  }
 
   // A block whose `data` is on one line.
   const inline = (data: string, vendor = 'GOOGLE') =>
@@ -360,6 +412,12 @@ ${text.replace(/^/gm, '      ')}
     ['writes a new key with the separator of the text\'s pairs',
      '{"x\\":y": 1}', '{"x\\":y":1}', '{"x\\":y":1,"k":2}',
      '{"x\\":y": 1, "k": 2}'],
+    ['writes a new value with the spaces inside the text\'s brackets',
+     '{ "a": [ 1 ] }', '{"a":[1]}', '{"a":[1],"b":{"c":[2]}}',
+     '{ "a": [ 1 ], "b": { "c": [ 2 ] } }'],
+    ['writes a new item with a bare comma beside a bare colon',
+     '{"extends":["Thing"]}', '{"extends":["Thing"]}',
+     '{"extends":["Thing","Named"]}', '{"extends":["Thing","Named"]}'],
   ] as const) {
     test(what, () => {
       expect(updatedText(inline(local), inline(base), inline(pulledData)))

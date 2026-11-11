@@ -1528,6 +1528,53 @@ semantic_model:
     });
   }
 
+  // A GOOGLE block profile that excludes every metric by name reads as one
+  // that excludes `*`, so after the catalog adds a metric, the local list
+  // with its layout kept no longer holds the catalog's content. The rest of
+  // the file still keeps its text, and `data` is the catalog's.
+  test('changes only the rest of a vanilla model when its GOOGLE block ' +
+           'data cannot keep its layout',
+       async () => {
+         const customers =
+             `      - { name: customers, expression: ${ansi('COUNT(Customer.key)')} }\n`;
+         const buyers = edited(VANILLA, [
+           customers,
+           customers +
+               `      - { name: buyers, expression: ${ansi('COUNT(Order.buyer)')} }\n`,
+         ]);
+         const excluding = (metrics: string[]|'*') => blockData(
+             d => Object.assign(d.profiles[0], {metrics_exclude: metrics}));
+         const moved = (d: typeof BLOCK_DATA) =>
+             d.profiles[0].entities[0].source = `${TABLES}/orders_v2`;
+         const catalog = excluding(['buyers', 'customers', 'orders']);
+         moved(catalog);
+         await pushed({'commerce.yaml': withBlock(catalog, buyers)});
+         const text = withBlock(excluding(['orders', 'customers']));
+         fs.writeFileSync(local('commerce.yaml'), text);
+         const warnSpy = console.warn as Mock<any>;
+
+         expect(await pull()).toBe(0);
+         // Pull's `data` sorts the entities by name.
+         const pulled = excluding('*');
+         moved(pulled);
+         pulled.profiles[0].entities.reverse();
+         expect(messages(warnSpy)).not.toContain('pull cannot change only');
+         expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+             .toBe(edited(
+                 text,
+                 [text.slice(text.indexOf('        data: |\n'),
+                             text.indexOf('    datasets:\n')),
+                  `        data: |-\n          ${JSON.stringify(pulled)}\n`],
+                 ['    metrics:\n',
+                  '    metrics:\n      - name: buyers\n' +
+                      '        expression:\n          dialects:\n' +
+                      '            - dialect: ANSI_SQL\n' +
+                      '              expression: COUNT(Order.buyer)\n' +
+                      '        custom_extensions:\n' +
+                      '          - vendor_name: GOOGLE\n' +
+                      '            data: \'{"entity":"Order"}\'\n']));
+       });
+
   // A local model file push would refuse is written from the catalog. Its
   // profile file still holds the catalog's content beside the model file pull
   // writes, so it stays.
