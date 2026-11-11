@@ -3095,17 +3095,26 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 // selected bare in INSERT ... SELECT as INT64. It is worth doing because it
 // turns the action's DECLARED parameter types into a claim checked against the
 // real column types, so a model that says `Float` where the column is a STRING
-// fails here rather than on the first call.
+// fails here rather than on the first call. `codeFor` gives the store's type
+// for a declared type.
 function statementParameterTypes(
-    action: Action, names: string[]): Record<string, string> {
+    action: Action, names: string[],
+    codeFor = storeCodeFor): Record<string, string> {
   const declared = new Map(action.parameters.map(p => [p.name, p.type]));
   const types: Record<string, string> = {};
   for (const name of names) {
     const type = declared.get(name);
     if (!type || type === 'Opaque') continue;
-    types[name] = storeCodeFor(type);
+    types[name] = codeFor(type);
   }
   return types;
+}
+
+// BigQuery's type for a declared parameter type. BigQuery has DATETIME, a date
+// and time with no time zone, for `DateTime`. Spanner has no such type and
+// takes TIMESTAMP for it, as storeCodeFor gives.
+function bigQueryCodeFor(type: string): string {
+  return type === 'DateTime' ? 'DATETIME' : storeCodeFor(type);
 }
 
 
@@ -3217,7 +3226,8 @@ export async function validateBigQueryActionStatements(
       // BigQuery infers parameter types only when the request declares none,
       // so a statement that reads an untyped parameter declares none.
       const names = referencedParameters(pending.sql);
-      const types = statementParameterTypes(pending.action, names);
+      const types =
+          statementParameterTypes(pending.action, names, bigQueryCodeFor);
       const untyped = names.some(name => !Object.hasOwn(types, name));
       const res = await bq.query(
           project, pending.sql, undefined, true, untyped ? {} : types);

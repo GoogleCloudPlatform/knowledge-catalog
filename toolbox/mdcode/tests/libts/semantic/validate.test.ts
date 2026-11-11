@@ -306,6 +306,8 @@ describe('action statement pre-flight', () => {
         {name: 'amount', type: 'Float'},
         {name: 'id', type: 'Integer'},
         {name: 'note', type: 'Opaque'},
+        {name: 'at', type: 'DateTime'},
+        {name: 'tz', type: 'DateTimeTz'},
       ],
       executor: {kind: 'sql', sql: {statements}},
     } as Action;
@@ -379,6 +381,18 @@ describe('action statement pre-flight', () => {
           [spannerModel([sqlAction([GOOD])])], spanner);
       expect(spanner.planned[0].paramTypes)
           .toEqual({amount: {code: 'FLOAT64'}, id: {code: 'INT64'}});
+    });
+
+    // Spanner has no DATETIME type.
+    test('sends TIMESTAMP for a DateTime parameter', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      await validateSpannerActionStatements(
+          [spannerModel(
+              [sqlAction(['UPDATE account SET memo = @at WHERE account_id = @id'])])],
+          spanner);
+      expect(spanner.planned[0].paramTypes)
+          .toEqual({at: {code: 'TIMESTAMP'}, id: {code: 'INT64'}});
     });
 
     test('omits a parameter the statement does not reference', async () => {
@@ -599,6 +613,12 @@ describe('action statement pre-flight', () => {
        {amount: 'FLOAT64', id: 'INT64'}],
       ['no types for a statement that reads an Opaque parameter',
        'UPDATE account SET memo = @note WHERE account_id = @id', {}],
+      ['DATETIME for a DateTime parameter',
+       'UPDATE account SET memo = @at WHERE account_id = @id',
+       {at: 'DATETIME', id: 'INT64'}],
+      ['TIMESTAMP for a DateTimeTz parameter',
+       'UPDATE account SET memo = @tz WHERE account_id = @id',
+       {tz: 'TIMESTAMP', id: 'INT64'}],
     ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();
       bq.dmlSchema = mockSchema(ACCOUNT);
