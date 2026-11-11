@@ -1333,7 +1333,7 @@ async function printStore(
     oneModel: true,
     snapshot,
     proceed: async () => {
-      const layout = snapshot.layout as SemanticModelLayout;
+      const layout = semanticLayoutOf(snapshot)!;
       const docs = layout.modelDocuments();
       const profileDocs = profileDocsReader(layout);
       // The check reads each source's dialect as push does. When a read
