@@ -2035,7 +2035,7 @@ async function pullSemanticModel(
                        layout, pulled.name,
                        [...pulledFiles, ...sidecars].map(f => f.fileName))
                        .map(f => shown(f.path));
-      const removed = [
+      const deletedFiles = [
         ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
         ...left,
       ];
@@ -2131,8 +2131,9 @@ async function pullSemanticModel(
           }
           if (staleLocal.length > 1) choices.push(`delete ${quoted(own)}`);
           choices.push(forceRemove(
-              renamesOnly && removed.length === own.length ? them :
-                                                             quoted(removed)));
+              renamesOnly && deletedFiles.length === own.length ?
+                  them :
+                  quoted(deletedFiles)));
           errors.push(
               `local model file '${file(name)}' holds model '${declared}'${
                   facts}. ${offer(choices)}`);
@@ -2154,7 +2155,7 @@ async function pullSemanticModel(
               ...others.length < staleLocal.length ?
                   [`delete ${quoted(othersFiles)}`] :
                   [],
-              forceRemove(quoted(removed)),
+              forceRemove(quoted(deletedFiles)),
             ])}`);
       }
       return printErrors(...errors);

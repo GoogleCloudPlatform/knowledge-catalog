@@ -76,6 +76,7 @@ beforeEach(() => {
   process.chdir(dir);
 });
 afterEach(() => {
+  mock.restore();
   process.chdir(cwd);
   fs.rmSync(dir, {recursive: true, force: true});
 });
