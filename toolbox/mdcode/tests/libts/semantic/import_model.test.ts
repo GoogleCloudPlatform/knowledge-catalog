@@ -231,7 +231,11 @@ describe('conversion, strict mode, and translation', () => {
   });
 
   const MDX_ONLY = '{dialects: [{dialect: MDX, expression: x}]}';
-  const GRAPH_DEPLOYMENT = `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g}]\n`;
+  // Abstract entity party, whose line ends with `line`, and its subtype person.
+  const party = (line: string) =>
+      `      - name: party\n        abstract: true\n${line}` +
+      `      - name: person\n        extends: [party]\n        source: ${BQ_PREFIX}/tables/person\n` +
+      `        primary_key: [id]\n        fields: [{name: id, expression: id}]\n`;
   // [what the input holds, the input, the flavor, the error under --input
   // first-party, which says what the input needs]. Without --input
   // first-party, import repairs the input itself, and the file it writes
@@ -243,62 +247,11 @@ describe('conversion, strict mode, and translation', () => {
      googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: order_id}, {dialect: MDX, expression: x}]}'}),
      'google', "field 'orders.order_id': remove the entry for unsupported dialect 'MDX'."],
     ['a field with no supported dialect', googleDoc({fieldExpr: MDX_ONLY}), 'google',
-     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
-     "remove 'expression' to leave the field unbound."],
-    // An AlloyDB deployment accepts an unbound field that no metric reads.
-    ['a field with no supported dialect under an AlloyDB deployment',
-     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
-                extra: `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
-     'google',
-     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
-     "remove 'expression' to leave the field unbound."],
-    // A graph needs every field of a concrete leaf entity bound, and an entity
-    // that another extends is no leaf.
-    ['a field with no supported dialect under a graph deployment',
-     googleDoc({fieldExpr: MDX_ONLY, extra: GRAPH_DEPLOYMENT}), 'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
-    ['a field with no supported dialect that an extending entity binds, under a graph deployment',
-     googleDoc({fieldExpr: MDX_ONLY,
-                extra: `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
-                    `        fields: [{name: order_id, expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}}]\n` +
-                    GRAPH_DEPLOYMENT}),
-     'google',
-     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
-     "remove 'expression' to leave the field unbound."],
-    // A subtype restates an inherited field only to rebind it, so the line
-    // keeps its 'expression'.
-    ['a restated inherited field with no supported dialect',
-     googleDoc({extra: `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
-                   `        fields: [{name: order_id, expression: ${MDX_ONLY}}]\n`}),
-     'google', "field 'items.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
-    // An AlloyDB deployment needs every field a metric reads bound, whichever
-    // remedy the metric's own error gets.
-    ['a field with no supported dialect that an unanchored metric reads, under an AlloyDB deployment',
-     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
-                extra: `      - name: customers\n        source: ${ALLOYDB_DB}/schemas/public/tables/customers\n` +
-                    `        primary_key: [id]\n        fields: [{name: id, expression: id}]\n` +
-                    `    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id) + COUNT(customers.id)'}\n` +
-                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
-     'google', "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
-    // A metric's error names only the first unbound field it reads, so a
-    // field the input already leaves unbound must not hide this one.
-    ['a field with no supported dialect that a metric reads after an unbound field, under an AlloyDB deployment',
-     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`,
-                extra: `          - name: a\n          - name: b\n            expression: ${MDX_ONLY}\n` +
-                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n` +
-                    `    metrics: [{name: m, expression: 'SUM(orders.a + orders.b)'}]\n`}),
-     'google', "field 'orders.b': 'expression' has no entry in a supported SQL dialect; add one."],
-    // The deployment already refuses relationship oc, which has no join
-    // columns, and leaving the field unbound refuses nothing more.
-    ['a field with no supported dialect under an AlloyDB deployment that refuses a relationship',
-     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`, fieldExpr: MDX_ONLY,
-                extra: `      - name: customers\n        source: ${ALLOYDB_DB}/schemas/public/tables/customers\n` +
-                    `        fields: [{name: id, expression: id}]\n` +
-                    `    relationships: [{name: oc, from: orders, to: customers}]\n` +
-                    `    deployments: [{name: d, target: ${ALLOYDB_DB}}]\n`}),
-     'google',
-     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one, or " +
-     "remove 'expression' to leave the field unbound."],
+    ['a field of an abstract entity with no supported dialect',
+     googleDoc({extra: party(`        fields: [{name: id, expression: ${MDX_ONLY}}]\n`)}), 'google',
+     "field 'party.id': 'expression' has no entry in a supported SQL dialect; remove 'expression', " +
+     "since a field of abstract entity 'party' takes none."],
     ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
      "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
     ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
@@ -306,18 +259,21 @@ describe('conversion, strict mode, and translation', () => {
     ['a vanilla string expression', ossieDoc({fieldExpr: '"order_id"'}), 'ossie',
      "field 'orders.order_id': write the string expression as an 'ANSI_SQL' dialects entry."],
     ['a query-valued source', googleDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
-     "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table, or remove " +
-     "'source' to leave the entity unbound."],
-    // A deployment on the model file's own bindings needs every entity bound.
-    ['a query-valued source with a deployment on the model file\'s bindings',
-     googleDoc({source: '"SELECT * FROM sales.orders"', extra: GRAPH_DEPLOYMENT}),
-     'google', "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
+     "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
+    ['a query-valued source on an abstract entity',
+     googleDoc({extra: party('        source: "SELECT * FROM sales.party"\n        fields: [{name: id}]\n')}),
+     'google',
+     "entity 'party': source 'SELECT * FROM sales.party' is a query; remove 'source', since an " +
+     'abstract entity has no table.'],
     // A vanilla file requires 'expression' and 'source'.
     ['a vanilla field with no supported dialect',
      ossieDoc({fieldExpr: MDX_ONLY}), 'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla query-valued source', ossieDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
      "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
+    ['a vanilla query-valued source on a dataset marked abstract',
+     ossieDoc({source: '"SELECT * FROM sales.orders"'}).replace('primary_key: [order_id]', 'abstract: true'),
+     'google', "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
     ['an unanchored metric',
      googleDoc({extra: joined('oc', "    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id) + COUNT(customers.order_id)'}\n")}),
      'google',
@@ -338,29 +294,6 @@ describe('conversion, strict mode, and translation', () => {
         const repaired = await importSemanticModelYaml(input, {flavor});
         expect((await importSemanticModelYaml(repaired.files[0].content, {flavor, strict: true}))
                    .errors).not.toContain(needed);
-      });
-
-  // Push's checks need a model and profile files that load. They stop before
-  // any rule that reads a binding at a profile file named 'default', a
-  // deployment target in no accepted form, and a deployment whose profile no
-  // file declares. A named profile binds or excludes each field the model file
-  // leaves unbound.
-  const PROD_GRAPH = `    deployments: [{name: d, target: ${BQ_PREFIX}/propertyGraphs/g, profile: prod}]\n`;
-  test.each([
-    ['the repaired model does not load', '    colour: red\n', []],
-    ['a profile file does not load', PROD_GRAPH,
-     [{fileName: 'retail.profile.prod.yaml', content: 'name: prod\ncolour: red\n'}]],
-    ['a profile file is named default', '', [{fileName: 'retail.profile.default.yaml', content: 'name: default\n'}]],
-    ['a deployment target is in no accepted form', `    deployments: [{name: d, target: ${BQ_PREFIX}}]\n`, []],
-    ['a deployment names a profile no file declares', PROD_GRAPH, []],
-    ['a profile file leaves the field out', '',
-     [{fileName: 'retail.profile.prod.yaml',
-       content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n    primary_key: [order_id]\n`}]],
-  ] as Array<[string, string, Array<{fileName: string; content: string}>]>)(
-      'offers no remedy that leaves a field unbound when %s', async (_, extra, profileFiles) => {
-        expect((await importSemanticModelYaml(googleDoc({fieldExpr: MDX_ONLY, extra}),
-                                              {flavor: 'google', strict: true, profileFiles})).errors)
-            .toContain("field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one.");
       });
 
   test(

@@ -5,13 +5,13 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, resolveModelDeployments, targetProblem} from './deployment_target';
+import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -124,20 +124,6 @@ interface TableEntry {
   parts: string[];
 }
 
-/**
- * A strict-mode error about an entity or field that the author may also fix by
- * leaving it unbound.
- */
-interface Unbinding {
-  /** The error's index in `ImportDocument.errors`. */
-  at: number;
-  /** The remedy that leaves the entity or field unbound. */
-  clause: string;
-  entity: string;
-  /** The field, for an error about a field. */
-  field?: string;
-}
-
 /** Mutable representation of a semantic model document during import. */
 interface ImportDocument {
   /**
@@ -189,8 +175,6 @@ interface ImportDocument {
   warnings: string[];
   /** Collected validation or strict-mode errors. */
   errors: string[];
-  /** The errors that `offerUnbinding` may add a remedy to. */
-  unbinding: Unbinding[];
   /** Appends `msg` to `errors` in strict mode or `warnings` otherwise. */
   warnOrError: (msg: string) => void;
   /**
@@ -514,7 +498,6 @@ function parseImportDocument(
     modified: false,
     warnings,
     errors,
-    unbinding: [],
     warnOrError: (msg: string) => (strict ? errors : warnings).push(msg),
     repair: (done: string, needed: string) =>
         strict ? errors.push(needed) : warnings.push(done),
@@ -986,27 +969,14 @@ function truncateDescription(
 }
 
 /**
- * Records that the strict-mode error just reported may also offer `clause`,
- * which leaves `u.entity` or `u.field` unbound. `offerUnbinding` decides
- * whether it does. A vanilla file requires 'source' and 'expression', so only a
- * Google input may leave an entity or field unbound.
- */
-function mayUnbind(
-    doc: ImportDocument, clause: string,
-    u: Pick<Unbinding, 'entity'|'field'>): void {
-  if (doc.strict && doc.inputVersion === GOOGLE_VERSION) {
-    doc.unbinding.push({at: doc.errors.length - 1, clause, ...u});
-  }
-}
-
-/**
  * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
  * with a warning in the Google version (or recording an error in the vanilla
- * version) if no supported SQL dialect remains. In strict mode, `mayUnbind`
- * records that the error may also offer to leave the field unbound.
+ * version) if no supported SQL dialect remains. `abstract` is true for a field
+ * of an abstract entity, which takes no expression.
  */
 function repairField(
-    f: Record<string, any>, dsName: string, doc: ImportDocument): void {
+    f: Record<string, any>, dsName: string, doc: ImportDocument,
+    abstract = false): void {
   const fLabel = `field '${dsName}.${f.name}'`;
   normalizeDatatype(f, fLabel, doc);
   if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
@@ -1021,11 +991,12 @@ function repairField(
       doc.repair(
           `${fLabel}: no supported SQL dialect remains; removed ` +
               `'expression' and left the field unbound.`,
-          `${fLabel}: 'expression' has no entry in a supported SQL ` +
-              `dialect; add one.`);
-      mayUnbind(
-          doc, `or remove 'expression' to leave the field unbound`,
-          {entity: dsName, field: f.name});
+          abstract ?
+              `${fLabel}: 'expression' has no entry in a supported SQL ` +
+                  `dialect; remove 'expression', since a field of abstract ` +
+                  `entity '${dsName}' takes none.` :
+              `${fLabel}: 'expression' has no entry in a supported SQL ` +
+                  `dialect; add one.`);
     }
   }
 }
@@ -1044,6 +1015,9 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // formats.
   const word = entityWord(doc.targetVersion);
   const dsLabel = `${word} '${ds.name}'`;
+  // A vanilla file has no abstract entity, and requires 'source' and
+  // 'expression'.
+  const abstract = doc.inputVersion === GOOGLE_VERSION && ds.abstract === true;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     // Push rejects whitespace around a source. A query is reported below.
@@ -1068,10 +1042,10 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
                 `${word} is now unbound.`,
-            `${dsLabel}: source '${trimmed}' is a query; name a table.`);
-        mayUnbind(
-            doc, `or remove 'source' to leave the ${word} unbound`,
-            {entity: ds.name});
+            abstract ?
+                `${dsLabel}: source '${trimmed}' is a query; remove ` +
+                    `'source', since an abstract entity has no table.` :
+                `${dsLabel}: source '${trimmed}' is a query; name a table.`);
         delete ds.source;
         doc.modified = true;
       }
@@ -1120,7 +1094,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // its `fields`.
   truncateDescription(ds, dsLabel, doc);
   for (const f of asRecords(ds.fields)) {
-    repairField(f, String(ds.name ?? ''), doc);
+    repairField(f, String(ds.name ?? ''), doc, abstract);
   }
 }
 
@@ -1180,17 +1154,11 @@ function keepsMetric(
   return true;
 }
 
-/**
- * Keeps the metrics of `doc` for which `keep` returns true. In strict mode,
- * the model in `doc.root` keeps every metric.
- */
+/** Keeps the metrics of `doc` for which `keep` returns true. */
 function filterMetrics(
     doc: ImportDocument,
     keep: (mt: Record<string, any>, doc: ImportDocument) => boolean): void {
   doc.metrics = doc.metrics.filter(mt => keep(mt, doc));
-  // Strict mode reports each metric it drops and writes nothing.
-  // offerUnbinding judges its remedies on the metrics as written.
-  if (doc.strict) return;
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
@@ -1313,93 +1281,6 @@ async function repairDocument(
     }
   }
   return load;
-}
-
-/**
- * Adds its remedy to each error of `doc.unbinding` when push's local checks
- * refuse nothing more with that entity or field unbound than with it bound.
- * In both runs, every other concrete entity and every other field of one is
- * bound, so the runs differ only in the one left unbound. An abstract entity
- * and its fields take no binding in either run. The checks read the repaired
- * model and the input's profile files. A model or profile file that does not
- * load cannot be checked, and gets no such remedy. Neither does a model that
- * push refuses before any check that reads a binding: one with a profile file
- * named 'default', a deployment target in no accepted form, or a deployment
- * whose profile no file declares.
- */
-async function offerUnbinding(
-    doc: ImportDocument, opts: ImportSemanticModelOptions,
-    load: DialectLoad): Promise<void> {
-  if (!doc.unbinding.length) return;
-  const offer = (u: Unbinding) => {
-    doc.errors[u.at] = `${doc.errors[u.at].slice(0, -1)}, ${u.clause}.`;
-  };
-  const profiles = (opts.profileFiles ?? []).map(pf => ({
-    name: parseProfileName(pf.fileName),
-    text: pf.content,
-    fileName: pf.fileName,
-  }));
-  let model: SemanticModel;
-  try {
-    [model] = fromDocument(
-                  plainCopy(doc.root),
-                  {bindingOptional: true, warnUnacceptedSource: true})
-                  .models;
-    for (const p of profiles) {
-      loadProfileFile(p.text, p.name, {skipActions: true});
-    }
-  } catch (err) {
-    if (!(err instanceof SemanticModelError)) throw err;
-    return;
-  }
-  const name = doc.model.name;
-  const docs = [{name, text: JSON.stringify(doc.root)}];
-  // Every run reads the same text, so its profiles are read once.
-  const declared = declaredProfiles(docs[0], profiles);
-  if ('errors' in withProfileFiles({document: name, model}, () => profiles) ||
-      'error' in resolveModelDeployments(model) ||
-      undeclaredProfileError(name, model, declared.map(p => p.name))) {
-    return;
-  }
-  // A concrete entity with no source takes the table of the first concrete
-  // entity that has one, so the dialect the model's sources imply stays the
-  // same. With no such entity, it takes its own name, which implies no
-  // dialect. A field with no expression takes one that reads no column.
-  const sourced = model.entities?.find(e => !e.abstract && e.dataSource);
-  const refused = async (unbound?: Unbinding) => {
-    const m = structuredClone(model);
-    for (const e of m.entities ?? []) {
-      if (e.abstract) continue;
-      const left = unbound?.entity === e.name ? unbound : undefined;
-      if (!e.dataSource && (!left || left.field !== undefined)) {
-        e.authoredSource = sourced?.authoredSource;
-        e.dataSource = sourced?.dataSource ?? e.name;
-        e.sourceDialect = sourced?.sourceDialect;
-      }
-      for (const f of e.fields ?? []) {
-        if (isFieldBound(f) || f.name === left?.field) continue;
-        f.expression = 'NULL';
-        f.dialects = [{dialect: 'ANSI_SQL', expression: 'NULL'}];
-      }
-    }
-    const base = {document: name, model: m};
-    const withFiles = withProfileFiles(base, () => profiles);
-    const checked = 'errors' in withFiles ? withFiles : await localChecks(
-        {
-          docs,
-          loaded: {models: [base], warnings: []},
-          models: [withFiles],
-          profileDocs: () => profiles,
-          declaredBy: () => declared,
-          load,
-        },
-        () => {});
-    return 'errors' in checked ? checked.errors.map(e => e.error) : [];
-  };
-  const bound = new Set(await refused());
-  for (const u of doc.unbinding) {
-    if ((await refused(u)).every(problem => bound.has(problem))) offer(u);
-  }
 }
 
 /**
@@ -2184,7 +2065,6 @@ export async function importSemanticModelYaml(
     };
   }
   const load = await repairDocument(doc, opts);
-  await offerUnbinding(doc, opts, load);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and

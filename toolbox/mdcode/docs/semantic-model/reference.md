@@ -95,6 +95,13 @@ repaired, and each repair is reported as a warning. Under
 Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla
 file written as vanilla, recasing a datatype such as `integer` is a repair, and
 so is writing a string `expression` as an `ANSI_SQL` entry under `dialects`.
+When import writes the Google flavor, removing a field's `expression` that has
+no entry in a supported SQL dialect is a repair, and so is removing a `source`
+that is a query. Under `--input first-party`, the error for the field asks for
+an entry in a supported dialect, and the error for the source asks for a table.
+On an abstract entity, each asks to remove the `expression` or `source`
+instead, since an abstract entity has no table and its fields take no
+expression.
 The other changes convert the file between flavors and are not reported. A
 conversion moves each value the two flavors place differently, such as a
 dataset's `extends`, between its own key and a `GOOGLE` block, as written. A
