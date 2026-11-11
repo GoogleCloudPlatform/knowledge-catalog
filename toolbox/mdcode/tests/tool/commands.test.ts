@@ -2248,8 +2248,8 @@ describe('a pull', () => {
   // A local model file that holds the catalog's model under another name is
   // kept by renaming it and its profile files, unless a file the rename
   // writes is there already, an earlier file is renamed to it, or two of its
-  // files would be renamed to one. The refusal names what to do, and writes
-  // nothing.
+  // files would be renamed to one. The refusal names what to do and each file
+  // --force-remove deletes, and writes nothing.
   const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
   test.each([
     ['the rename that keeps it', ['mysales.yaml'],
@@ -2292,6 +2292,12 @@ describe('a pull', () => {
      holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
          "profile files, or re-run with --force-remove to delete " +
          "'mysales.yaml' and pull the catalog's.", 'commerce'],
+    ['the catalog model\'s file in the older directory, which pull deletes',
+     ['commerce.yaml', 'commerce.profiles/prod.yaml', 'mysales.yaml'],
+     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
+         "profile files, or re-run with --force-remove to delete " +
+         "'mysales.yaml' and 'commerce.profiles/prod.yaml' and pull the " +
+         "catalog's.", 'commerce'],
     ['no rename onto a profile file already there',
      ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'],
      holds + "which pull writes as 'commerce.yaml', and " +
@@ -2310,8 +2316,8 @@ describe('a pull', () => {
      "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
          "model 'commerce' in this entry group. An entry group holds one " +
          "model, so pull will not leave two behind. Re-run with " +
-         "--force-remove to delete the local model(s) and pull the " +
-         "catalog's.", 'other'],
+         "--force-remove to delete 'old.yaml' and pull the catalog's.",
+     'other'],
   ])('refuses a local file that holds another model name, naming %s',
      async (_, files, error, declares) => {
        writeRoundTripWorkspace();
