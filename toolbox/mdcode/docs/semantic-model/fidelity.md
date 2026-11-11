@@ -287,10 +287,10 @@ entries edited by hand.
 It translates a date or time plus or minus a whole number of one unit. The
 value can be a column, a cast to DATE, a DATE literal, the current date, the
 current timestamp, or, where the list below allows, another such sum. Each way
-a database writes the same sum gets the same translation: `+` or `-` with an
-INTERVAL, a function such as DATE_ADD, ADDDATE, DATEADD or TIMESTAMPADD with
-any unit name the database documents, or a whole number of days. A column can
-be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
+a database writes the same sum gets the same BigQuery value and type: `+` or `-`
+with an INTERVAL, a function such as DATE_ADD, ADDDATE, DATEADD or TIMESTAMPADD
+with any unit name the database documents, or a whole number of days. A column
+can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
 only the units that keep the value and type of each. These are the units it
 adds, by database:
 
@@ -298,6 +298,9 @@ adds, by database:
   seconds to years to a value it can see is a DATE, such as the current date.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   CURRENT_DATETIME('UTC'), a DATETIME as in MySQL, and adds every unit to it.
+  It translates no sum that names its INTERVAL first, since MySQL adds that
+  INTERVAL to all that follows it. Write the value first, as in
+  `d + INTERVAL 1 DAY`.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
   DATE and to a DATE plus an INTERVAL.
