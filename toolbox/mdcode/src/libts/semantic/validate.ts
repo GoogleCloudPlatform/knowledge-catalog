@@ -1067,6 +1067,7 @@ export function yamlChangedStatementErrors(
       // The indent of a comment line after the statement, past blank lines.
       const commentIndent =
           /^(?:[ \t]*\r?\n)+([ \t]*)#/.exec(after)?.[1].length ?? -1;
+      const marker = joinedLineMarker(statement, file.text, dialects);
       if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
@@ -1079,10 +1080,10 @@ export function yamlChangedStatementErrors(
                 flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
             `so YAML reads the statement as '${statement.value}'. ${
                 advice('the comment line', flow)}`);
-      } else if (joinedLinesCommented(statement, file.text, dialects)) {
+      } else if (marker) {
         errors.push(
-            `${at} has a SQL comment on a line YAML joins to the next one, ` +
-            `so the comment also covers the lines after it. ${
+            `${at} has '${marker}' on a line YAML joins to the next one, so ` +
+            `a SQL comment it starts would also cover the lines after it. ${
                 flow ? 'Write the statements as a block list, with this one ' +
                         "as a block scalar with '|'" :
                        "Write it as a block scalar with '|'"}, which keeps ` +
@@ -1168,19 +1169,19 @@ function statementDialects(model: SemanticModel, profile: string): string[] {
                          .map(d => d.engine.toUpperCase()))];
 }
 
-// The dialects in which `#` starts a SQL comment. `--` and `/*` start one in
-// every dialect. PostgreSQL and AlloyDB read `#` as an operator.
-const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER', 'MYSQL']);
+// The deployment dialects in which `#` starts a SQL comment. `--` and `/*`
+// start one in every dialect. AlloyDB reads `#` as an operator.
+const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
 
-// Whether YAML joins the lines of `statement` into one, and a line before the
-// last holds a SQL comment marker that one of `dialects` reads. A marker
+// The SQL comment marker that one of `dialects` reads on a line of
+// `statement` before the last, when YAML joins its lines into one. A marker
 // counts anywhere on the line, inside a string or a quoted name too. A '|'
-// block keeps its line breaks, so it is never refused. With no dialect, `#`
-// is not a marker.
-function joinedLinesCommented(
-    statement: yaml.Scalar, text: string, dialects: string[]): boolean {
+// block keeps its line breaks, so it has none. With no dialect, `#` is not a
+// marker.
+function joinedLineMarker(statement: yaml.Scalar, text: string,
+                          dialects: string[]): string|undefined {
   const joins = ['PLAIN', 'BLOCK_FOLDED', 'QUOTE_SINGLE', 'QUOTE_DOUBLE'];
-  if (!joins.includes(statement.type ?? '')) return false;
+  if (!joins.includes(statement.type ?? '')) return undefined;
   const markers = ['--', '/*'];
   if (dialects.some(d => HASH_COMMENT_DIALECTS.has(d))) markers.push('#');
   const lines = text.slice(statement.range![0], statement.range![1])
@@ -1188,7 +1189,11 @@ function joinedLinesCommented(
                     // A '>' block's first line is its header.
                     .slice(statement.type === 'BLOCK_FOLDED' ? 1 : 0)
                     .filter(line => line.trim());
-  return lines.slice(0, -1).some(line => markers.some(m => line.includes(m)));
+  for (const line of lines.slice(0, -1)) {
+    const marker = markers.find(m => line.includes(m));
+    if (marker) return marker;
+  }
+  return undefined;
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a

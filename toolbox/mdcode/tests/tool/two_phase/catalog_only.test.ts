@@ -9,7 +9,7 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
+import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -396,10 +396,10 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       files: {'commerce.yaml': modelWriting(
           ['[UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k]'])},
       errors: [has(
-          'has a SQL comment on a line YAML joins to the next one, so the ' +
-          'comment also covers the lines after it. Write the statements as a ' +
-          "block list, with this one as a block scalar with '|', which keeps " +
-          'its line breaks.')],
+          "has '--' on a line YAML joins to the next one, so a SQL comment " +
+          'it starts would also cover the lines after it. Write the ' +
+          'statements as a block list, with this one as a block scalar with ' +
+          "'|', which keeps its line breaks.")],
     }],
   },
   {
@@ -411,9 +411,9 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         ['- UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
     errors: [err(
         "action 'purge' in model 'commerce' (commerce) has a sql executor " +
-        'whose statement 1 has a SQL comment on a line YAML joins to the ' +
-        'next one, so the comment also covers the lines after it. Write it ' +
-        "as a block scalar with '|', which keeps its line breaks.")],
+        "whose statement 1 has '--' on a line YAML joins to the next one, so " +
+        'a SQL comment it starts would also cover the lines after it. ' +
+        "Write it as a block scalar with '|', which keeps its line breaks.")],
     then: [{
       files: {'commerce.yaml': modelWriting(
           ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
@@ -426,8 +426,10 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         "- UPDATE customer SET note = 'a -- b'", '  WHERE c_key = @k',
         '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k',
         '- UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
+        '- >', '  UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
       ])},
-      errors: [1, 2, 3, 4].map(n => has(`statement ${n} has a SQL comment`)),
+      errors: ['--', '--', '/*', '--'].map(
+          (m, i) => has(`statement ${i + 1} has '${m}' on a line YAML joins`)),
     }, {
       files: {'commerce.yaml': modelWriting([
         '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',
@@ -435,7 +437,12 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         // A YAML comment on a '>' block's header is not part of the statement.
         '- > # a note', '  UPDATE customer SET doc = doc WHERE c_key = @k',
       ], {deployments: ['g']})},
-      errors: [has('statement 1 has a SQL comment'), has('statement 2 has a SQL comment')],
+      errors: [1, 2].map(n => has(`statement ${n} has '#' on a line`)),
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
+          {deployments: [{name: 's', target: spannerGraph('s')}]})},
+      errors: [has("statement 1 has '#' on a line")],
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],
