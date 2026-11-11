@@ -547,7 +547,7 @@ function misreadToken(engine: PolyglotEngine, sql: string, read: string):
     while (tokens[j]?.token_type === 'L_PAREN') j--;
     const fn = String(tokens[j]?.text).toUpperCase();
     const part = table?.functions[fn] ? table.functions[fn] === 'part' : PART_FUNCTIONS.has(fn);
-    return j < i - 1 && tokens[j]?.token_type === 'VAR' && part ? fn : undefined;
+    return tokens[j]?.token_type === 'VAR' && part ? fn : undefined;
   };
   const quoted = read === 'bigquery' ? undefined :
       tokens.map((t, i) => t.token_type === 'QUOTED_IDENTIFIER' ? partFunction(i) : undefined).find(f => f);
@@ -1132,12 +1132,9 @@ const TODAY = new Set(Object.values(DATE_TABLES).flatMap(t => t.today));
 const CURRENT = new Set(Object.values(DATE_TABLES).flatMap(t => [...t.today, ...t.now.functions]));
 const DATE_FUNCTIONS = new Set(Object.values(DATE_TABLES).flatMap(t => Object.keys(t.functions)));
 
-// The functions whose first argument is a date part.
-const PART_FUNCTIONS = new Set([
-  ...Object.values(DATE_TABLES).flatMap(t => Object.entries(t.functions).filter(([, how]) => how === 'part')
-      .map(([name]) => name)),
-  'DATE_TRUNC', 'DATE_PART', 'DATEPART', 'DATEDIFF',
-]);
+// The functions whose first argument is a date part, besides those DATE_TABLES
+// lists as 'part'.
+const PART_FUNCTIONS = new Set(['DATE_TRUNC', 'DATE_PART', 'DATEPART', 'DATEDIFF']);
 
 // The functions written only with parentheses. Without them, quoted or not,
 // NOW, CURDATE and GETDATE name a column, which the engine reads as the
