@@ -1943,18 +1943,20 @@ async function pushRefusal(
 
 
 // The profile files among `files` that pull writes for `pulled`, as push
-// reads them.
+// reads them, in name order.
 function pulledProfileDocs(
     layout: SemanticModelLayout, pulled: SemanticModel,
     files: SerializedFile[]): ReturnType<ProfileDocs> {
-  return (pulled.profiles ?? []).flatMap(({name}) => {
-    const fileName = `${pulled.name}.profile.${name}.yaml`;
-    const file = files.find(f => f.fileName === fileName);
-    const target = pulledFileTarget(layout, pulled.name, fileName, false);
-    return file && target ?
-        [{name, text: file.content, path: target.path, fileName}] :
-        [];
-  });
+  return (pulled.profiles ?? [])
+      .flatMap(({name}) => {
+        const fileName = `${pulled.name}.profile.${name}.yaml`;
+        const file = files.find(f => f.fileName === fileName);
+        const target = pulledFileTarget(layout, pulled.name, fileName, false);
+        return file && target ?
+            [{name, text: file.content, path: target.path, fileName}] :
+            [];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 

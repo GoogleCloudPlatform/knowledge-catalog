@@ -1978,6 +1978,20 @@ describe('a pull', () => {
      }]}]},
      "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
          "'Customer.gone', which is not a field of 'Customer'."],
+    // The catalog lists its profiles in its own order. Push lists them by
+    // name.
+    ['the profile a deployment names',
+     {...SECOND_GEN,
+      profiles: ['staging', 'dev'].map(
+          name => ({...SECOND_GEN.profiles![0], name})),
+      deployments: [{
+        name: 'qa',
+        target: 'bigquery.googleapis.com/projects/test-project/datasets/d/' +
+            'propertyGraphs/g',
+        profile: 'missing',
+      }]},
+     "[commerce] model 'commerce': deployment 'qa' names unknown binding " +
+         "profile 'missing'; defined profiles: dev, staging."],
   ] as Array<[string, SemanticModel, string]>) {
     test(`warns when push refuses the model file it writes without ${what}`,
          async () => {
