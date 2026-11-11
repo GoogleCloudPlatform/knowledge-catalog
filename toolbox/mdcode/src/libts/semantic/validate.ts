@@ -942,6 +942,21 @@ export function validateActions(
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
     errors.push(...sqlExecutorErrors(action, where, sqlDialect));
+    // BigQuery and Spanner match parameter names without regard to case, so
+    // they read two declared names that differ only in case as one. A null
+    // dialect says no lookup read the tables' dialect, as in pull. Push reads
+    // it and reports these.
+    if (executor?.kind === 'sql' && sqlDialect !== null) {
+      const declared = action.parameters.map(p => p.name);
+      declared.forEach((second, i) => {
+        for (const first of declared.slice(0, i)) {
+          if (boundParameter(second, [first], sqlDialect) !== first) continue;
+          errors.push(
+              `${where} declares parameters '${first}' and '${second}', ` +
+              `which BigQuery and Spanner read as one name. Rename one.`);
+        }
+      });
+    }
   }
   return errors;
 }

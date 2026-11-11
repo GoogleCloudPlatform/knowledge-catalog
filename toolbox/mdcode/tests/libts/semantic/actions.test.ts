@@ -636,6 +636,29 @@ describe('validatePushRequirements gates actions', () => {
     expect(errs).toEqual(binds.map(b => expect.stringContaining(b)));
   });
 
+  // BigQuery reads two parameter names that differ only in case as one name.
+  // AlloyDB keeps them apart.
+  test.each([
+    ['BigQuery', 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
+     ['action \'A\' in model \'m\' (doc) declares parameters \'id\' and ' +
+      '\'ID\', which BigQuery and Spanner read as one name. Rename one.']],
+    ['AlloyDB',
+     'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/' +
+         'databases/d/schemas/public/tables/orders',
+     []],
+  ])('on %s checks parameter names that differ only in case', (_, source, errors) => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders WHERE id = @id']}},
+      parameters: [{name: 'id', type: 'Integer'}, {name: 'ID', type: 'String'}],
+    }]);
+    const entity = {...model.entities[0], authoredSource: source, dataSource: source};
+    expect(validatePushRequirements([{
+      document,
+      model: {...model, entities: [entity], deployments: undefined},
+    }])).toEqual(errors);
+  });
+
   test('an @ inside a string literal is not read as a binding', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'A',
