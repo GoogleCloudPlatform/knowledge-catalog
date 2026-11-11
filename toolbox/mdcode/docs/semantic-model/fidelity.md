@@ -316,8 +316,9 @@ adds, by database:
   plus hours, minutes or seconds.
 - Databricks: days to a column, and days, weeks, months and years to a DATE.
   date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
-  It adds seconds, minutes, hours, days and weeks to the current timestamp, a
-  TIMESTAMP.
+  Seconds, minutes and hours go to TIMESTAMP(x) of a DATE, its midnight in
+  UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
+  hours, days and weeks to the current timestamp, a TIMESTAMP.
 - SQL Server: days to a column, and days, weeks, months, quarters and years to
   a date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
@@ -329,8 +330,24 @@ databases an ANSI_SQL text runs on add a unit as different types. From a
 SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
 days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
 does. From the other databases, import leaves any other date arithmetic
-untranslated, such as a sum of two INTERVALs, an amount that is a fraction,
-or a function such as MAX plus an INTERVAL.
+untranslated, such as an amount that is a fraction, or a function such as MAX
+plus an INTERVAL.
+
+From PostgreSQL and Databricks, import also translates a sum or difference of
+INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
+times an amount. Alone, it becomes BigQuery's INTERVAL sum as written. Added
+to a value, it gets the form and type that its smallest unit gets in the list
+above. Where that form is `+`, import keeps the sum as written, and each of
+its units must be one the list adds to the result. BigQuery then adds months
+first, then days, then time, as PostgreSQL and Databricks do. Where that form
+is DATE_ADD, the INTERVALs must add up to whole days or whole months, so
+Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
+`DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
+years, or weeks and smaller units, as Databricks does. A single INTERVAL
+alone stays untranslated. So does AVG of an INTERVAL and an INTERVAL divided
+by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
+and Databricks round to the nearest microsecond, and Databricks gives a
+year-month INTERVAL in whole months.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's

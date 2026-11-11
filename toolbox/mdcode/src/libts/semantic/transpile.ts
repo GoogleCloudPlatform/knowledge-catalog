@@ -716,9 +716,11 @@ type Unit = typeof UNITS[number];
 
 // What import writes for an amount added to an operand: BigQuery's DATE_ADD or
 // DATE_SUB, or its `+` or `-`, and the row of the result in the same table.
+// With `timestamp`, BigQuery adds to TIMESTAMP(x), the operand at midnight UTC.
 interface Addition {
   form: 'DATE_ADD'|'+';
   gives: string;
+  timestamp?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
@@ -773,6 +775,10 @@ interface DateTable {
   // The units an INTERVAL may name, when the dialect documents fewer than for
   // its function.
   intervals?: Unit[];
+  // The groups of units that one INTERVAL value may join, in a dialect whose
+  // INTERVALs are values: a sum or difference of INTERVALs, such as INTERVAL
+  // '1 day' + INTERVAL '2 hours', or an INTERVAL times an amount.
+  sums?: Unit[][];
   // Why import adds a unit to no operand, or to the operands of some rows, by
   // unit, for a message.
   notes?: Partial<Record<Unit, string>>;
@@ -832,7 +838,9 @@ const DATE_TABLES: Record<string, DateTable> = {
   // date plus a whole number. A column plus an INTERVAL is a timestamp, which
   // no whole number is added to. Its current timestamp is a timestamptz, a
   // TIMESTAMP in BigQuery, and a day there is 24 hours in UTC. It has no
-  // INTERVAL of a quarter.
+  // INTERVAL of a quarter. It joins INTERVALs of any units into one value,
+  // which it adds months first, then days, then time, as BigQuery adds an
+  // INTERVAL.
   postgresql: {
     date: 'date', today: ['CURRENT_DATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'timestamptz'},
     functions: {},
@@ -841,6 +849,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       HOUR: ['hours', 'h', 'hr', 'hrs'], DAY: ['days', 'd'], WEEK: ['weeks', 'w'],
       MONTH: ['months', 'mon', 'mons'], YEAR: ['years', 'y', 'yr', 'yrs'],
     }),
+    sums: [[...UNITS]],
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds(['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK'], '+', 'column')},
       date: {
@@ -899,7 +908,10 @@ const DATE_TABLES: Record<string, DateTable> = {
   },
   // Databricks gives a DATE for a DATE plus an INTERVAL of days, weeks, months
   // or years and for date_add(x, n), date_sub(x, n) and dateadd(x, n), and a
-  // TIMESTAMP for a DATE plus an hour, a minute or a second. It adds a whole
+  // TIMESTAMP for a DATE plus an hour, a minute or a second, which it reads
+  // at midnight UTC, as BigQuery's TIMESTAMP(x) does. It joins INTERVALs of
+  // months and years, or of weeks and smaller units, into one value, whose
+  // smallest unit gives the type of a DATE plus it. It adds a whole
   // number to a DATE as days. Its current timestamp is a TIMESTAMP, and a day
   // there is 24 hours in UTC. Its three-argument dateadd and date_add give a
   // TIMESTAMP.
@@ -912,10 +924,15 @@ const DATE_TABLES: Record<string, DateTable> = {
     }),
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
+    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']],
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds(['DAY'], 'DATE_ADD', 'column'), days: {form: '+', gives: 'column'}},
       DATE: {
-        type: 'DATE', name: 'a DATE', units: adds(['DAY', 'WEEK', 'MONTH', 'YEAR'], 'DATE_ADD', 'DATE'),
+        type: 'DATE', name: 'a DATE',
+        units: {
+          ...adds(['DAY', 'WEEK', 'MONTH', 'YEAR'], 'DATE_ADD', 'DATE'),
+          ...Object.fromEntries(SUB_DAY.map(u => [u, {form: '+', gives: 'TIMESTAMP', timestamp: true}])),
+        },
         days: {form: 'DATE_ADD', gives: 'DATE'},
       },
       TIMESTAMP: {
@@ -970,6 +987,9 @@ interface DateSum {
   call?: boolean;
   asDate?: boolean;
   addition: Addition;
+  // The values in an INTERVAL value that import writes as the source does,
+  // for the checks.
+  values?: any[];
 }
 
 // The date arithmetic in `node`, a source node in the engine's dialect `read`.
@@ -991,6 +1011,9 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
     DateSum|string|undefined {
   const op = OPERATORS[kind];
   const sides = [value.left, value.right].map(s => intervalOf(s, read));
+  const values = [value.left, value.right].map(s => intervalValue(s, read, table));
+  // A sum of two INTERVAL values is an INTERVAL value (see intervalValue).
+  if (values[0] && values[1] && table.sums) return undefined;
   if (sides[0] || sides[1]) {
     const first = !!sides[0];
     const added = sides[first ? 0 : 1];
@@ -1001,6 +1024,13 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
       operand: first ? value.right : value.left, ...parsed, subtract: kind === 'sub', first,
       name: op, spelling: `${op} INTERVAL ${intervalText(added)}`, unitText: `INTERVAL ${intervalText(added)}`,
     });
+  }
+  if (values[0] || values[1]) {
+    const first = !!values[0];
+    const joined = values[first ? 0 : 1]!;
+    if (typeof joined === 'string') return joined;
+    if (first && kind === 'sub') return '- with an INTERVAL value first';
+    return valueOn(table, read, {operand: first ? value.right : value.left, joined, subtract: kind === 'sub', first, op});
   }
   // A whole number added to a date, which some dialects add as days.
   const [operand, amount] = dayOperands(kind, value);
@@ -1087,6 +1117,116 @@ function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}|s
 function wholeNumber(text: string): unknown {
   const number = {literal: {literal_type: 'number', value: text.trim().replace(/^[+-]/, '')}};
   return text.trim().startsWith('-') ? {neg: {this: number}} : number;
+}
+
+// One INTERVAL in an INTERVAL value: `amount` `unit`, the INTERVAL's text for
+// a message, whether it is `negative`, as after a `-`, and the amount it is
+// multiplied by, if any, as `times`.
+interface IntervalPart {
+  amount: any;
+  unit: Unit;
+  text: string;
+  negative: boolean;
+  times?: any;
+}
+
+// An INTERVAL value: its INTERVALs, and the values in it that import checks,
+// such as n in n * INTERVAL '1 day'.
+interface IntervalValue {
+  parts: IntervalPart[];
+  values: any[];
+}
+
+// The INTERVAL value that `node`, a source value in the engine's dialect
+// `read`, is in `table`: an INTERVAL or, in a dialect with `sums`, a sum or
+// difference of INTERVAL values or an INTERVAL value times an amount. A
+// message when import does not read it, and undefined when `node` is no
+// INTERVAL value.
+function intervalValue(node: any, read: string, table: DateTable): IntervalValue|string|undefined {
+  const b = bare(node);
+  const added = intervalOf(b, read);
+  if (added) {
+    const parsed = readInterval(added, table);
+    return typeof parsed === 'string' ? parsed :
+        {parts: [{...parsed, text: `INTERVAL ${intervalText(added)}`, negative: false}], values: []};
+  }
+  const kind = kindOf(b) ?? '';
+  if (!table.sums || !['add', 'sub', 'mul'].includes(kind)) return undefined;
+  const [left, right] = [b[kind].left, b[kind].right].map(s => intervalValue(s, read, table));
+  if (kind === 'mul') {
+    if (!left === !right) return undefined;
+    const [joined, times] = left ? [left, b.mul.right] : [right!, b.mul.left];
+    if (typeof joined === 'string') return joined;
+    return {parts: joined.parts.map(p => ({...p, times})), values: [...joined.values, times]};
+  }
+  if (!left || !right) return undefined;
+  if (typeof left === 'string') return left;
+  if (typeof right === 'string') return right;
+  const parts = [...left.parts, ...right.parts.map(p => ({...p, negative: p.negative !== (kind === 'sub')}))];
+  const group = table.sums.find(g => g.includes(parts[0].unit))!;
+  const other = parts.find(p => !group.includes(p.unit));
+  if (other) return `${OPERATORS[kind]} of ${parts[0].text} and ${other.text}`;
+  return {parts, values: [...left.values, ...right.values]};
+}
+
+// Whether `node`, a source value in the engine's dialect `read`, is visibly an
+// INTERVAL: an INTERVAL value, a negation, product, sum or difference of one,
+// or one that MAX, COALESCE or a similar function returns.
+function intervalTyped(node: any, read: string): boolean {
+  const table = DATE_TABLES[read];
+  const b = bare(node);
+  if (!table?.sums) return false;
+  if (typeof intervalValue(b, read, table) === 'object') return true;
+  const kind = kindOf(b) ?? '';
+  const operands = kind === 'neg' ? [b.neg.this] : ['add', 'sub', 'mul'].includes(kind) ?
+      [b[kind].left, b[kind].right] : returned(b);
+  return operands.some(o => intervalTyped(o, read));
+}
+
+// The days or months that `parts`, INTERVALs of whole numbers, add up to, as
+// one amount and unit, or undefined. A week is 7 days, a quarter 3 months and
+// a year 12 months, in each source as in BigQuery.
+const FOLDS: Partial<Record<Unit, number>>[] = [{DAY: 1, WEEK: 7}, {MONTH: 1, QUARTER: 3, YEAR: 12}];
+function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined {
+  const fold = FOLDS.find(f => parts.every(p => f[p.unit]));
+  const numbers = parts.map(p => numberText(p.amount));
+  if (!fold || parts.some((p, i) => p.times || numbers[i] === undefined)) return undefined;
+  const total = parts.reduce(
+      (t, p, i) => t + (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * BigInt(fold[p.unit]!), 0n);
+  return {amount: wholeNumber(String(total)), unit: Object.keys(fold)[0] as Unit};
+}
+
+// The date arithmetic `operand` plus or minus `joined`, an INTERVAL value of
+// more than one INTERVAL or with a product, in `table`, the table of the
+// engine's dialect `read`, or a message. The row's addition of the value's
+// finest unit gives the form and the type, as in the sources. A DATE_ADD
+// needs one amount, so the INTERVALs must add up to days or months (see
+// folded). A `+` keeps the value as the source writes it, which BigQuery adds
+// months first, then days, then time, as the sources do. Each unit must then
+// be one that the row the addition gives adds with `+`.
+function valueOn(table: DateTable, read: string, sum: {
+  operand: any; joined: IntervalValue; subtract: boolean; first: boolean; op: string;
+}): DateSum|string {
+  const {operand, joined, subtract, first, op} = sum;
+  const found = operandRow(operand, read, table);
+  if (typeof found === 'string') return found;
+  if (!found) return `${op} of ${valueName(bare(operand))}`;
+  const finest = joined.parts.reduce((a, p) => UNITS.indexOf(p.unit) < UNITS.indexOf(a.unit) ? p : a);
+  const spelled = (p: IntervalPart) => `${op} ${p.text}${p.times ? ' times an amount' : ''}`;
+  const row = table.rows[found.row];
+  const addition = row.units[finest.unit];
+  const note = table.notes?.[finest.unit];
+  if (!addition) return note ? `${spelled(finest)}, ${note}` : `${spelled(finest)} on ${found.name}`;
+  if (addition.form === 'DATE_ADD') {
+    const fold = folded(joined.parts);
+    const one = fold && row.units[fold.unit];
+    if (!one) return `${spelled(finest)} on ${found.name}`;
+    return {operand, amount: fold.amount, unit: fold.unit, subtract, first, addition: one};
+  }
+  const gives = table.rows[addition.gives];
+  const other = joined.parts.find(p => gives.units[p.unit]?.form !== '+');
+  if (other) return `${spelled(other)} on ${found.name}`;
+  return {operand, amount: undefined, subtract, first, addition, values: joined.values};
 }
 
 // The interval `node`, a side of a `+` or `-` in the engine's dialect `read`,
@@ -1498,6 +1638,13 @@ function nextNodes(kind: string, value: any, read: string):
     return castProblem(kind, value, read) ?? [value.this];
   }
   if (kind === 'count' && bare(value.this)?.tuple) return 'COUNT of more than one value';
+  // BigQuery averages and divides an INTERVAL to whole microseconds, rounding
+  // down. PostgreSQL and Databricks round to the nearest microsecond, and
+  // Databricks gives a year-month INTERVAL in whole months.
+  const timed = (n: any) => intervalTyped(n, read);
+  if ((kind === 'avg' && timed(value.this)) || (kind === 'div' && (timed(value.left) || timed(value.right)))) {
+    return `${kind === 'avg' ? 'AVG' : '/'} of an INTERVAL`;
+  }
   if (kind === 'add' || kind === 'sub' || kind === 'mul') return arithmetic(kind, value, read);
   // The sources read a string beside AND, OR or NOT as a truth value or a
   // number, and BigQuery rejects it. MySQL reads `a || ' '` as OR.
@@ -1591,8 +1738,11 @@ function article(noun: string): string {
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
+  const table = DATE_TABLES[read];
+  const joined = table?.sums ? intervalValue({[kind]: value}, read, table) : undefined;
+  if (joined) return typeof joined === 'string' ? joined : joined.values;
   const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
-  if (sum) return typeof sum === 'string' ? sum : [sum.operand, sum.amount];
+  if (sum) return typeof sum === 'string' ? sum : [sum.operand, ...(sum.values ?? [sum.amount])];
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
   // A value import can see is a date or a time, a function of a dialect's
@@ -2058,7 +2208,18 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       while (sum.addition.form === 'DATE_ADD' && operand?.paren) operand = operand.paren.this;
       return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
-    const exact = isNode(node) ? exactForm(node, read) : undefined;
+    // An INTERVAL in an INTERVAL value is BigQuery's INTERVAL of its unit.
+    const table = DATE_TABLES[read];
+    const added = table?.sums && isNode(node) && intervalOf(node, read);
+    const parsed = added && readInterval(added, table);
+    if (parsed && typeof parsed === 'object') {
+      changed = true;
+      return formCall(`INTERVAL _1 ${parsed.unit}`, [parsed.amount]);
+    }
+    // A `+` that BigQuery adds to TIMESTAMP(x) reads its operand so.
+    const stamped = typeof sum === 'object' && sum.addition.timestamp ?
+        swapped(node, new Map([[sum.operand, formCall('TIMESTAMP(_1)', [sum.operand])]])) : undefined;
+    const exact = stamped ?? (isNode(node) ? exactForm(node, read) : undefined);
     if (exact && typeof exact === 'object') changed = true;
     const source = exact && typeof exact === 'object' ? exact : node;
     const out: any = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, rewrite(v)]));
@@ -2084,8 +2245,9 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
 // The DATE_CALL for `sum`, with `operand` and `amount`, its operand and amount
 // ready for the engine, in `dialect`: the operand, the amount, the unit and
 // BigQuery's form, and 'DATE' when the source reads the operand as a DATE
-// first. A sum written with `+` or `-` for a function call goes in
-// parentheses, unless it is the `whole` text.
+// first, or 'TIMESTAMP' when BigQuery adds to TIMESTAMP(x). A sum written with
+// `+` or `-` for a function call goes in parentheses, unless it is the `whole`
+// text.
 function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolean, dialect: string): unknown {
   const op = sum.first ? 'INTERVAL +' : sum.subtract ? '-' : '+';
   const form = sum.addition.form === 'DATE_ADD' ? (sum.subtract ? 'DATE_SUB' : 'DATE_ADD') :
@@ -2093,7 +2255,8 @@ function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolea
   const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
   const text = (value: string) => ({literal: {literal_type: 'string', value}});
   const args = [operand, amount, text(sum.unit!), text(form)];
-  return {function: {...call, args: sum.asDate ? [...args, text('DATE')] : args}};
+  const reads = sum.asDate ? 'DATE' : sum.addition.timestamp ? 'TIMESTAMP' : undefined;
+  return {function: {...call, args: reads ? [...args, text(reads)] : args}};
 }
 
 // The engine's EXTRACT field for `part`, a key of PARTS, such as `Year`.
@@ -2231,16 +2394,13 @@ function repairNode(node: any, read: string): unknown {
 
 // BigQuery's SQL for a DATE_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the operand, the amount, the unit and BigQuery's form, and
-// 'DATE' when the source reads the operand as a DATE first. A form in
+// how BigQuery reads the operand first, if it does (see READS). A form in
 // parentheses puts the sum in parentheses, since it stands where the source
-// calls a function. BigQuery's CAST(CAST(x AS DATETIME) AS DATE) gives the
-// date of a DATE, a DATETIME, a TIMESTAMP in UTC, or a string with or without a
-// time of day, as Databricks' date_add does.
+// calls a function.
 function dateSql(args: any[]): unknown {
-  const [operand, amount, unit, form, asDate] = args;
+  const [operand, amount, unit, form, reads] = args;
   const text = (n: any) => String(bare(n)?.literal?.value);
-  const cast = sqlExpressionTree('CAST(CAST(x AS DATETIME) AS DATE)', 'BIGQUERY');
-  const date = asDate ? {cast: {...cast.cast, this: {cast: {...cast.cast.this.cast, this: operand}}}} : operand;
+  const date = reads ? formSql([{literal: {literal_type: 'string', value: READS[text(reads)]}}, operand]) : operand;
   const name = text(unit);
   const added = {
     interval: {this: amount, unit: {type: 'simple', unit: extractField(name.toLowerCase()), use_plural: false}},
@@ -2256,6 +2416,15 @@ function dateSql(args: any[]): unknown {
   const sum = {[kind]: {...template, ...(op === 'INTERVAL +' ? {left: added, right: date} : {left: date, right: added})}};
   return op === how ? sum : {paren: {this: sum}};
 }
+
+// How BigQuery reads an operand first, by the name a DATE_CALL gives. Its
+// CAST(CAST(x AS DATETIME) AS DATE) gives the date of a DATE, a DATETIME, a
+// TIMESTAMP in UTC, or a string with or without a time of day, as Databricks'
+// date_add does. TIMESTAMP(x) gives a DATE at midnight UTC.
+const READS: Record<string, string> = {
+  DATE: 'CAST(CAST(_1 AS DATETIME) AS DATE)',
+  TIMESTAMP: 'TIMESTAMP(_1)',
+};
 
 // BigQuery's SQL for a FORM_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the form's SQL, then the operands it names _1, _2 and so on.

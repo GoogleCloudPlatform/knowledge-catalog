@@ -363,7 +363,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', "d + INTERVAL '1' DAY TO SECOND(3)", {error: 'kcmd does not translate INTERVAL 1 DAY TO SECOND(3)'}],
     ['DATABRICKS', "d + INTERVAL '2' SECOND(3)", {error: 'kcmd does not translate INTERVAL 2 SECOND(3)'}],
     ['SPANNER', "d + INTERVAL '''1''' DAY", {error: 'kcmd does not translate a triple quoted string literal'}],
-    ['POSTGRES', "2 * INTERVAL '1 day'", {error: 'kcmd does not translate INTERVAL'}],
+    ['POSTGRES', "2 * INTERVAL '1 day'", {sql: '2 * INTERVAL 1 DAY'}],
     ['MYSQL', "'2024-01-01' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a string'}],
     ['MYSQL', '-20240101 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a number'}],
     ['MYSQL', "TIMESTAMP '2024-01-31 10:00:00' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a timestamp literal'}],
@@ -523,8 +523,9 @@ describe('polyglotTranspiler (date arithmetic)', () => {
   const DAY_OR_LONGER = UNITS.slice(3);
 
   // Each row of each dialect's table: the sum, with {U} or {u} for the unit,
-  // the operand as BigQuery writes it, and the units BigQuery adds with
-  // DATE_ADD and with `+`. Every other unit stays untranslated.
+  // the operand as BigQuery writes it, the units BigQuery adds with DATE_ADD
+  // and with `+`, and the operand of `+` when it differs. Every other unit
+  // stays untranslated.
   test.each([
     ['MYSQL', 'd + INTERVAL 1 {U}', 'd', ['DAY'], SUB_DAY],
     ['MYSQL', 'CURDATE() + INTERVAL 1 {U}', 'CURRENT_DATE', DAY_OR_LONGER, SUB_DAY],
@@ -537,17 +538,17 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_DATE)', "CURRENT_DATE('America/Los_Angeles')", DAY_OR_LONGER, SUB_DAY],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_TIMESTAMP)', "CURRENT_DATETIME('America/Los_Angeles')", DAY_OR_LONGER, []],
     ['DATABRICKS', 'd + INTERVAL 1 {U}', 'd', ['DAY'], []],
-    ['DATABRICKS', 'current_date() + INTERVAL 1 {U}', 'CURRENT_DATE', ['DAY', 'WEEK', 'MONTH', 'YEAR'], []],
+    ['DATABRICKS', 'current_date() + INTERVAL 1 {U}', 'CURRENT_DATE', ['DAY', 'WEEK', 'MONTH', 'YEAR'], SUB_DAY, 'TIMESTAMP(CURRENT_DATE)'],
     ['DATABRICKS', 'now() + INTERVAL 1 {U}', 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK']],
     ['SQLSERVER', 'DATEADD({u}, 1, d)', 'd', ['DAY'], []],
     ['SQLSERVER', 'DATEADD({u}, 1, CAST(d AS DATE))', 'CAST(d AS DATE)', DAY_OR_LONGER, []],
     ['SQLSERVER', 'DATEADD({u}, 1, GETDATE())', "CURRENT_DATETIME('UTC')", UNITS, []],
     ['ANSI_SQL', `CURRENT_DATE + INTERVAL '1' {U}`, '', [], []],
-  ] as [string, string, string, string[], string[]][])('%s %s adds the units of its row', async (dialect, sum, operand, dateAdd, plus) => {
+  ] as [string, string, string, string[], string[], string?][])('%s %s adds the units of its row', async (dialect, sum, operand, dateAdd, plus, plusOperand = operand) => {
     const texts = UNITS.map(u => sum.replace('{U}', u).replace('{u}', u.toLowerCase()));
     expect(await translate(dialect, texts))
         .toEqual(UNITS.map(u => dateAdd.includes(u) ? `DATE_ADD(${operand}, INTERVAL 1 ${u})` :
-            plus.includes(u) ? `${operand} + INTERVAL 1 ${u}` : 'untranslated'));
+            plus.includes(u) ? `${plusOperand} + INTERVAL 1 ${u}` : 'untranslated'));
   });
 
   // Whole numbers of days, the sums Databricks' date_add and date_sub read as
@@ -568,6 +569,18 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'CURRENT_DATE - 7 - 1', {sql: 'DATE_SUB(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY), INTERVAL 1 DAY)'}],
     ['POSTGRES', "CURRENT_DATE + INTERVAL '1 day' + INTERVAL '2 hours'", {sql: 'CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 2 HOUR'}],
     ['POSTGRES', "d::date + INTERVAL '1 hour' + INTERVAL '1 quarter'", {error: "kcmd does not translate INTERVAL '1 quarter'"}],
+    // A sum of INTERVALs, alone or added to a value, and an INTERVAL times an
+    // amount.
+    ['POSTGRES', "INTERVAL '1 month' - INTERVAL '1 day'", {sql: 'INTERVAL 1 MONTH - INTERVAL 1 DAY'}],
+    ['POSTGRES', "CURRENT_DATE + (INTERVAL '1 day' + INTERVAL '1 month')", {sql: 'CURRENT_DATE + (INTERVAL 1 DAY + INTERVAL 1 MONTH)'}],
+    ['POSTGRES', "NOW() + (INTERVAL '1 day' + INTERVAL '1 month')", {error: "kcmd does not translate + INTERVAL '1 month' on NOW"}],
+    ['POSTGRES', "d::date + INTERVAL '1 day' * n", {sql: 'CAST(d AS DATE) + INTERVAL 1 DAY * n'}],
+    ['DATABRICKS', 'current_date() - (INTERVAL 1 DAY + INTERVAL 2 HOURS)', {sql: 'TIMESTAMP(CURRENT_DATE) - (INTERVAL 1 DAY + INTERVAL 2 HOUR)'}],
+    ['DATABRICKS', 'current_date() + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)', {sql: 'DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)'}],
+    ['DATABRICKS', 'current_date() + 3 * INTERVAL 1 DAY', {error: 'kcmd does not translate + INTERVAL 1 DAY times an amount on CURRENT_DATE'}],
+    ['DATABRICKS', 'INTERVAL 1 MONTH + INTERVAL 1 DAY', {error: 'kcmd does not translate + of INTERVAL 1 MONTH and INTERVAL 1 DAY'}],
+    ['DATABRICKS', 'AVG(COALESCE(i, 2 * INTERVAL 1 MONTH))', {error: 'kcmd does not translate AVG of an INTERVAL'}],
+    ['DATABRICKS', '(INTERVAL 1 MONTH + INTERVAL 1 YEAR) / 2', {error: 'kcmd does not translate / of an INTERVAL'}],
     ['SNOWFLAKE', "DATEADD(hour, 1, CURRENT_DATE) + INTERVAL '1 day'", {error: "kcmd does not translate + INTERVAL '1 day' on a TIMESTAMP_NTZ"}],
     ['POSTGRES', "CURRENT_TIMESTAMP - INTERVAL '1 hour'", {sql: 'CURRENT_TIMESTAMP - INTERVAL 1 HOUR'}],
     ['POSTGRES', "NOW() - INTERVAL '1 month'", {error: "kcmd does not translate - INTERVAL '1 month' on NOW"}],
