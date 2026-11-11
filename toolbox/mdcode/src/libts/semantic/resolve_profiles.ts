@@ -1403,6 +1403,14 @@ export function tableDialects(
   return undefined;
 }
 
+// Every dialect the tables of the concrete `entities` may have, a table no
+// lookup read included.
+export function possibleDialects(
+    entities: ReadonlyArray<Parameters<typeof tableDialects>[0]>): string[] {
+  return [...new Set(entities.filter(e => !e.abstract)
+                         .flatMap(e => tableDialects(e, true)?.dialects ?? []))];
+}
+
 // Each field of each entity whose table `tableDialects(entity, withUnread)`
 // gives, with that table. An inherited field is listed on each entity that
 // inherits it.
@@ -1669,6 +1677,9 @@ export function validateProfileCompleteness(
         `profile reads from one system a single query can reach`);
   }
   const dialect = dialectOfSources(stated);
+  const candidates = dialect === null ?
+      possibleDialects(stated.map(s => profiledByName.get(s.entity)!)) :
+      [];
 
 
   // The expressions of each entity the profile may bind.
@@ -1684,9 +1695,9 @@ export function validateProfileCompleteness(
     // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
-    // as the profile's own SQL. When no lookup read its dialect, it is read as
-    // columnsWithoutDialect reads it with `readWithoutDialect`, and not at all
-    // without.
+    // as the profile's own SQL. When no lookup read its dialect, it is read
+    // with `readWithoutDialect` as columnsWithoutDialect reads it in the
+    // dialects the profile's tables may have, and not at all without.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
       // A text with no SQL is reported above, and has nothing to read.
@@ -1696,7 +1707,7 @@ export function validateProfileCompleteness(
                 !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
         const columns = written === 'ANSI_SQL' && dialect === null ?
-            columnsWithoutDialect(text)?.columns :
+            columnsWithoutDialect(text, candidates)?.columns :
             columnReferences(
                 text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {

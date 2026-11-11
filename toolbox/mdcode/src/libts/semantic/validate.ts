@@ -23,7 +23,7 @@ import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems,
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
@@ -1836,9 +1836,10 @@ function metricNoSqlError(
 // drops unbound fields and metrics on a graph push. When given,
 // `flaggedMetrics` collects the name of each metric it reports. With
 // `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
-// lookup read is read as columnsWithoutDialect reads it, where it is otherwise
-// skipped. A metric text that read leaves a name out of is then left out of
-// the rules on which entities the text reaches.
+// lookup read is read as columnsWithoutDialect reads it in the dialects those
+// tables may have, where it is otherwise skipped. A metric text that read
+// leaves a name out of is then left out of the rules on which entities the
+// text reaches.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
     flaggedMetrics?: Set<string>, load: DialectLoad = {}): string[] {
@@ -1866,6 +1867,8 @@ export function validateExpressionReferences(
     const sourcesRead = sourcesDialect(model);
     const dialectless = sourcesRead === null && !!load.readWithoutDialect;
     const impliedDialect = dialectless ? undefined : sourcesRead;
+    const candidates =
+        dialectless ? possibleDialects(model.entities ?? []) : [];
     // The columns `text` reads, and whether the read left a name out.
     const read = (text: string, dialect: string) => {
       if (dialect !== 'ANSI_SQL' || !dialectless) {
@@ -1874,7 +1877,7 @@ export function validateExpressionReferences(
           skipped: false,
         };
       }
-      const r = columnsWithoutDialect(text);
+      const r = columnsWithoutDialect(text, candidates);
       return {columns: r?.columns, skipped: !!r?.skipped};
     };
     const addUnreadableWarning =

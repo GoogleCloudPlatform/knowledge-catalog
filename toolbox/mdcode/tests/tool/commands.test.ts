@@ -2037,7 +2037,8 @@ describe('a pull', () => {
   }
 
   // With no table's dialect read, pull still reads which fields and entities
-  // an ANSI_SQL expression reads, and warns as push refuses.
+  // an ANSI_SQL expression reads, and warns as push refuses. It leaves to push
+  // a text that one of the dialects the table may have cannot parse.
   for (const [kind, source] of [
     ['Spanner', 'spanner.googleapis.com/projects/test-project/instances/i/' +
          'databases/db/tables/orders'],
@@ -2055,9 +2056,13 @@ describe('a pull', () => {
        "'Gone.id' has qualifier 'Gone', which is not a declared entity in " +
            "model 'commerce'; write 'entity.field' starting with a declared " +
            'entity.'],
+      // MySQL and Spanner GoogleSQL read "Order" as a string, so they cannot
+      // parse this text.
+      ['a field beside quoted names', ['id'],
+       'COUNT("Order"."id") + SUM(Order.amount)', ''],
     ] as Array<[string, string[], string, string]>) {
-      test(`on a ${kind} table warns about ${what} a metric reads that the ` +
-               'catalog lacks',
+      test(`on a ${kind} table ${error ? 'warns' : 'gives no warning'} ` +
+               `about ${what} a metric reads that the catalog lacks`,
            async () => {
              fs.writeFileSync(
                  path.join(dir, 'catalog.yaml'),
@@ -2078,9 +2083,9 @@ describe('a pull', () => {
 
              expect(await pull()).toBe(0);
              expect(messages(console.warn)).toBe(
-                 `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
-                 `writes it: metric 'm' in model 'commerce' (commerce): ${
-                     error}`);
+                 error && `Warning: push refuses ${shown('commerce.yaml')} ` +
+                     `as pull writes it: metric 'm' in model 'commerce' ` +
+                     `(commerce): ${error}`);
              expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
              expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
            });

@@ -78,6 +78,19 @@ export function loadedSqlEngine(): PolyglotEngine|undefined {
   return loadedEngine;
 }
 
+// Runs `read` and drops the message the engine prints to the console when it
+// panics on a text. The engine then reports that text unread, as it reports
+// any text it cannot parse.
+export function withoutEngineMessages<T>(read: () => T): T {
+  const error = console.error;
+  console.error = () => {};
+  try {
+    return read();
+  } finally {
+    console.error = error;
+  }
+}
+
 // The engine's dialect for each kcmd dialect. The engine has no Spanner
 // dialect, so Spanner's GoogleSQL is read as BigQuery's.
 const PARSER_DIALECTS: Record<string, string> = {
