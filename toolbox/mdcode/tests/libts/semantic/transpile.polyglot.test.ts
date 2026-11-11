@@ -610,27 +610,31 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', 'd = (INTERVAL 1 DAY) + CURDATE() IS NULL', {error: 'kcmd does not translate INTERVAL 1 DAY first, which MySQL adds to all that follows it; write x + INTERVAL 1 DAY'}],
     ['POSTGRES', "INTERVAL '1 month' + CURRENT_DATE > d", {sql: 'INTERVAL 1 MONTH + CURRENT_DATE > d'}],
     ['DATABRICKS', 'INTERVAL 1 DAY + d', {sql: 'DATE_ADD(d, INTERVAL 1 DAY)'}],
-    // A date part written as a quoted name stays untranslated. NOW, CURDATE and
-    // GETDATE without parentheses are columns.
+    // A date part written as a quoted name, and NOW, CURDATE and GETDATE without
+    // parentheses, quoted or not, name a column and stay untranslated.
     ['SQLSERVER', 'DATEADD([day], 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
     ['SNOWFLAKE', 'DATEADD("day", 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
+    ['SNOWFLAKE', 'DATEADD(("day"), 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
+    ['DATABRICKS', 'dateadd(`order date`, 7)', {sql: 'DATE_ADD(CAST(CAST(`order date` AS DATETIME) AS DATE), INTERVAL 7 DAY)'}],
     ['POSTGRES', 'DATE_TRUNC("month", d)', {error: 'kcmd does not translate DATE_TRUNC with a quoted part'}],
     ['POSTGRES', 'DATE_PART("day", d)', {error: 'kcmd does not translate DATE_PART with a quoted part'}],
     ['SQLSERVER', 'DATEPART([day], d)', {error: 'kcmd does not translate DATEPART with a quoted part'}],
     ['SQLSERVER', 'DATEDIFF([day], a, b)', {error: 'kcmd does not translate DATEDIFF with a quoted part'}],
     ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
-    ['DATABRICKS', 'curdate - 7', {sql: '`curdate` - 7'}],
-    ['POSTGRES', 'NOW - 7', {sql: '`NOW` - 7'}],
-    ['MYSQL', 'CURDATE + INTERVAL 1 DAY', {sql: 'DATE_ADD(`CURDATE`, INTERVAL 1 DAY)'}],
-    ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {sql: 'DATE_ADD(`GETDATE`, INTERVAL 1 DAY)'}],
+    ['DATABRICKS', '`curdate` - 7', {error: 'kcmd does not translate a bare CURDATE, which the database reads as a column'}],
+    ['POSTGRES', 'NOW - 7', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
+    ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {error: 'kcmd does not translate a bare GETDATE, which the database reads as a column'}],
+    ['SPANNER', 'd < NOW', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
     // NULLIF of two date and time types.
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a TIMESTAMP'}],
     ['MYSQL', 'NULLIF(CURDATE(), NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
-    // A SPANNER INTERVAL other than a whole number or a column of days, hours or
-    // minutes.
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(CURRENT_DATE, d::timestamp))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
+    // A SPANNER INTERVAL whose amount is neither a whole number nor a column, or
+    // one beside + or - with a unit other than days, hours or minutes.
     ['SPANNER', "d + INTERVAL '1 day'", {error: "kcmd does not translate INTERVAL '1 day'"}],
     ['SPANNER', 'd + (INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
     ['SPANNER', 'd + INTERVAL TRUE DAY', {error: 'kcmd does not translate INTERVAL ? DAY'}],
+    ['SPANNER', 'DATE_ADD(d, INTERVAL 1.5 DAY)', {error: 'kcmd does not translate INTERVAL 1.5 DAY'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

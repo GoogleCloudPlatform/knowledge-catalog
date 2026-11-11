@@ -450,16 +450,15 @@ function transpileWith(
     const {text, comments} = sqlComments(engine, source, read);
     let repaired: {sql: string}|{error: string};
     if (write === 'bigquery') {
-      // The checks read NOW, CURDATE and GETDATE without parentheses as columns.
-      const parsed = sqlExpressionTree(text, r.dialect);
-      const tree = spanner ? parsed : bareColumns(parsed).tree;
+      const tree = sqlExpressionTree(text, r.dialect);
       const rules = spanner ? 'spanner' : read;
       const named = () => {
         const found = unknownConstruct(engine, tree, rules);
         return found && writtenName(engine, text, r.dialect, read, rules, found);
       };
       const unknown = misreadToken(engine, source, read) ??
-          (tree ? named() : 'a text it cannot read as one expression');
+          (tree ? bareCall(tree) ?? named() :
+                  'a text it cannot read as one expression');
       if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }
@@ -527,10 +526,11 @@ function sqlComments(engine: PolyglotEngine, sql: string, read: string):
 
 // The first token of `sql`, a text in the engine's dialect `read`, that the
 // engine reads another way than the source, named for a message, or undefined.
-// A date part written as a quoted name, such as DATEADD("day", 1, d) or
-// DATEADD([day], 1, d), is a column or an error in the source, and the engine
-// reads it as the part. A SPANNER text, which the engine reads as BigQuery's
-// SQL, names its date parts last.
+// A date part written as a quoted name, such as DATEADD("day", 1, d),
+// DATEADD([day], 1, d) or DATEADD(("day"), 1, d), is a column or an error in
+// the source, and the engine reads it as the part. A function is read by the
+// dialect's table, so Databricks' dateadd(d, 7) has no part. A SPANNER text,
+// which the engine reads as BigQuery's SQL, names its date parts last.
 // MySQL runs the SQL in a /*! comment, which the engine keeps as a comment, and
 // reads a /*+ comment as an optimizer hint. MySQL and Databricks keep the
 // backslash of \% and \_ in a string, which LIKE reads as a literal % or _,
@@ -539,11 +539,19 @@ function sqlComments(engine: PolyglotEngine, sql: string, read: string):
 function misreadToken(engine: PolyglotEngine, sql: string, read: string):
     string|undefined {
   const tokens = engine.tokenize(sql, read).tokens ?? [];
-  const name = (i: number) => String(tokens[i]?.text).toUpperCase();
-  const quoted = read === 'bigquery' ? -1 : tokens.findIndex((t, i) =>
-      t.token_type === 'QUOTED_IDENTIFIER' && tokens[i - 1]?.token_type === 'L_PAREN' &&
-      tokens[i - 2]?.token_type === 'VAR' && PART_FUNCTIONS.has(name(i - 2)));
-  if (quoted >= 0) return `${name(quoted - 2)} with a quoted part`;
+  const table = DATE_TABLES[read];
+  // The date-part function whose first argument starts at token `i`, perhaps
+  // in parentheses, or undefined.
+  const partFunction = (i: number) => {
+    let j = i - 1;
+    while (tokens[j]?.token_type === 'L_PAREN') j--;
+    const fn = String(tokens[j]?.text).toUpperCase();
+    const part = table?.functions[fn] ? table.functions[fn] === 'part' : PART_FUNCTIONS.has(fn);
+    return j < i - 1 && tokens[j]?.token_type === 'VAR' && part ? fn : undefined;
+  };
+  const quoted = read === 'bigquery' ? undefined :
+      tokens.map((t, i) => t.token_type === 'QUOTED_IDENTIFIER' ? partFunction(i) : undefined).find(f => f);
+  if (quoted) return `${quoted} with a quoted part`;
   if (read !== 'mysql' && read !== 'databricks') return undefined;
   const chars = [...sql];
   for (const t of tokens) {
@@ -1131,27 +1139,22 @@ const PART_FUNCTIONS = new Set([
   'DATE_TRUNC', 'DATE_PART', 'DATEPART', 'DATEDIFF',
 ]);
 
-// The functions written only with parentheses. Without them, NOW, CURDATE and
-// GETDATE name a column, which the engine writes as the function.
+// The functions written only with parentheses. Without them, quoted or not,
+// NOW, CURDATE and GETDATE name a column, which the engine reads as the
+// function.
 const CALLED_ONLY = new Set(['NOW', 'CURDATE', 'GETDATE']);
 
-// The start of the name that stands for such a column in the text the engine
-// translates. The engine keeps the name, and repairNode writes the column.
-const BARE_COLUMN = 'kcmd column ';
-
-// `tree`, a source tree, with each function of CALLED_ONLY written without
-// parentheses as a quoted column named `prefix` and its name, and whether it
-// changed.
-function bareColumns(tree: any, prefix = ''): {tree: any; changed: boolean} {
-  let changed = false;
-  const out = mapTree(tree, node => {
-    const fn = node.function;
-    if (!fn?.no_parens || !CALLED_ONLY.has(String(fn.name).toUpperCase())) return undefined;
-    changed = true;
-    const column = sqlExpressionTree('x', 'BIGQUERY').column;
-    return {column: {...column, name: {...column.name, name: prefix + fn.name, quoted: true}}};
+// The first function of CALLED_ONLY in `tree`, a source tree, written without
+// parentheses, named for a message, or undefined. It is found before the other
+// checks, which read it as the function.
+function bareCall(tree: any): string|undefined {
+  let found: string|undefined;
+  mapTree(tree, node => {
+    const name = String(node.function?.name).toUpperCase();
+    if (node.function?.no_parens && CALLED_ONLY.has(name)) found ??= name;
+    return undefined;
   });
-  return {tree: out, changed};
+  return found && `a bare ${found}, which the database reads as a column`;
 }
 
 // The kinds of node that give a BOOL in BigQuery, and 1 or 0 in MySQL.
@@ -1641,6 +1644,14 @@ function timeType(node: any, read: string): string|undefined {
   return CAST_TYPES[type]?.includes(read) ? types[type] : undefined;
 }
 
+// Each type timeType gives `node`, a source value in the engine's dialect
+// `read`, or each value it can give as its own, such as COALESCE's operands.
+function timeTypes(node: any, read: string): string[] {
+  const results = returned(node);
+  const type = timeType(node, read);
+  return results.length ? results.flatMap(v => timeTypes(v, read)) : type ? [type] : [];
+}
+
 // The arguments of `fn`, a source function call in the engine's dialect
 // `read`, that import still has to check, the name of a construct in it
 // import does not translate, or undefined when import does not translate it.
@@ -1664,8 +1675,8 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
   if (name === 'CONCAT') return joinProblem(name, args, read) ?? args;
   // BigQuery's NULLIF compares no DATE or DATETIME with a TIMESTAMP, and gives
   // a DATE and a DATETIME as a DATETIME, where the sources give the type of
-  // the first or text.
-  const times = [...new Set(name === 'NULLIF' ? args.map(a => timeType(a, read)).filter(t => t) : [])];
+  // the first or text. An argument such as COALESCE(d, NOW()) can be either.
+  const times = [...new Set(name === 'NULLIF' ? args.flatMap(a => timeTypes(a, read)) : [])];
   if (times.length > 1) return `NULLIF on a ${times[0]} and a ${times[1]}`;
   const part = (arg: any) => String(partName(arg) ?? '?');
   if (name === 'DATE_TRUNC' || name === 'DATE_PART' || name === 'DATEDIFF') {
@@ -1710,9 +1721,14 @@ function valueName(node: any): string {
 // Whether import keeps `value`, an engine interval beside `+` or `-` in a
 // SPANNER text: a whole number or a column of days, hours or minutes.
 function spannerInterval(value: any): boolean {
+  return spannerAmount(value) && ['DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
+}
+
+// Whether `value`, an engine interval in a SPANNER text, names one unit and a
+// whole number or a column.
+function spannerAmount(value: any): boolean {
   const text = intervalAmount(value);
-  return value?.unit?.type === 'simple' && (!!bare(value.this)?.column || /^\s*[+-]?\d+\s*$/.test(text ?? '')) &&
-      ['DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
+  return value?.unit?.type === 'simple' && (!!bare(value.this)?.column || /^\s*[+-]?\d+\s*$/.test(text ?? ''));
 }
 
 // `value`, an engine interval, as the source writes it after INTERVAL, for a
@@ -1832,8 +1848,7 @@ const DATE_CALL = 'KCMD_DATE_ARITHMETIC';
 // DATE_CALL (see dateCall). A whole number added to a column has no unit and is
 // kept, since the engine writes it as written. In a dialect of EXTRACT_FIRST,
 // YEAR(d) and the other functions of PARTS are written as EXTRACT, whose
-// argument the engine translates. A column that NOW, CURDATE or GETDATE names
-// without parentheses gets a name that starts with BARE_COLUMN.
+// argument the engine translates.
 function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read: string):
     {sql: string}|{error: string} {
   let changed = false;
@@ -1854,9 +1869,7 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     changed = true;
     return {extract: {this: out[part].this, field: extractField(part)}};
   };
-  const parsed = bareColumns(sqlExpressionTree(sql, dialect), BARE_COLUMN);
-  changed = parsed.changed;
-  const tree = rewrite(parsed.tree, true);
+  const tree = rewrite(sqlExpressionTree(sql, dialect), true);
   if (!changed) return {sql};
   const written = engine.generate([tree], read);
   return written.success && written.sql?.length === 1 ? {sql: written.sql[0]} :
@@ -1904,8 +1917,7 @@ function mapTree(node: any, visit: (node: any) => unknown): any {
 // timestamp, MySQL's and SQL Server's current timestamp, and Snowflake's
 // division and average, which give another value or type in BigQuery. So the
 // adapter reads the engine's BigQuery output back and rewrites them. It also
-// writes each date arithmetic in place of its DATE_CALL (see dateSql), and
-// each column named with BARE_COLUMN by its own name.
+// writes each date arithmetic in place of its DATE_CALL (see dateSql).
 
 // The types BigQuery has for Snowflake's TIMESTAMP_NTZ, a wall-clock time.
 const SNOWFLAKE_TYPES: Record<string, unknown> = {
@@ -1948,10 +1960,6 @@ function repairNode(node: any, read: string): unknown {
     return sqlExpressionTree(CURRENT_TIME[read][name], 'BIGQUERY');
   }
   if (name === DATE_CALL) return dateSql(args);
-  const column = node.column?.name;
-  if (String(column?.name).startsWith(BARE_COLUMN)) {
-    return {column: {...node.column, name: {...column, name: column.name.slice(BARE_COLUMN.length)}}};
-  }
   // Snowflake divides and averages a NUMBER, and PostgreSQL averages an
   // integer or a NUMERIC, as an exact decimal, and BigQuery as a FLOAT64 unless
   // a value is a NUMERIC. A Snowflake FLOAT or PostgreSQL double precision
@@ -2236,9 +2244,7 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     }
     return [value.this];
   }
-  if (kind === 'interval') {
-    return value.unit?.type === 'simple' ? [value.this] : `INTERVAL ${intervalText(value)}`;
-  }
+  if (kind === 'interval') return spannerAmount(value) ? [value.this] : `INTERVAL ${intervalText(value)}`;
   if (kind === 'cast' || kind === 'safe_cast') {
     // CAST(x AS DATE), CAST(x AS STRING) read a TIMESTAMP in the default time
     // zone, and CAST(x AS TIMESTAMP) a string or a DATE. BigQuery's CAST takes
