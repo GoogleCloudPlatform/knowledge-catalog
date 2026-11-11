@@ -12,7 +12,8 @@ NODE TABLES (
       order_id AS id,
       customer_id AS customerId,
       amount,
-      MEASURE(COUNT(id)) AS order_count,
+      order_id,
+      MEASURE(COUNT(order_id)) AS order_count,
       MEASURE(SUM(amount)) AS total_amount
     )
 )

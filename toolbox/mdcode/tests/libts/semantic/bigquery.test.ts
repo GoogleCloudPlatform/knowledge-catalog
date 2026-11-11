@@ -406,15 +406,16 @@ describe('the SQL parser reads a metric\'s entity and aggregate', () => {
 
   test('COUNT(DISTINCT(x)) lowers to a valid measure', () => {
     // The parentheses are the operand's, so the measure counts distinct
-    // buyers. Read with patterns, the operand was `DISTINCT(buyer)`, which
-    // gave the input property `DISTINCT(buyer) AS buyers_input` and the
-    // measure `COUNT(buyers_input)`, which BigQuery rejects.
+    // buyers, through the column `buyer` reads. Read with patterns, the operand
+    // was `DISTINCT(buyer)`, which gave the input property `DISTINCT(buyer) AS
+    // buyers_input` and the measure `COUNT(buyers_input)`, which BigQuery
+    // rejects.
     const {ddl, warnings} = generatePropertyGraph(model(
         {name: 'buyers', expression: 'COUNT(DISTINCT(orders.buyer))'},
         {name: 'sites', expression: 'COUNT(DISTINCT (orders.url || orders.o_id))'},
     ), GEN_OPTS);
     expect(warnings).toEqual([]);
-    expect(ddl).toContain('MEASURE(COUNT(DISTINCT buyer)) AS buyers');
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT customer_id)) AS buyers');
     expect(ddl).toContain('url || o_id AS sites_input');
     expect(ddl).toContain('MEASURE(COUNT(DISTINCT sites_input)) AS sites');
     expect(ddl).not.toContain('DISTINCT(');
@@ -538,7 +539,7 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
           expression: 'SUM(orders.amount * 2) / SUM(orders.amount + 1)'
         },
         {name: 'n', expression: 'AVG(orders.amount + 1) * 2'},
-        // A field bound to another column is aggregated by its name.
+        // A field bound to another column aggregates that column.
         {name: 'net_per_order', expression: 'SUM(orders.net) / COUNT(*)'},
         {
           name: 'distinct_share',
@@ -554,10 +555,11 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
     expect(ordersProperties(ddl).slice(4)).toEqual([
       'amount * 2 AS m_input,',
       'amount + 1 AS m_input_2,',
+      'net_amount,',
       'MEASURE(MAX(amount) - MIN(amount)) AS `range`,',
       'MEASURE(SUM(m_input) / SUM(m_input_2)) AS m,',
       'MEASURE(AVG(m_input_2) * 2) AS n,',
-      'MEASURE(SUM(net) / COUNT(order_id)) AS net_per_order,',
+      'MEASURE(SUM(net_amount) / COUNT(order_id)) AS net_per_order,',
       'MEASURE(COUNT(DISTINCT status) / COUNT(status)) AS distinct_share,',
       'MEASURE(SUM(amount) * +(COUNT(order_id))) AS signed',
     ]);
@@ -1861,7 +1863,7 @@ describe('a comment in a field expression', () => {
                  expression: 'SUM(orders.amount -- in cents\n)'}],
     };
     const {ddl, warnings} = generatePropertyGraph(withMetric, GEN_OPTS);
-    expect(ddl).toContain('MEASURE(SUM(total)) AS revenue');
+    expect(ddl).toContain('MEASURE(SUM(amount)) AS revenue');
     expect(warnings).toEqual([]);
   });
 
@@ -1944,7 +1946,8 @@ describe('a comment in a field expression', () => {
     expect(ddl).toContain('KEY(order_id)');
     expect(ddl).toContain(
         '      order_id AS id,\n      amount_cents AS amount,\n' +
-        '      `group` AS `select`,\n      MEASURE(SUM(amount)) AS revenue\n');
+        '      `group` AS `select`,\n      amount_cents,\n' +
+        '      MEASURE(SUM(amount_cents)) AS revenue\n');
     expect(warnings).toEqual([]);
   });
 
@@ -2386,6 +2389,172 @@ describe('a metric operand that names a field', () => {
     }
   });
 
+  // b/581838371: the purchase table keeps its old `amount` and `customer_id`
+  // columns beside `amount_usd` and `cust_ref`, and joins on `customer_id`.
+  test('aggregates the SQL of a field that renames a join column', () => {
+    const model = purchaseWith(
+        [
+          {name: 'amount', expression: 'amount_usd'},
+          {name: 'customer_id', expression: 'cust_ref'},
+        ],
+        [
+          {name: 'total_amount', expression: 'SUM(purchase.amount)'},
+          {name: 'buyers', expression: 'COUNT(DISTINCT purchase.customer_id)'},
+        ]);
+    model.entities.push({
+      name: 'customer',
+      dataSource: 'p.d.customer',
+      keys: ['id'],
+      fields: [{name: 'id', expression: 'id'}],
+    });
+    model.relationships.push({
+      name: 'placed_by',
+      source: {entity: 'purchase', columns: ['customer_id']},
+      destination: {entity: 'customer', columns: ['id']},
+    });
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      cust_ref AS customer_id,\n' +
+        '      amount_usd,\n' +
+        '      cust_ref,\n' +
+        '      MEASURE(SUM(amount_usd)) AS total_amount,\n' +
+        '      MEASURE(COUNT(DISTINCT cust_ref)) AS buyers\n');
+    expect(ddl).toContain(
+        '    DESTINATION KEY(customer_id) REFERENCES customer(id)\n');
+    expect(warnings).toEqual([]);
+  });
+
+  // BigQuery ignores case in a property name, so a column property `AMOUNT`
+  // beside `amount` is rejected: "Duplicate graph property name amount".
+  test('does not expose a column whose name differs from a field\'s only in case', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [
+              {name: 'amount', expression: 'amount_usd'},
+              {name: 'fee', expression: 'AMOUNT'},
+            ],
+            [{name: 'total_fee', expression: 'SUM(purchase.fee)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      AMOUNT AS fee,\n' +
+        '      AMOUNT AS total_fee_input,\n' +
+        '      MEASURE(SUM(total_fee_input)) AS total_fee\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('does not expose a column whose name differs from a metric\'s only in case', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [{name: 'x', expression: 'Total'}],
+            [{name: 'total', expression: 'SUM(purchase.x)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      Total AS x,\n' +
+        '      Total AS total_input,\n' +
+        '      MEASURE(SUM(total_input)) AS total\n');
+    expect(warnings).toEqual([]);
+  });
+
+  // BigQuery gives a property name one type across the graph, so a column
+  // exposed under its own name can clash with another node table's property:
+  // "The property declaration of 'id' has type conflicts".
+  test('does not expose a column under a name another node table\'s field has', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        {
+          name: 'm',
+          relationships: [],
+          metrics:
+              [{name: 'customers', expression: 'COUNT(customer.customer_id)'}],
+          entities: [
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              fields: [{name: 'customer_id', expression: 'id'}],
+            },
+            {
+              name: 'product',
+              dataSource: 'p.d.product',
+              keys: ['id'],
+              fields: [{name: 'id', expression: 'id'}],
+            },
+          ],
+        },
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      id AS customer_id,\n' +
+        '      id AS customers_input,\n' +
+        '      MEASURE(COUNT(customers_input)) AS customers\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('does not expose a column under a name another node table exposed', () => {
+    const model = purchaseWith(
+        [{name: 'amount', expression: 'amount_usd'}],
+        [
+          {name: 'total_amount', expression: 'SUM(purchase.amount)'},
+          {name: 'refunded', expression: 'SUM(refund.amount)'},
+        ]);
+    model.entities.push({
+      name: 'refund',
+      dataSource: 'p.d.refund',
+      keys: ['refund_id'],
+      fields: [{name: 'amount', expression: 'amount_usd'}],
+    });
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      amount_usd,\n' +
+        '      MEASURE(SUM(amount_usd)) AS total_amount\n');
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      amount_usd AS refunded_input,\n' +
+        '      MEASURE(SUM(refunded_input)) AS refunded\n');
+    expect(warnings).toEqual([]);
+  });
+
+  // A measure that named a column of the table would be ambiguous: "Name
+  // total_input is ambiguous because it exists as both a column and a graph
+  // property".
+  test('a synthesized operand property takes no name of a column the table is known to have', () => {
+    const net: Field = {name: 'net', expression: 'gross - fee'};
+    const total: Metric = {name: 'total', expression: 'SUM(purchase.net)'};
+    // A field reads the column.
+    const read = generatePropertyGraph(
+        purchaseWith([net, {name: 'raw', expression: 'total_input'}], [total]),
+        GEN_OPTS);
+    expect(read.ddl).toContain(
+        '      total_input AS raw,\n' +
+        '      gross - fee AS total_input_2,\n' +
+        '      MEASURE(SUM(total_input_2)) AS total\n');
+    expect(read.warnings).toEqual([]);
+    // The key names the column.
+    const model = purchaseWith([net], [total]);
+    model.entities[0].keys = ['purchase_id', 'total_input'];
+    const keyed = generatePropertyGraph(model, GEN_OPTS);
+    expect(keyed.ddl).toContain(
+        '      gross - fee AS total_input_2,\n' +
+        '      MEASURE(SUM(total_input_2)) AS total\n');
+    expect(keyed.warnings).toEqual([]);
+  });
+
+  test('a measure over a field bound to TRUE, FALSE or NULL aggregates that value', () => {
+    for (const value of ['TRUE', 'FALSE', 'NULL']) {
+      const {ddl, warnings} = generatePropertyGraph(
+          purchaseWith(
+              [{name: 'flag', expression: value}],
+              [{name: 'm', expression: 'MAX(purchase.flag)'}]),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          `      ${value} AS flag,\n` +
+          `      ${value} AS m_input,\n` +
+          '      MEASURE(MAX(m_input)) AS m\n');
+      expect(warnings).toEqual([]);
+    }
+  });
+
   test('COUNT(*) counts the key column, not a field named like another column', () => {
     // The key names column `purchase_id`, which field `id` reads, while
     // `legacy_id` reads column `id`.
@@ -2419,13 +2588,15 @@ describe('a metric operand that names a field', () => {
               }],
             },
             GEN_OPTS);
-    // `hour` reads the same column, so reading `hour2` by its SQL would give
-    // `SUM(hour)`.
+    // Each measure sums the column the field reads.
     const time = one(
         'time',
         [{name: 'hour', expression: 'hr'}, {name: 'hour2', expression: 'hr'}],
         [{name: 'h', expression: 'SUM(time.hour2)'}]);
-    expect(time.ddl).toContain('      MEASURE(SUM(hour2)) AS h\n');
+    expect(time.ddl).toContain(
+        '      hr AS hour2,\n' +
+        '      hr,\n' +
+        '      MEASURE(SUM(hr)) AS h\n');
     expect(time.warnings).toEqual([]);
     const date = one(
         'Date', [{name: 'days', expression: 'd_days'}],
@@ -2436,8 +2607,9 @@ describe('a metric operand that names a field', () => {
     expect(date.ddl).toContain(
         '      d_days AS days,\n' +
         '      d_days * 2 AS tw_input,\n' +
+        '      d_days,\n' +
         '      MEASURE(SUM(tw_input)) AS tw,\n' +
-        '      MEASURE(SUM(days)) AS td\n');
+        '      MEASURE(SUM(d_days)) AS td\n');
     expect(date.warnings).toEqual([]);
   });
 
@@ -2453,44 +2625,51 @@ describe('a metric operand that names a field', () => {
     expect(lowered('purchase.amount.x').ddl).toContain(
         '      amt.x AS m_input,\n' +
         '      MEASURE(SUM(m_input)) AS m\n');
-    // Each of these is the field itself. `purchase . amount` places through
-    // the metric's entity: placement does not read it as naming `purchase`.
+    // Each of these is the field itself, so the measure sums its column.
+    // `purchase . amount` places through the metric's entity: placement does
+    // not read it as naming `purchase`.
     for (const operand of
              ['purchase.`amount`', '(purchase.amount)', 'purchase . amount']) {
       const {ddl, warnings} = lowered(operand);
       expect(ddl).toContain(
           '      amt AS amount,\n' +
-          '      MEASURE(SUM(amount)) AS m\n');
+          '      amt,\n' +
+          '      MEASURE(SUM(amt)) AS m\n');
       expect(warnings).toEqual([]);
     }
   });
 
-  test('reuses a field only when its SQL on the table is the operand\'s', () => {
+  test('reuses a field only when it reads the operand\'s column under its own name', () => {
     // `dbl` doubles the column `amount`, not the field `amount`, which reads
-    // `amt`. `twice` doubles `amt`.
-    const {ddl} = generatePropertyGraph(
-        purchaseWith(
-            [
-              {name: 'amount', expression: 'amt'},
-              {name: 'dbl', expression: 'amount * 2'},
-            ],
-            [{name: 'm', expression: 'SUM(purchase.amount * 2)'}]),
-        GEN_OPTS);
-    expect(ddl).toContain(
-        '      amount * 2 AS dbl,\n' +
-        '      amt * 2 AS m_input,\n' +
-        '      MEASURE(SUM(m_input)) AS m\n');
-    const reused = generatePropertyGraph(
-        purchaseWith(
-            [
-              {name: 'amount', expression: 'amt'},
-              {name: 'twice', expression: 'amt * 2'},
-            ],
-            [{name: 'm', expression: 'SUM(purchase.amount * 2)'}]),
-        GEN_OPTS);
-    expect(reused.ddl).toContain(
-        '      amt * 2 AS twice,\n' +
-        '      MEASURE(SUM(twice)) AS m\n');
+    // `amt`. `twice` doubles `amt`, but a measure that named it would also
+    // name a column `twice` if the table has one.
+    for (const [name, expression] of
+             [['dbl', 'amount * 2'], ['twice', 'amt * 2']]) {
+      const {ddl} = generatePropertyGraph(
+          purchaseWith(
+              [{name: 'amount', expression: 'amt'}, {name, expression}],
+              [{name: 'm', expression: 'SUM(purchase.amount * 2)'}]),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          `      ${expression} AS ${name},\n` +
+          '      amt * 2 AS m_input,\n' +
+          '      MEASURE(SUM(m_input)) AS m\n');
+    }
+    // A field that reads the column of its name, in any case, names that
+    // column alone.
+    for (const [name, property] of [['amt', 'amt'], ['Amt', 'amt AS Amt']]) {
+      const {ddl} = generatePropertyGraph(
+          purchaseWith(
+              [
+                {name: 'amount', expression: 'amt'},
+                {name, expression: 'amt'},
+              ],
+              [{name: 'm', expression: 'SUM(purchase.amount)'}]),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          `      ${property},\n` +
+          `      MEASURE(SUM(${name})) AS m\n`);
+    }
   });
 
   test('a metric named like a property an earlier metric added reaches the graph, in either order', () => {
@@ -2502,7 +2681,7 @@ describe('a metric operand that names a field', () => {
           GEN_OPTS);
       expect(ddl).toContain('      amt * 2 AS m_input_2,\n');
       expect(ddl).toContain('      MEASURE(SUM(m_input_2)) AS m');
-      expect(ddl).toContain('      MEASURE(SUM(amount)) AS m_input');
+      expect(ddl).toContain('      MEASURE(SUM(amt)) AS m_input');
       expect(warnings).toEqual([]);
     }
     // COUNT(*) exposes a key column that no field names. A metric may have
@@ -2516,7 +2695,7 @@ describe('a metric operand that names a field', () => {
       const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
       expect(ddl).toContain('      code AS n_input,\n');
       expect(ddl).toContain('      MEASURE(COUNT(n_input)) AS n');
-      expect(ddl).toContain('      MEASURE(MAX(id)) AS code');
+      expect(ddl).toContain('      MEASURE(MAX(purchase_id)) AS code');
       expect(warnings).toEqual([]);
     }
   });

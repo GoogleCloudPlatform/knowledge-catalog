@@ -6,7 +6,8 @@ NODE TABLES (
       order_id AS id,
       group_fk AS groupId,
       `order` AS rank,
-      MEASURE(COUNT(id)) AS `range`
+      order_id,
+      MEASURE(COUNT(order_id)) AS `range`
     ),
   `proj.ds.groups` AS `Group`
     KEY(group_id)

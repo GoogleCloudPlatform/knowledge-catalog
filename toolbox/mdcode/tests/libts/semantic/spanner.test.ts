@@ -1097,6 +1097,35 @@ describe('a field expression that names a sibling field', () => {
     }
   });
 
+  // b/581838371: backticked, each would be a column of that name.
+  test('leaves a field bound to TRUE, FALSE or NULL, and a sibling that reads it, bare', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(ordersWith({
+        is_retail: 'TRUE',
+        is_gift: 'false',
+        discount: 'NULL',
+        big_retail: 'orders.is_retail AND amount_usd > 100',
+        wrapped: 'NOT orders.is_gift',
+        net: 'amount_usd - COALESCE(orders.discount, 0)',
+      }));
+      expect(ddl, engine).toContain(
+          '      TRUE AS is_retail,\n' +
+          '      false AS is_gift,\n' +
+          '      NULL AS discount,\n' +
+          '      TRUE AND amount_usd > 100 AS big_retail,\n' +
+          '      NOT false AS wrapped,\n' +
+          '      amount_usd - COALESCE(NULL, 0) AS net\n');
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('a field named like a value it is bound to holds that value', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({null: 'NULL'}));
+      expect(ddl, engine).toContain('      NULL AS `null`\n');
+    }
+  });
+
   test('a field bound to the quoted column of its name renders as that column', () => {
     for (const [engine, generate] of ENGINES) {
       const {ddl} = generate(ordersWith({order: '`order`'}));

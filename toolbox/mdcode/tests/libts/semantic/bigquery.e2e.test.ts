@@ -512,12 +512,14 @@ describe('binding profiles resolve physical columns and availability', () => {
     expect(ddl).toContain(
         'DESTINATION KEY(fk_customer) REFERENCES Customer(cust_id)');
     // A renamed column is exposed under its logical name (`gross_amount AS
-    // amount`), and the MEASURE aggregates that exposed property -- the one
-    // position where the logical name is correct, because it names a sibling
-    // property, not a raw column. This is the shape live BigQuery accepts
-    // (verified: `MEASURE(SUM(item_count))` over `num_of_item AS item_count`).
+    // amount`). The MEASURE aggregates the column under its own name instead,
+    // since `SUM(amount)` would also name a column `amount` if the table has
+    // one, which BigQuery rejects as ambiguous.
     expect(ddl).toContain('gross_amount AS amount');
-    expect(ddl).toContain('MEASURE(SUM(amount)) AS total_amount');
+    expect(ddl).toContain(
+        '      gross_amount,\n' +
+        '      MEASURE(COUNT(order_id)) AS order_count,\n' +
+        '      MEASURE(SUM(gross_amount)) AS total_amount\n');
     // No logical field name leaks into a structural (KEY/REFERENCES) position,
     // where BigQuery requires the physical column.
     expect(ddl).not.toContain('KEY(id)');

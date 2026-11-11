@@ -168,6 +168,18 @@ export function quoteIfReserved(name: string): string {
                                                                name;
 }
 
+// The reserved keywords that are values. SQL that is one of them alone, such as
+// a field bound to `TRUE`, is that value, not a column of that name.
+const VALUE_KEYWORDS = new Set<string>(['TRUE', 'FALSE', 'NULL']);
+
+// Quotes SQL that is a lone reserved keyword, which a field binding reads as
+// the column of that name, as in `order`. TRUE, FALSE and NULL stay bare, since
+// both engines read a backticked word as a column name. Use on the SQL a field
+// binds to, where quoteIfReserved would turn such a value into a column.
+export function quoteColumnIfReserved(sql: string): string {
+  return VALUE_KEYWORDS.has(sql.toUpperCase()) ? sql : quoteIfReserved(sql);
+}
+
 
 // The distinct `@name` references in a SQL statement, ignoring the ones inside
 // a single-quoted string so a literal containing an '@' is not read as a

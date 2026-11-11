@@ -26,7 +26,7 @@
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {isColumnName, qualifiedColumns, selfReferenceMessage, withSiblingsSpliced} from './sql_expr_utils';
-import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 import {sqlExpressionTree} from './sql_parser';
 
 export interface GenerateResult {
@@ -552,9 +552,9 @@ type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
 // The SQL `field` of `owner` renders from on `engine`. The text is the
 // engine's (fieldExpression), and a field may name a sibling field in it as
 // `<owner>.<field>`. Each sibling it names is replaced with that sibling's
-// own SQL for the engine, in parentheses unless that SQL is a lone column, and
-// every other column loses the owner's qualifier; the rest of the text stays
-// as written. Both engines' SQL is read as BigQuery's.
+// own SQL for the engine, in parentheses unless that SQL is a lone column,
+// TRUE, FALSE or NULL, or already in parentheses, and every other column
+// loses the owner's qualifier; the rest of the text stays as written. Both engines' SQL is read as BigQuery's.
 // Throws when the field names itself, directly or through its siblings, since
 // no SQL can render it; push validation rejects such a model first
 // (validateExpressionReferences).
@@ -588,21 +588,26 @@ function siblingsRead(
     const sibling = read(name);
     if ('noSql' in sibling) return {through: [name]};
     if ('through' in sibling) return {through: [name, ...sibling.through]};
-    // A sibling bound to a reserved column, such as `order`, reads it quoted.
-    // One bound to the column of its own name reads the same either way.
-    const sql = quoteIfReserved(sibling.sql);
+    // A sibling bound to a reserved column, such as `order`, reads it quoted,
+    // and one bound to TRUE, FALSE or NULL reads that value. One bound to the
+    // column of its own name reads the same either way.
+    const sql = quoteColumnIfReserved(sibling.sql);
     if (sql !== name) replacements.set(name, parenthesized(sql));
   }
   return {sql: withSiblingsSpliced(expr, owner.name, replacements)};
 }
 
-// `sql` in parentheses, unless it is a lone column or already in them.
+// `sql` in parentheses, unless it is a lone column, TRUE, FALSE or NULL, or
+// already in them.
 function parenthesized(sql: string): string {
   const tree = sqlExpressionTree(sql, 'BIGQUERY');
   const kind = tree && Object.keys(tree).length === 1 ?
       Object.keys(tree)[0] :
       undefined;
-  return kind === 'column' || kind === 'paren' ? sql : `(${sql})`;
+  return kind === 'column' || kind === 'boolean' || kind === 'null' ||
+          kind === 'paren' ?
+      sql :
+      `(${sql})`;
 }
 
 // What a warning says a field reads when it names a sibling the engine has no
@@ -645,13 +650,13 @@ function renderFieldProperty(
 function renderFieldPropertyCore(
     field: Field, owner: FieldOwner, engine: GraphEngine): string {
   const sql = fieldSql(field, owner, engine);
-  const local = 'sql' in sql ? sql.sql : field.name;
   const alias = quoteIfReserved(field.name);
-  // A field bound to the column of its name, such as `order` bound to
-  // `` `order` ``, is that column.
-  return local === field.name || local === alias ?
-      alias :
-      `${quoteIfReserved(local)} AS ${alias}`;
+  if (!('sql' in sql)) return alias;
+  // A field bound to the column of its name, such as `order` bound to `order`
+  // or `` `order` ``, is that column. One named `null` and bound to NULL holds
+  // the value.
+  const local = quoteColumnIfReserved(sql.sql);
+  return local === alias ? alias : `${local} AS ${alias}`;
 }
 
 
