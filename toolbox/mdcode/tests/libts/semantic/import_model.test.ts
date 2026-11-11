@@ -340,9 +340,13 @@ describe('conversion, strict mode, and translation', () => {
                    .errors).not.toContain(needed);
       });
 
-  // Push's checks need a model that loads, with or without deployments.
+  // Push's checks need a model that loads, with or without deployments. A
+  // named profile binds or excludes each field the model file leaves unbound.
   test.each([
     ['the repaired model does not load', '    colour: red\n', []],
+    ['a profile file leaves the field out', '',
+     [{fileName: 'retail.profile.prod.yaml',
+       content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n    primary_key: [order_id]\n`}]],
   ] as Array<[string, string, Array<{fileName: string; content: string}>]>)(
       'offers no remedy that leaves a field unbound when %s', async (_, extra, profileFiles) => {
         expect((await importSemanticModelYaml(googleDoc({fieldExpr: MDX_ONLY, extra}),
