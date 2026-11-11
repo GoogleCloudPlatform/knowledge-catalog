@@ -291,6 +291,30 @@ describe('OKF workspace', () => {
          expect(updateGroup).not.toHaveBeenCalled();
        });
 
+  test('a create whose operation fails stops push before any entry', async () => {
+    fs.writeFileSync('catalog.yaml', OKF_SCOPE + 'description: d\n');
+    spyOn(CatalogClient.prototype, 'getEntryGroup')
+        .mockImplementation(async () => ({status: 404, message: 'not found'}));
+    const op = 'projects/test-project/locations/us/operations/op-1';
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ({status: 200, result: {name: op}}));
+    spyOn(CatalogClient.prototype, 'getOperation')
+        .mockImplementation(async () => ({
+                              status: 200,
+                              result: {
+                                name: op,
+                                done: true,
+                                error: {code: 7, message: 'Permission denied'},
+                              },
+                            }));
+    expect(await commands.push({})).toBe(1);
+    expect(errors).toEqual([
+      'Error: creating context set \'test-project.us.commerce_eg\': ' +
+          'Permission denied',
+    ]);
+    expect(events).not.toContain('sync.push');
+  });
+
   test('warns when an untyped index.md names what catalog.yaml does not', async () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     fs.writeFileSync('catalog.yaml', OKF_SCOPE);
