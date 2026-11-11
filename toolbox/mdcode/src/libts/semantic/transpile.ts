@@ -546,7 +546,7 @@ function misreadToken(engine: PolyglotEngine, sql: string, read: string):
     let j = i - 1;
     while (tokens[j]?.token_type === 'L_PAREN') j--;
     const fn = String(tokens[j]?.text).toUpperCase();
-    const part = table?.functions[fn] ? table.functions[fn] === 'part' : PART_FUNCTIONS.has(fn);
+    const part = table?.functions[fn] ? table.functions[fn] === 'part' : !!PART_FUNCTIONS[fn]?.includes(read);
     return tokens[j]?.token_type === 'VAR' && part ? fn : undefined;
   };
   const quoted = read === 'bigquery' ? undefined :
@@ -803,7 +803,7 @@ const MAY_BE_TIMESTAMP = 'a value that may be a TIMESTAMP';
 // for a DATE plus any INTERVAL, and adds no month, quarter or year to a
 // TIMESTAMP. An ANSI_SQL text runs by the rules of its tables' database, and
 // the databases add a unit to a DATE as different types. A SPANNER text has no
-// table. arithmetic() keeps its days, hours and minutes, which BigQuery adds as
+// table. spannerNodes keeps its days, hours and minutes, which BigQuery adds as
 // Spanner does.
 const DATE_TABLES: Record<string, DateTable> = {
   // MySQL gives a DATE for a DATE plus a day or longer, and a DATETIME for a
@@ -1133,8 +1133,11 @@ const CURRENT = new Set(Object.values(DATE_TABLES).flatMap(t => [...t.today, ...
 const DATE_FUNCTIONS = new Set(Object.values(DATE_TABLES).flatMap(t => Object.keys(t.functions)));
 
 // The functions whose first argument is a date part, besides those DATE_TABLES
-// lists as 'part'.
-const PART_FUNCTIONS = new Set(['DATE_TRUNC', 'DATE_PART', 'DATEPART', 'DATEDIFF']);
+// lists as 'part', with the dialects that read it so. MySQL's and Databricks'
+// DATEDIFF(end, start) take two dates.
+const PART_FUNCTIONS: Record<string, string[]> = {
+  DATE_TRUNC: DIALECTS, DATE_PART: DIALECTS, DATEPART: DIALECTS, DATEDIFF: except('mysql', 'databricks'),
+};
 
 // The functions written only with parentheses. Without them, quoted or not,
 // NOW, CURDATE and GETDATE name a column, which the engine reads as the
@@ -1532,12 +1535,6 @@ function article(noun: string): string {
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
-  const intervals = kind === 'mul' || read !== 'spanner' ? [] : sides.flatMap(spannerIntervals);
-  if (intervals.length) {
-    const untranslated = intervals.find(i => !spannerInterval(i));
-    return untranslated ? `INTERVAL ${intervalText(untranslated)}` :
-                          sides.map(s => bare(s)?.interval ? bare(s).interval.this : s);
-  }
   const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
   if (sum) return typeof sum === 'string' ? sum : [sum.operand, sum.amount];
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
@@ -1715,19 +1712,17 @@ function valueName(node: any): string {
       'an expression';
 }
 
-// Whether import keeps `value`, an engine interval beside `+` or `-` in a
-// SPANNER text: a whole number or a column of days, hours or minutes.
+// Whether import keeps `value`, an engine interval in a SPANNER text outside
+// DATE_ADD and the other functions of SPANNER_ADDS: a whole number or a column
+// of days, hours or minutes. BigQuery adds no month or year to a TIMESTAMP,
+// and such an INTERVAL can reach `+` or `-` through COALESCE, a product or
+// any other expression.
 function spannerInterval(value: any): boolean {
   return spannerAmount(value) && ['DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
 }
 
-// The engine intervals that `node`, a side of `+` or `-` in a SPANNER text, can
-// give: an INTERVAL, one after a minus sign, or one that COALESCE, IF or a
-// similar function returns. BigQuery adds no month or year to a TIMESTAMP.
-function spannerIntervals(node: any): any[] {
-  const b = bare(node);
-  return b?.interval ? [b.interval] : b?.neg ? spannerIntervals(b.neg.this) : returned(b).flatMap(spannerIntervals);
-}
+// The functions that add their INTERVAL as Spanner does, for any unit they take.
+const SPANNER_ADDS = new Set(['DATE_ADD', 'DATE_SUB', 'TIMESTAMP_ADD', 'TIMESTAMP_SUB']);
 
 // Whether `value`, an engine interval in a SPANNER text, names one unit and a
 // whole number or a column.
@@ -2249,7 +2244,7 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     }
     return [value.this];
   }
-  if (kind === 'interval') return spannerAmount(value) ? [value.this] : `INTERVAL ${intervalText(value)}`;
+  if (kind === 'interval') return spannerInterval(value) ? [value.this] : `INTERVAL ${intervalText(value)}`;
   if (kind === 'cast' || kind === 'safe_cast') {
     // CAST(x AS DATE), CAST(x AS STRING) read a TIMESTAMP in the default time
     // zone, and CAST(x AS TIMESTAMP) a string or a DATE. BigQuery's CAST takes
@@ -2284,6 +2279,8 @@ function spannerArgs(name: string, args: any[]): unknown[]|string|undefined {
   if (partAt !== undefined && !bare(args[partAt])?.var) {
     return `${name} with part '${partName(args[partAt]) ?? '?'}'`;
   }
+  const added = SPANNER_ADDS.has(name) ? bare(args[1])?.interval : undefined;
+  if (added) return spannerAmount(added) ? [args[0], added.this] : `INTERVAL ${intervalText(added)}`;
   const read = ({DATE: 0, TIMESTAMP_TRUNC: 0, FORMAT_TIMESTAMP: 1} as Record<string, number>)[name];
   if (read !== undefined && type(read) === 'string') return `${name} of a string`;
   if (name === 'STRING' && args.length === 1 &&

@@ -620,6 +620,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'DATE_PART("day", d)', {error: 'kcmd does not translate DATE_PART with a quoted part'}],
     ['SQLSERVER', 'DATEPART([day], d)', {error: 'kcmd does not translate DATEPART with a quoted part'}],
     ['SQLSERVER', 'DATEDIFF([day], a, b)', {error: 'kcmd does not translate DATEDIFF with a quoted part'}],
+    ['MYSQL', 'DATEDIFF(`a`, `b`)', {error: 'kcmd does not translate DATEDIFF'}],
     ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
     ['DATABRICKS', '`curdate` - 7', {error: 'kcmd does not translate a bare CURDATE, which the database reads as a column'}],
     ['POSTGRES', 'NOW - 7', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
@@ -629,12 +630,17 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a TIMESTAMP'}],
     ['MYSQL', 'NULLIF(CURDATE(), NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(CURRENT_DATE, d::timestamp))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(x, COALESCE(CURRENT_DATE, d::timestamp)))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor a column, or
-    // one beside + or - with a unit other than days, hours or minutes.
+    // one outside DATE_ADD and the like with a unit other than days, hours or
+    // minutes.
     ['SPANNER', "d + INTERVAL '1 day'", {error: "kcmd does not translate INTERVAL '1 day'"}],
     ['SPANNER', 'd + (INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
     ['SPANNER', 'd + COALESCE(INTERVAL 1 MONTH, INTERVAL 2 DAY)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
     ['SPANNER', 'd + (-INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', 'd + INTERVAL 1 MONTH * 2', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', "EXTRACT(HOUR FROM t - INTERVAL 1 MONTH AT TIME ZONE 'UTC')", {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', 'DATE_ADD(d, INTERVAL 1 MONTH)', {sql: "DATE_ADD(d, INTERVAL '1' MONTH)"}],
     ['SPANNER', 'd + INTERVAL TRUE DAY', {error: 'kcmd does not translate INTERVAL ? DAY'}],
     ['SPANNER', 'DATE_ADD(d, INTERVAL 1.5 DAY)', {error: 'kcmd does not translate INTERVAL 1.5 DAY'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
