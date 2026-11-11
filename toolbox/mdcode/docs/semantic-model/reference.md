@@ -11,11 +11,19 @@ needs. For what of your metadata survives a deploy or a pull, see
 
 ```bash
 kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
+kcmd init --context-set <projectId>.<locationId>.<entryGroupId>
 ```
 
 Provisions the Knowledge Catalog entry group named by the scope (idempotent — an
 existing group is fine) and creates its local directory,
-`catalog/EntryGroups/<entryGroupId>/`. Author `<model>.yaml` there.
+`catalog/EntryGroups/<entryGroupId>/`. Author `<model>.yaml` there. With
+`--context-set`, `init` creates the entry group as a context set (`type:
+context-set`), also creates `bundle/` for OKF concept markdown and
+`bundle/_links.yaml`, and lists `dataplex-types.global.overview` under
+`snapshot.aspects` in `catalog.yaml`. If an entry group with that ID already
+exists without `type: context-set`, `init --context-set` fails and asks you to
+choose a new context set ID because an existing entry group's type cannot be
+changed.
 
 ### push
 
@@ -1142,10 +1150,15 @@ and each aspect type attached, so a push needs, on the destination entry group:
 > The `reference`, `sql-expressions` and semantic-type permissions are not
 > listed there yet, so confirm them against your project's IAM once granted.
 
-`kcmd init --semantic-model` creates what a later push only references, so it
-needs more than push does, in the destination project:
+`kcmd init --semantic-model` (and `kcmd init --context-set`) creates what a
+later push only references, so it needs more than push does, in the destination
+project:
 
-* `dataplex.entryGroups.create` — the destination entry group
+* `dataplex.entryGroups.create` — the destination entry group for
+  `--semantic-model`, or `dataplex.entryGroups.createContextSet` for
+  `--context-set` (granted by `roles/dataplex.contentCreator` on the project;
+  teammates and CI working on an existing context set need
+  `roles/dataplex.contentEditor` on the group)
 * `dataplex.operations.get` — to wait for its creates and updates to finish
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
   `dataplex.entryTypes.create` — the custom `semantic-action` and
