@@ -1041,10 +1041,15 @@ function sqlExecutorErrors(
 export function yamlChangedStatementErrors(
     base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
   const {document, model} = base;
-  const advice = (what: string) =>
+  // What to do with `what` when it belongs to the statement and when it is a
+  // YAML comment. A flow list has no '-' column and cannot hold a block
+  // scalar.
+  const advice = (what: string, flow: boolean) => flow ?
+      `If ${what} is part of the statement, write the statements as a block ` +
+          `list, with this one as a block scalar with '|'. If it is a YAML ` +
+          `comment, move it after the ',' or ']' that follows the statement.` :
       `If ${what} is part of the statement, write it as a block scalar with ` +
-      `'|'. If it is a YAML comment, move it to the '-' column or above the ` +
-      `statement.`;
+          `'|'. If it is a YAML comment, move it to the '-' column.`;
   const errors: string[] = [];
   // The model file holds the inline bindings and goes by its document name,
   // as in the other action messages.
@@ -1057,6 +1062,7 @@ export function yamlChangedStatementErrors(
              writtenStatements(file.text)) {
       const at = `action '${action}' in model '${model.name}' (${
           file.fileName}) has a sql executor whose statement ${index + 1}`;
+      const flow = dashColumn === undefined;
       const after = file.text.slice(statement.range![1]);
       // The indent of a comment line after the statement, past blank lines.
       const commentIndent =
@@ -1065,23 +1071,14 @@ export function yamlChangedStatementErrors(
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
             `statement as '${statement.value}'. ${
-                advice("the text after ' #'")}`);
-      } else if (statement.type === 'PLAIN' && dashColumn !== undefined &&
-                 commentIndent > dashColumn) {
+                advice("the text after ' #'", flow)}`);
+      } else if (statement.type === 'PLAIN' &&
+                 commentIndent > (dashColumn ?? -1)) {
         errors.push(
-            `${at} is followed by a comment line indented under it, so YAML ` +
-            `reads the statement as '${statement.value}'. ${
-                advice('the comment line')}`);
-      } else if (statement.type === 'PLAIN' && dashColumn === undefined &&
-                 commentIndent >= 0) {
-        // A flow list has no '-' column and cannot hold a block scalar.
-        errors.push(
-            `${at} is followed by a comment line before the next ',' or ']', ` +
-            `so YAML reads the statement as '${statement.value}'. If the ` +
-            `comment line is part of the statement, write the statements as ` +
-            `a block list, with this one as a block scalar with '|'. If it ` +
-            `is a YAML comment, move it after the ',' or ']' that follows the ` +
-            `statement.`);
+            `${at} is followed by a comment line ${
+                flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
+            `so YAML reads the statement as '${statement.value}'. ${
+                advice('the comment line', flow)}`);
       } else if (joinedLinesCommented(statement, file.text, dialects)) {
         errors.push(
             `${at} has a SQL comment on a line YAML joins to the next one, ` +

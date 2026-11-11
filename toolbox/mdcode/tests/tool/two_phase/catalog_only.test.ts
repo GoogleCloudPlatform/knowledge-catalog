@@ -304,7 +304,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         'whose statement 1 has a comment on the same line, so YAML reads the ' +
         "statement as 'UPDATE customer SET doc = doc'. If the text after ' #' " +
         "is part of the statement, write it as a block scalar with '|'. If it " +
-        "is a YAML comment, move it to the '-' column or above the statement.")],
+        "is a YAML comment, move it to the '-' column.")],
     then: [{
       files: {'commerce.yaml': modelWriting([
         '- UPDATE customer SET doc = doc WHERE c_key = @k',
@@ -334,8 +334,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         'whose statement 1 is followed by a comment line indented under it, ' +
         "so YAML reads the statement as 'UPDATE customer SET doc = doc'. If " +
         'the comment line is part of the statement, write it as a block ' +
-        "scalar with '|'. If it is a YAML comment, move it to the '-' column " +
-        'or above the statement.')],
+        "scalar with '|'. If it is a YAML comment, move it to the '-' column.")],
     then: [{
       files: {'commerce.yaml': modelWriting(
           ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
@@ -376,6 +375,12 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         ']  # a note',
       ])},
       code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([`[${COMMENTED}`, ']'])},
+      errors: [has(
+          "has a comment on the same line, so YAML reads the statement as " +
+          "'UPDATE customer SET doc = doc'. If the text after ' #' is part of " +
+          'the statement, write the statements as a block list')],
     }],
   },
   {
