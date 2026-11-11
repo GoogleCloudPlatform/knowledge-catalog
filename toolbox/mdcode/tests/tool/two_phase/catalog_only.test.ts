@@ -344,6 +344,18 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       files: {'commerce.yaml': modelWriting(
           ['- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k"])},
       code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '- &cut UPDATE customer SET doc = doc', '',
+        "  #- '{draft}' WHERE c_key = @k", '- *cut',
+      ])},
+      errors: [has('statement 1 is followed by a comment line'),
+               has('statement 2 is followed by a comment line')],
+    }, {
+      // A flow list has no '-' column to indent a comment line past.
+      files: {'commerce.yaml': modelWriting(
+          ['[UPDATE customer SET doc = doc WHERE c_key = @k', '   # a note', ']'])},
+      code: 0,
     }],
   },
   {
@@ -358,20 +370,28 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         'next one, so the comment also covers the lines after it. Write it ' +
         "as a block scalar with '|', which keeps its line breaks.")],
     then: [{
-      files: {'commerce.yaml': modelWriting(
-          ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
+      files: {'commerce.yaml': modelWriting([
+        '- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
+        // A line break written as '\' joins the name back together.
+        '- "UPDATE cust\\', '  omer SET doc = doc WHERE c_key = @k"',
+      ])},
       code: 0,
     }, {
       files: {'commerce.yaml': modelWriting([
         '- "UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k"',
         "- 'UPDATE customer SET doc = doc -- every row?", "  WHERE c_key = @k'",
+        '- "UPDATE customer SET doc = doc -- every row? \\', '  WHERE c_key = @k"',
+        // The comment covers the opening quote or '/*' of text on a later line.
+        '- >', '  UPDATE customer SET doc = doc -- every row?', "  WHERE doc = 'a", '', "  b' AND c_key = @k",
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '  /* a', '', '  b */ WHERE c_key = @k',
       ])},
-      errors: [has('statement 1 has a SQL comment'), has('statement 2 has a SQL comment')],
+      errors: [1, 2, 3, 4, 5].map(n => has(`statement ${n} has a SQL comment`)),
     }, {
-      files: {'commerce.yaml': modelWriting(
-          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
-          {deployments: ['g']})},
-      errors: [has('has a SQL comment on a line YAML joins to the next one')],
+      files: {'commerce.yaml': modelWriting([
+        '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',
+        '- UPDATE customer SET doc = doc#every row?', '  WHERE c_key = @k',
+      ], {deployments: ['g']})},
+      errors: [has('statement 1 has a SQL comment'), has('statement 2 has a SQL comment')],
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],

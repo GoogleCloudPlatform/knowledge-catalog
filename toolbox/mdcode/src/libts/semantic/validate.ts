@@ -29,7 +29,7 @@ import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding,
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
-import {SqlColumn, sqlTokens} from './sql_parser';
+import {SqlColumn, SqlToken, sqlTokens} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
 // Checks every model against the push requirements and returns the collected
@@ -1031,8 +1031,9 @@ function sqlExecutorErrors(
 //   1. An unquoted statement with a comment on the same line. YAML ends an
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
-//   2. An unquoted statement followed by a comment line indented past the
-//      list's '-'. YAML ends the statement there too.
+//   2. An unquoted statement in a block list followed, after any blank lines,
+//      by a comment line indented past the list's '-'. YAML ends the
+//      statement there too.
 //   3. A statement whose YAML style joins its lines into one, with a SQL line
 //      comment on a line before the last. Joined, the comment also covers the
 //      lines after it.
@@ -1051,19 +1052,20 @@ export function yamlChangedStatementErrors(
          ...profileDocs(document),
        ]) {
     const dialects = statementDialects(model, file.name);
-    for (const {action, index, aliased, statement, dashColumn} of
+    for (const {action, index, statement, dashColumn} of
              writtenStatements(file.text)) {
       const at = `action '${action}' in model '${model.name}' (${
           file.fileName}) has a sql executor whose statement ${index + 1}`;
       const after = file.text.slice(statement.range![1]);
+      // The indent of a comment line after the statement, past blank lines.
       const commentIndent =
-          /^[ \t]*\r?\n([ \t]*)#/.exec(after)?.[1].length ?? -1;
+          /^(?:[ \t]*\r?\n)+([ \t]*)#/.exec(after)?.[1].length ?? -1;
       if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
             `statement as '${statement.value}'. ${
                 advice("the text after ' #'")}`);
-      } else if (statement.type === 'PLAIN' && !aliased &&
+      } else if (statement.type === 'PLAIN' && dashColumn !== undefined &&
                  commentIndent > dashColumn) {
         errors.push(
             `${at} is followed by a comment line indented under it, so YAML ` +
@@ -1085,11 +1087,10 @@ interface WrittenStatement {
   action: string;
   // 0-based position in the executor's `statements` list.
   index: number;
-  // Whether the list item is an alias of `statement`.
-  aliased: boolean;
   statement: yaml.Scalar;
-  // The column of the list's '-'.
-  dashColumn: number;
+  // The column of the list's '-', or undefined for a flow list, which has
+  // none.
+  dashColumn?: number;
 }
 
 // Each `sql` executor statement in the model or profile file `text`. A model
@@ -1120,13 +1121,14 @@ function writtenStatements(text: string): WrittenStatement[] {
     if (!yaml.isSeq(statements)) return [];
     const name = nodeAt(action, 'name');
     const start = statements.range![0];
-    const dashColumn = start - text.lastIndexOf('\n', start - 1) - 1;
+    const dashColumn = statements.flow ?
+        undefined :
+        start - text.lastIndexOf('\n', start - 1) - 1;
     return statements.items.flatMap((item, index) => {
       const statement = resolved(item);
       return yaml.isScalar(statement) ? [{
         action: yaml.isScalar(name) ? String(name.value) : '',
         index,
-        aliased: item !== statement,
         statement,
         dashColumn,
       }] : [];
@@ -1134,57 +1136,95 @@ function writtenStatements(text: string): WrittenStatement[] {
   });
 }
 
-// The dialects of the stores binding profile `profile` runs statements
-// against: one for each deployment that uses it, named after its engine.
+// The dialects of the stores where binding profile `profile` runs
+// statements: one for each deployment that uses it, named after its engine.
 // Empty when no deployment uses it, or when a deployment's target is in no
 // accepted form, which localChecks reports.
 function statementDialects(model: SemanticModel, profile: string): string[] {
-  const resolved = resolveModelDeployments(model);
-  if ('error' in resolved) return [];
-  return [...new Set(resolved.deployments.filter(d => d.profile === profile)
+  const deployments = resolveModelDeployments(model);
+  if ('error' in deployments) return [];
+  return [...new Set(deployments.deployments.filter(d => d.profile === profile)
                          .map(d => d.engine.toUpperCase()))];
 }
 
 // Whether a SQL line comment on a line YAML joins to the next covers text from
-// the lines after it, as any of `dialects` reads the statement. The join can
-// only take tokens away, by putting them inside such a comment, so the
-// statement YAML reads then has fewer tokens than the statement with its line
-// breaks kept. With no dialect, only `--` starts a comment, since PostgreSQL
-// reads `#` as an operator.
+// the lines after it, as any of `dialects` reads the statement. Joining lines
+// does not merge or split tokens, so the tokens of the statement YAML reads
+// differ from those of the statement with its line breaks kept only when such
+// a comment covers some of them, or covers a quote or `/*` and leaves the
+// rest unreadable. With no dialect, only `--` starts a comment, since
+// PostgreSQL reads `#` as an operator.
 function joinedLinesCommented(
     statement: yaml.Scalar, text: string, dialects: string[]): boolean {
-  const kept = withLineBreaks(statement, text);
-  if (kept === undefined) return false;
   return (dialects.length ? dialects : ['ANSI_SQL']).some(dialect => {
-    const joinedTokens = sqlTokens(String(statement.value), dialect);
-    const keptTokens = sqlTokens(kept, dialect);
-    return !!joinedTokens && !!keptTokens &&
-        joinedTokens.length < keptTokens.length;
+    const kept = withLineBreaks(statement, text, dialect);
+    const keptTokens = kept === undefined ? undefined :
+                                            statementTokens(kept, dialect);
+    if (!keptTokens) return false;
+    const joinedTokens = statementTokens(String(statement.value), dialect);
+    return !joinedTokens || joinedTokens.length !== keptTokens.length ||
+        joinedTokens.some((t, i) => t.token_type !== keptTokens[i].token_type);
   });
+}
+
+// The tokens of the statement `text` as `dialect` reads them, or undefined
+// when it cannot be read. BigQuery and Spanner start a comment at a `#`
+// written against a name or a parameter, as in `doc#note`, which the
+// tokenizer reads as part of the name. So such a `#` is read after a space.
+function statementTokens(text: string, dialect: string): SqlToken[]|undefined {
+  const tokens = sqlTokens(text, dialect);
+  if (dialect !== 'BIGQUERY' && dialect !== 'SPANNER') return tokens;
+  const glued =
+      tokens?.find(t => t.token_type === 'VAR' && t.text.includes('#'));
+  if (!glued) return tokens;
+  // A span counts code points.
+  const chars = Array.from(text);
+  const at = glued.span.start + Array.from(glued.text).indexOf('#');
+  return statementTokens(
+      [...chars.slice(0, at), ' ', ...chars.slice(at)].join(''), dialect);
 }
 
 // `statement` as written, with the line breaks YAML joins kept, or undefined
 // when it is on one line or its style keeps line breaks. A '>' block reads as
-// the '|' block it would be. A double-quoted value reads with each line break
-// YAML joins written as the escape `\n` and an escaped line break. A line
-// break after an odd number of backslashes is escaped already.
-function withLineBreaks(statement: yaml.Scalar, text: string): string|
-    undefined {
+// the '|' block it would be. In a double-quoted value, each line break YAML
+// joins is rewritten as `\n` followed by an escaped line break, which YAML
+// reads as one line break. A line break written as `\` at the end of a line
+// joins the lines with nothing between them, so it stays as written unless
+// the line before it ends inside a SQL comment, as `dialect` reads it.
+function withLineBreaks(
+    statement: yaml.Scalar, text: string, dialect: string): string|undefined {
   const written = text.slice(statement.range![0], statement.range![1]);
   if (!written.includes('\n')) return undefined;
-  let kept: unknown;
-  if (statement.type === 'PLAIN') {
-    kept = written;
-  } else if (statement.type === 'QUOTE_SINGLE') {
-    kept = written.slice(1, -1).replace(/''/g, "'");
-  } else if (statement.type === 'QUOTE_DOUBLE') {
-    kept = yaml.parse(
-        written.replace(/(?<![\\\r])((?:\\\\)*)(\r?\n)/g, '$1\\n\\$2'),
-        YAML_OPTIONS);
-  } else if (statement.type === 'BLOCK_FOLDED') {
-    kept = yaml.parse(`|${written.slice(1)}`, YAML_OPTIONS);
+  if (statement.type === 'PLAIN') return written;
+  if (statement.type === 'QUOTE_SINGLE') {
+    return written.slice(1, -1).replace(/''/g, "'");
   }
-  return typeof kept === 'string' ? kept : undefined;
+  if (statement.type === 'BLOCK_FOLDED') {
+    return yaml.parse(`|${written.slice(1)}`, YAML_OPTIONS);
+  }
+  if (statement.type !== 'QUOTE_DOUBLE') return undefined;
+  // Text added after SQL that ends inside a comment adds no token.
+  const endsInComment = (sql: string) => {
+    const tokens = statementTokens(sql, dialect);
+    return !!tokens &&
+        statementTokens(`${sql} x`, dialect)?.length === tokens.length;
+  };
+  // The rewritten source, which ends in the line before each line break.
+  let source = '';
+  for (const [i, part] of written.split(/(\r?\n)/).entries()) {
+    const escaped = /(^|[^\\])(\\\\)*\\$/.test(source);
+    if (i % 2 === 0) {
+      source += part;
+    } else if (!escaped) {
+      source += `\\n\\${part}`;
+    } else if (endsInComment(
+                   yaml.parse(`${source.slice(0, -1)}"`, YAML_OPTIONS))) {
+      source = `${source.slice(0, -1)}\\n\\${part}`;
+    } else {
+      source += part;
+    }
+  }
+  return yaml.parse(source, YAML_OPTIONS);
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a

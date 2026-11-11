@@ -561,7 +561,9 @@ describe('kcmd import', () => {
           google +
           '    actions:\n      - name: purge\n        parameters: [{name: k, type: Integer}]\n' +
           '        executor:\n          sql:\n            statements:\n' +
-          "              - UPDATE orders SET doc = doc #- '{draft}' WHERE order_id = @k\n");
+          "              - UPDATE orders SET doc = doc #- '{draft}' WHERE order_id = @k\n" +
+          // Push stops at the first refusal, before it reads this statement.
+          '              - DELETE FROM orders WHERE order_id = @missing\n');
     expect(await importModel('retail.yaml', {flavor: 'google', input: 'first-party', out: 'out'}))
         .toBe(1);
     expect(errors).toEqual([expect.stringContaining(
