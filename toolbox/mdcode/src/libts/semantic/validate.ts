@@ -2639,8 +2639,9 @@ const storedName = (name: string) => name.replace(/^`|`$/g, '').toLowerCase();
 // write. It reads the database's schema, and plans a query of what each node
 // and edge table of the graph reads, so Spanner reports a column the table
 // lacks and SQL it cannot run. It finds a graph named like another schema
-// object, a key that no primary key or unique index of its table backs, and a
-// property that two tables give different types. It changes nothing. `at`
+// object, a key that no primary key or unique index of its table backs, a
+// property that two tables give different types, and an edge's join column
+// whose type differs from the column it references. It changes nothing. `at`
 // names the deployment. Returns one message per problem.
 export async function validateSpannerGraph(
     at: string, model: SemanticModel, target: SpannerGraphTarget,
@@ -2740,12 +2741,14 @@ export async function validateSpannerGraph(
 
     // The type Spanner gives each property, by its name in lower case.
     const typed = new Map<string, Array<{where: string; type: SpannerType}>>();
-    const plan = async (
-        what: string, table: string, read: string[], properties = 0) => {
+    // Plans a query of `read` on `table`, and gives the type Spanner gives
+    // each text it reads, or undefined when Spanner refuses the query.
+    const plan = async (what: string, table: string, read: string[]) => {
       // The table gets an alias the query does not name, since a name that
       // matches the table's own reads as its row and not as a column, as
       // `order` does in table `Order`.
-      const list = [...new Set(read)].join(', ');
+      const texts = [...new Set(read)];
+      const list = texts.join(', ');
       const sql = `SELECT ${list} FROM ${table} AS ${
           unusedName(list, 'kcmd_table')}`;
       const res = await spanner.executeQuery(session, sql, {plan: true});
@@ -2756,28 +2759,49 @@ export async function validateSpannerGraph(
             `to plan: ${sql}`);
         return undefined;
       }
-      return res.result?.metadata?.rowType?.fields?.slice(0, properties);
+      const fields = res.result?.metadata?.rowType?.fields ?? [];
+      return new Map(texts.map((t, i) => [t, fields[i]?.type]));
     };
+    const planned = new Map<GraphElement, Map<string, SpannerType|undefined>>();
     for (const e of tables) {
-      const texts = e.properties.map(p => p.text);
-      const fields = await plan(
-          label(e), e.table, [...texts, ...e.key, ...e.endpointColumns],
-          new Set(texts).size);
-      e.properties.forEach((p, i) => {
-        const type = fields?.[i]?.type;
-        if (!type) return;
+      const types = await plan(
+          label(e), e.table,
+          [...e.properties.map(p => p.text), ...e.key, ...e.endpointColumns]);
+      if (!types) continue;
+      planned.set(e, types);
+      for (const p of e.properties) {
+        const type = types.get(p.text);
+        if (!type) continue;
         const key = p.name.toLowerCase();
         typed.set(key, [...typed.get(key) ?? [], {where: label(e), type}]);
-      });
-      // The columns an edge's REFERENCES clauses read in a node's table,
-      // unless that node's own query reads them.
+      }
+      // Each SOURCE KEY and DESTINATION KEY column of an edge has the type of
+      // the column it references, read by that node's own query when it can.
+      let offset = 0;
       for (const {entity, columns} of e.references) {
+        const joined = e.endpointColumns.slice(offset, offset += columns.length);
         const node = tables.find(n => n.kind === 'node' && n.name === entity);
-        if (!node || columns.every(c => node.key.includes(c))) continue;
-        await plan(
-            `the columns relationship '${e.name}' references in entity '${
-                entity}'`,
-            node.table, columns);
+        if (!node) continue;
+        const own = planned.get(node);
+        const refTypes = own && columns.every(c => own.has(c)) ? own :
+            await plan(
+                `the columns relationship '${e.name}' references in entity '${
+                    entity}'`,
+                node.table, columns);
+        columns.forEach((ref, i) => {
+          const from = types.get(joined[i]);
+          const to = refTypes?.get(ref);
+          if (!from || !to || JSON.stringify(from) === JSON.stringify(to)) {
+            return;
+          }
+          errors.push(
+              `${at}: relationship '${e.name}' joins column ${joined[i]} of ` +
+              `table ${e.table}, of type ${spannerTypeName(from)}, to column ${
+                  ref} of entity '${entity}', of type ${
+                  spannerTypeName(to)}; Spanner needs each join column to ` +
+              `have the type of the column it references. Join on columns ` +
+              `of one type.`);
+        });
       }
     }
     for (const [key, found] of typed) {

@@ -72,7 +72,7 @@ scenarios('a Spanner graph', [
     }],
   },
   {
-    name: 'is refused before the catalog write when Spanner refuses the plan of what a node table reads, or gives a property two types, after planning each node and edge table and the columns an edge references',
+    name: 'is refused before the catalog write when Spanner refuses the plan of what a node table reads, gives a property two types, or gives a join column a type other than that of the column it references, after planning each node and edge table and the columns an edge references',
     ...GRAPH,
     services: {
       executeQuery: when(
@@ -109,6 +109,22 @@ scenarios('a Spanner graph', [
           "entity 'employee' and type INT64 in the node table of entity " +
           "'purchase', but a Spanner graph gives a property one type. Cast " +
           'the expressions to one type, or rename the fields.')],
+    }, {
+      // Join column `by` is an INT64, and dept, which it references, a STRING.
+      code: 1, nothingWritten: true,
+      services: {
+        executeQuery: (_s: string, sql: string, opts: any) =>
+            sql === 'SELECT dept FROM employees AS kcmd_table' ?
+            planned('STRING') :
+            isPlan(sql, opts, '`Order`') ? planned('INT64', 'INT64') :
+                                          undefined,
+      },
+      errors: [err(
+          `${at('sp')}: relationship 'placed_by' joins column \`by\` of ` +
+          'table `Order`, of type INT64, to column dept of entity ' +
+          "'employee', of type STRING; Spanner needs each join column to " +
+          'have the type of the column it references. Join on columns of ' +
+          'one type.')],
     }],
   },
   {
