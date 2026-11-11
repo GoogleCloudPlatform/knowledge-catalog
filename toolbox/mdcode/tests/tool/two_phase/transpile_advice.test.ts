@@ -213,6 +213,7 @@ semantic_model:
       '%s names the command that works once the error is fixed',
       async (_, options, code, command, error, suggested) => {
         vanilla();
+        spyOn(ApiContext, 'default').mockReturnValue(CTX);
         const warnings: string[] = [];
         spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
           warnings.push(a.join(' '));
@@ -223,10 +224,7 @@ semantic_model:
         expect(warnings).toContain("Warning: field 'Customer.code': no 'BIGQUERY' or " +
             "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; " +
             `give it one, or add one with ${command} after fixing this: ${error}`);
-        mock.restore();
         fs.rmSync(path.join(dir, SIBLING));
-        spyOn(console, 'warn').mockImplementation(() => {});
-        spyOn(console, 'log').mockImplementation(() => {});
         expect(await importModel(VANILLA, suggested)).toBe(0);
         mock.restore();
         const after = await runPush({}, {validateOnly: true});
