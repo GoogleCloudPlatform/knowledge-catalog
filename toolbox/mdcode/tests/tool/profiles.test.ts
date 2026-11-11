@@ -1307,8 +1307,8 @@ semantic_model:
       test('when the kept binding reads the excluded field', async () => {
         const errors = [
           "[commerce.profile.prod.yaml] profile 'prod': field 'leaf.b' " +
-              "depends on 'leaf.a', which this profile excludes; exclude " +
-              "'leaf.b' too, or rebind it",
+              "depends on 'leaf.a', which this profile excludes; add 'b' " +
+              "to the 'fields_exclude' of entity 'leaf', or rebind it",
         ];
         for (const deploy of [undefined, 'prod']) {
           writeScope(scope('1', 'mid.a + 1', deploy));

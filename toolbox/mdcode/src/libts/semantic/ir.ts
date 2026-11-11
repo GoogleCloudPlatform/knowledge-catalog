@@ -88,6 +88,11 @@ export interface SemanticModel {
   // in `metrics`, so a catalog push still publishes them; pruning drops them.
   // Set when a profile is applied; absent otherwise.
   excludedMetrics?: string[];
+  // Set when kcmd import checks what it writes for a file another product
+  // wrote, unless it writes a GOOGLE block over that file, so that a message
+  // naming an import command names one that reads that file. Absent
+  // otherwise.
+  thirdPartyImport?: boolean;
 }
 
 /**

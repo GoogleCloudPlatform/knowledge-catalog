@@ -244,9 +244,10 @@ describe('a model with no deployments checks every profile file\'s sources', () 
     expect(await push({})).toBe(1);
     expect(messages(errorSpy)).toBe(
         `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
-        `table Knowledge Catalog knows about. The table may not exist, or you ` +
-        `may not be allowed to read its catalog entry. Fix the source, or ` +
-        `pass --skip-source-check.`);
+        `table Knowledge Catalog knows about. BigQuery has the table, but ` +
+        `Knowledge Catalog has no entry for it that you may read. Fix the ` +
+        `access or the source. --skip-source-check skips this lookup, but a ` +
+        `deployment that reads the table still checks the table itself.`);
     expect(preflightSpy).not.toHaveBeenCalled();
     expect(lookup.mock.calls.map(c => c[2]).sort())
         .toEqual([RAW, PROD, DEV].map(entry).sort());
@@ -609,7 +610,8 @@ entities:
     const depends = (profile: string, field: string) =>
         `Error: [commerce.profile.${profile}.yaml] profile '${profile}': ` +
         `field 'orders.${field}' depends on 'orders.tax', which this profile ` +
-        `excludes; exclude 'orders.${field}' too, or rebind it`;
+        `excludes; add '${field}' to the 'fields_exclude' of entity 'orders', ` +
+        `or rebind it`;
 
     expect(await push({validateOnly: true})).toBe(1);
     expect(messages(errorSpy).split('\n'))
@@ -2687,9 +2689,10 @@ semantic_model:
     expect(await push({})).toBe(1);
     expect(messages(errorSpy)).toBe(
         `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
-        `table Knowledge Catalog knows about. The table may not exist, or you ` +
-        `may not be allowed to read its catalog entry. Fix the source, or ` +
-        `pass --skip-source-check.`);
+        `table Knowledge Catalog knows about. BigQuery has the table, but ` +
+        `Knowledge Catalog has no entry for it that you may read. Fix the ` +
+        `access or the source. --skip-source-check skips this lookup, but a ` +
+        `deployment that reads the table still checks the table itself.`);
     expect(applySpy).not.toHaveBeenCalled();
     const entry = (source: string) =>
         `projects/test-project/locations/us/entryGroups/@bigquery/entries/${source}`;

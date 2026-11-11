@@ -2161,6 +2161,20 @@ export async function importModel(
   // One context, made on first use.
   let ctx: context.ApiContext|undefined;
   const api = () => ctx ??= context.ApiContext.default();
+  // The workspace's layout, read once, when the files go into it.
+  let layoutRead: Promise<SemanticModelLayout|string>|undefined;
+  const layoutOf = () => layoutRead ??= workspaceLayout();
+  // Where the model file `fileName` goes, when it has a place.
+  const modelTarget = async (fileName: string) => {
+    if (options.out) {
+      return YAML_FILE.test(options.out) ? options.out :
+                                           path.join(options.out, fileName);
+    }
+    const layout = await layoutOf();
+    return typeof layout === 'string' ?
+        undefined :
+        layout.modelPath(fileName.replace(YAML_FILE, ''));
+  };
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
     sourcePrefix: options.sourcePrefix,
@@ -2175,6 +2189,10 @@ export async function importModel(
         new dataplex.CatalogClient(api()).listEntries(
             project, location, entryGroup),
     readDialects: texts => readDialects(api(), texts),
+    overwritesInput: async fileName => {
+      const target = await modelTarget(fileName);
+      return !!target && path.resolve(target) === path.resolve(file);
+    },
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
@@ -2199,7 +2217,7 @@ export async function importModel(
       return {path: target, write: text => writeFileAt(target, text)};
     });
   } else {
-    const layout = await workspaceLayout();
+    const layout = await layoutOf();
     if (typeof layout === 'string') return fail(layout);
     // The engine's first file is the model file, `<model>.yaml`; the rest are
     // its profile files, which pull's mapping writes beside it.

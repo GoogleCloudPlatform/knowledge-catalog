@@ -128,6 +128,7 @@ describe('kcmd import', () => {
           [[model(), {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
             listEntries: expect.any(Function), readDialects: expect.any(Function),
+            overwritesInput: expect.any(Function),
           }]]);
       expect(ApiContext.default).not.toHaveBeenCalled();
     });
@@ -172,6 +173,38 @@ describe('kcmd import', () => {
       expect(errors).toEqual([]);
     });
   }
+
+  // A third-party import that writes over its input names the import command
+  // that reads the file it writes. The command takes --input first-party when
+  // that file has a GOOGLE block, here for the relationship's description.
+  // Following it adds the BigQuery text of 'orders.order_id'.
+  const DESCRIBED = `      - name: customers\n        source: ${PREFIX}/tables/customers\n` +
+      '        primary_key: [id]\n        fields:\n          - name: id\n' +
+      '            expression: {dialects: [{dialect: BIGQUERY, expression: id}]}\n' +
+      '    relationships:\n      - {name: oc, from: orders, to: customers, ' +
+      'from_columns: [order_id], to_columns: [id], description: d}\n';
+  // [label, the input, --out, text after the field 'orders.order_id', --input]
+  test.each([
+    ['in place in the workspace', path.join(GROUP, 'retail.yaml'), undefined, DESCRIBED, 'first-party'],
+    ['over the file --out names', 'retail.yaml', 'retail.yaml', DESCRIBED, 'first-party'],
+    // A first-party import of this file stops at the field the translator
+    // refuses.
+    ['in place, writing no GOOGLE block,', path.join(GROUP, 'retail.yaml'), undefined,
+     '          - name: custom_val\n            expression: {dialects: [{dialect: SNOWFLAKE, ' +
+         "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n",
+     undefined],
+  ])('a third-party import %s hints at a command that reads the written file', async (_, input, out, rest, mode) => {
+    workspace();
+    write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') + rest);
+    expect(await importModel(input, {flavor: 'ossie', out})).toBe(0);
+    expect(warnings).toContainEqual(expect.stringContaining(`add one with 'kcmd import <file>${
+        mode ? ' --input first-party' : ''} --flavor ossie --transpile'`));
+    warnings = [];
+    expect(await importModel(input, {flavor: 'ossie', input: mode, transpile: true, out}))
+        .toBe(0);
+    expect(errors).toEqual([]);
+    expect(warnings.join('\n')).not.toContain("field 'orders.order_id' in model");
+  });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
   // [label, the workspace, the error, the input file]

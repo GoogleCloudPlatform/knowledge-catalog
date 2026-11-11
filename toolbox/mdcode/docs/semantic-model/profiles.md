@@ -135,7 +135,8 @@ BigQuery runs each query in one location, so push also refuses a profile whose
 BigQuery and BigLake tables share no location. A BigLake table can be queried in
 any replica region of its catalog. A `US` catalog with replicas in `us-central1`
 and `us-east1` therefore joins datasets in either region. It cannot join a
-dataset in the `US` multi-region. `--skip-source-check` skips this check. A
+dataset in the `US` multi-region. `--skip-source-check` skips this check, but
+a BigQuery deployment still checks the location of each table it reads. A
 profile moves an entity between stores by swapping its source and, when the
 two stores shape the data differently, the column each field reads.
 
@@ -603,6 +604,8 @@ writes nothing.
   the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
+- **Unknown key** — a key that neither a profile nor the model file takes at
+  that level is rejected, and the error lists the keys the profile takes there.
 - **Incomplete profile** — a push checks every named profile of each model it
   deploys or publishes, whichever deployment it deploys: each profile file, and
   each profile a vanilla model carries in its `GOOGLE` block. A profile that

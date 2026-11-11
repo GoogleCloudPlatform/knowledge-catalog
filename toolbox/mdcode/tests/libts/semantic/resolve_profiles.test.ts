@@ -324,13 +324,18 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(report.unboundFields).toContain('Customer.lifetimeValue');
   });
 
-  test('a metric that reads an unbound field is dropped and reported', () => {
-    const {model, report} = pruneUnavailable(irModel(), 'operational');
-    expect(metricNames(model)).toEqual(['order_count']);
-    const dropped =
-        report.droppedMetrics.find(d => d.name === 'avg_lifetime_value');
-    expect(dropped?.reason).toMatch(/Customer\.lifetimeValue/);
-  });
+  // An unqualified name reads a field of the metric's entity.
+  test.each(['AVG(Customer.lifetimeValue)', 'AVG(lifetimeValue)'])(
+      'a metric that reads an unbound field as %s is dropped and reported',
+      expression => {
+        const m = irModel();
+        m.metrics![1].expression = expression;
+        const {model, report} = pruneUnavailable(m, 'operational');
+        expect(metricNames(model)).toEqual(['order_count']);
+        const dropped =
+            report.droppedMetrics.find(d => d.name === 'avg_lifetime_value');
+        expect(dropped?.reason).toMatch(/Customer\.lifetimeValue/);
+      });
 
   test('a metric whose fields are all bound survives', () => {
     const {model} = pruneUnavailable(irModel(), 'operational');
@@ -1018,15 +1023,38 @@ actions:
     }]);
   });
 
+  // [where, the profile, the key written, the key the message lists, the
+  // message]
+  test.each([
+    ['the profile', 'name: prod\nmetric_exclude: "*"\n', 'metric_exclude', 'metrics_exclude',
+     "profile 'prod': unknown key 'metric_exclude'; it takes 'name', 'entities', " +
+     "'relationships', 'metrics_exclude' and 'actions'"],
+    ['an entity', 'name: prod\nentities:\n  - {name: orders, sourc: x}\n', 'sourc', 'source',
+     "profile 'prod': entity 'orders': unknown key 'sourc'; it takes 'name', 'source', " +
+     "'primary_key', 'unique_keys', 'fields' and 'fields_exclude'"],
+    ['a field', 'name: prod\nentities:\n  - {name: orders, fields: [{name: a, expresion: x}]}\n',
+     'expresion', 'expression',
+     "profile 'prod': entity 'orders': field 'a': unknown key 'expresion'; it takes 'name' " +
+     "and 'expression'"],
+    ['a relationship', 'name: prod\nrelationships:\n  - {name: r, from_columns: [a], to_column: [b]}\n',
+     'to_column', 'to_columns',
+     "profile 'prod': relationship 'r': unknown key 'to_column'; it takes 'name', " +
+     "'from_columns' and 'to_columns'"],
+  ])('a key no model file takes on %s is unknown, and the key the message lists loads',
+     (_, text, written, listed, message) => {
+       expect(() => loadProfileFile(text, 'prod')).toThrow(message);
+       expect(() => loadProfileFile(text.replace(written, listed), 'prod')).not.toThrow();
+     });
+
   test('metrics_exclude "*" reads back as "*"', () => {
     expect(loadProfileFile('name: prod\nmetrics_exclude: "*"\n', 'prod').metricsExclude)
         .toBe('*');
   });
 
   test('a logical key, "*" in a list, a wrong name, datasets and the old wrapper are rejected', () => {
-    for (const key of ['description', 'datatype']) {
-      expect(() => loadProfileFile(
-                 `name: prod\nentities:\n  - {name: orders, ${key}: x}\n`, 'prod'))
+    for (const entity of ['{name: orders, description: x}',
+                          '{name: orders, fields: [{name: a, datatype: x}]}']) {
+      expect(() => loadProfileFile(`name: prod\nentities:\n  - ${entity}\n`, 'prod'))
           .toThrow(/which a profile may not set/);
     }
     expect(() => loadProfileFile('name: prod\nmetrics_exclude: ["*"]\n', 'prod'))
@@ -1146,15 +1174,21 @@ describe('validateProfileCompleteness', () => {
         .toEqual([]);
   });
 
-  test('a metric reaching an excluded field is named with the field', () => {
+  // The expression of metric avg_lifetime_value, anchored on Customer. A name
+  // without an entity reads a field of the metric's entity.
+  test.each(['AVG(Customer.lifetimeValue)', 'AVG(lifetimeValue)'])(
+      'a metric over %s reaching an excluded field is named with the field', expression => {
+    const m = irModel();
+    Object.assign(m.metrics!.find(x => x.name === 'avg_lifetime_value')!,
+                  {expression, authoredEntity: 'Customer'});
     const entities = [CUSTOMER_WITHOUT_LTV, profile().entities[1]];
-    const errors = validateProfileCompleteness(irModel(), profile({entities}));
+    const errors = validateProfileCompleteness(m, profile({entities}));
     expect(errors).toEqual([
       "profile 'prod': metric 'avg_lifetime_value' reaches " +
       "'Customer.lifetimeValue', which this profile excludes; add " +
       "'avg_lifetime_value' to 'metrics_exclude'",
     ]);
-    expect(validateProfileCompleteness(irModel(), profile({
+    expect(validateProfileCompleteness(m, profile({
       entities, metricsExclude: ['avg_lifetime_value'],
     }))).toEqual([]);
   });
@@ -1594,7 +1628,7 @@ describe('profile overlay edges', () => {
 
   test('deployment_target at the top of a profile file is rejected', () => {
     expect(() => loadProfileFile('name: prod\ndeployment_target: x\n', 'prod'))
-        .toThrow(/which a profile may not set/);
+        .toThrow(/unknown key 'deployment_target'/);
   });
 
   test(
@@ -2708,7 +2742,26 @@ semantic_model:
     });
     expect(errors).toEqual([
       "profile 'prod': field 'vip.net' depends on 'vip.discount', which this profile " +
-          "excludes; exclude 'vip.net' too, or rebind it",
+          "excludes; add 'net' to the 'fields_exclude' of entity 'vip', or rebind it",
+    ]);
+    // The name the message gives, in the list it names, clears it.
+    expect(validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [keyedById('customer', BQ('c'), column('gross'), column('discount')),
+                 {...keyedById('vip', BQ('v'), column('gross')), fieldsExclude: ['discount', 'net']}],
+      relationships: [],
+    })).toEqual([]);
+    // A field the profile binds in 'fields' moves from there.
+    expect(validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [keyedById('customer', BQ('c'), column('gross'), column('discount')),
+                 {...keyedById('vip', BQ('v'), column('gross'), column('net', 'vip.gross - vip.discount')),
+                  fieldsExclude: ['discount']}],
+      relationships: [],
+    })).toEqual([
+      "profile 'prod': field 'vip.net' depends on 'vip.discount', which this profile " +
+          "excludes; move 'net' from 'fields' to the 'fields_exclude' of entity 'vip', or " +
+          'rebind it',
     ]);
   });
 
@@ -2746,7 +2799,8 @@ semantic_model:
       expect(validateProfileCompleteness(model('root.r_id + 1', 'mid.a + 1'), prod))
           .toEqual([
             "profile 'prod': field 'leaf.b' depends on 'leaf.a', which this " +
-                "profile excludes; exclude 'leaf.b' too, or rebind it",
+                "profile excludes; add 'b' to the 'fields_exclude' of entity 'leaf', or " +
+                'rebind it',
           ]);
     });
 

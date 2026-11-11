@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
@@ -42,9 +42,10 @@ import {YAML_OPTIONS} from './yaml_options';
 // combined single-file form).
 export const DEFAULT_PROFILE = 'default';
 
-// Keys a profile may carry at each level. Everything else is a logical
-// declaration the model owns; setting it in a profile is rejected so swapping a
-// profile can move data but never change what the model means.
+// Keys a profile may carry at each level. A key the model file takes at the
+// same level is a logical declaration the model owns; setting it in a profile
+// is rejected so swapping a profile can move data but never change what the
+// model means. Any other key is unknown.
 export const PROFILE_FILE_KEYS = new Set([
   'name', 'entities', 'relationships', 'metrics_exclude', 'actions',
 ]);
@@ -267,7 +268,11 @@ export function pruneUnavailable(
         unread++;
       }
     }
-    const hit = firstUnboundReferenced(columns, unavailable);
+    // An unqualified name reads a field of the metric's entity.
+    const hit = firstUnboundReferenced(
+        columns.map(c => c.qualifier === undefined && mt.entity ?
+                        {...c, qualifier: mt.entity} : c),
+        unavailable);
     if (hit) {
       report.droppedMetrics.push({
         name: mt.name,
@@ -1150,7 +1155,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
         `under 'entities'`);
   }
   // The profile's own name is checked against the file name below.
-  requireKeys(doc, PROFILE_FILE_KEYS, where, false);
+  requireKeys(doc, PROFILE_FILE_KEYS, where, [], false);
   if (doc.name !== profileName) {
     throw new SemanticModelError(
         `${where} declares name '${doc.name ?? ''}', which does not match ` +
@@ -1162,7 +1167,9 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
                   .map(e => profileEntity(e, where)),
     relationships:
         listOf(doc.relationships, `${where} 'relationships'`).map(r => {
-          requireKeys(r, PROFILE_RELATIONSHIP_KEYS, `${where}: relationship`);
+          requireKeys(
+              r, PROFILE_RELATIONSHIP_KEYS, `${where}: relationship`,
+              ['relationships', 0]);
           const at = `${where}: relationship '${r.name}'`;
           // An empty list is rejected as a load rejects one, so an empty side
           // here can only mean a side the profile leaves out.
@@ -1195,7 +1202,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
     // Actions are out of preview scope and gain no new checks, so when a
     // profile lists an action twice, the last entry wins.
     spec.actions = listOf(doc.actions, `${where} 'actions'`).map(a => {
-      requireKeys(a, PROFILE_ACTION_KEYS, `${where}: action`);
+      requireKeys(a, PROFILE_ACTION_KEYS, `${where}: action`, ['actions', 0]);
       if (a.executor === undefined) return {name: a.name};
       return {
         name: a.name,
@@ -1213,7 +1220,7 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
 }
 
 function profileEntity(e: any, where: string): ProfileEntityBinding {
-  requireKeys(e, PROFILE_ENTITY_KEYS, `${where}: entity`);
+  requireKeys(e, PROFILE_ENTITY_KEYS, `${where}: entity`, ['datasets', 0]);
   const at = `${where}: entity '${e.name}'`;
   const binding: ProfileEntityBinding = {name: e.name};
   if (e.source !== undefined) {
@@ -1231,7 +1238,8 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
   }
   if (e.fields !== undefined) {
     binding.fields = listOf(e.fields, `${at} 'fields'`).map(f => {
-      requireKeys(f, PROFILE_FIELD_KEYS, `${at}: field`);
+      requireKeys(
+          f, PROFILE_FIELD_KEYS, `${at}: field`, ['datasets', 0, 'fields', 0]);
       const fat = `${at}: field '${f.name}'`;
       return f.expression === undefined ?
           {name: f.name} :
@@ -1250,21 +1258,25 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
 }
 
 // Checks that `obj` is a mapping carrying only `allowed` keys and, unless
-// `named` is false, a string `name`.
+// `named` is false, a string `name`. `level` is the path of the same level in
+// a model file, below its model (see modelFileKeysAt).
 function requireKeys(
-    obj: any, allowed: Set<string>, where: string, named = true): void {
+    obj: any, allowed: Set<string>, where: string,
+    level: readonly PropertyKey[], named = true): void {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     throw new SemanticModelError(`${where} is not a mapping`);
   }
   if (named && typeof obj.name !== 'string') {
     throw new SemanticModelError(`${where} has no 'name'`);
   }
+  const at = named && obj.name !== undefined ? `${where} '${obj.name}'` : where;
   for (const k of Object.keys(obj)) {
-    if (!allowed.has(k)) {
-      throw new SemanticModelError(notAllowed(
-          named && obj.name !== undefined ? `${where} '${obj.name}'` : where,
-          k));
-    }
+    if (allowed.has(k)) continue;
+    throw new SemanticModelError(
+        modelFileKeysAt(level).includes(k) ?
+            notAllowed(at, k) :
+            `${at}: unknown key '${k}'; it takes ${
+                listed([...allowed].map(a => `'${a}'`))}`);
   }
 }
 
@@ -1396,15 +1408,20 @@ export function fieldsOnTables(model: SemanticModel, withUnread = false):
   });
 }
 
-// The import command, ending in `flags`, that keeps a model file of `version`
+// The import command, ending in `flags`, that keeps the model file of `model`
 // in its own flavor: `--flavor google` for a Google model, `--flavor ossie` for
 // a vanilla one, and both flavors when no model is known. Push reads only files
-// written for kcmd, so `--input first-party` fits each of them.
-export function importCommand(flags: string, version?: string): string {
-  const flavor = version === GOOGLE_VERSION ? 'google' :
-      version === OSSIE_VERSION             ? 'ossie' :
-                                              '<ossie|google>';
-  return `kcmd import <file> --input first-party --flavor ${flavor} ${flags}`;
+// written for kcmd, so the command takes `--input first-party`. A third-party
+// import names the command for the file it imports instead, which reads that
+// file as another product's.
+export function importCommand(
+    flags: string,
+    model?: Pick<SemanticModel, 'version'|'thirdPartyImport'>): string {
+  const flavor = model?.version === GOOGLE_VERSION ? 'google' :
+      model?.version === OSSIE_VERSION             ? 'ossie' :
+                                                     '<ossie|google>';
+  const input = model?.thirdPartyImport ? '' : ' --input first-party';
+  return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
@@ -1421,10 +1438,11 @@ export function importTranspiles(
 // `model`, or ''.
 export function importHint(
     f: Parameters<typeof textsFor>[0], dialect: string,
-    model: Pick<SemanticModel, 'entities'|'version'>): string {
+    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>):
+    string {
   if (!importTranspiles(f, dialect, model)) return '';
   return `; give it one, or add one with '${
-      importCommand('--transpile', model.version)}'`;
+      importCommand('--transpile', model)}'`;
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -1845,7 +1863,7 @@ export function validateProfileCompleteness(
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
           const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
               ` add one with '${
-                  importCommand('--transpile', baseModel.version)}',` :
+                  importCommand('--transpile', baseModel)}',` :
               '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
@@ -1883,24 +1901,39 @@ export function validateProfileCompleteness(
     }
   }
   for (const [field, reached] of dangling) {
+    const [entity, name] = field.split('.');
+    // A field the entity's binding lists in 'fields' cannot be in
+    // 'fields_exclude' too.
+    const bound =
+        bindingOf.get(entity)?.fields?.some(f => f.name === name) ?? false;
     errors.push(
         `${at}: field '${field}' depends on '${reached}', which this ` +
-        `profile excludes; exclude '${field}' too, or rebind it`);
+        `profile excludes; ${bound ? 'move' : 'add'} '${name}' ${
+            bound ? "from 'fields' " : ''}to the 'fields_exclude' of entity ` +
+        `'${entity}', or rebind it`);
   }
   const why = (target: string) => excluded.has(target) ?
       'which this profile excludes' :
       `which depends on '${dangling.get(target)}', an excluded field`;
   if (profile.metricsExclude !== '*') {
     const metricExcluded = new Set(profile.metricsExclude ?? []);
-    for (const m of baseModel.metrics ?? []) {
+    // The profile's metrics, each with its entity as this profile's sources
+    // infer it.
+    for (const m of profiled.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
+      // An unqualified name that is a field of the metric's entity reads
+      // that field.
+      const ownFields = m.entity ? fieldsOf.get(m.entity) : undefined;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
       for (const text of textsFor(m as Field, dialect)) {
         // A text with no SQL has nothing to read.
         if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
         if (columns) {
-          read.push(columns);
+          read.push(columns.map(
+              c => c.qualifier === undefined && ownFields?.has(c.name) ?
+                  {...c, qualifier: m.entity} :
+                  c));
         } else {
           unreadable.add(metricLabel(m.name));
           noteUnread(metricLabel(m.name), m, text);

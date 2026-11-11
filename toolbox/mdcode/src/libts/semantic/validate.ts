@@ -341,7 +341,7 @@ function measurePlacementErrors(
           `'BIGQUERY' or 'ANSI_SQL' expression${
               importTranspiles(metric, 'BIGQUERY', model) ?
                   `, or add one with '${
-                      importCommand('--transpile', model.version)}'` :
+                      importCommand('--transpile', model)}'` :
                   ''}.`);
       continue;
     }
@@ -1343,9 +1343,10 @@ function inheritanceRuleErrors(
               `${where(entity.name)}: field '${field.name}' is inherited, so ` +
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
-        } else if (!isFieldBound(field)) {
-          // A redeclaration sets `expression` and nothing else, so a line with
-          // only the name is not one.
+        }
+        if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else, so a line
+          // with no `expression` is not one.
           const from = (ancestorsOf.get(entity.name) ?? [])
                            .find(a => ownNames.get(a)?.has(field.name));
           errors.push(
@@ -1853,8 +1854,35 @@ export function validateExpressionReferences(
           impliedDialect));
     }
 
+    const entityOfMetric =
+        new Map((model.metrics ?? []).map(m => [m.name, m.entity]));
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
+      const authored = metric.authoredEntity;
+      const anchor = authored ?? metric.entity;
+      // Whether `name`, read where a field belongs, names another metric of
+      // the model: qualified with `on`, that metric's entity, or unqualified
+      // and no field of this metric's entity, declared or inherited. A metric
+      // cannot read another metric, so each such metric gets one message,
+      // with no advice on how to name a field.
+      const metricsRead = new Set<string>();
+      const readsMetric = (name: string, on?: string) => {
+        if (name === metric.name || !entityOfMetric.has(name)) return false;
+        if (on === undefined ?
+                anchor !== undefined && fieldsByEntity.get(anchor)?.has(name) :
+                entityOfMetric.get(name) !== on) {
+          return false;
+        }
+        if (!metricsRead.has(name)) {
+          metricsRead.add(name);
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}): '${name}' is a metric, and a metric over ` +
+              `other metrics is not supported in this version; write the ` +
+              `expression of '${name}' in its place.`);
+        }
+        return true;
+      };
       const sources = expressionSources(metric);
       // A text with no SQL has nothing to read, so it gets no warning.
       const readable =
@@ -1872,8 +1900,6 @@ export function validateExpressionReferences(
       addUnreadableWarning(
           `metric '${metric.name}'`, readable.length, unreadDialects);
 
-      const authored = metric.authoredEntity;
-      const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
       const collision = metricFieldCollisionError(
@@ -1923,7 +1949,7 @@ export function validateExpressionReferences(
         for (const entityName of reached) {
           const knownFields = fieldsByEntity.get(entityName)!;
           for (const ref of fieldsReadOn(allColumns, entityName)) {
-            if (!knownFields.has(ref)) {
+            if (!knownFields.has(ref) && !readsMetric(ref, entityName)) {
               errors.push(
                   `metric '${metric.name}' in model '${model.name}' (${
                       document}): expression references '${entityName}.${
@@ -1947,6 +1973,7 @@ export function validateExpressionReferences(
         if (seenUnqualified.has(token)) continue;
         seenUnqualified.add(token);
         if (col.qualifier === undefined) {
+          if (readsMetric(col.name)) continue;
           errors.push(
               `metric '${metric.name}' in model '${model.name}' (${
                   document}): '${token}' must be written as ` +

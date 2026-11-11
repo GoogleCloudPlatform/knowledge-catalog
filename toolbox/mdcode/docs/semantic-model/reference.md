@@ -90,53 +90,63 @@ kcmd import <file> --flavor <ossie|google>
 Imports a semantic model file into the flavor `--flavor` names. Import changes
 a value only when that flavor rejects it. When the file's own flavor rejects
 the value too, the change is a repair. A file another product wrote is
-repaired, and each repair is reported as a warning. Renaming a dialect such as
-`GOOGLE_SQL` or `bigquery` is a repair. In a vanilla file written as vanilla,
-recasing a datatype such as `integer` is a repair, and so is writing a string
-`expression` as an `ANSI_SQL` entry under `dialects`. The other changes convert
-the file between flavors and are not reported. A conversion moves each value
-the two flavors place differently, such as a dataset's `extends`, between its
-own key and a `GOOGLE` block, as written. A conversion to vanilla drops an
-empty `extends`, `deployments` or relationship `description` instead of writing
-a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
-when nothing else is left in it. A file written for kcmd converts between
-flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
-a Google-flavor `<file>` go in with it. A profile's sources stay as written,
-even with `--source-prefix`. Import runs push's checks of the model and its
-bindings on what it writes, and stops where push stops. Unlike push, it
-reports every deployment target in no accepted form. Without
-`--input first-party`, it still reports each profile's problems when the model
-file has a source push rejects. The checks cover the model's names,
-descriptions, fields, keys, metrics, relationships, inheritance, actions and
-constraints. They also cover the model file's own bindings and each profile
-import writes. For each deployment they cover its profile, bindings, metrics,
-tables and graph. A profile file beside a vanilla `<file>` and a
+repaired, and each repair is reported as a warning. Under
+`--input first-party`, each repair is an error that says what the file needs.
+Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla
+file written as vanilla, recasing a datatype such as `integer` is a repair, and
+so is writing a string `expression` as an `ANSI_SQL` entry under `dialects`.
+When import writes the Google flavor, removing a field's `expression` that has
+no entry in a supported SQL dialect is a repair, and so is removing a `source`
+that is a query. Under `--input first-party`, the error for the field asks for
+an entry in a supported dialect, and the error for the source asks for a table.
+On an abstract entity, each asks to remove the `expression` or `source`
+instead, since an abstract entity has no table and its fields take no
+expression.
+The other changes convert the file between flavors and are not reported. A
+conversion moves each value the two flavors place differently, such as a
+dataset's `extends`, between its own key and a `GOOGLE` block, as written. A
+conversion to vanilla drops an empty `extends`, `deployments` or relationship
+`description` instead of writing a `GOOGLE` block for it, and drops an empty
+`custom`, with its `ai_context` when nothing else is left in it. A file written
+for kcmd converts between flavors exactly or not at all. The
+`<model>.profile.<name>.yaml` files beside a Google-flavor `<file>` go in with
+it. A profile's sources stay as written, even with `--source-prefix`. Import
+runs push's checks of the model and its bindings on what it writes, and stops
+where push stops. Unlike push, it reports every deployment target in no
+accepted form. Without `--input first-party`, it still reports each profile's
+problems when the model file has a source push rejects. The checks cover the
+model's names, descriptions, fields, keys, metrics, relationships, inheritance,
+actions and constraints. They also cover the model file's own bindings and each
+profile import writes. For each deployment they cover its profile, bindings,
+metrics, tables and graph. A profile file beside a vanilla `<file>` and a
 `<model>.profiles/` directory beside `<file>` are checked too. The checks also
 make sure Knowledge Catalog can store each aspect push writes. The deployment
 checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
 description and synonym limits. Import reports what these checks reject as an
 error under `--input first-party` and as a warning otherwise, except a
 deployment target in no accepted form, which is an error either way. It reports
-their warnings as warnings in either mode. They include push's warnings about the Knowledge
-Catalog entries, about the fields each deployment leaves out and about each
-graph. Import leaves out push's notes. A profile file that does not parse is
-always an error. Under `--input first-party`, a message from these checks names
-the input file that holds what it reports. The checks that read a service stay
-with push, such as whether each source names a table Knowledge Catalog knows
-about. For its checks, import reads only each table's dialect, as push does: a
-Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
-table's from its database. Import then judges each table in that dialect. When
-it cannot read a table's dialect, it warns with push's reason and skips the
-checks that need the dialect: whether a field has SQL in its table's dialect,
-what an `ANSI_SQL` text reads when every table of the model file or profile is
-such a table, and whether a profile's or the model file's tables are in one
-database when only that table's entry can say. Tables of two systems are never
-in one database, so import still reports a profile or model file that binds a
-BigQuery table beside such a table.
-Nothing is written
-when the import reports an error. Import rewrites only the values it changes,
-and every other line of the file stays as written, with its comments, blank
-lines, quoting, indentation and line endings. Comments on anything import
+their warnings as warnings in either mode. They include push's warnings about
+the Knowledge Catalog entries, about the fields each deployment leaves out and
+about each graph. Import leaves out push's notes. A profile file that does not
+parse is always an error. Under `--input first-party`, a message from these
+checks names the input file that holds what it reports. Without it, a message
+that suggests a `kcmd import` command leaves out `--input first-party`, so the
+command imports the same input. An import that writes a `GOOGLE` block over its
+input keeps that flag, since the command then reads the file the import wrote.
+The checks that read a service stay with push, such as whether each source
+names a table Knowledge Catalog knows about. For its checks, import reads only
+each table's dialect, as push does: a Cloud SQL or third-party table's from its
+Knowledge Catalog entry, and a Spanner table's from its database. Import then
+judges each table in that dialect. When it cannot read a table's dialect, it
+warns with push's reason and skips the checks that need the dialect: whether a
+field has SQL in its table's dialect, what an `ANSI_SQL` text reads when every
+table of the model file or profile is such a table, and whether a profile's or
+the model file's tables are in one database when only that table's entry can
+say. Tables of two systems are never in one database, so import still reports a
+profile or model file that binds a BigQuery table beside such a table. Nothing
+is written when the import reports an error. Import rewrites only the values it
+changes, and every other line of the file stays as written, with its comments,
+blank lines, quoting, indentation and line endings. Comments on anything import
 removes or moves elsewhere in the file are dropped, such as those on a key that
 goes into or out of a `GOOGLE` block. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.
@@ -934,7 +944,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   profile here. Push reads the entry of a Cloud SQL or third-party table for
   its dialect instead, and a missing entry stops the push even with
   `--skip-source-check`. That flag skips the source check and its location
-  rule. `kcmd profiles` does not run the source check.
+  rule. Each error from the check offers the flag and says what it skips. The
+  flag gets no BigQuery or Spanner deployment past a missing table. A BigQuery
+  deployment still probes each table it reads before anything is written, as
+  the next check says. A Spanner deployment's graph DDL fails on a missing
+  table after Knowledge Catalog is written. `kcmd profiles` does not run the
+  source check.
   *(live — needs the reads listed under [Permissions](#permissions))*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
