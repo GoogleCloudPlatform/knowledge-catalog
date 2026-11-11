@@ -110,6 +110,17 @@ function jsonIn(value: unknown): object|undefined {
   }
 }
 
+/**
+ * `data`, the JSON text of a GOOGLE block's `data`, changed to hold `value`
+ * in its own layout (see `updatedJson`), or undefined when it cannot be.
+ */
+export function updatedData(data: string, value: unknown): string|undefined {
+  // A string that ends in a blank line is written double-quoted, since a
+  // `|+` block would take the blank lines after it, so a changed `data`
+  // ends in one line break and stays a block.
+  return updatedJson(data, value)?.replace(/\n\s*$/, '\n');
+}
+
 // `text`, a JSON object or list, changed to hold `value`, or undefined when
 // the yaml library reads `text` as another value, as with a lone carriage
 // return. Each part whose value stays keeps its text, and a changed scalar is
@@ -359,12 +370,7 @@ function merged(
   if (isDeepStrictEqual(base, pulled)) return local;
   const [l, b, p] = [local, base, pulled].map(jsonIn);
   if (json && l !== undefined && b !== undefined && p !== undefined) {
-    // A string that ends in a blank line is written double-quoted, since a
-    // `|+` block would take the blank lines after it, so a changed `data`
-    // ends in one line break and stays a block.
-    return updatedJson(local as string, merged(l, b, p, jsonLayout))
-               ?.replace(/\n\s*$/, '\n') ??
-        pulled;
+    return updatedData(local as string, merged(l, b, p, jsonLayout)) ?? pulled;
   }
   if (isRecord(local) && isRecord(base) && isRecord(pulled)) {
     const entries = mergedEntries(

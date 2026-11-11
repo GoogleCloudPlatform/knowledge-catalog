@@ -456,6 +456,55 @@ describe('profile translation', () => {
     expect(res.warnings).not.toContain("Converted 'retail.profile.prod.yaml' to YAML.");
   });
 
+  // A GOOGLE block whose profile binds order_id to the JSON `dialects`, over
+  // several lines or on one line, beside another vendor's block.
+  const lines = (dialects: string) => `    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |
+          {
+            "profiles": [
+              {
+                "name": "prod",
+                "entities": [
+                  {
+                    "name": "orders",
+                    "source": "${BQ_PREFIX}/tables/orders_prod",
+                    "primary_key": ["order_id"],
+                    "fields": [
+                      {
+                        "name": "order_id",
+                        "expression": {
+                          "dialects": [
+                            ${dialects}
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+      - vendor_name: ACME
+        data: '{"x":   1}'
+`;
+  const line = (dialects: string) => `    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"profiles": [{"name": "prod", "entities": [{"name": "orders", "source": "${
+      BQ_PREFIX}/tables/orders_prod", "primary_key": ["order_id"], "fields": [{"name": "order_id", "expression": {"dialects": [${
+      dialects}]}}]}]}]}'
+`;
+  const SF_JSON = '{ "dialect": "SNOWFLAKE", "expression": "NVL(order_id, 0)" }';
+  const BQ_JSON = '{ "dialect": "BIGQUERY", "expression": "COALESCE(order_id, 0)" }';
+  test.each([
+    ['over several lines', lines, `${SF_JSON},\n                            ${BQ_JSON}`],
+    ['on one line', line, `${SF_JSON}, ${BQ_JSON}`],
+  ])('writes only the translated entry into a GOOGLE block written %s', async (_, block, dialects) => {
+    const res = await importSemanticModelYaml(ossieDoc({extra: block(SF_JSON)}), ossie);
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toBe(ossieDoc({extra: block(dialects)}));
+  });
+
   // A profile file that changes is written as YAML, as a model file is. One
   // that does not change stays as written. Each warning names its file.
   test.each([

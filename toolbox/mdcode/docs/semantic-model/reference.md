@@ -164,7 +164,9 @@ say. Tables of two systems are never in one database, so import still reports a
 profile or model file that binds a BigQuery table beside such a table. Nothing
 is written when the import reports an error. Import rewrites only the values it
 changes, and every other line of the file stays as written, with its comments,
-blank lines, quoting, indentation and line endings. Comments on anything import
+blank lines, quoting, indentation and line endings. The JSON `data` of a
+`GOOGLE` block keeps its layout too. A translation that `--transpile` adds to a
+profile there is written like the entry beside it. Comments on anything import
 removes or moves elsewhere in the file are dropped, such as those on a key that
 goes into or out of a `GOOGLE` block. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.
