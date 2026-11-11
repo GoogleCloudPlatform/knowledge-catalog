@@ -106,7 +106,7 @@ export function modelFile(s: Scope = {}): string {
   return YAML.stringify({
     version: s.google ? '0.2.0.dev0' : '0.2.0.dev0/google',
     semantic_model: [{name: 'commerce', ...model}],
-  });
+  }, {lineWidth: 0});
 }
 
 export function profileFile(name: string, p: Profile): string {
@@ -114,7 +114,8 @@ export function profileFile(name: string, p: Profile): string {
   const bound = entities && Object.entries(entities).map(
       ([n, b]) => typeof b === 'string' ? {name: n, source: b} :
                                           {name: n, ...b});
-  return YAML.stringify({name, ...(bound ? {entities: bound} : {}), ...rest});
+  return YAML.stringify(
+      {name, ...(bound ? {entities: bound} : {}), ...rest}, {lineWidth: 0});
 }
 
 // Writes catalog.yaml and the entry group's files, replacing earlier ones.
