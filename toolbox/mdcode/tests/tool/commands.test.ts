@@ -1357,6 +1357,22 @@ semantic_model:
          });
   }
 
+  // Pull writes an action statement on one line, so YAML joins no lines of
+  // it and push accepts it again.
+  test('a pulled long action statement pushes again', async () => {
+    await pushed({
+      'commerce.yaml': WITH_SQL_ACTION.replace(
+          'UPDATE ledger SET closed = TRUE',
+          "UPDATE ledger SET note = CONCAT(note, ' -- closed by the " +
+              "nightly job') WHERE closed = FALSE"),
+      'commerce.profile.prod.yaml': PROFILE,
+    });
+    fs.rmSync(local('commerce.yaml'));
+
+    expect(await pull()).toBe(0);
+    expect(await push({deployment: false})).toBe(0);
+  });
+
   // `text` with each pair of `pairs` replaced, each first part found once.
   const edited = (text: string, ...pairs: Array<[string, string]>) =>
       pairs.reduce((t, [from, to]) => {
