@@ -11,7 +11,9 @@ const IN_SQL: NameKind[] = ['entity', 'metric', 'relationship'];
 
 describe('nameProblem', () => {
   test('each kind accepts a plain name and rejects a slash, a leading digit or a space', () => {
-    for (const kind of KINDS) {
+    // Field names are now more flexible, so we exclude them from the restrictive tests
+    const restrictiveKinds = KINDS.filter(k => k !== 'field');
+    for (const kind of restrictiveKinds) {
       expect(nameProblem(kind, 'orders_2024')).toBeUndefined();
       for (const bad of ['sales/orders', '2024_orders', 'order date', '*', 'prod,us', '']) {
         expect(nameProblem(kind, bad)).toContain(`name '${bad}' is not valid`);
@@ -19,11 +21,28 @@ describe('nameProblem', () => {
     }
   });
 
-  test('a hyphen is accepted in a model, profile or deployment name only', () => {
+  test('a field name accepts flexible BigQuery characters, spaces, and backtick-quoting', () => {
+    // Valid unquoted flexible names
+    expect(nameProblem('field', 'order date')).toBeUndefined();
+    expect(nameProblem('field', '2024_orders')).toBeUndefined();
+    expect(nameProblem('field', 'R&D cost')).toBeUndefined();
+    expect(nameProblem('field', 'growth %')).toBeUndefined();
+
+    // Valid backtick-quoted names
+    expect(nameProblem('field', '`sales/orders!`')).toBeUndefined();
+    expect(nameProblem('field', '`my*column`')).toBeUndefined();
+
+    // Invalid unquoted names
+    for (const bad of ['sales/orders', '*', 'my@column', '']) {
+      expect(nameProblem('field', bad)).toContain(`name '${bad}' is not valid`);
+    }
+  });
+
+  test('a hyphen is accepted in a model, field, profile or deployment name only', () => {
     for (const kind of WITH_HYPHEN) {
       expect(nameProblem(kind, 'sales-analytics')).toBeUndefined();
     }
-    for (const kind of [...IN_SQL, 'field'] as NameKind[]) {
+    for (const kind of [...IN_SQL] as NameKind[]) {
       expect(nameProblem(kind, 'my-entity')).toContain(`name 'my-entity' is not valid`);
     }
   });
@@ -60,10 +79,9 @@ describe('nameProblem', () => {
     expect(nameProblem('model', 'sales/orders')).toBe(
         "Model name 'sales/orders' is not valid; names must match " +
         '^[A-Za-z][A-Za-z0-9_-]*$: a letter, then letters, digits, underscores or hyphens.');
-    expect(nameProblem('field', 'order date')).toBe(
-        "Field name 'order date' is not valid; names must match " +
-        '^[A-Za-z_][A-Za-z0-9_]{0,299}$: a letter or underscore, then letters, digits or ' +
-        'underscores.');
+    expect(nameProblem('field', 'my@column')).toBe(
+        "Field name 'my@column' is not valid; names must match " +
+        "^(`[^`]+`|[\\p{L}\\p{N}\\p{Pc}\\p{Pd}\\p{M}\\s&%=>+:'<#|]+)$: a BigQuery flexible column name.");
   });
 
   test('a catalog entry description holds 2,000 characters', () => {
