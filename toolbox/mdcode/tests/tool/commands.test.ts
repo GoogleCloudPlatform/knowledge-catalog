@@ -2301,10 +2301,11 @@ describe('a pull', () => {
     ['no rename onto a profile file already there',
      ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'],
      holds + "which pull writes as 'commerce.yaml', and " +
-         "'commerce.profile.prod.yaml' is already there. Delete one of them " +
-         "with its profile files, or re-run with --force-remove to delete " +
-         "'mysales.yaml' and 'mysales.profile.prod.yaml' and pull the " +
-         "catalog's.", 'commerce'],
+         "'commerce.profile.prod.yaml' is already there. Delete " +
+         "'commerce.profile.prod.yaml' and pull again, or delete " +
+         "'mysales.yaml' with its profile files, or re-run with " +
+         "--force-remove to delete 'mysales.yaml' and " +
+         "'mysales.profile.prod.yaml' and pull the catalog's.", 'commerce'],
     ['no rename onto a file that holds another model',
      ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'],
      holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' is " +

@@ -1885,7 +1885,8 @@ async function pullSemanticModel(
       // kept by renaming it and its profile files to the files pull writes,
       // unless one of those files is already there, an earlier file is
       // renamed to it, or two of its files would be renamed to one. The
-      // advice to delete either model file names its profile files too.
+      // advice to delete either model file names its profile files too. When
+      // only profile files are in the way, the advice names them.
       const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
       // A file by its path in the entry group directory.
       const shown = (p: string) => path.relative(groupDir, p);
@@ -1935,7 +1936,10 @@ async function pullSemanticModel(
                      `which pull writes as '${file(declared)}', and ${
                          quoted(taken)} ${
                          taken.length > 1 ? 'are' : 'is'} already there`) +
-                `. Delete one of them` +
+                (other !== undefined ?
+                     `. Delete one of them` :
+                     `. Delete ${quoted(taken)} and pull again, or delete '${
+                         file(name)}'`) +
                 `${withProfiles ? ' with its profile files' : ''}, ` +
                 `or re-run with --force-remove to delete ${removal(own)} and ` +
                 `pull the catalog's.`);
