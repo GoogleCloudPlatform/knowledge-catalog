@@ -614,8 +614,13 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     // GETDATE without parentheses are columns.
     ['SQLSERVER', 'DATEADD([day], 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
     ['SNOWFLAKE', 'DATEADD("day", 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
+    ['POSTGRES', 'DATE_TRUNC("month", d)', {error: 'kcmd does not translate DATE_TRUNC with a quoted part'}],
+    ['POSTGRES', 'DATE_PART("day", d)', {error: 'kcmd does not translate DATE_PART with a quoted part'}],
+    ['SQLSERVER', 'DATEPART([day], d)', {error: 'kcmd does not translate DATEPART with a quoted part'}],
+    ['SQLSERVER', 'DATEDIFF([day], a, b)', {error: 'kcmd does not translate DATEDIFF with a quoted part'}],
     ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
     ['DATABRICKS', 'curdate - 7', {sql: '`curdate` - 7'}],
+    ['POSTGRES', 'NOW - 7', {sql: '`NOW` - 7'}],
     ['MYSQL', 'CURDATE + INTERVAL 1 DAY', {sql: 'DATE_ADD(`CURDATE`, INTERVAL 1 DAY)'}],
     ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {sql: 'DATE_ADD(`GETDATE`, INTERVAL 1 DAY)'}],
     // NULLIF of two date and time types.
