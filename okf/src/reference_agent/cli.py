@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from reference_agent.agent import DEFAULT_MODEL
 from reference_agent.bundle.paths import parse_concept_id
+from reference_agent.bundle.usage import rank_usage, record_usage
 from reference_agent.runner import ReferenceRunner
 from reference_agent.sources.bigquery import BigQuerySource
 
@@ -158,7 +159,30 @@ def _parser() -> argparse.ArgumentParser:
         "--name", default=None,
         help="Display name for the bundle (default: bundle directory name).",
     )
+
+    usage = sub.add_parser("usage", help="Read and record advisory usage hints.")
+    usage_sub = usage.add_subparsers(dest="usage_command", required=True)
+    record = usage_sub.add_parser("record", help="Record one concept access.")
+    record.add_argument("--bundle", required=True, type=Path)
+    record.add_argument("--concept", required=True)
+    record.add_argument("--intent", required=True)
+    record.add_argument("--condition", action="append", default=[], metavar="KEY=VALUE")
+    record.add_argument("--successful", action="store_true")
+    rank = usage_sub.add_parser("rank", help="Rank hints for an intent.")
+    rank.add_argument("--bundle", required=True, type=Path)
+    rank.add_argument("--intent", required=True)
+    rank.add_argument("--condition", action="append", default=[], metavar="KEY=VALUE")
     return p
+
+
+def _conditions(values: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        key, separator, item = value.partition("=")
+        if not separator or not key:
+            raise SystemExit(f"Invalid --condition {value!r}; expected KEY=VALUE")
+        result[key] = item
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,5 +235,20 @@ def main(argv: list[str] | None = None) -> int:
         n = runner.enrich_all(only=only)
         web_note = f"; web pass used {len(seeds)} seed(s)" if seeds else "; web pass skipped"
         print(f"Enriched {n} concept(s) into {args.out}{web_note}", file=sys.stderr)
+        return 0
+    if args.command == "usage":
+        conditions = _conditions(args.condition)
+        if args.usage_command == "record":
+            hint = record_usage(
+                args.bundle,
+                args.concept,
+                args.intent,
+                conditions,
+                successful=args.successful,
+            )
+            print(f"Recorded {hint.concept} ({hint.access_count})")
+            return 0
+        for hint in rank_usage(args.bundle, args.intent, conditions):
+            print(f"{hint.concept}\t{hint.access_count}")
         return 0
     return 1
