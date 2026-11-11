@@ -2967,24 +2967,23 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 // The parameter types to send with one statement's pre-flight request, keyed by
 // `@name`.
 //
-// Only the parameters the statement actually references are sent, and only
-// those whose declared type maps to a store type we can state. An `Opaque` type
-// is exactly the case we cannot: it means the model does not know the type, so
-// asserting one would invent a constraint the author never wrote. Those are
-// left out and the store resolves them from context. Spanner does that for
-// each parameter left out. BigQuery does it only when the request declares no
-// parameters, so its arm sends none for a statement that reads one.
+// `names` are the parameters the statement reads. Only those whose declared
+// type maps to a store type we can state are sent. An `Opaque` type is exactly
+// the case we cannot: it means the model does not know the type, so asserting
+// one would invent a constraint the author never wrote. Those are left out and
+// the store resolves them from context.
 //
 // Sending the types at all is optional -- a statement with no parameter types
-// passes either backend's dry run. It is worth doing because it turns the
-// action's DECLARED parameter types into a claim checked against the real
-// column types, so a model that says `Float` where the column is a STRING fails
-// here rather than on the first call.
+// passes either backend's dry run, except that BigQuery types a parameter
+// selected bare in INSERT ... SELECT as INT64. It is worth doing because it
+// turns the action's DECLARED parameter types into a claim checked against the
+// real column types, so a model that says `Float` where the column is a STRING
+// fails here rather than on the first call.
 function statementParameterTypes(
-    action: Action, sql: string): Record<string, string> {
+    action: Action, names: string[]): Record<string, string> {
   const declared = new Map(action.parameters.map(p => [p.name, p.type]));
   const types: Record<string, string> = {};
-  for (const name of referencedParameters(sql)) {
+  for (const name of names) {
     const type = declared.get(name);
     if (!type || type === 'Opaque') continue;
     types[name] = storeCodeFor(type);
@@ -3049,7 +3048,8 @@ export async function validateSpannerActionStatements(
     }
     try {
       for (const pending of statements) {
-        const types = statementParameterTypes(pending.action, pending.sql);
+        const types = statementParameterTypes(
+            pending.action, referencedParameters(pending.sql));
         const params: Record<string, null> = {};
         const paramTypes: Record<string, {code: string}> = {};
         for (const [name, code] of Object.entries(types)) {
@@ -3097,13 +3097,11 @@ export async function validateBigQueryActionStatements(
     const project = billingProject(loaded.model, defaultProject);
     const store = `BigQuery (project '${project}')`;
     for (const pending of statements) {
-      // Once a request declares one parameter, BigQuery answers "Query
-      // parameter 'x' not found" for every other one the statement reads. So
-      // a statement reading an untyped parameter declares none, and BigQuery
-      // infers them all.
-      const types = statementParameterTypes(pending.action, pending.sql);
-      const untyped = referencedParameters(pending.sql)
-                          .some(name => !Object.hasOwn(types, name));
+      // BigQuery infers parameter types only when the request declares none,
+      // so a statement that reads an untyped parameter declares none.
+      const names = referencedParameters(pending.sql);
+      const types = statementParameterTypes(pending.action, names);
+      const untyped = names.some(name => !Object.hasOwn(types, name));
       const res = await bq.query(
           project, pending.sql, undefined, true, untyped ? {} : types);
       if (res.status === 200) continue;

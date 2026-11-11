@@ -593,13 +593,18 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).toContain('BigQuery');
     });
 
-    test('sends the declared type of each referenced parameter', async () => {
+    // BigQuery infers parameter types only when a request declares none.
+    test.each([
+      ['the declared type of each referenced parameter', GOOD,
+       {amount: 'FLOAT64', id: 'INT64'}],
+      ['no types for a statement that reads an Opaque parameter',
+       'UPDATE account SET memo = @note WHERE account_id = @id', {}],
+    ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();
-      bq.dmlSchema = mockSchema(ACCOUNT);
+      bq.dmlSchema = mockSchema({account: ['account_id', 'balance', 'memo']});
       await validateBigQueryActionStatements(
-          [bqModel([sqlAction([GOOD])])], bq, 'p');
-      expect(bq.dryRunDml[0].parameterTypes)
-          .toEqual({amount: 'FLOAT64', id: 'INT64'});
+          [bqModel([sqlAction([statement])])], bq, 'p');
+      expect(bq.dryRunDml[0].parameterTypes).toEqual(types);
     });
 
     test('omits a parameter named only inside a comment', async () => {
@@ -616,19 +621,6 @@ describe('action statement pre-flight', () => {
       expect(bq.dryRunDml.map(d => d.parameterTypes))
           .toEqual([{id: 'INT64'}, {id: 'INT64'}, {id: 'INT64'}]);
     });
-
-    // BigQuery infers a parameter only when the request declares none, so
-    // declaring `id` alone would fail with "Query parameter 'note' not found".
-    test('sends no types for a statement that reads an Opaque parameter',
-         async () => {
-           const bq = new BigQueryClientMock();
-           bq.dmlSchema = mockSchema({account: ['account_id', 'memo']});
-           await validateBigQueryActionStatements(
-               [bqModel([sqlAction(
-                   ['UPDATE account SET memo = @note WHERE account_id = @id'])])],
-               bq, 'p');
-           expect(bq.dryRunDml[0].parameterTypes).toEqual({});
-         });
 
     test('checks every statement of every action', async () => {
       const bq = new BigQueryClientMock();

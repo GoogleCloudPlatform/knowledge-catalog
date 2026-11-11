@@ -383,6 +383,8 @@ be: the store catches what a name comparison can't see. A placeholder or a
 function borrowed from another dialect gets every identifier right and is still
 invalid. A parameter whose declared type doesn't fit the column it's compared to
 resolves every name correctly and fails on the type.
+On BigQuery, a statement that also reads an `Opaque` parameter is dry-run with
+no declared types, so the types its other parameters declare are not checked.
 
 An entity named `Order` bound to a table named `Orders` is the case worth
 recognizing, because the answer doesn't mention a table at all:
@@ -1157,6 +1159,7 @@ This is a prototype. Four things you might reasonably expect are absent.
   statement, so the store rejects `WHERE region = @source` when `region` is a
   string and `source` projects an integer — see
   [statements use your database names](#statements-use-your-database-names).
+  On BigQuery that holds only for a statement that reads no `Opaque` parameter.
   What survives is a wrong column of the right type. `WHERE branch_id = @source`
   passes, because the parameter is logical, the column is physical, and nothing
   joins the two beyond the type they happen to share. Whoever writes a statement
