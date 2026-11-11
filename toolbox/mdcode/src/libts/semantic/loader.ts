@@ -3221,17 +3221,16 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 // without regard to case. No transpilation is performed here; chosen
 // expressions are passed through verbatim. At least one form is set.
 //
-// The fallbacks differ in risk, so they are surfaced differently:
+// The fallbacks differ in risk:
 //   - ANSI_SQL is the AI-first format's default expression language (ANSI
-//     SQL:2003 core), deliberately chosen to be valid across targets — BigQuery
-//     included. Using it as `expression` is the intended authoring path, not a
-//     lossy degradation, so it is reported as a single informational `note:`
-//     (worded field-agnostically so identical notes dedupe to one line).
+//     SQL:2003 core), chosen to be valid across targets, BigQuery included.
+//     Using it as `expression` is the intended authoring path, so it draws no
+//     message.
 //   - When neither the target nor ANSI_SQL is present, `expression` is left
-//     unset and only `importedExpression` is populated; that is a genuine risk
-//     (needs transpilation) and is warned per field/metric, naming the dialect.
-// Both are reported only where a table of the target dialect runs the
-// expression (see fieldWarnings and metricWarning).
+//     unset and only `importedExpression` is populated. That text needs
+//     translating, so expressionWarning warns about it for each field and
+//     metric, naming the dialect, where a table of the target dialect runs it
+//     (see fieldWarnings and metricWarning).
 interface PickedExpression {
   expression?: string;
   importedExpression?: string;
