@@ -1966,11 +1966,20 @@ async function validateOutputDocument(
       if (!(err instanceof ProfileFileError)) throw err;
       doc.warnOrError(err.message);
     }
+    const profiles = read;
+    const base = {document: model.name, model: loaded.models[0]};
+    const withFiles = profiles && withProfileFiles(base, () => profiles);
+    // Push then refuses an action statement YAML reads differently from how
+    // it is written, in the model file and in each profile file, before it
+    // checks the deployment targets.
+    const changed = !withFiles || 'errors' in withFiles || doc.errors.length ?
+        [] :
+        yamlChangedStatementErrors(base, content, () => profiles!);
+    for (const error of changed) doc.warnOrError(error);
     if (!doc.errors.length) {
       for (const m of loaded.models) validateDeploymentTargets(m, doc);
     }
-    const profiles = read;
-    if (!profiles) return;
+    if (!profiles || !withFiles) return;
     const declaredBy = () => declaredProfiles(model, profiles).map(
         p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
     // Push stops at a source its loader rejects. Import still reports each
@@ -1983,22 +1992,13 @@ async function validateOutputDocument(
       }
       return;
     }
-    if (doc.errors.length) return;
-    const base = {document: model.name, model: loaded.models[0]};
+    if (doc.errors.length || changed.length) return;
     const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
     // Push prints each warning once, after the load's. Each is a warning in
     // either mode.
     const warn = (w: string) => {
       if (!own.includes(w) && !doc.warnings.includes(w)) doc.warnings.push(w);
     };
-    const withFiles = withProfileFiles(base, () => profiles);
-    // Push then refuses an action statement YAML reads differently from how
-    // it is written, in the model file and in each profile file.
-    const changed = 'errors' in withFiles ?
-        [] :
-        yamlChangedStatementErrors(base, content, () => profiles);
-    for (const error of changed) doc.warnOrError(error);
-    if (changed.length) return;
     const checked = 'errors' in withFiles ? withFiles : await localChecks(
         {
           docs: [model],

@@ -557,12 +557,14 @@ describe('kcmd import', () => {
 
   // Push refuses an unquoted action statement with a comment on the same line.
   test('a first-party file with a comment after an action statement gets push\'s error, and nothing is written', async () => {
+    // Push stops at the first refusal, before it checks the deployment's
+    // target or the second statement's parameter.
     write('retail.yaml',
-          google +
+          google.replace('  - name: retail\n',
+                         '  - name: retail\n    deployments: [{name: bad, target: not-a-target}]\n') +
           '    actions:\n      - name: purge\n        parameters: [{name: k, type: Integer}]\n' +
           '        executor:\n          sql:\n            statements:\n' +
           "              - UPDATE orders SET doc = doc #- '{draft}' WHERE order_id = @k\n" +
-          // Push stops at the first refusal, before it reads this statement.
           '              - DELETE FROM orders WHERE order_id = @missing\n');
     expect(await importModel('retail.yaml', {flavor: 'google', input: 'first-party', out: 'out'}))
         .toBe(1);
