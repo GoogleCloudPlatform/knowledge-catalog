@@ -777,12 +777,18 @@ interface DateTable {
   // The functions that add a unit, by name, each with how it names the amount:
   // `interval` for MySQL's DATE_ADD(x, INTERVAL n unit), `interval or days`
   // for MySQL's ADDDATE, which also takes a number of days, `part` for
-  // DATEADD(part, n, x), and `days` for Databricks' date_add(x, n), which reads
-  // x as a DATE and adds n days.
-  functions: Record<string, 'interval'|'interval or days'|'part'|'days'>;
+  // DATEADD(part, n, x), `days` for Databricks' date_add(x, n), which reads
+  // x as a DATE and adds n days, and `days or part` for Databricks' date_add
+  // and dateadd, which take either (see `partReads`).
+  functions: Record<string, 'interval'|'interval or days'|'part'|'days'|'days or part'>;
   // The unit each word names, in lower case, in an INTERVAL string such as
   // '2 days' and as DATEADD's part.
   words: Record<string, Unit>;
+  // The unit each word names as the part of a `days or part` function.
+  parts?: Record<string, Unit>;
+  // The row a `days or part` function with a part reads its operand as, and
+  // the rows of the operands it reads so.
+  partReads?: {row: string; rows: string[]};
   // False when DATEADD's part may not be a string, such as 'day'.
   quotedParts?: false;
   // False when an INTERVAL may not name its unit outside its string, as in
@@ -972,14 +978,20 @@ const DATE_TABLES: Record<string, DateTable> = {
   // smallest unit gives the type of a DATE plus it. It adds a whole
   // number to a DATE as days. Its current timestamp is a TIMESTAMP, and a day
   // there is 24 hours in UTC. It adds a month or a year to it in UTC. Its
-  // three-argument dateadd and date_add give a TIMESTAMP.
+  // three-argument dateadd and date_add, whose part is a name, read a DATE as a
+  // TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of a
+  // TIMESTAMP_NTZ, which a column may be, so a column gets no part. They add
+  // a quarter, which an INTERVAL does not name.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
-    functions: {DATE_ADD: 'days', DATE_SUB: 'days', DATEADD: 'days'},
+    functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part'},
     words: named({
       MICROSECOND: ['microseconds'], MILLISECOND: ['milliseconds'], SECOND: ['seconds'], MINUTE: ['minutes'],
       HOUR: ['hours'], DAY: ['days'], WEEK: ['weeks'], MONTH: ['months'], YEAR: ['years'],
     }),
+    parts: named({...Object.fromEntries(UNITS.map(u => [u, []])), DAY: ['dayofyear']}),
+    quotedParts: false, intervals: UNITS.filter(u => u !== 'QUARTER'),
+    partReads: {row: 'TIMESTAMP', rows: ['DATE', 'TIMESTAMP']},
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
     sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']],
@@ -995,7 +1007,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       },
       TIMESTAMP: {
         type: 'TIMESTAMP', name: 'a TIMESTAMP',
-        units: {...adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'TIMESTAMP'), ...inUtc(['MONTH', 'YEAR'], 'TIMESTAMP')},
+        units: {...adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'TIMESTAMP'), ...inUtc(['MONTH', 'QUARTER', 'YEAR'], 'TIMESTAMP')},
       },
     },
   },
@@ -1034,8 +1046,8 @@ const DATE_TABLES: Record<string, DateTable> = {
 // One date arithmetic in a source text: `operand` plus or minus `amount`, a
 // whole number or an expression of `unit`, and what its row gives. A whole number added as days
 // that import writes as the source does has no unit. The INTERVAL may come
-// `first`. A `call` is a function, such as DATEADD. With `asDate`, the source
-// reads an operand that is not a DATE as a DATE first.
+// `first`. A `call` is a function, such as DATEADD. The source reads an
+// operand of another type as `reads`, a DATE or a TIMESTAMP, first.
 interface DateSum {
   operand: any;
   amount: any;
@@ -1043,7 +1055,7 @@ interface DateSum {
   subtract: boolean;
   first?: boolean;
   call?: boolean;
-  asDate?: boolean;
+  reads?: 'DATE'|'TIMESTAMP';
   addition: Addition;
   // The values in an INTERVAL value that import writes as the source does,
   // for the checks, and the value itself when a function adds it.
@@ -1103,8 +1115,11 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
 function functionSum(name: string, args: any[], read: string, table: DateTable): DateSum|string {
   const how = table.functions[name];
   const subtract = name.includes('SUB');
-  const added = how !== 'part' && args.length === 2 ? bare(args[1])?.interval : undefined;
-  if (added && how !== 'days') {
+  // A `days or part` function names a part with three arguments.
+  const byPart = how === 'part' || (how === 'days or part' && args.length === 3);
+  const byDays = how === 'days' || (how === 'days or part' && !byPart);
+  const added = !byPart && args.length === 2 ? bare(args[1])?.interval : undefined;
+  if (added && !byDays) {
     const parsed = readInterval(added, table);
     const spelling = `${name} with INTERVAL ${intervalText(added, table)}`;
     if (typeof parsed === 'string') return `${name} with ${parsed}`;
@@ -1115,17 +1130,18 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
     }
     return sumOn(table, read, {operand: args[0], ...parsed[0], subtract, call: true, name, spelling, unitText: spelling});
   }
-  const [part, amount, operand] = how === 'part' ? args : [undefined, args[1], args[0]];
-  if (how === 'interval' || args.length !== (how === 'part' ? 3 : 2) || added) return name;
+  const [part, amount, operand] = byPart ? args : [undefined, args[1], args[0]];
+  if (how === 'interval' || args.length !== (byPart ? 3 : 2) || added) return name;
   const whole = functionAmount(amount, table);
   if (typeof whole === 'string') return `${name} ${whole}`;
-  const spelling = how === 'part' ? `${name} with part '${partName(part) ?? '?'}'` : name;
-  const unit = how !== 'part' ? 'DAY' : table.quotedParts === false && bare(part)?.literal ? undefined :
-      table.words[String(partName(part)).toLowerCase()];
+  const spelling = byPart ? `${name} with part '${partName(part) ?? '?'}'` : name;
+  // A part is a name, or a string where the dialect takes one.
+  const named = !bare(part)?.column?.name?.quoted && (table.quotedParts !== false || !bare(part)?.literal);
+  const words = how === 'days or part' ? table.parts! : table.words;
+  const unit = !byPart ? 'DAY' : named ? words[String(partName(part)).toLowerCase()] : undefined;
   if (!unit) return spelling;
-  return sumOn(table, read, {
-    operand, amount: whole, unit, subtract, call: true, asDate: how === 'days', name, spelling, unitText: spelling,
-  });
+  const as = byDays ? {row: table.date, rows: Object.keys(table.rows)} : byPart ? table.partReads : undefined;
+  return sumOn(table, read, {operand, amount: whole, unit, subtract, call: true, as, name, spelling, unitText: spelling});
 }
 
 // The amount of `amount`, the number of units a function such as DATEADD(day,
@@ -1409,7 +1425,7 @@ function intervalOf(node: any, read: string): any {
 // unit, and `spelling` for one about the unit on the operand.
 function sumOn(table: DateTable, read: string, sum: {
   operand: any; amount: any; unit: Unit; subtract: boolean; first?: boolean; call?: boolean;
-  asDate?: boolean; name: string; spelling: string; unitText: string;
+  as?: {row: string; rows: string[]}; name: string; spelling: string; unitText: string;
 }): DateSum|string {
   const note = table.notes?.[sum.unit];
   if (!Object.values(table.rows).some(r => r.units[sum.unit])) {
@@ -1418,11 +1434,16 @@ function sumOn(table: DateTable, read: string, sum: {
   const found = operandRow(sum.operand, read, table) ?? daysRow(sum.operand, table);
   if (typeof found === 'string') return found;
   if (!found) return `${sum.name} of ${valueName(bare(sum.operand))}`;
-  const asDate = sum.asDate && found.row !== table.date;
-  const addition = table.rows[sum.asDate ? table.date : found.row].units[sum.unit];
+  // A function that reads its operand as another row first, such as
+  // Databricks' date_add(x, n), which reads x as a DATE, reads the rows `as`
+  // names.
+  if (sum.as && !sum.as.rows.includes(found.row)) return `${sum.spelling} on ${found.name}`;
+  const row = sum.as?.row ?? found.row;
+  const reads = row !== found.row ? table.rows[row].type as 'DATE'|'TIMESTAMP' : undefined;
+  const addition = table.rows[row].units[sum.unit];
   if (!addition) return note ? `${sum.spelling}, ${note}` : `${sum.spelling} on ${found.name}`;
   const {operand, amount, unit, subtract, first, call} = sum;
-  return {operand, amount, unit, subtract, first, call, asDate, addition};
+  return {operand, amount, unit, subtract, first, call, reads, addition};
 }
 
 // The row in `table`, the table of the engine's dialect `read`, of `node`, a
@@ -2466,10 +2487,10 @@ function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolea
 }
 
 // How BigQuery reads the operand of `sum` first, as names in READS, in order:
-// DATE when the source reads the operand as a DATE first, TIMESTAMP when
-// BigQuery adds to TIMESTAMP(x), and UTC when it adds in UTC (see Addition).
+// the type the source reads it as first, TIMESTAMP when BigQuery adds to
+// TIMESTAMP(x), and UTC when it adds in UTC (see Addition).
 function readsOf(sum: DateSum): string[] {
-  const first = sum.asDate ? ['DATE'] : sum.addition.timestamp ? ['TIMESTAMP'] : [];
+  const first = sum.reads ? [sum.reads] : sum.addition.timestamp ? ['TIMESTAMP'] : [];
   return sum.addition.utc ? [...first, 'UTC'] : first;
 }
 
