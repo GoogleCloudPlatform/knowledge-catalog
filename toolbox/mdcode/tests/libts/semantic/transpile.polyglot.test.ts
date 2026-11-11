@@ -368,6 +368,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', '-20240101 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a number'}],
     ['MYSQL', "TIMESTAMP '2024-01-31 10:00:00' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a timestamp literal'}],
     ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
+    ['POSTGRES', "(d + 1) + INTERVAL '1 month'", {sql: '(d + 1) + INTERVAL 1 MONTH'}],
+    ['DATABRICKS', '(d + 1) + INTERVAL 1 HOUR', {sql: 'TIMESTAMP(d + 1) + INTERVAL 1 HOUR'}],
     ['MYSQL', 'd - 1 - INTERVAL 1 DAY', {error: 'kcmd does not translate - of a difference'}],
     ['MYSQL', 'COALESCE(d - 1, d) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of COALESCE'}],
     ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate + of an INTERVAL'}],

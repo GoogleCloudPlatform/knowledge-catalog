@@ -331,7 +331,9 @@ names microseconds.
   and adds every unit to it.
 
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
-counts as days. Import translates no date arithmetic from ANSI_SQL, since the
+counts as days. A column plus a whole number, such as `(d + 1) + INTERVAL '1
+day'`, gets an INTERVAL as a DATE does. None of the three adds an INTERVAL to
+a number or a whole number to a timestamp, and BigQuery does neither. Import translates no date arithmetic from ANSI_SQL, since the
 databases an ANSI_SQL text runs on add a unit as different types. From a
 SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
 days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner

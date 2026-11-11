@@ -1266,7 +1266,7 @@ function valueOn(table: DateTable, read: string, sum: {
   operand: any; joined: IntervalValue; subtract: boolean; first: boolean; op: string;
 }): DateSum|string {
   const {operand, joined, subtract, first, op} = sum;
-  const found = operandRow(operand, read, table);
+  const found = operandRow(operand, read, table) ?? daysRow(operand, table);
   if (typeof found === 'string') return found;
   if (!found) return `${op} of ${valueName(bare(operand))}`;
   const finest = joined.parts.reduce((a, p) => UNITS.indexOf(p.unit) < UNITS.indexOf(a.unit) ? p : a);
@@ -1314,7 +1314,7 @@ function sumOn(table: DateTable, read: string, sum: {
   if (!Object.values(table.rows).some(r => r.units[sum.unit])) {
     return note ? `${sum.spelling}, ${note}` : sum.unitText;
   }
-  const found = operandRow(sum.operand, read, table);
+  const found = operandRow(sum.operand, read, table) ?? daysRow(sum.operand, table);
   if (typeof found === 'string') return found;
   if (!found) return `${sum.name} of ${valueName(bare(sum.operand))}`;
   const asDate = sum.asDate && found.row !== table.date;
@@ -1341,6 +1341,21 @@ function operandRow(node: any, read: string, table: DateTable):
   const sum = dateSum(b, read);
   if (typeof sum !== 'object') return sum;
   return {row: sum.addition.gives, name: table.rows[sum.addition.gives].name};
+}
+
+// The row in `table` of `node`, a source value beside an INTERVAL, when it is
+// a column plus or minus a whole number: the row of a DATE plus days, where
+// the dialect adds a whole number to a DATE as days. Undefined otherwise. The
+// sources and BigQuery add an INTERVAL to no number and a whole number to no
+// timestamp, so the column can only be a DATE.
+function daysRow(node: any, table: DateTable): {row: string; name: string}|undefined {
+  const b = bare(node);
+  const kind = kindOf(b);
+  if (kind !== 'add' && kind !== 'sub') return undefined;
+  const [operand, amount] = dayOperands(kind, b[kind]);
+  const days = table.rows[table.date].days;
+  return days && bare(operand)?.column && /^-?\d+$/.test(numberText(amount) ?? '') ?
+      {row: days.gives, name: table.rows[days.gives].name} : undefined;
 }
 
 // The names in any dialect's table: the functions that give the current date,
@@ -2264,9 +2279,11 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     const sum = isNode(node) ? dateSum(node, read) : undefined;
     if (typeof sum === 'object' && sum.unit) {
       changed = true;
-      // An operand of DATE_ADD needs no parentheses.
+      // An operand of DATE_ADD or TIMESTAMP needs no parentheses.
       let operand = sum.operand;
-      while (sum.addition.form === 'DATE_ADD' && operand?.paren) operand = operand.paren.this;
+      while ((sum.addition.form === 'DATE_ADD' || sum.addition.timestamp) && operand?.paren) {
+        operand = operand.paren.this;
+      }
       return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
     // An INTERVAL in an INTERVAL value is BigQuery's INTERVAL of its unit.
@@ -2281,8 +2298,10 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       return formCall(sorted.length > 1 ? `(${sql})` : sql, sorted.map(p => p.amount));
     }
     // A `+` that BigQuery adds to TIMESTAMP(x) reads its operand so.
+    let inner = typeof sum === 'object' ? sum.operand : undefined;
+    while (inner?.paren) inner = inner.paren.this;
     const stamped = typeof sum === 'object' && sum.addition.timestamp ?
-        swapped(node, new Map([[sum.operand, formCall('TIMESTAMP(_1)', [sum.operand])]])) : undefined;
+        swapped(node, new Map([[sum.operand, formCall('TIMESTAMP(_1)', [inner])]])) : undefined;
     const exact = stamped ?? (isNode(node) ? exactForm(node, read) : undefined);
     if (exact && typeof exact === 'object') changed = true;
     const source = exact && typeof exact === 'object' ? exact : node;
