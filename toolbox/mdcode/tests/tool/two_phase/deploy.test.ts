@@ -695,7 +695,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
               statements: [
                 'UPDATE Customer SET c_key = c_key WHERE c_key = @id -- @undeclared',
                 'UPDATE Customer SET c_key = c_key WHERE c_key = @id /* @undeclared */',
-                '# @undeclared\nUPDATE Customer SET c_key = c_key WHERE c_key = @id',
+                '# @undeclared\rUPDATE Customer SET c_key = c_key WHERE c_key = @id',
               ],
             },
           },
@@ -709,6 +709,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
             sql: {
               statements: [
                 '/* outer /* inner */ @undeclared */ UPDATE customer SET c_key = c_key WHERE c_key = @id -- @other',
+                'WITH s AS (SELECT doc #>> \'{k}\' AS k FROM customer) UPDATE customer SET note = s.k FROM s WHERE c_key = @id',
               ],
             },
           },
@@ -748,6 +749,49 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           "action 'refund' in model 'commerce' (commerce, deployment 'pg') " +
           "has a sql executor whose statement 1 binds '@missing', but action " +
           "'refund' declares no parameter of that name.")],
+    }, {
+      deployments: [{name: 'pg', target: ALLOYDB}],
+      entities: [{
+        name: 'Customer',
+        abstract: true,
+        fields: [{name: 'key', datatype: 'Integer'}],
+      }],
+      profiles: undefined,
+      actions: [{
+        name: 'refund',
+        parameters: [{name: 'id', type: 'Integer', description: 'The customer key.'}],
+        executor: {
+          sql: {
+            statements: [
+              'WITH s AS (SELECT doc #>> \'{k}\' AS k FROM customer) UPDATE customer SET note = s.k FROM s WHERE c_key = @id',
+              '/* outer /* inner */ @undeclared */ UPDATE customer SET c_key = c_key WHERE c_key = @id',
+            ],
+          },
+        },
+      }],
+      code: 0,
+    }, {
+      deployments: [{name: 'pg', target: ALLOYDB}],
+      entities: [{
+        name: 'Customer',
+        abstract: true,
+        fields: [{name: 'key', datatype: 'Integer'}],
+      }],
+      profiles: undefined,
+      actions: [{
+        name: 'refund',
+        parameters: [],
+        executor: {
+          sql: {
+            statements: [
+              'UPDATE customer SET doc = doc #- \'{a}\' WHERE c_key = @missing',
+            ],
+          },
+        },
+      }],
+      code: 1,
+      nothingWritten: true,
+      errors: [has("binds '@missing'")],
     }],
   },
 ], {deployments: ['g1', 'g2'], code: 0});

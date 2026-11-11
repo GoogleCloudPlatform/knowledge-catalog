@@ -122,6 +122,8 @@ describe('leadingDmlVerb', () => {
     // lost and a legitimate zero-row INSERT is refused.
     expect(leadingDmlVerb('# update the audit trail\nINSERT INTO t VALUES (1)'))
         .toBe('INSERT');
+    expect(leadingDmlVerb('# @before\rINSERT INTO orders (id) VALUES (@id)'))
+        .toBe('INSERT');
     expect(leadingDmlVerb('-- update the audit trail\nINSERT INTO t VALUES (1)'))
         .toBe('INSERT');
   });
@@ -131,6 +133,15 @@ describe('leadingDmlVerb', () => {
         .toBe('UPDATE');
     expect(leadingDmlVerb('WITH x AS (SELECT 1) UPDATE t SET a = 1'))
         .toBe('UPDATE');
+    expect(leadingDmlVerb(
+               'WITH s AS (SELECT doc #>> \'{k}\' AS k FROM customer) ' +
+                   'UPDATE customer SET note = s.k FROM s WHERE c_key = @id',
+               'ALLOYDB'))
+        .toBe('UPDATE');
+    expect(leadingDmlVerb(
+               '/* outer /* inner */ DELETE */ SELECT * FROM customer',
+               'ALLOYDB'))
+        .toBe('');
   });
 
   test('a quoted literal is not a verb', () => {
@@ -162,6 +173,9 @@ describe('referencedParameters', () => {
          expect(referencedParameters(
                     'UPDATE orders SET status = @status /* @unterminated'))
              .toEqual(['status']);
+         // GoogleSQL block comments do not nest.
+         expect(referencedParameters('SELECT @y1 /* /* @n1 */ + @y2'))
+             .toEqual(['y1', 'y2']);
          // An apostrophe inside a comment never opens a string literal.
          expect(referencedParameters(
                     '-- don\'t bind @note\n' +
@@ -200,6 +214,8 @@ describe('referencedParameters', () => {
                     'dir = r\'\'\'C:\\\\\'\'\', ' +
                     'bytes = b\'it\\\'s @skip\' WHERE id = @id -- \''))
              .toEqual(['id']);
+         expect(referencedParameters('SELECT \'\'\'a\\\'\'\' @n1\'\'\', @y1'))
+             .toEqual(['y1']);
        });
 
   test('handles PostgreSQL/AlloyDB quotes, E\'...\', dollar-quotes, and nested comments',
@@ -216,6 +232,13 @@ describe('referencedParameters', () => {
                     'UPDATE t SET body = E\'it\'\'s \\\'@nobody\\\'\' WHERE id = @id',
                     'POSTGRES'))
              .toEqual(['id']);
+         expect(referencedParameters(
+                    'UPDATE customer SET note = E\'first line\\n\'\n' +
+                        '  -- comment\n' +
+                        '  \'it\\\'s @note\' WHERE c_key = @id -- ' +
+                        '-'.repeat(60),
+                    'POSTGRES'))
+             .toEqual(['id']);
          // Nested block comments, ` operator, $-identifiers, and $tag$ strings.
          expect(referencedParameters(
                     '/* outer /* inner */ @skip */ UPDATE t SET x = a ` b, ' +
@@ -224,7 +247,7 @@ describe('referencedParameters', () => {
                     'ALLOYDB'))
              .toEqual(['id']);
          expect(referencedParameters('SELECT $1$$@id', 'POSTGRES'))
-             .toEqual(['id']);
+             .toEqual([]);
          expect(referencedParameters(
                     '/* outer /* inner */ @ignored', 'POSTGRES'))
              .toEqual([]);

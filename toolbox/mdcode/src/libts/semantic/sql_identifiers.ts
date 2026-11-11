@@ -1,6 +1,6 @@
 // Quoting for GoogleSQL identifiers emitted into generated graph DDL, plus
-// SQL action statement scanners (`referencedParameters`, which is
-// dialect-aware, and `leadingDmlVerb`).
+// dialect-aware SQL action statement scanners (`referencedParameters` and
+// `leadingDmlVerb`).
 //
 // The graph generator (./graph_ddl) lowers logical names -- entity and
 // relationship labels, property names, key columns -- into identifier
@@ -185,6 +185,8 @@ export function quoteColumnIfReserved(sql: string): string {
 
 const DOLLAR_QUOTE_TAG =
     /\$(?:[A-Za-z_\x80-\uffff][A-Za-z0-9_\x80-\uffff]*)?\$/y;
+const QUOTE_CONTINUE =
+    /^[ \t\f]*(?:--[^\n\r]*)?[\n\r](?:[ \t\n\r\f\v]|--[^\n\r]*[\n\r])*'/;
 
 function endOfLineComment(text: string, from: number): number {
   let i = from;
@@ -245,6 +247,62 @@ function endOfTripleQuoted(text: string, from: number): number {
   return text.length;
 }
 
+// `text` with each comment and each quoted string or identifier replaced by a
+// space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
+// `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).
+function sqlCode(text: string, dialect?: string|null): string {
+  const postgres = dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+  const identCont =
+      postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
+  let out = '';
+  let start = 0;
+  const skip = (from: number, to: number): number => {
+    out += `${text.slice(start, from)} `;
+    start = to;
+    return to - 1;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '-' && text[i + 1] === '-') {
+      i = skip(i, endOfLineComment(text, i + 2));
+    } else if (!postgres && c === '#') {
+      i = skip(i, endOfLineComment(text, i + 1));
+    } else if (c === '/' && text[i + 1] === '*') {
+      i = skip(i, endOfBlockComment(text, i, postgres));
+    } else if (
+        !postgres && (c === '\'' || c === '"') && text[i + 1] === c &&
+        text[i + 2] === c) {
+      i = skip(i, endOfTripleQuoted(text, i));
+    } else if (c === '\'' || c === '"') {
+      i = skip(i, endOfQuoted(text, i, !postgres, postgres));
+    } else if (!postgres && c === '`') {
+      i = skip(i, endOfQuoted(text, i, true, false));
+    } else if (postgres && c === '$') {
+      DOLLAR_QUOTE_TAG.lastIndex = i;
+      const m = DOLLAR_QUOTE_TAG.exec(text);
+      if (m) {
+        const end = text.indexOf(m[0], i + m[0].length);
+        i = skip(i, end < 0 ? text.length : end + m[0].length);
+      }
+    } else if (/[A-Za-z_\x80-\uffff]/.test(c)) {
+      let j = i + 1;
+      while (j < text.length && identCont.test(text[j])) j++;
+      if (postgres && j === i + 1 && (c === 'e' || c === 'E') &&
+          text[j] === '\'') {
+        let end = endOfQuoted(text, j, true, true);
+        // A string continued on a later line keeps E's backslash escapes.
+        for (let m; (m = QUOTE_CONTINUE.exec(text.slice(end)));) {
+          end = endOfQuoted(text, end + m[0].length - 1, true, true);
+        }
+        i = skip(i, end);
+      } else {
+        i = j - 1;
+      }
+    }
+  }
+  return start === 0 ? text : out + text.slice(start);
+}
+
 // The distinct `@name` references in a SQL statement, ignoring comments and
 // quoted strings or identifiers so prose or a literal containing an '@' is not
 // read as a binding. `#` starts a line comment in GoogleSQL (the default), and
@@ -253,53 +311,9 @@ function endOfTripleQuoted(text: string, from: number): number {
 // only the parameters a statement actually reads.
 export function referencedParameters(
     text: string, dialect?: string|null): string[] {
-  const postgres = dialect === 'POSTGRES' || dialect === 'ALLOYDB';
-  const identCont =
-      postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   const names = new Set<string>();
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === '-' && text[i + 1] === '-') {
-      i = endOfLineComment(text, i + 2);
-    } else if (!postgres && c === '#') {
-      i = endOfLineComment(text, i + 1);
-    } else if (c === '/' && text[i + 1] === '*') {
-      i = endOfBlockComment(text, i, postgres) - 1;
-    } else if (
-        !postgres && (c === '\'' || c === '"') && text[i + 1] === c &&
-        text[i + 2] === c) {
-      i = endOfTripleQuoted(text, i) - 1;
-    } else if (c === '\'' || c === '"') {
-      i = endOfQuoted(text, i, !postgres, postgres) - 1;
-    } else if (!postgres && c === '`') {
-      i = endOfQuoted(text, i, true, false) - 1;
-    } else if (postgres && c === '$' && !/[0-9]/.test(text[i - 1] ?? '')) {
-      DOLLAR_QUOTE_TAG.lastIndex = i;
-      const m = DOLLAR_QUOTE_TAG.exec(text);
-      if (m) {
-        const end = text.indexOf(m[0], i + m[0].length);
-        if (end < 0) break;
-        i = end + m[0].length - 1;
-      }
-    } else if (/[A-Za-z_\x80-\uffff]/.test(c)) {
-      let j = i + 1;
-      while (j < text.length && identCont.test(text[j])) j++;
-      if (postgres && j === i + 1 && (c === 'e' || c === 'E') &&
-          text[j] === '\'') {
-        i = endOfQuoted(text, j, true, true) - 1;
-      } else {
-        i = j - 1;
-      }
-    } else if (c === '@') {
-      if (text[i + 1] === '@') {
-        while (text[i + 1] === '@') i++;
-      } else if (/[A-Za-z_]/.test(text[i + 1] ?? '')) {
-        let k = i + 2;
-        while (k < text.length && /\w/.test(text[k])) k++;
-        names.add(text.slice(i + 1, k));
-        i = k - 1;
-      }
-    }
+  for (const m of sqlCode(text, dialect).matchAll(/@@+|@([A-Za-z_]\w*)/g)) {
+    if (m[1]) names.add(m[1]);
   }
   return [...names];
 }
@@ -309,16 +323,16 @@ export function referencedParameters(
 //
 // Reading the first six characters is not enough: a statement opening with a
 // `--` comment, or with a `WITH` clause ahead of its UPDATE, reports a verb
-// that is not the statement's. So this walks the text instead, skipping what
-// cannot hold the verb -- comments, quoted strings, and anything nested in
-// parentheses -- and returns the first DML keyword left standing at the top
+// that is not the statement's. So this walks `sqlCode(sql, dialect)` instead,
+// skipping comments, quoted strings or identifiers, and anything nested in
+// parentheses, and returns the first DML keyword left standing at the top
 // level. For `WITH x AS (SELECT ...) UPDATE ...` that is the UPDATE, because
 // the CTE body is inside parentheses; for `UPDATE t SET note = 'DELETE'` it is
 // the UPDATE, because the literal is not read as a keyword.
 //
-// BOTH line-comment forms are skipped. GoogleSQL takes `#` as well as `--`, and
-// action DML runs against Spanner, so `# credit the account` ahead of an INSERT
-// would otherwise hand back whatever verb the prose happened to use.
+// In GoogleSQL (the default), `#` is skipped as a line comment alongside `--`,
+// while on PostgreSQL/AlloyDB `#` stays an operator (such as `#>` or `#>>` in a
+// leading CTE).
 //
 // It lives here, rather than beside the one caller that refuses a zero-row
 // write, because validation reads the same statements to decide what a model
@@ -344,35 +358,20 @@ export function referencedParameters(
 // and would reject valid ones. Given which direction a misread now falls, a
 // scanner that recognizes a leading INSERT is enough; if that stops being true,
 // the parser is the thing to reach for rather than more cases here.
-export function leadingDmlVerb(sql: string): string {
+export function leadingDmlVerb(sql: string, dialect?: string|null): string {
   const verbs = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
+  const code = sqlCode(sql, dialect);
   let depth = 0;
-  for (let i = 0; i < sql.length; i++) {
-    const c = sql[i];
-    if ((c === '-' && sql[i + 1] === '-') || c === '#') {
-      const end = sql.indexOf('\n', i);
-      if (end < 0) break;
-      i = end;
-    } else if (c === '/' && sql[i + 1] === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      if (end < 0) break;
-      i = end + 1;
-    } else if (c === '\'' || c === '"' || c === '`') {
-      for (i++; i < sql.length; i++) {
-        if (sql[i] === '\\') {
-          i++;
-        } else if (sql[i] === c) {
-          break;
-        }
-      }
-    } else if (c === '(') {
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    if (c === '(') {
       depth++;
     } else if (c === ')') {
       if (depth > 0) depth--;
     } else if (depth === 0 && /[A-Za-z_]/.test(c)) {
-      let j = i;
-      while (j < sql.length && /[A-Za-z0-9_]/.test(sql[j])) j++;
-      const word = sql.slice(i, j).toUpperCase();
+      let j = i + 1;
+      while (j < code.length && /[A-Za-z0-9_]/.test(code[j])) j++;
+      const word = code.slice(i, j).toUpperCase();
       if (verbs.has(word)) return word;
       i = j - 1;
     }

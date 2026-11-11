@@ -15,7 +15,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
-import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {alloyDbTargets, ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
@@ -752,7 +752,8 @@ export function validateActions(
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sourcesDialect(model) :
+      sourcesDialect(model) ??
+          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : undefined) :
       undefined;
   for (const action of actions) {
     const where =
@@ -900,7 +901,7 @@ function sqlExecutorErrors(
     // authored executor `kcmd` refused. Sharing the scanner does not widen
     // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
     // does not list, so a MERGE is still refused here.
-    const verb = leadingDmlVerb(text);
+    const verb = leadingDmlVerb(text, dialect);
     if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
       // Name what the author wrote, not merely that nothing was found. The
       // scanner reads DML verbs only, so a SELECT executor -- the likeliest
@@ -2196,10 +2197,17 @@ export async function localChecks(
     }
   }
   const kcWarnings: string[] = [];
-  const kcErrors = models.flatMap(
-      m => ofModel(m.document, ...validatePushRequirements(
-          [{...m, model: {...m.model, deployments: []}}],
-          {warnings: kcWarnings})));
+  const kcErrors = models.flatMap(m => {
+    const inlineAlloyDb = (m.model.deployments ?? []).filter(
+        d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE &&
+            everyByDoc.get(m.document)!.some(
+                r => r.name === d.name && r.engine === 'alloydb'));
+    return ofModel(
+        m.document,
+        ...validatePushRequirements(
+            [{...m, model: {...m.model, deployments: inlineAlloyDb}}],
+            {warnings: kcWarnings}));
+  });
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
     return stop([...profileErrors, ...kcErrors]);

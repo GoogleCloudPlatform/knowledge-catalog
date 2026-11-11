@@ -643,6 +643,7 @@ describe('validatePushRequirements gates actions', () => {
             'UPDATE orders SET status = @status -- @note is optional',
             'UPDATE orders SET status = @status /* @note */',
             'UPDATE orders SET status = @status # @note is optional',
+            '# @before\rINSERT INTO orders (status) VALUES (@status)',
           ],
         },
       },
@@ -680,8 +681,45 @@ describe('validatePushRequirements gates actions', () => {
                     'SET note = $$@raw$$ WHERE id = @id -- @other')]))
              .toEqual([]);
          expect(validatePushRequirements([pgModel(
+                    'WITH s AS (SELECT doc #>> \'{k}\' AS k FROM orders) ' +
+                    'UPDATE orders SET note = s.k FROM s WHERE id = @id')]))
+             .toEqual([]);
+         expect(validatePushRequirements([pgModel(
                     'UPDATE orders SET doc = doc #- \'{draft}\' WHERE id = @missing')]))
              .toEqual([expect.stringContaining('binds \'@missing\'')]);
+         // When no entity has a source, an AlloyDB deployment target still
+         // implies PostgreSQL.
+         expect(validatePushRequirements([{
+           document: 'doc',
+           model: {
+             name: 'm',
+             entities: [{
+               name: 'customer',
+               abstract: true,
+               dataSource: '',
+               keys: [],
+               fields: [{name: 'c_key', type: 'Integer'}],
+             }],
+             relationships: [],
+             metrics: [],
+             deployments: [{
+               name: 'pg',
+               target: 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d',
+             }],
+             actions: [{
+               name: 'A',
+               executor: {
+                 kind: 'sql',
+                 sql: {
+                   statements: [
+                     'UPDATE customer SET doc = doc #- \'{a}\' WHERE c_key = @missing',
+                   ],
+                 },
+               },
+               parameters: [],
+             }],
+           },
+         }])).toEqual([expect.stringContaining('binds \'@missing\'')]);
        });
 
   test(
