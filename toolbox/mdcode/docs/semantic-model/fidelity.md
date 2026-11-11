@@ -292,7 +292,9 @@ with an INTERVAL, a function such as DATE_ADD, ADDDATE, DATEADD or TIMESTAMPADD
 with any unit name the database documents, or a whole number of days. The
 amount is a whole number. In a function and in MySQL's INTERVAL it can also be
 an expression, such as a column, which import writes as it is. BigQuery rejects
-an amount that is not an INT64, where the database may round it. SQL Server's
+an amount that is not an INT64, where the database may round it. An amount
+that is visibly an INTERVAL, such as `3 * INTERVAL 1 DAY` in Databricks'
+date_add, stays untranslated, as the database rejects it. SQL Server's
 DATEADD reads a string of a whole number, such as '1', as the number. A column
 can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
 only the units that keep the value and type of each. It also adds months,

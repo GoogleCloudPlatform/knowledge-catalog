@@ -1187,7 +1187,7 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   }
   const [part, amount, operand] = byPart ? args : [undefined, args[1], args[0]];
   if (how === 'interval' || args.length !== (byPart ? 3 : 2) || added) return name;
-  const whole = functionAmount(amount, table);
+  const whole = functionAmount(amount, read, table);
   if (typeof whole === 'string') return `${name} ${whole}`;
   const spelling = byPart ? `${name} with part '${partName(part) ?? '?'}'` : name;
   // A part is a name, or a string where the dialect takes one.
@@ -1200,16 +1200,20 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
 }
 
 // The amount of `amount`, the number of units a function such as DATEADD(day,
-// n, d) adds, in `table`'s dialect, as import writes it, or a message. A
-// number is whole, and a string of a whole number is the number where the
-// dialect reads it so. Any other expression is written as it is. BigQuery
-// rejects one that is not an INT64, where the sources may round it.
-function functionAmount(amount: any, table: DateTable): unknown {
+// n, d) adds, in `table`, the table of the engine's dialect `read`, as import
+// writes it, or a message. A number is whole, and a string of a whole number
+// is the number where the dialect reads it so. Any other expression that is
+// not visibly an INTERVAL is written as it is. BigQuery rejects one that is
+// not an INT64, where the sources may round it. The sources and BigQuery
+// reject an INTERVAL there.
+function functionAmount(amount: any, read: string, table: DateTable): unknown {
   const b = bare(amount);
   const text = literalText(b?.literal);
   const string = b?.literal?.literal_type === 'string' && /^\s*[+-]?\d+\s*$/.test(text ?? '');
   const written = numberText(b) ?? (table.stringAmounts && string ? text : undefined);
-  if (written === undefined) return b?.literal ? `by ${valueName(b)}` : amount;
+  if (written === undefined) {
+    return b?.literal ? `by ${valueName(b)}` : intervalTyped(b, read) ? 'by an INTERVAL' : amount;
+  }
   return /^\s*[+-]?\d+\s*$/.test(written) ? wholeNumber(written) : 'of a fraction';
 }
 
