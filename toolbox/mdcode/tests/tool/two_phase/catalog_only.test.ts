@@ -351,10 +351,30 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       ])},
       errors: [has('statement 1 is followed by a comment line'),
                has('statement 2 is followed by a comment line')],
-    }, {
-      // A flow list has no '-' column to indent a comment line past.
+    }],
+  },
+  {
+    name: 'refuses an unquoted action statement in a flow list followed by a comment line',
+    files: {'commerce.yaml': modelWriting(
+        ['[UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k", ']'])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        "whose statement 1 is followed by a comment line before the next ',' " +
+        "or ']', so YAML reads the statement as 'UPDATE customer SET doc = " +
+        "doc'. If the comment line is part of the statement, write the " +
+        "statements as a block list, with this one as a block scalar with " +
+        "'|'. If it is a YAML comment, move it after the ',' or ']' that " +
+        'follows the statement.')],
+    then: [{
       files: {'commerce.yaml': modelWriting(
-          ['[UPDATE customer SET doc = doc WHERE c_key = @k', '   # a note', ']'])},
+          ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '[UPDATE customer SET doc = doc WHERE c_key = @k, # a note',
+        '  DELETE FROM customer WHERE c_key = @k',
+        ']  # a note',
+      ])},
       code: 0,
     }],
   },

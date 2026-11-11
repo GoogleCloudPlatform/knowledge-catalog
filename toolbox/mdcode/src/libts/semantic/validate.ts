@@ -1031,9 +1031,10 @@ function sqlExecutorErrors(
 //   1. An unquoted statement with a comment on the same line. YAML ends an
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
-//   2. An unquoted statement in a block list followed, after any blank lines,
-//      by a comment line indented past the list's '-'. YAML ends the
-//      statement there too.
+//   2. An unquoted statement followed, after any blank lines, by a comment
+//      line: in a block list one indented past the list's '-', and in a flow
+//      list any before the next ',' or ']'. YAML ends the statement there
+//      too.
 //   3. A statement whose YAML style joins its lines into one, with a SQL line
 //      comment on a line before the last. Joined, the comment also covers the
 //      lines after it.
@@ -1071,6 +1072,16 @@ export function yamlChangedStatementErrors(
             `${at} is followed by a comment line indented under it, so YAML ` +
             `reads the statement as '${statement.value}'. ${
                 advice('the comment line')}`);
+      } else if (statement.type === 'PLAIN' && dashColumn === undefined &&
+                 commentIndent >= 0) {
+        // A flow list has no '-' column and cannot hold a block scalar.
+        errors.push(
+            `${at} is followed by a comment line before the next ',' or ']', ` +
+            `so YAML reads the statement as '${statement.value}'. If the ` +
+            `comment line is part of the statement, write the statements as ` +
+            `a block list, with this one as a block scalar with '|'. If it ` +
+            `is a YAML comment, move it after the ',' or ']' that follows the ` +
+            `statement.`);
       } else if (joinedLinesCommented(statement, file.text, dialects)) {
         errors.push(
             `${at} has a SQL comment on a line YAML joins to the next one, ` +
