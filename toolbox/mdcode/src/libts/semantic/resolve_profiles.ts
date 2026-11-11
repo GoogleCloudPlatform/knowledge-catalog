@@ -268,7 +268,11 @@ export function pruneUnavailable(
         unread++;
       }
     }
-    const hit = firstUnboundReferenced(columns, unavailable);
+    // An unqualified name reads a field of the metric's entity.
+    const hit = firstUnboundReferenced(
+        columns.map(c => c.qualifier === undefined && mt.entity ?
+                        {...c, qualifier: mt.entity} : c),
+        unavailable);
     if (hit) {
       report.droppedMetrics.push({
         name: mt.name,

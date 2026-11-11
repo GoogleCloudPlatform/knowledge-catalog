@@ -324,13 +324,18 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(report.unboundFields).toContain('Customer.lifetimeValue');
   });
 
-  test('a metric that reads an unbound field is dropped and reported', () => {
-    const {model, report} = pruneUnavailable(irModel(), 'operational');
-    expect(metricNames(model)).toEqual(['order_count']);
-    const dropped =
-        report.droppedMetrics.find(d => d.name === 'avg_lifetime_value');
-    expect(dropped?.reason).toMatch(/Customer\.lifetimeValue/);
-  });
+  // An unqualified name reads a field of the metric's entity.
+  test.each(['AVG(Customer.lifetimeValue)', 'AVG(lifetimeValue)'])(
+      'a metric that reads an unbound field as %s is dropped and reported',
+      expression => {
+        const m = irModel();
+        m.metrics![1].expression = expression;
+        const {model, report} = pruneUnavailable(m, 'operational');
+        expect(metricNames(model)).toEqual(['order_count']);
+        const dropped =
+            report.droppedMetrics.find(d => d.name === 'avg_lifetime_value');
+        expect(dropped?.reason).toMatch(/Customer\.lifetimeValue/);
+      });
 
   test('a metric whose fields are all bound survives', () => {
     const {model} = pruneUnavailable(irModel(), 'operational');
