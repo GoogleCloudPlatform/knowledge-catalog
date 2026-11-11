@@ -1938,6 +1938,57 @@ describe('a pull', () => {
          });
   }
 
+  // With no table's dialect read, pull still reads which fields and entities
+  // an ANSI_SQL expression reads, and warns as push refuses.
+  for (const [kind, source] of [
+    ['Spanner', 'spanner.googleapis.com/projects/test-project/instances/i/' +
+         'databases/db/tables/orders'],
+    ['Cloud SQL', 'cloudsql.googleapis.com/projects/test-project/locations/' +
+         'us-central1/instances/i/databases/shop/tables/orders'],
+    ['third-party', 'projects/test-project/locations/us/entryGroups/snow/' +
+         'entries/orders'],
+  ]) {
+    for (const [what, fields, expression, error] of [
+      ['a field', ['id'], 'SUM(Order.amount)',
+       "expression references 'Order.amount', but entity 'Order' has no " +
+           "field 'amount'; metric expressions must reference declared " +
+           'fields, not physical columns.'],
+      ['an entity', ['id', 'amount'], 'SUM(Order.amount) + COUNT(Gone.id)',
+       "'Gone.id' has qualifier 'Gone', which is not a declared entity in " +
+           "model 'commerce'; write 'entity.field' starting with a declared " +
+           'entity.'],
+    ] as Array<[string, string[], string, string]>) {
+      test(`on a ${kind} table warns about ${what} a metric reads that the ` +
+               'catalog lacks',
+           async () => {
+             fs.writeFileSync(
+                 path.join(dir, 'catalog.yaml'),
+                 'scope: semantic-model.test-project.us.commerce_eg\n');
+             pulled({
+               name: 'commerce',
+               relationships: [],
+               entities: [{
+                 name: 'Order', dataSource: source, keys: ['id'],
+                 fields: fields.map(
+                     name => ({name, expression: name, stringForm: true})),
+               }],
+               metrics: [{
+                 name: 'm', entity: 'Order', authoredEntity: 'Order',
+                 expression, stringForm: true,
+               }],
+             });
+
+             expect(await pull()).toBe(0);
+             expect(messages(console.warn)).toBe(
+                 `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
+                 `writes it: metric 'm' in model 'commerce' (commerce): ${
+                     error}`);
+             expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
+             expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
+           });
+    }
+  }
+
   // Reading a table's SQL dialect calls Spanner or Knowledge Catalog, so pull
   // leaves the checks that need one to push.
   test('reads no table\'s SQL dialect', async () => {

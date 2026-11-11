@@ -443,8 +443,13 @@ export function loadProfileFile(
 // The source dialects a command looked up before it loads
 // (LoadOptions.sourceDialects). `sourceDatabases` holds the database each
 // third-party table's entry names, by entry name, for the one-database rule.
-export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&
-    {sourceDatabases?: ReadonlyMap<string, string>};
+// With `readWithoutDialect`, push's checks of which fields and entities a
+// model's expressions read parse an ANSI_SQL text as generic SQL when no
+// lookup read its tables' dialect. Without it, they skip such a text.
+export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&{
+  sourceDatabases?: ReadonlyMap<string, string>;
+  readWithoutDialect?: boolean;
+};
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {

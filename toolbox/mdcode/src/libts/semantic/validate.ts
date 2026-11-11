@@ -41,11 +41,14 @@ import {SqlColumn} from './sql_parser';
 // `warnings` collects non-fatal messages (such as an expression the SQL parser
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
+//
+// `load` is what the caller read of each table's dialect.
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
       fieldsPruned?: boolean;
       warnings?: string[];
+      load?: DialectLoad;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
@@ -82,7 +85,7 @@ export function validatePushRequirements(
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
-        flaggedMetrics));
+        flaggedMetrics, opts.load));
     if (deployInfo.bigQuery.length > 0) {
       errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
     }
@@ -258,7 +261,8 @@ export function validateDeployments(
     if (engine !== 'bigquery') continue;
     if (!referenced) {
       referenced = new Set();
-      validateExpressionReferences([{document, model}], false, [], referenced);
+      validateExpressionReferences(
+          [{document, model}], false, [], referenced, load);
     }
     for (const m of available) {
       const problem =
@@ -1830,10 +1834,12 @@ function metricNoSqlError(
 //
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
-// `flaggedMetrics` collects the name of each metric it reports.
+// `flaggedMetrics` collects the name of each metric it reports. With
+// `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
+// lookup read is read as generic SQL, where it is otherwise skipped.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>): string[] {
+    flaggedMetrics?: Set<string>, load: DialectLoad = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1855,11 +1861,15 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = sourcesDialect(model);
+    const sourcesRead = sourcesDialect(model);
+    const impliedDialect = sourcesRead === null && load.readWithoutDialect ?
+        undefined :
+        sourcesRead;
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
-          // A caller that looked up no table's dialect reads no ANSI_SQL
-          // text when every table needs the lookup, so it warns about none.
+          // A caller that looked up no table's dialect and did not set
+          // readWithoutDialect reads no ANSI_SQL text when every table needs
+          // the lookup, so it warns about none.
           const unreadDialects = impliedDialect === null ?
               unread.filter(d => d !== 'ANSI_SQL') :
               unread;
@@ -2283,7 +2293,7 @@ export async function localChecks(
         m.document,
         ...validatePushRequirements(
             [{...m, model: {...m.model, deployments: inlineAlloyDb}}],
-            {warnings: kcWarnings}));
+            {warnings: kcWarnings, load}));
   });
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
@@ -2380,7 +2390,7 @@ async function deploymentPlan(
   // localChecks has already warned about the SQL they cannot read.
   const unprunedErrors = [
     ...validateInheritance([checked]),
-    ...validateExpressionReferences([checked]),
+    ...validateExpressionReferences([checked], false, [], undefined, load),
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
@@ -2395,7 +2405,7 @@ async function deploymentPlan(
   };
   const errors = [
     ...unprunedErrors,
-    ...validatePushRequirements([narrowed], {fieldsPruned: true}),
+    ...validatePushRequirements([narrowed], {fieldsPruned: true, load}),
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.

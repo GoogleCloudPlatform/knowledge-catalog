@@ -1902,7 +1902,9 @@ async function pullSemanticModel(
 // `profiles`, or undefined when push accepts them. Like push, it loads the SQL
 // parser and runs push's checks that call no service. It reads no table's SQL
 // dialect, since that calls a service, so only push runs the checks that need
-// one. It reads the overview sidecars on disk, as push does, unless given
+// one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
+// SQL for the checks of which fields and entities an expression reads. It
+// reads the overview sidecars on disk, as push does, unless given
 // `overviews`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
@@ -1913,8 +1915,9 @@ async function pushRefusal(
   if (parserError) return parserError;
   const docs = [doc];
   const profileDocs = () => profiles;
+  const load = {readWithoutDialect: true};
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load: {}, overviews}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load, overviews}, true);
   return 'errors' in checked ? checked.errors[0]?.error : undefined;
 }
 
