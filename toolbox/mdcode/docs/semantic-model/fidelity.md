@@ -296,7 +296,9 @@ an amount that is not an INT64, where the database may round it. SQL Server's
 DATEADD reads a string of a whole number, such as '1', as the number. A column
 can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
 only the units that keep the value and type of each. These are the units it
-adds, by database:
+adds, by database. Milliseconds and microseconds go wherever seconds go,
+where the database names them: PostgreSQL and Databricks name both, and MySQL
+names microseconds.
 
 - MySQL: seconds, minutes, hours and days to a column, and every unit from
   seconds to years to a value it can see is a DATE, such as the current date.
@@ -308,7 +310,11 @@ adds, by database:
   first.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
-  DATE and to a DATE plus an INTERVAL.
+  DATE and to a DATE plus an INTERVAL. An INTERVAL string can name several
+  units, such as '1 day 2 hours', and decades, centuries and millennia, which
+  count as 10, 100 and 1000 years. A cast to INTERVAL with fields, such as
+  `'90 minutes'::interval hour`, and `INTERVAL '90 minutes' HOUR` become the
+  INTERVAL PostgreSQL computes, here `INTERVAL 1 HOUR`.
 - Snowflake: seconds, minutes, hours and days to a column, and every unit to a
   DATE. It writes CURRENT_TIMESTAMP as CURRENT_DATETIME('America/Los_Angeles')
   and adds days, weeks, months, quarters and years to it. An INTERVAL string
