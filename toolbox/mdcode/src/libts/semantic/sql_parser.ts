@@ -22,8 +22,10 @@ export interface PolyglotEngine {
   // from `parse` or an expression from `sqlExpressionTree`.
   generate(ast: unknown[], dialect: string):
       {success: boolean; sql?: string[]; error?: string};
-  // On failure, `errorStart` is where the text the engine cannot read starts,
-  // in Unicode code points, as in a token's `span`.
+  // On failure, `errorStart` is where the text the engine cannot read starts.
+  // It counts Unicode code points, as a token's `span` does, though the SDK's
+  // type declarations call both byte offsets. The MySQL comment row with an
+  // emoji in transpile.polyglot.test.ts checks it.
   tokenize(sql: string, dialect: string):
       {success: boolean; tokens?: SqlToken[]; error?: string; errorStart?: number};
 }
