@@ -1441,15 +1441,17 @@ function nextNodes(kind: string, value: any, read: string):
       [value.left, value.right, value.this].some(n => bare(n)?.literal?.literal_type === 'string')) {
     return `${kind.toUpperCase()} of a string`;
   }
-  // BigQuery cannot compare a TIMESTAMP with a DATE or a DATETIME, which the
-  // sources compare, or give either as a result of one COALESCE, NVL, IF or
-  // CASE.
+  // A comparison, and the results of one COALESCE, NVL, IF or CASE, translate
+  // when their visible types are all in one group of COMPARED.
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   const pairs: [any[], string][] = [[comparedValues(kind, value) ?? [], OPERATORS[kind]], [merged, valueName(node)]];
   for (const [values, name] of pairs) {
-    const times = new Set(values.map(v => timeType(v, read)));
-    const other = ['DATE', 'DATETIME'].find(t => times.has(t));
-    if (times.has('TIMESTAMP') && other) return `${prefix}${name} on a ${other} and a TIMESTAMP`;
+    const order = COMPARED.flat();
+    const types = [...new Set(values.map(v => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined)))]
+        .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const group = COMPARED.find(g => g.includes(types[0])) ?? [];
+    const other = types.find(t => !group.includes(t));
+    if (other) return `${prefix}${name} on a ${types[0]} and a ${other}`;
   }
   // Snowflake and SQL Server have no default escape character in LIKE, where
   // BigQuery's is a backslash. SQL Server reads [ in a pattern as a set of
@@ -1605,6 +1607,12 @@ function joinProblem(op: string, parts: any[], read: string): string|undefined {
   return notText ? `${op} of a value that is not text` : undefined;
 }
 
+// The groups of visible types that BigQuery compares with each other, or gives
+// as results of one COALESCE, NVL, IF or CASE. The sources also compare a
+// TIMESTAMP with a DATE or a DATETIME, and MySQL a date or a time with a
+// number, which it reads as a number such as 20240101.
+const COMPARED = [['DATE', 'DATETIME'], ['TIMESTAMP'], ['number']];
+
 // The values a node of `kind`, a comparison, BETWEEN, IN or a CASE with an
 // operand, compares, or undefined for another kind.
 function comparedValues(kind: string, value: any): any[]|undefined {
@@ -1638,12 +1646,27 @@ function timeType(node: any, read: string): string|undefined {
   return CAST_TYPES[type]?.includes(read) ? types[type] : undefined;
 }
 
-// Each type timeType gives `node`, a source value in the engine's dialect
-// `read`, or each value it can give as its own, such as COALESCE's operands.
-function timeTypes(node: any, read: string): string[] {
+// The values `node`, a source value, can give: `node`, or each value it gives
+// as its own, such as COALESCE's operands.
+function givenValues(node: any): any[] {
   const results = returned(node);
-  const type = timeType(node, read);
-  return results.length ? results.flatMap(v => timeTypes(v, read)) : type ? [type] : [];
+  return results.length ? results.flatMap(givenValues) : [node];
+}
+
+// The arguments of NULLIF, in the engine's dialect `read`, that import still
+// has to check, or why it does not translate it. BigQuery gives NULLIF the
+// common type of its values. PostgreSQL, Databricks and SQL Server give the
+// type of the first, and MySQL gives a date or a time as text. So NULLIF
+// translates when every value its arguments can give has one type, the same
+// visible type or none, and in MySQL when none is a date or a time. A value
+// with no visible type, such as a column, may be any type.
+function nullifArgs(args: any[], read: string): unknown[]|string {
+  const types = [...new Set(args.flatMap(givenValues).map(v => timeType(v, read)))];
+  const time = types.find(t => t);
+  if (types.length === 1 && !(read === 'mysql' && time)) return args;
+  if (types.length === 1) return `NULLIF of a ${time}, which MySQL gives as text`;
+  const other = types.find(t => t && t !== time);
+  return `NULLIF on a ${time} and ${other ? `a ${other}` : 'a value that may be another type'}`;
 }
 
 // The arguments of `fn`, a source function call in the engine's dialect
@@ -1667,18 +1690,14 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return undefined;
   }
   if (name === 'CONCAT') return joinProblem(name, args, read) ?? args;
-  // BigQuery's NULLIF compares no DATE or DATETIME with a TIMESTAMP, and gives
-  // a DATE and a DATETIME as a DATETIME, where the sources give the type of
-  // the first or text. An argument such as COALESCE(d, NOW()) can be either.
-  const times = [...new Set(name === 'NULLIF' ? args.flatMap(a => timeTypes(a, read)) : [])];
-  if (times.length > 1) return `NULLIF on a ${times[0]} and a ${times[1]}`;
+  if (name === 'NULLIF') return nullifArgs(args, read);
   const part = (arg: any) => String(partName(arg) ?? '?');
   if (name === 'DATE_TRUNC' || name === 'DATE_PART' || name === 'DATEDIFF') {
     const parts = name === 'DATE_TRUNC' ? TRUNC_PARTS : PARTS;
     if (!parts[part(args[0]).toLowerCase()]) {
       return `${name} with part '${part(args[0])}'`;
     }
-    const values = args.slice(1).map(a => dateValue(name, a));
+    const values = args.slice(1).map(a => dateValue(name, a, read));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
   }
   return args;
@@ -1687,11 +1706,14 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
 // `[node]`, the date or timestamp the date function `name` reads in the
 // engine's dialect `read`, to check next, or a message. It may be a column, a
 // DATE literal, a cast or the current date or time; BigQuery reads a string, a
-// number or a sum another way, or rejects it.
-function dateValue(name: string, node: any): unknown[]|string {
+// number or a sum another way, or rejects it. PostgreSQL's DATE_TRUNC reads
+// only a value import does not see as a DATE, since PostgreSQL truncates a
+// DATE as a timestamp with time zone, where BigQuery gives a DATE.
+function dateValue(name: string, node: any, read = ''): unknown[]|string {
   const b = bare(node);
-  const allowed = b?.column || b?.cast || b?.try_cast || b?.literal?.literal_type === 'date' ||
-      CURRENT.has(String(b?.function?.name).toUpperCase());
+  const readsDate = read !== 'postgresql' || name !== 'DATE_TRUNC';
+  if (isDate(b)) return readsDate ? [node] : `${name} of a DATE, which PostgreSQL truncates as a timestamp with time zone`;
+  const allowed = b?.column || b?.cast || b?.try_cast || CURRENT.has(String(b?.function?.name).toUpperCase());
   return allowed ? [node] : `${name} of ${valueName(b)}`;
 }
 

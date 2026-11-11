@@ -631,6 +631,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', 'NULLIF(CURDATE(), NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(CURRENT_DATE, d::timestamp))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, COALESCE(x, COALESCE(CURRENT_DATE, d::timestamp)))', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, d)', {error: 'kcmd does not translate NULLIF on a DATE and a value that may be another type'}],
+    ['MYSQL', 'NULLIF(CURDATE(), CURDATE())', {error: 'kcmd does not translate NULLIF of a DATE, which MySQL gives as text'}],
+    // A date compared with a number, and PostgreSQL's DATE_TRUNC of a DATE.
+    ['MYSQL', 'CURDATE() = 20240101', {error: 'kcmd does not translate = on a DATE and a number'}],
+    ['POSTGRES', "DATE_TRUNC('month', CURRENT_DATE)", {error: 'kcmd does not translate DATE_TRUNC of a DATE, which PostgreSQL truncates as a timestamp with time zone'}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor a column, or
     // one outside DATE_ADD and the like with a unit other than days, hours or
     // minutes.
