@@ -370,7 +370,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
     ['MYSQL', 'd - 1 - INTERVAL 1 DAY', {error: 'kcmd does not translate - of a difference'}],
     ['MYSQL', 'COALESCE(d - 1, d) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of COALESCE'}],
-    ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate INTERVAL 1 DAY first, which MySQL adds to all that follows it; write x + INTERVAL 1 DAY'}],
+    ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate + of an INTERVAL'}],
     ['MYSQL', 'INTERVAL 1 DAY - d', {error: 'kcmd does not translate - with INTERVAL 1 DAY first'}],
     ['MYSQL', 'd + INTERVAL n DAY', {error: 'kcmd does not translate INTERVAL of a column'}],
     ['MYSQL', 'd + INTERVAL -9223372036854775808 DAY', {error: 'kcmd does not translate the number 9223372036854775808'}],
@@ -606,12 +606,12 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['ANSI_SQL', '"t" < CURRENT_TIMESTAMP OR "d" = CURRENT_DATE', {sql: '`t` < CURRENT_TIMESTAMP OR `d` = CURRENT_DATE'}],
     ['SQLSERVER', 'DATEADD(month, 1, CURRENT_DATE)', {sql: "DATE_ADD(CAST(CURRENT_DATETIME('UTC') AS DATE), INTERVAL 1 MONTH)"}],
     // MySQL adds a sum that names its INTERVAL first to all that follows it.
-    ['MYSQL', 'INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY', {error: 'kcmd does not translate INTERVAL 1 MONTH first, which MySQL adds to all that follows it; write x + INTERVAL 1 MONTH'}],
-    ['MYSQL', 'd = (INTERVAL 1 DAY) + CURDATE() IS NULL', {error: 'kcmd does not translate INTERVAL 1 DAY first, which MySQL adds to all that follows it; write x + INTERVAL 1 DAY'}],
+    ['MYSQL', 'INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY', {sql: 'DATE_ADD(DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY), INTERVAL 1 MONTH)'}],
+    ['MYSQL', 'd = (INTERVAL 1 DAY) + CURDATE() IS NULL', {error: 'kcmd does not translate + of a comparison'}],
+    ['MYSQL', 'x > INTERVAL 1 DAY + CURDATE() > z', {error: 'kcmd does not translate + of a comparison'}],
     ['POSTGRES', "INTERVAL '1 month' + CURRENT_DATE > d", {sql: 'INTERVAL 1 MONTH + CURRENT_DATE > d'}],
     ['DATABRICKS', 'INTERVAL 1 DAY + d', {sql: 'DATE_ADD(d, INTERVAL 1 DAY)'}],
-    // A date part written as a quoted name, and NOW, CURDATE and GETDATE without
-    // parentheses, quoted or not, name a column and stay untranslated.
+    // A date part written as a quoted name names a column and stays untranslated.
     ['SQLSERVER', 'DATEADD([day], 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
     ['SNOWFLAKE', 'DATEADD("day", 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
     ['SNOWFLAKE', 'DATEADD(("day"), 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
@@ -622,10 +622,12 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SQLSERVER', 'DATEDIFF([day], a, b)', {error: 'kcmd does not translate DATEDIFF with a quoted part'}],
     ['MYSQL', 'DATEDIFF(`a`, `b`)', {error: 'kcmd does not translate DATEDIFF'}],
     ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
-    ['DATABRICKS', '`curdate` - 7', {error: 'kcmd does not translate a bare CURDATE, which the database reads as a column'}],
-    ['POSTGRES', 'NOW - 7', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
-    ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {error: 'kcmd does not translate a bare GETDATE, which the database reads as a column'}],
-    ['SPANNER', 'd < NOW', {error: 'kcmd does not translate a bare NOW, which the database reads as a column'}],
+    // NOW, CURDATE and GETDATE without parentheses, quoted or not, name a column.
+    ['DATABRICKS', '`curdate` - 7', {sql: '`curdate` - 7'}],
+    ['POSTGRES', 'NOW - 7', {sql: '`NOW` - 7'}],
+    ['POSTGRES', "DATE_TRUNC('month', NOW)", {sql: 'DATE_TRUNC(`NOW`, MONTH)'}],
+    ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {sql: 'DATE_ADD(`GETDATE`, INTERVAL 1 DAY)'}],
+    ['SPANNER', 'd < NOW', {sql: 'd < `NOW`'}],
     // NULLIF of two date and time types, and in MySQL of a date, which it gives
     // as text, and of a column beside a date, which has no exact form.
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {sql: 'IF(TIMESTAMP(CURRENT_DATE) = CURRENT_TIMESTAMP(), NULL, CURRENT_DATE)'}],

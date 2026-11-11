@@ -450,15 +450,14 @@ function transpileWith(
     const {text, comments} = sqlComments(engine, source, read);
     let repaired: {sql: string}|{error: string};
     if (write === 'bigquery') {
-      const tree = sqlExpressionTree(text, r.dialect);
+      const tree = sourceTree(text, r.dialect, read);
       const rules = spanner ? 'spanner' : read;
       const named = () => {
         const found = unknownConstruct(engine, tree, rules);
         return found && writtenName(engine, text, r.dialect, read, rules, found);
       };
       const unknown = misreadToken(engine, source, read) ??
-          (tree ? bareCall(tree) ?? named() :
-                  'a text it cannot read as one expression');
+          (tree ? named() : 'a text it cannot read as one expression');
       if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }
@@ -765,10 +764,6 @@ interface DateTable {
   // False when an INTERVAL may not name its unit outside its string, as in
   // INTERVAL 1 DAY or INTERVAL '1' DAY.
   keywords?: false;
-  // False when a sum may not name its INTERVAL first. MySQL reads
-  // `INTERVAL 1 DAY + d - 1` as INTERVAL 1 DAY + (d - 1), and takes a
-  // comparison after it into the sum too.
-  intervalFirst?: false;
   // The units an INTERVAL may name, when the dialect documents fewer than for
   // its function.
   intervals?: Unit[];
@@ -816,7 +811,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
-    words: {}, intervalFirst: false,
+    words: {},
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
       DATE: {
@@ -994,10 +989,6 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
     const first = !!sides[0];
     const added = sides[first ? 0 : 1];
     if (first && kind === 'sub') return `- with INTERVAL ${intervalText(added)} first`;
-    if (first && table.intervalFirst === false) {
-      return `INTERVAL ${intervalText(added)} first, which MySQL adds to all that follows it; ` +
-          `write x + INTERVAL ${intervalText(added)}`;
-    }
     const parsed = readInterval(added, table);
     if (typeof parsed === 'string') return parsed;
     return sumOn(table, read, {
@@ -1145,17 +1136,65 @@ const PART_FUNCTIONS: Record<string, string[]> = {
 // function.
 const CALLED_ONLY = new Set(['NOW', 'CURDATE', 'GETDATE']);
 
-// The first function of CALLED_ONLY in `tree`, a source tree, written without
-// parentheses, named for a message, or undefined. It is found before the other
-// checks, which read it as the function.
-function bareCall(tree: any): string|undefined {
-  let found: string|undefined;
-  mapTree(tree, node => {
-    const name = String(node.function?.name).toUpperCase();
-    if (node.function?.no_parens && CALLED_ONLY.has(name)) found ??= name;
-    return undefined;
+// The engine's tree of `text`, a source text in `dialect` that the engine
+// reads as `read`, as the source reads it: a function of CALLED_ONLY without
+// parentheses is a column (see calledColumns), and a MySQL sum that names its
+// INTERVAL first adds it to all that follows (see mysqlRest).
+function sourceTree(text: string, dialect: string, read: string): any {
+  const tree = calledColumns(sqlExpressionTree(text, dialect));
+  return read === 'mysql' ? mapTree(tree, mysqlRest) : tree;
+}
+
+// `tree`, an engine tree, with each function of CALLED_ONLY written without
+// parentheses as a quoted column of its name.
+function calledColumns(tree: any): any {
+  return mapTree(tree, node => {
+    const fn = node.function;
+    if (!fn?.no_parens || !CALLED_ONLY.has(String(fn.name).toUpperCase())) return undefined;
+    const column = sqlExpressionTree('x', 'BIGQUERY').column;
+    return {column: {...column, name: {...column.name, name: fn.name, quoted: true}}};
   });
-  return found && `a bare ${found}, which the database reads as a column`;
+}
+
+// The MySQL operators that a sum which names its INTERVAL first takes into the
+// value it adds the INTERVAL to, by kind: the key of the operand written first,
+// and for a binary operator the key of the one written last. MySQL reads
+// `INTERVAL 1 MONTH + d - INTERVAL 1 DAY` as INTERVAL 1 MONTH +
+// (d - INTERVAL 1 DAY), and `INTERVAL 1 DAY + d > x` as
+// INTERVAL 1 DAY + (d > x). It leaves AND, OR and XOR outside the sum.
+const INTERVAL_REST: Record<string, string[]> = {
+  ...Object.fromEntries([
+    'add', 'sub', 'bitwise_or', 'bitwise_and', 'bitwise_xor', 'bitwise_left_shift',
+    'bitwise_right_shift', 'eq', 'neq', 'lt', 'lte', 'gt', 'gte', 'null_safe_eq',
+  ].map(kind => [kind, ['left', 'right']])),
+  like: ['left'], member_of: ['left'], is_null: ['this'], is_true: ['this'], in: ['this'],
+  between: ['this'], regexp_like: ['this'],
+};
+
+// `node`, a MySQL source node whose operands are grouped as MySQL groups them,
+// grouped so too, or undefined when it already is. The engine reads an
+// operator after a sum as applying to the sum. MySQL reads an operator of
+// INTERVAL_REST after a sum that names its INTERVAL first as part of the value
+// the sum adds the INTERVAL to.
+function mysqlRest(node: any): any {
+  const kind = kindOf(node) ?? '';
+  const [first] = INTERVAL_REST[kind] ?? [];
+  if (!first) return undefined;
+  // The operators between `node` and the sum, which ends its first operand.
+  const path: any[] = [];
+  let sum = node[kind][first];
+  while (!(sum?.add && intervalOf(sum.add.left, 'mysql'))) {
+    const last = INTERVAL_REST[kindOf(sum) ?? '']?.[1];
+    if (!last) return undefined;
+    path.push(sum);
+    sum = sum[kindOf(sum)!][last];
+  }
+  const rest = {[kind]: {...node[kind], [first]: sum.add.right}};
+  const grouped = {add: {...sum.add, right: mysqlRest(rest) ?? rest}};
+  return path.reduceRight((inner, outer) => {
+    const k = kindOf(outer)!;
+    return {[k]: {...outer[k], [INTERVAL_REST[k][1]]: inner}};
+  }, grouped);
 }
 
 // The kinds of node that give a BOOL in BigQuery, and 1 or 0 in MySQL.
@@ -2004,7 +2043,14 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     changed = true;
     return {extract: {this: out[part].this, field: extractField(part)}};
   };
-  const tree = rewrite(sqlExpressionTree(sql, dialect), true);
+  // The engine reads a column named NOW, CURDATE or GETDATE as the function,
+  // quoted or not, so it gets a form that writes the quoted column.
+  const tree = mapTree(rewrite(sourceTree(sql, dialect, read), true), node => {
+    const name = node.column?.table ? undefined : node.column?.name?.name;
+    if (!CALLED_ONLY.has(String(name).toUpperCase())) return undefined;
+    changed = true;
+    return formCall(`\`${name}\``, []);
+  });
   if (!changed) return {sql};
   const written = engine.generate([tree], read);
   return written.success && written.sql?.length === 1 ? {sql: written.sql[0]} :
@@ -2189,9 +2235,10 @@ function dateSql(args: any[]): unknown {
 
 // BigQuery's SQL for a FORM_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the form's SQL, then the operands it names _1, _2 and so on.
+// A quoted NOW, CURDATE or GETDATE in the form is a column, as in BigQuery.
 function formSql(args: any[]): unknown {
   const [sql, ...operands] = args;
-  return mapTree(sqlExpressionTree(String(bare(sql)?.literal?.value), 'BIGQUERY'), node => {
+  return mapTree(calledColumns(sqlExpressionTree(String(bare(sql)?.literal?.value), 'BIGQUERY')), node => {
     const index = /^_(\d+)$/.exec(node.column?.table ? '' : node.column?.name?.name ?? '')?.[1];
     return index ? operands[Number(index) - 1] : undefined;
   });

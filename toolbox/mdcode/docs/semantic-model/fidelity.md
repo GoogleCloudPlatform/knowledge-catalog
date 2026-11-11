@@ -298,9 +298,9 @@ adds, by database:
   seconds to years to a value it can see is a DATE, such as the current date.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   CURRENT_DATETIME('UTC'), a DATETIME as in MySQL, and adds every unit to it.
-  It translates no sum that names its INTERVAL first, since MySQL adds that
-  INTERVAL to all that follows it. Write the value first, as in
-  `d + INTERVAL 1 DAY`.
+  A sum that names its INTERVAL first adds it to all that follows, as MySQL
+  does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
+  first.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
   DATE and to a DATE plus an INTERVAL.
