@@ -387,8 +387,9 @@ not prune the model to a deployment's profile first.
 - In a vanilla model, the `GOOGLE` blocks on an object come back as one block
   under the name `GOOGLE`, after the other vendors' blocks. When its `data`
   comes back as the catalog holds it, the `data` is compact JSON.
-- A profile's `metrics_exclude` comes back as `"*"` when it excludes every
-  metric, and otherwise as a list in name order.
+- A profile's `metrics_exclude` comes back as a list in name order. When it
+  excludes every metric, it comes back as `"*"`, unless the local file writes
+  that profile's `metrics_exclude` as a list.
 - Entities, relationships, metrics, actions and constraints come back sorted
   by name. Field order within each entity is kept.
 

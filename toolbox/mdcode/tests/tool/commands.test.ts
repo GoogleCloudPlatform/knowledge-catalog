@@ -18,6 +18,7 @@ import {entryIdOf} from '../../src/libts/semantic/kc_ids';
 import * as loaderMod from '../../src/libts/semantic/loader';
 import * as osi from '../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
+import * as pullUpdate from '../../src/libts/semantic/pull_update';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
@@ -1558,10 +1559,10 @@ semantic_model:
     });
   }
 
-  // A GOOGLE block profile that excludes every metric by name reads as one
-  // that excludes `*`, so after the catalog adds a metric, the local list
-  // with its layout kept no longer holds the catalog's content. The rest of
-  // the file still keeps its text, and `data` is the catalog's.
+  // When the GOOGLE block's `data` with its layout kept would not hold the
+  // catalog's content, `data` is the catalog's, and the rest of the file
+  // still keeps its text. Here the change that keeps the layout leaves the
+  // file as it is, without the metric the catalog adds.
   test('changes only the rest of a vanilla model when its GOOGLE block ' +
            'data cannot keep its layout',
        async () => {
@@ -1572,7 +1573,7 @@ semantic_model:
            customers +
                `      - { name: buyers, expression: ${ansi('COUNT(Order.buyer)')} }\n`,
          ]);
-         const excluding = (metrics: string[]|'*') => blockData(
+         const excluding = (metrics: string[]) => blockData(
              d => Object.assign(d.profiles[0], {metrics_exclude: metrics}));
          const moved = (d: typeof BLOCK_DATA) =>
              d.profiles[0].entities[0].source = `${TABLES}/orders_v2`;
@@ -1582,10 +1583,15 @@ semantic_model:
          const text = withBlock(excluding(['orders', 'customers']));
          fs.writeFileSync(local('commerce.yaml'), text);
          const warnSpy = console.warn as Mock<any>;
+         const real = pullUpdate.updatedText;
+         spyOn(pullUpdate, 'updatedText').mockImplementation(
+             (text, base, pulled, jsonLayout = true) =>
+                 jsonLayout ? text : real(text, base, pulled, jsonLayout));
 
          expect(await pull()).toBe(0);
-         // Pull's `data` sorts the entities by name.
-         const pulled = excluding('*');
+         // Pull's `data` sorts the entities by name. Its `metrics_exclude`
+         // names every metric, since the local file writes it as a list.
+         const pulled = excluding(['buyers', 'customers', 'orders']);
          moved(pulled);
          pulled.profiles[0].entities.reverse();
          expect(messages(warnSpy)).not.toContain('pull cannot change only');
@@ -1703,40 +1709,34 @@ semantic_model:
              .not.toContain('# Production bindings.');
        });
 
-  test('writes a profile file whole when its content is the catalog\'s ' +
-           'only beside the local model file',
+  // Pull keeps a changed local file only when it holds the catalog's content.
+  test('writes a profile file whole when the changed file would not hold ' +
+           'the catalog\'s content',
        async () => {
-         // The catalog renames the only metric and excludes it. Beside the
-         // local model file the local profile excludes every metric too, but
-         // it names a metric the catalog's model does not have.
-         const only = (metric: string) => MODEL.replace(
-             /    metrics:\n[\s\S]*$/,
-             '    metrics:\n' +
-                 `      - { name: ${metric}, expression: COUNT(Order.id) }\n`);
-         const excluding = (metric: string) =>
-             PROFILE.replace('[orders, customers]', `[${metric}]`);
-         await pushed(BOTH(only('revenue'), excluding('revenue')));
-         fs.writeFileSync(local('commerce.yaml'), only('orders'));
-         fs.writeFileSync(
-             local('commerce.profile.prod.yaml'), excluding('orders'));
+         await pushed(
+             BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])));
+         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
+         // A change that leaves the local text as it is.
+         spyOn(pullUpdate, 'updatedText').mockImplementation(text => text);
 
          expect(await pull()).toBe(0);
-         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
-             .toContain('metrics_exclude: "*"');
+         const profile =
+             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+         expect(profile).not.toContain('# Production bindings.');
+         expect(profile).toContain('/orders_v2');
          expect(messages(console.warn as Mock<any>)).toContain(
              'Warning: pull cannot change only the values that differ in ' +
              `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
              'from the catalog.');
        });
 
-  test('writes a profile file whole when the changed file would not hold ' +
-           'the catalog\'s content',
+  test('changes a profile file whose metrics_exclude list names every ' +
+           'metric only beside the local model file',
        async () => {
-         // As in the test below, the catalog adds metric `buyers` and excludes
-         // it from prod. The local profile file also binds an entity the
-         // catalog's model does not have, so pull reads it beside the local
-         // model file, where it excludes every metric just as the catalog's
-         // does. Its `metrics_exclude` would stay, and no longer exclude
+         // The catalog adds metric `buyers` and excludes it from prod. The
+         // local profile file also binds an entity the catalog's model does
+         // not have, so pull reads it beside the local model file, where it
+         // excludes every metric just as the catalog's does. The list gets
          // `buyers`.
          await pushed({
            'commerce.yaml': MODEL,
@@ -1758,14 +1758,11 @@ semantic_model:
                   'relationships:\n']));
 
          expect(await pull()).toBe(0);
-         const profile =
-             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
-         expect(profile).not.toContain('# Production bindings.');
-         expect(profile).toContain('metrics_exclude: "*"');
-         expect(messages(console.warn as Mock<any>)).toContain(
-             'Warning: pull cannot change only the values that differ in ' +
-             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
-             'from the catalog.');
+         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
+             .toBe(PROFILE.replace(
+                 '[orders, customers]', '[buyers, orders, customers]'));
+         expect(messages(console.warn as Mock<any>))
+             .not.toContain('pull cannot change');
        });
 
   test('writes a profile file that holds the catalog\'s content only beside ' +
@@ -1789,6 +1786,53 @@ semantic_model:
              .toContain('name: buyers');
          expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
              .not.toBe(PROFILE);
+       });
+
+  // A vanilla model's GOOGLE block profile names every metric in its
+  // `metrics_exclude`. The catalog adds metric `buyers` and excludes it there.
+  test('adds the metric the catalog adds to a vanilla profile\'s ' +
+           'metrics_exclude list',
+       async () => {
+         const withOps = (model: string, excluded: string[]) => model.replace(
+             '    ai_context: Answer in dollars.\n',
+             '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
+                 '      - vendor_name: GOOGLE   # ops bindings\n' +
+                 '        data: |\n' +
+                 JSON.stringify({profiles: [{
+                       name: 'ops',
+                       entities: [
+                         {name: 'Order', source: `${TABLES}/orders`,
+                          primary_key: ['id'],
+                          fields: [{name: 'id', expression: 'o_id'},
+                                   {name: 'buyer', expression: 'o_buyer'}]},
+                         {name: 'Customer', source: `${TABLES}/customer`,
+                          primary_key: ['key'],
+                          fields: [{name: 'key', expression: 'c_key'}]},
+                       ],
+                       relationships: [{name: 'placed_by',
+                                        from_columns: ['buyer'],
+                                        to_columns: ['key']}],
+                       metrics_exclude: excluded,
+                     }]}, null, 2).replace(/^/gm, '          ') + '\n');
+         await pushed({'commerce.yaml': withOps(
+             VANILLA + '      - { name: buyers, expression: ' +
+                 `${ansi('COUNT(Order.buyer)')} }\n`,
+             ['orders', 'customers', 'buyers'])});
+         fs.writeFileSync(
+             local('commerce.yaml'), withOps(VANILLA, ['orders', 'customers']));
+
+         expect(await pull()).toBe(0);
+         expect(messages(console.warn as Mock<any>))
+             .not.toContain('pull cannot change');
+         const written = fs.readFileSync(local('commerce.yaml'), 'utf8');
+         for (const kept of ['# Hand-written vanilla model.', '# ops bindings',
+                             '# flow style', 'name: buyers']) {
+           expect(written).toContain(kept);
+         }
+         const [, excluded] =
+             /"metrics_exclude":\s*(\[[^\]]*\])/.exec(written)!;
+         expect(JSON.parse(excluded).sort())
+             .toEqual(['buyers', 'customers', 'orders']);
        });
 });
 

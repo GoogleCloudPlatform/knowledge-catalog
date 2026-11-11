@@ -24,7 +24,7 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
-import {SemanticModel} from '../libts/semantic/ir';
+import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
@@ -1987,13 +1987,24 @@ function removeEmptyDirs(file: string, top: string): void {
 
 // The model and profile files pull writes for `pulled`. The catalog stores no
 // profile's actions, so a profile file keeps the actions it binds locally. A
-// vanilla model declares no action.
+// vanilla model declares no action. A profile that excludes every metric
+// names them all, in name order, when its local `metrics_exclude` is a list,
+// and is "*" otherwise.
 function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
-  const model = pulled.version === OSSIE_VERSION ? pulled : {
+  const vanilla = pulled.version === OSSIE_VERSION;
+  const locals = localProfiles(layout, pulled.name, vanilla);
+  const model = {
     ...pulled,
     profiles: pulled.profiles?.map(p => {
-      const actions = localProfileActions(layout, pulled.name, p.name);
-      return actions ? {...p, actions} : p;
+      const local = locals.get(p.name);
+      const actions = vanilla ? undefined : local?.actions;
+      const named = p.metricsExclude === '*' &&
+          Array.isArray(local?.metricsExclude);
+      return {
+        ...p,
+        ...(actions ? {actions} : {}),
+        ...(named ? {metricsExclude: pulled.metrics.map(m => m.name)} : {}),
+      };
     }),
   };
   return serializeModelFiles(model, {logical: true});
@@ -2053,10 +2064,9 @@ function updatedFiles(
       return file;
     }
     if (base === file.content && fromCatalog) return {...file, content: text};
-    // A GOOGLE block's `data` that keeps its layout can read as other
-    // content, as when a profile's `metrics_exclude` names every metric, which
-    // reads as `*`, and the catalog adds a metric. The file is then changed
-    // with that `data` as the catalog holds it.
+    // When a GOOGLE block's `data` that keeps its layout would not read as
+    // the catalog's content, the file is changed with that `data` as the
+    // catalog holds it.
     for (const content of new Set([true, false].map(
              jsonLayout => updatedText(text, base, file.content, jsonLayout)))) {
       const changed = read(content);
@@ -2122,19 +2132,30 @@ function updatedFiles(
 }
 
 
-// The actions the local profile file of `profile` binds, or undefined when it
-// binds none or does not load.
-function localProfileActions(
-    layout: SemanticModelLayout, model: string, profile: string) {
-  const file = layout.localProfileFiles(model).find(
-      f => (f.profileName ?? path.basename(f.path, '.yaml')) === profile);
-  if (!file) return undefined;
-  try {
-    return loadProfileFile(fs.readFileSync(file.path, 'utf8'), profile).actions;
-  } catch (err) {
-    if (!(err instanceof SemanticModelError)) throw err;
-    return undefined;
+// The local profiles of `model`, by name: those in the GOOGLE block of the
+// local model file for a vanilla model, and else each local profile file that
+// loads.
+function localProfiles(
+    layout: SemanticModelLayout, model: string,
+    vanilla: boolean): Map<string, ProfileSpec> {
+  if (vanilla) {
+    const doc = layout.modelDocuments().find(
+        d => layout.modelPath(d.name) === layout.modelPath(model));
+    const loaded = doc && loadSemanticModels([doc], {bindingOptional: true});
+    const profiles = loaded?.models[0]?.model.profiles ?? [];
+    return new Map(profiles.map(p => [p.name, p]));
   }
+  const out = new Map<string, ProfileSpec>();
+  for (const file of layout.localProfileFiles(model)) {
+    const name = file.profileName ?? path.basename(file.path, '.yaml');
+    if (out.has(name)) continue;
+    try {
+      out.set(name, loadProfileFile(fs.readFileSync(file.path, 'utf8'), name));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+    }
+  }
+  return out;
 }
 
 
