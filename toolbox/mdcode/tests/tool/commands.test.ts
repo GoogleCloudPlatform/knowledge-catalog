@@ -2254,6 +2254,10 @@ describe('a pull', () => {
   const force = (files: string) =>
       `re-run with --force-remove to delete ${files} and pull the catalog's.`;
   const rename = (from: string, to: string) => `${from}>${to}`;
+  // The files --force-remove deletes beside a second file that holds the
+  // model with its profile in both forms.
+  const sales2 = "'mysales.yaml', 'sales2.yaml', " +
+      "'sales2.profile.prod.yaml' and 'sales2.profiles/prod.yaml'";
   // [label, the local files, the model each model file holds, the refusal,
   // the choices: '-<file>' deletes it, '<a>><b>' renames a to b, and 'force'
   // pulls with --force-remove]
@@ -2359,6 +2363,19 @@ describe('a pull', () => {
          force("'mysales.yaml' and 'sales2.yaml'"),
      [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
       ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    ['a second file that holds it, with one profile in both forms',
+     ['mysales.yaml', 'sales2.yaml', 'sales2.profile.prod.yaml', 'sales2.profiles/prod.yaml'],
+     'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force(sales2) + "\nError: local model file 'sales2.yaml' holds " +
+         "model 'commerce', which 'mysales.yaml' also holds. Delete " +
+         "'sales2.yaml', 'sales2.profile.prod.yaml' and " +
+         "'sales2.profiles/prod.yaml', or " + force(sales2),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml', '-sales2.profile.prod.yaml',
+       '-sales2.profiles/prod.yaml'],
+      ['-mysales.yaml', '-sales2.yaml', '-sales2.profile.prod.yaml', '-sales2.profiles/prod.yaml'],
+      ['force']]],
     ['two files that hold it beside the catalog model\'s file, which holds it too',
      ['commerce.yaml', 'mysales.yaml', 'sales2.yaml'], 'commerce',
      holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +

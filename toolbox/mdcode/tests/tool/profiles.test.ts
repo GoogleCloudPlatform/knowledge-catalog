@@ -1799,6 +1799,25 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       });
     });
 
+    // Push refuses a metric with no entity whose text reaches no entity, so
+    // the profile's error about it names no import command.
+    test('and names no import command for a vendor-only metric with no entity', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce()}    metrics:
+      - name: purchases
+        expression:
+          dialects:
+            - { dialect: SNOWFLAKE, expression: "IFF(TRUE, COUNT(*), 0)" }
+`,
+        'commerce.profile.prod.yaml': profileFile('prod'),
+      });
+      expect((await pushResult()).errors).toContain(
+          "[commerce.profile.prod.yaml] profile 'prod': metric 'purchases' " +
+              'has no expression for BIGQUERY or ANSI_SQL, and this ' +
+              "profile's sources are BIGQUERY; give it one, or add it to " +
+              "'metrics_exclude'");
+    });
+
     // A profile file push cannot read gives one error, which names the file,
     // whichever binding the push deploys.
     test('and names the profile file in an error, whichever binding the push deploys', async () => {
