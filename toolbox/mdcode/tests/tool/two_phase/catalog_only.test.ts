@@ -340,16 +340,27 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
       code: 0,
     }, {
-      files: {'commerce.yaml': modelWriting(
-          ['- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k"])},
+      files: {'commerce.yaml': modelWriting([
+        '- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k",
+        '- "DELETE FROM customer WHERE c_key = @k"', '  # a note',
+      ])},
       code: 0,
     }, {
       files: {'commerce.yaml': modelWriting([
         '- &cut UPDATE customer SET doc = doc', '',
         "  #- '{draft}' WHERE c_key = @k", '- *cut',
-      ])},
+      ]).replace(/\n/g, '\r\n')},
       errors: [has('statement 1 is followed by a comment line'),
                has('statement 2 is followed by a comment line')],
+    }, {
+      // The alias reads the comment line against the list its anchor is in.
+      files: {'commerce.yaml': withStatementLines(withStatementLines(
+          modelFile({actions: [
+            purge(ONE_STATEMENT),
+            {...purge({sql: {statements: ['STATEMENT']}}), name: 'archive'},
+          ]}),
+          '- &kept DELETE FROM customer WHERE c_key = @k', '# reused below'), '[*kept]')},
+      code: 0,
     }],
   },
   {

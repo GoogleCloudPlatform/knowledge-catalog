@@ -1127,21 +1127,31 @@ function writtenStatements(text: string): WrittenStatement[] {
         .flatMap(m => listAt(m, 'actions')),
     ...listAt(doc.contents, 'actions'),
   ];
+  // The '-' column of the list that holds each node, or undefined for a node
+  // in a flow list.
+  const dashColumns = new Map<unknown, number|undefined>();
+  yaml.visit(doc, {
+    Seq(_, seq) {
+      const start = seq.range![0];
+      const dashColumn = seq.flow ?
+          undefined :
+          start - text.lastIndexOf('\n', start - 1) - 1;
+      for (const item of seq.items) dashColumns.set(item, dashColumn);
+    },
+  });
   return actions.flatMap(action => {
     const statements = nodeAt(action, 'executor', 'sql', 'statements');
     if (!yaml.isSeq(statements)) return [];
     const name = nodeAt(action, 'name');
-    const start = statements.range![0];
-    const dashColumn = statements.flow ?
-        undefined :
-        start - text.lastIndexOf('\n', start - 1) - 1;
     return statements.items.flatMap((item, index) => {
       const statement = resolved(item);
+      // An alias takes the column of the list its anchored statement is in.
+      const written = dashColumns.has(statement) ? statement : item;
       return yaml.isScalar(statement) ? [{
         action: yaml.isScalar(name) ? String(name.value) : '',
         index,
         statement,
-        dashColumn,
+        dashColumn: dashColumns.get(written),
       }] : [];
     });
   });
