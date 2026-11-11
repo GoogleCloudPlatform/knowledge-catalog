@@ -733,6 +733,13 @@ function scalarText(
   if (!flow && /^_: [|>][0-9]*\+/.test(text)) {
     return scalarText(u, value, col, flow, 'QUOTE_DOUBLE');
   }
+  // yaml writes some double-quoted text over several lines so that it reads
+  // back as other text, as with a line of one space, so that text goes on one
+  // line.
+  if (!flow && !oneLine && /^_: "/.test(text) &&
+      text.trimEnd().includes('\n') && !readsInBlock(text, value)) {
+    return scalarText(u, value, col, flow, 'QUOTE_DOUBLE', true);
+  }
   // A block scalar's indentation indicator, which yaml writes as 2, is the
   // file's.
   return (flow ? text.slice(1, -2) :

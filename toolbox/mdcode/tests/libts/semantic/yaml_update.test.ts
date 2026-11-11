@@ -59,6 +59,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'k:\n  data: |-4\n      x\n      z\nq: 1\n'
   ],
   [
+    'a quoted string set to text whose lines yaml would write so that a line of one space reads back as a backslash',
+    'a: "x"\n', v => (v.a = 'first line of forty characters or more!!\n \nlast'),
+    'a: "first line of forty characters or more!!\\n\\ \\nlast"\n'
+  ],
+  [
     '`|+` block scalars moved, and text that ends in two line breaks added',
     'a:\n  m: |+  # h\n    x\n\n  w:\n    v: |+\n      y\n  k: 1\n\nc:\n  - 1\n',
     v => (v.a = {k: 1, c: {m: v.a.m, w: v.a.w}}, v.c.push('y\n\n'), v.d = 'x\n\n'),
