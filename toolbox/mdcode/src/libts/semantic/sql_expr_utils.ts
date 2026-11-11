@@ -274,6 +274,37 @@ export function columnsForSource(
   return cols.filter(c => c.qualifier !== undefined || bqBare.has(c.name));
 }
 
+// The columns an ANSI_SQL text reads when no lookup read its tables' dialect,
+// read as generic SQL. Each name whose reading depends on the dialect is left
+// out: an unqualified name, which may be a keyword there, such as `month` in
+// `DATE_TRUNC(month, ts)`, and a name in double quotes, which some databases
+// read as a string. `skipped` is set when a name is left out. Undefined when
+// the parser cannot read the text.
+export function columnsWithoutDialect(text: string):
+    {columns: SqlColumn[]; skipped: boolean}|undefined {
+  const tokens = sqlTokens(text, 'ANSI_SQL');
+  if (!tokens) return undefined;
+  // Each name in double quotes is read as a placeholder name, so the columns
+  // it gives can be told apart.
+  const chars = Array.from(text);
+  const stem = unusedName(text, 'kcmd_quoted_');
+  let read = '';
+  let end = 0;
+  tokens.filter(t => t.token_type === 'QUOTED_IDENTIFIER' &&
+                    chars[t.span.start] === '"')
+      .forEach((t, k) => {
+        read += chars.slice(end, t.span.start).join('') + stem + k;
+        end = t.span.end;
+      });
+  read += chars.slice(end).join('');
+  const all = columnReferences(read, 'ANSI_SQL');
+  if (!all) return undefined;
+  const columns = all.filter(
+      c => c.qualifier !== undefined && !c.qualifier.startsWith(stem) &&
+          !c.name.startsWith(stem));
+  return {columns, skipped: columns.length < all.length};
+}
+
 // The entities from `entityNames` that `columns` read, deduplicated in
 // first-seen order. Matching is case-sensitive.
 export function entitiesReached(

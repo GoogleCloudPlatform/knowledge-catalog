@@ -1917,9 +1917,9 @@ async function pullSemanticModel(
 // parser and runs push's checks that call no service. It reads no table's SQL
 // dialect, since that calls a service, so only push runs the checks that need
 // one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
-// SQL for the checks of which fields and entities an expression reads. It
-// reads the overview sidecars on disk, as push does, unless given
-// `overviews`.
+// SQL for the checks of which fields and entities an expression reads, and
+// skips each name whose reading depends on the dialect. It reads the overview
+// sidecars on disk, as push does, unless given `overviews`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},

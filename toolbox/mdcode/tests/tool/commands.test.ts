@@ -2033,6 +2033,39 @@ describe('a pull', () => {
     }
   }
 
+  // A table's dialect may read an unqualified name as a keyword and a name in
+  // double quotes as a string, so pull skips both. A metric text that loses a
+  // name is not judged on the entities it reaches.
+  test('skips the names whose reading depends on the table\'s dialect',
+       async () => {
+         fs.writeFileSync(
+             path.join(dir, 'catalog.yaml'),
+             'scope: semantic-model.test-project.us.commerce_eg\n');
+         const table = (name: string) => 'spanner.googleapis.com/projects/' +
+             `test-project/instances/i/databases/db/tables/${name}`;
+         const metric = (name: string, expression: string, entity?: string) =>
+             ({name, expression, stringForm: true,
+               ...(entity ? {entity, authoredEntity: entity} : {})});
+         pulled({
+           name: 'commerce',
+           relationships: [],
+           entities: ['Order', 'Customer'].map(name => ({
+             name, dataSource: table(name), keys: ['id'],
+             fields: ['id', 'amount'].map(
+                 f => ({name: f, expression: f, stringForm: true})),
+           })),
+           metrics: [
+             metric('m1', 'MAX(DATE_TRUNC(month, Order.amount)) + ' +
+                        'COUNT("Gone"."id")', 'Order'),
+             metric('m2', 'COUNT("Order"."id")'),
+             metric('m3', 'COUNT("Order"."id") + COUNT(Customer.id)', 'Order'),
+           ],
+         });
+
+         expect(await pull()).toBe(0);
+         expect(messages(console.warn)).toBe('');
+       });
+
   // Reading a table's SQL dialect calls Spanner or Knowledge Catalog, so pull
   // leaves the checks that need one to push.
   test('reads no table\'s SQL dialect', async () => {

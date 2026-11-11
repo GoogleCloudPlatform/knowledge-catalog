@@ -25,7 +25,7 @@ import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
+import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
@@ -1836,7 +1836,9 @@ function metricNoSqlError(
 // drops unbound fields and metrics on a graph push. When given,
 // `flaggedMetrics` collects the name of each metric it reports. With
 // `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
-// lookup read is read as generic SQL, where it is otherwise skipped.
+// lookup read is read as columnsWithoutDialect reads it, where it is otherwise
+// skipped. A metric text that read leaves a name out of is then left out of
+// the rules on which entities the text reaches.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
     flaggedMetrics?: Set<string>, load: DialectLoad = {}): string[] {
@@ -1862,9 +1864,19 @@ export function validateExpressionReferences(
          model.entities ?? [])
             .map(e => [e.name, e]));
     const sourcesRead = sourcesDialect(model);
-    const impliedDialect = sourcesRead === null && load.readWithoutDialect ?
-        undefined :
-        sourcesRead;
+    const dialectless = sourcesRead === null && !!load.readWithoutDialect;
+    const impliedDialect = dialectless ? undefined : sourcesRead;
+    // The columns `text` reads, and whether the read left a name out.
+    const read = (text: string, dialect: string) => {
+      if (dialect !== 'ANSI_SQL' || !dialectless) {
+        return {
+          columns: columnsForSource(text, dialect, impliedDialect),
+          skipped: false,
+        };
+      }
+      const r = columnsWithoutDialect(text);
+      return {columns: r?.columns, skipped: !!r?.skipped};
+    };
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
           // A caller that looked up no table's dialect and did not set
@@ -1900,7 +1912,7 @@ export function validateExpressionReferences(
         const allColumns: SqlColumn[] = [];
         const unreadDialects: string[] = [];
         for (const {text, dialect} of sources) {
-          const columns = columnsForSource(text, dialect, impliedDialect);
+          const {columns} = read(text, dialect);
           if (!columns) {
             unreadDialects.push(dialect);
             continue;
@@ -1979,12 +1991,15 @@ export function validateExpressionReferences(
           sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
       const allColumns: SqlColumn[] = [];
       const unreadDialects: string[] = [];
+      // Whether the read left a name out of a text.
+      let partial = false;
       for (const {text, dialect} of readable) {
-        const columns = columnsForSource(text, dialect, impliedDialect);
+        const {columns, skipped} = read(text, dialect);
         if (!columns) {
           unreadDialects.push(dialect);
           continue;
         }
+        partial ||= skipped;
         allColumns.push(...columns);
       }
       addUnreadableWarning(
@@ -2002,8 +2017,10 @@ export function validateExpressionReferences(
       if (noSql) {
         errors.push(noSql);
       } else if (
-          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
-          !authored && reached.length > 1) {
+          !partial &&
+          (!authored && unreadDialects.length === 0 &&
+               allColumns.length === 0 ||
+           !authored && reached.length > 1)) {
         const fixHint = model.version === '0.2.0.dev0' ?
             `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
             `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
@@ -2025,7 +2042,7 @@ export function validateExpressionReferences(
                 anchor}' is not declared in the model.`);
       }
 
-      if (authored !== undefined && fieldsByEntity.has(authored) &&
+      if (!partial && authored !== undefined && fieldsByEntity.has(authored) &&
           reached.length > 0 && !reached.includes(authored)) {
         errors.push(
             `metric '${metric.name}' in model '${model.name}' (${
