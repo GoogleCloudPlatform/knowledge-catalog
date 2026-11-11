@@ -8,9 +8,14 @@ import {expect} from 'bun:test';
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
+// What push adds when deployment `d` fails after the catalog write.
+const written = (d: string) =>
+    `Knowledge Catalog already holds the new model, but deployment '${d}' ` +
+    'did not deploy its graph. Fix the cause and push again to finish the ' +
+    'deploy.';
 
 const sales = (s: Scope) =>
     modelFile(s).replace('name: commerce', 'name: sales');
@@ -336,17 +341,17 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
-    name: 'a failed catalog write, or a Spanner or BigQuery deployment that fails to deploy, stops the push',
+    name: 'a failed catalog write, or a Spanner or BigQuery deployment that fails to deploy, stops the push, and a failed deploy says the catalog already holds the model',
     ...THREE,
     services: {spanner: failedDeploy},
     code: 1,
     events: ['preflight', 'apply', 'deploy c', 'deploy a'],
-    errors: ['Error pushing semantic model to Spanner: boom'],
+    errors: ['Error pushing semantic model to Spanner: boom', written('a')],
     then: [{
       services: {bq: failedDeploy},
       code: 1,
       events: ['preflight', 'apply', 'deploy c'],
-      errors: ['Error pushing semantic model to BigQuery: boom'],
+      errors: ['Error pushing semantic model to BigQuery: boom', written('c')],
     }, {
       services: {apply: kcResult({success: false, details: 'x'})},
       code: 1,
@@ -363,8 +368,10 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       fetch: async () => new Response(REJECTED, {status: 400}),
     },
     code: 1,
-    errors: [`Error pushing semantic model to BigQuery: Failed to deploy ` +
-             `'g': ${LIMIT}`],
+    errors: [
+      `Error pushing semantic model to BigQuery: Failed to deploy 'g': ${LIMIT}`,
+      written('g'),
+    ],
   },
   {
     name: 'a Spanner deployment deploys on an Enterprise or Enterprise Plus edition instance, and under --skip-source-check when its instance cannot be read',
@@ -565,12 +572,11 @@ scenarios('how push deploys each deployment in order, and what it prints', [
   },
   {
     // The model file binds no table, and g1's profile leaves field ltv unbound.
-    name: 'prints no pruning note when a later deployment fails a local check, and prints the note once every check passes',
+    name: 'prints no pruning note when a later deployment fails a local check, also when push does not select it, and prints the note once every check passes',
     deployments: [{name: 'g1', profile: 'prod'}, {name: 'g2', profile: 'p2'}],
     entities: [{...WITH_LTV, source: undefined}],
     profiles: {
       prod: NO_LTV,
-      // Push reads a profile's actions only when it applies the profile.
       p2: {...NO_LTV, actions: [{name: 'refund', bogus: 1}]},
     },
     code: 1,
@@ -578,6 +584,12 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     warnings: [has("unbound 'default' profile")],
     nothingWritten: true,
     then: [{
+      flags: {deployment: ['g1']},
+      code: 1,
+      errors: [has("action 'refund'")],
+      nothingWritten: true,
+    }, {
+      profiles: {prod: NO_LTV, p2: NO_LTV},
       flags: {deployment: ['g1']},
       code: 0,
       warnings: [has("unbound 'default' profile"),
@@ -656,3 +668,52 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     }],
   },
 ], {deployments: ['g1', 'g2'], code: 0});
+
+// A deployment push does not select fails the push as a selected one does,
+// also under --no-deployment.
+const unselected = (name: string, scope: Scope, selected: string,
+                    ...errors: unknown[]): Case => ({
+  name, ...scope, flags: {deployment: [selected]}, code: 1, errors,
+  nothingWritten: true,
+  then: [{flags: {deployment: false}, code: 1, errors, nothingWritten: true}],
+});
+const AB = [{name: 'a', expression: 'c_a'}, {name: 'b', expression: 'c_b'}];
+
+scenarios('a deployment push does not select gets every local check of a selected one', [
+  unselected('a profile whose fields name each other', {
+    deployments: ['g', {name: 'x', profile: 'x'}],
+    entities: [{...CUSTOMER, fields: [...CUSTOMER.fields, ...AB]}],
+    profiles: {x: {entities: {Customer: {
+      ...CUSTOMER, source: bqTable('customer', 'x'),
+      fields: [...CUSTOMER.fields, {name: 'a', expression: 'Customer.b'},
+               {name: 'b', expression: 'Customer.a'}],
+    }}}},
+  }, 'g',
+  ...['a', 'b'].map(f => has(`field 'Customer.${f}' in model 'commerce' ` +
+                            "(commerce, deployment 'x') names itself"))),
+  unselected('a profile action the model does not declare', {
+    deployments: ['g', {name: 'x', profile: 'x'}],
+    profiles: {x: {...boundTo('x'), actions: [
+      {name: 'ghost', executor: {sql: {statements: ['UPDATE t SET a = 1']}}},
+    ]}},
+  }, 'g', err(`${at('x')}: profile 'x': action 'ghost' is not in the logical model`)),
+  unselected('a profile action whose statement is a query', {
+    deployments: ['g', {name: 'x', profile: 'x'}],
+    actions: [{name: 'refund'}],
+    profiles: {x: {...boundTo('x'), actions: [
+      {name: 'refund', executor: {sql: {statements: ['SELECT 1']}}},
+    ]}},
+  }, 'g', has("has a sql executor whose statement 1 starts with 'SELECT'")),
+  unselected('a metric with only Snowflake SQL on a BigQuery deployment of the model file\'s bindings', {
+    deployments: ['g', {name: 'x', profile: 'x'}],
+    metrics: [{...SNOWFLAKE_METRIC, entity: 'Customer'}],
+    profiles: {x: {...boundTo('x'), metrics_exclude: '*'}},
+  }, 'x', has("deployment 'g') targets a BigQuery graph with only a 'SNOWFLAKE' expression")),
+  {
+    name: 'a graph with no node table',
+    deployments: ['g'],
+    entities: [{name: 'Party', abstract: true, fields: [{name: 'key'}]}],
+    flags: {deployment: false}, code: 1, nothingWritten: true,
+    errors: [has(`${at('g')}: cannot generate a property graph`)],
+  },
+]);

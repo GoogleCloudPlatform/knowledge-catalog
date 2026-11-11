@@ -3884,6 +3884,76 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
            expect(check(m)).toEqual([]);
          });
   });
+
+  // Spanner compares names ignoring case.
+  describe('Spanner graphs', () => {
+    const table = (t: string) =>
+        SPANNER_TARGET.replace(/graphs\/g$/, `tables/${t}`);
+    // Entities employee and purchase on tables employees and Order, each with
+    // a field of the name, datatype and expression `fields` gives, in a graph
+    // named `graph`. The expression is `c` unless given.
+    const graphOf =
+        (graph: string, fields = [['code', 'String'], ['code', 'String']]) =>
+            check(loadOne('commerce', `    deployments:
+      - { name: sp, target: ${SPANNER_TARGET.replace(/g$/, graph)} }
+    entities:
+${['employee', 'purchase'].map((e, i) => `      - name: ${e}
+        source: ${table(['employees', 'Order'][i])}
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: ${fields[i][0]}, datatype: ${fields[i][1]}, expression: ${
+              JSON.stringify(fields[i][2] ?? 'c')} }
+`).join('')}`));
+    const IN = (problem: string) =>
+        `model 'commerce' (commerce) deployment 'sp' targets Spanner${problem}`;
+
+    test('refuses a graph name Spanner does not accept or that names a table the graph reads, ignoring case', () => {
+      const name = (g: string) => IN(
+          ` graph '${g}', but a Spanner graph name starts with a letter, ` +
+          'holds only letters, digits and underscores, and is at most 128 ' +
+          'characters long; rename the graph in the target.');
+      const long = `g${'x'.repeat(128)}`;
+      for (const g of ['my-graph', '1graph', '_g', long]) {
+        expect(graphOf(g)).toEqual([name(g)]);
+      }
+      expect(graphOf('ORDER')).toEqual([IN(
+          " graph 'ORDER', which has the name of table 'Order' that entity " +
+          "'purchase' reads; a graph cannot share its name with a table of " +
+          'its database, compared ignoring case. Rename the graph in the ' +
+          'target.')]);
+      for (const g of ['g_1', 'select', long.slice(1)]) {
+        expect({g, errors: graphOf(g)}).toEqual({g, errors: []});
+      }
+    });
+
+    // Spanner types a property by its expression, which the live check reads.
+    test('accepts a property that two tables declare with different datatypes', () => {
+      expect(graphOf('g', [['score', 'Decimal'], ['score', 'Float']]))
+          .toEqual([]);
+    });
+
+    test('refuses a property expression that holds a subquery', () => {
+      const subquery = (owners: string) => IN(
+          `, where property 'code' of ${owners} holds a subquery, which ` +
+          'Spanner refuses in a property expression; write the expression ' +
+          'without a subquery.');
+      for (const [expression, other, errors] of [
+             ['(SELECT MAX(c) FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['EXISTS (SELECT 1 FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['c IN (SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['ARRAY(SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             // A property of one SQL in two tables is reported once.
+             ['(SELECT 1)', '(SELECT 1)',
+              [subquery("entity 'employee' and entity 'purchase'")]],
+             ['c IN (1, 2)', 'c', []],
+           ] as Array<[string, string, string[]]>) {
+        expect({expression, errors: graphOf('g', [
+                  ['code', 'String', expression], ['code', 'String', other],
+                ])}).toEqual({expression, errors});
+      }
+    });
+  });
 });
 
 describe('validateInlineDialects', () => {

@@ -37,7 +37,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -923,7 +923,13 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
-  if (errors.length) return fail(...errors);
+  if (errors.length) {
+    // A warning about a generated graph can explain why a check fails.
+    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+      console.warn(`Warning: ${w}`);
+    }
+    return fail(...errors);
+  }
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
@@ -959,7 +965,13 @@ async function pushInTwoPhases(
     const code = deployment.engine === 'bigquery' ?
         await pushBigQuery([model], ctx, options, printed) :
         await pushSpanner([model], ctx, options, printed);
-    if (code !== 0) return code;
+    if (code !== 0) {
+      console.error(
+          `Knowledge Catalog already holds the new model, but deployment '${
+              deployment.name}' did not deploy its graph. Fix the cause and ` +
+          `push again to finish the deploy.`);
+      return code;
+    }
   }
   return 0;
 }
@@ -1056,9 +1068,10 @@ async function checkBeforeWrites(
 
 // The errors of one deployment's live checks, which change nothing. They read
 // the BigQuery dataset or the Spanner database and instance, probe each
-// BigQuery source and dry-run the BigQuery DDL in the dataset's location, and
-// check each action's DML. A dataset whose location cannot be read, or an
-// instance whose edition cannot be read, adds a warning to `warnings`.
+// BigQuery source and dry-run the BigQuery DDL in the dataset's location,
+// check the Spanner graph against the database's schema, and check each
+// action's DML. A dataset whose location cannot be read, or an instance whose
+// edition cannot be read, adds a warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1095,6 +1108,9 @@ async function liveErrors(
         `it.`,
       ];
     }
+    const graphErrors = await validateSpannerGraph(
+        at, model.model, deployment.coordinates, spanner);
+    if (graphErrors.length) return graphErrors;
     return validateSpannerActionStatements([model], spanner);
   }
   if (deployment.engine !== 'bigquery') return [];

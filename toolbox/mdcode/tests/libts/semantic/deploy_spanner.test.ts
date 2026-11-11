@@ -166,22 +166,32 @@ describe('deploySpanner', () => {
         }
       });
 
-  test('a completed operation carrying an error fails the deploy', async () => {
+  // Spanner escapes the quotes and line breaks of `message`, and gives the
+  // text as written in a LocalizedMessage detail.
+  test.each([
+    [{code: 3, message: 'bad DDL'}, 'bad DDL'],
+    [{
+      code: 3,
+      message: "The declaration of \\'code\\' conflicts\\n  ^",
+      details: [{
+        '@type': 'type.googleapis.com/google.rpc.LocalizedMessage',
+        locale: 'en-US',
+        message: "The declaration of 'code' conflicts\n  ^",
+      }],
+    }, "The declaration of 'code' conflicts\n  ^"],
+  ])('a completed operation carrying an error fails the deploy',
+     async (error, text) => {
     const ddlSpy =
         spyOn(spannerClient.SpannerClient.prototype, 'updateDatabaseDdl')
             .mockImplementation(async () => ({
                                   status: 200,
-                                  result: {
-                                    name: 'op-1',
-                                    done: true,
-                                    error: {code: 3, message: 'bad DDL'},
-                                  },
+                                  result: {name: 'op-1', done: true, error},
                                 }));
     try {
       const res = await deploySpanner(
           models([{name: 'sales', text: OSSIE}]), CTX, {pollBackoffMs: 0});
       expect(res.success).toBe(false);
-      expect(res.details).toContain('bad DDL');
+      expect(res.details).toBe(`Failed to deploy 'sales_graph': ${text}`);
       expect(res.deployed).toBe(0);
     } finally {
       ddlSpy.mockRestore();

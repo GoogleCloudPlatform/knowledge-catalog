@@ -10,19 +10,22 @@
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
-import {SpannerClient} from '../gcp/spanner';
+import {SpannerClient, SpannerType} from '../gcp/spanner';
 
 import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
+import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {GraphElement} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
+import {generateSpannerPropertyGraph} from './spanner';
+import {columnsForSource, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
@@ -166,8 +169,8 @@ export function validateDeployments(
     const named = model.profiles?.find(p => p.name === d.profile);
     if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE && !named) continue;
     const resolved = resolveModelDeployments(model, [d.name]);
-    const engine =
-        'error' in resolved ? undefined : resolved.deployments[0].engine;
+    const parsed = 'error' in resolved ? undefined : resolved.deployments[0];
+    const engine = parsed?.engine;
     const alloyDb = engine === 'alloydb';
     // The model the deployment's bindings give, less what they leave
     // unavailable. The completeness check reports a named profile that does
@@ -178,6 +181,11 @@ export function validateDeployments(
     const available = bound.model.metrics ?? [];
     if (engine === 'bigquery' || engine === 'spanner') {
       for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
+    }
+    if (parsed?.engine === 'spanner') {
+      for (const p of spannerGraphProblems(bound.model, parsed.coordinates)) {
+        add(d.name, p);
+      }
     }
     if (named) {
       if (engine === 'bigquery' || engine === 'spanner') {
@@ -604,6 +612,73 @@ function graphNameProblems(
               e.name}.${f.name}': a measure's name must differ from every ` +
           `property name in the graph, compared ignoring case; rename one.`);
     }
+  }
+  return problems;
+}
+
+// A Spanner graph name: a letter, then letters, digits and underscores, at most
+// 128 characters in all.
+const SPANNER_GRAPH_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+
+// What Spanner refuses in the graph of `model` that `target` names, each as
+// the end of a sentence about a deployment: a name Spanner does not accept,
+// the name of a table of the target database that the graph reads, and a
+// property expression that holds a subquery. Names compare ignoring case, as
+// Spanner compares them.
+function spannerGraphProblems(
+    model: SemanticModel, target: SpannerGraphTarget): string[] {
+  const graph = target.graphName;
+  const database =
+      `spanner/${target.project}/${target.instance}/${target.database}`;
+  const problems: string[] = [];
+  if (!SPANNER_GRAPH_NAME.test(graph)) {
+    problems.push(
+        `targets Spanner graph '${graph}', but a Spanner graph name starts ` +
+        `with a letter, holds only letters, digits and underscores, and is ` +
+        `at most 128 characters long; rename the graph in the target.`);
+  }
+  let elements: GraphElement[];
+  try {
+    ({elements} = generateSpannerPropertyGraph(model, {graphName: graph}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return problems;
+  }
+  const owner = (e: GraphElement) =>
+      `${e.kind === 'node' ? 'entity' : 'relationship'} '${e.name}'`;
+  const lower = graph.toLowerCase();
+  const named = elements.find(
+      e => databaseOf(e.dataSource) === database &&
+          boundTable(e.dataSource, [], '', t => t).toLowerCase() === lower);
+  if (named) {
+    problems.push(
+        `targets Spanner graph '${graph}', which has the name of table '${
+            boundTable(named.dataSource, [], '', t => t)}' that ${
+            owner(named)} reads; a graph cannot share its name with a table ` +
+        `of its database, compared ignoring case. Rename the graph in the ` +
+        `target.`);
+  }
+  // The tables that list each property whose SQL holds a subquery, by the
+  // property's name and SQL, so a property a subtype inherits is reported
+  // once.
+  const subqueries = new Map<string, {name: string; owners: string[]}>();
+  for (const e of elements) {
+    for (const {name, sql} of e.properties) {
+      if (!holdsSubquery(sql, 'SPANNER')) continue;
+      const key = `${name}\u0000${sql}`;
+      const found = subqueries.get(key);
+      if (found) {
+        found.owners.push(owner(e));
+      } else {
+        subqueries.set(key, {name, owners: [owner(e)]});
+      }
+    }
+  }
+  for (const {name, owners} of subqueries.values()) {
+    problems.push(
+        `targets Spanner, where property '${name}' of ${
+            listed(owners)} holds a subquery, which Spanner refuses in a ` +
+        `property expression; write the expression without a subquery.`);
   }
   return problems;
 }
@@ -2179,9 +2254,9 @@ export async function localChecks(
 
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
-  // is checked as a model that deploys nowhere. A selected deployment's own
-  // checks run only after these pass, so these give every error and every
-  // warning about SQL kcmd cannot read.
+  // is checked as a model that deploys nowhere. Each deployment's own checks
+  // run only after these pass, so these give every error and every warning
+  // about SQL kcmd cannot read.
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])),
@@ -2235,35 +2310,44 @@ export async function localChecks(
               document, d.profile,
               ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
-  // Spanner creates no property graph in a PostgreSQL-dialect database, so a
-  // selected Spanner deployment there is refused by the dialect already read.
-  const dialectErrors = models.flatMap(
-      ({document}) => (selectedByDoc.get(document) ?? []).flatMap(d => {
+  // A Spanner graph holds no metric, and Spanner creates no property graph in
+  // a PostgreSQL-dialect database, which the dialect already read shows. Both
+  // apply to every Spanner deployment, whether or not this push selects it.
+  const spannerErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(d => {
         if (d.engine !== 'spanner') return [];
         const {project, instance, database} = d.coordinates;
         const key = `spanner.googleapis.com/projects/${project}/instances/${
             instance}/databases/${database}`;
-        if (load.sourceDialects?.get(key) !== 'POSTGRES') return [];
         return ofProfile(
-            document, d.profile,
-            `[${document}] deployment '${d.name}': database ${project}/${
-                instance}/${database} has the PostgreSQL dialect, and ` +
-                `Spanner creates no property graph in a PostgreSQL-dialect ` +
-                `database. Remove the deployment; push still publishes the ` +
-                `model to Knowledge Catalog.`);
+            document, d.profile, ...spannerMetricsErrors(document, model, d),
+            ...load.sourceDialects?.get(key) !== 'POSTGRES' ? [] : [
+              `[${document}] deployment '${d.name}': database ${project}/${
+                  instance}/${database} has the PostgreSQL dialect, and ` +
+                  `Spanner creates no property graph in a PostgreSQL-dialect ` +
+                  `database. Remove the deployment; push still publishes the ` +
+                  `model to Knowledge Catalog.`,
+            ]);
       }));
-  if (dialectErrors.length) return stop(dialectErrors);
+  if (spannerErrors.length) return stop(spannerErrors);
 
+  // Every deployment gets the checks of a selected one, whether or not this
+  // push selects it. An unselected deployment's profile warnings print above.
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
-    for (const deployment of selectedByDoc.get(base.document) ?? []) {
+    const chosen = selectedByDoc.get(base.document) ?? [];
+    const others = (everyByDoc.get(base.document) ?? [])
+                       .filter(d => !chosen.some(c => c.name === d.name));
+    for (const deployment of [...chosen, ...others]) {
+      const isChosen = chosen.includes(deployment);
       const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, load, warn);
+          base, profileDocs(base.document), deployment, load,
+          isChosen ? warn : () => {});
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
       }
-      plans.push(plan);
+      if (isChosen) plans.push(plan);
     }
   }
   return {plans};
@@ -2280,8 +2364,6 @@ async function deploymentPlan(
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
-  const spanner = spannerMetricsErrors(document, model, deployment);
-  if (spanner.length) return fail(...spanner);
   let applied = model;
   // The profile's warnings, which print only once every check below passes.
   const warnings: string[] = [];
@@ -2512,6 +2594,238 @@ function probeableRef(dataSource: string|undefined): string|null {
     return null;
   }
   return trimmed;
+}
+
+
+// The schema objects of a Spanner database's default schema, other than
+// property graphs, and the database's roles, whose name matches @graph
+// ignoring case: each row gives the kind of object and its name. A graph
+// cannot share a name with any of them. The constraints Spanner names for a
+// primary key or a NOT NULL column are left out, since a graph can take their
+// names.
+const SPANNER_NAMES_SQL = `SELECT kind, name FROM (
+  SELECT IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind, TABLE_NAME AS name
+    FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ''
+  UNION ALL SELECT 'index', INDEX_NAME FROM INFORMATION_SCHEMA.INDEXES
+    WHERE TABLE_SCHEMA = '' AND INDEX_TYPE != 'PRIMARY_KEY'
+  UNION ALL SELECT 'sequence', NAME FROM INFORMATION_SCHEMA.SEQUENCES
+    WHERE SCHEMA = ''
+  UNION ALL SELECT 'change stream', CHANGE_STREAM_NAME
+    FROM INFORMATION_SCHEMA.CHANGE_STREAMS WHERE CHANGE_STREAM_SCHEMA = ''
+  UNION ALL SELECT 'schema', SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA
+    WHERE SCHEMA_NAME NOT IN ('', 'INFORMATION_SCHEMA', 'SPANNER_SYS')
+  UNION ALL SELECT 'role', ROLE_NAME FROM INFORMATION_SCHEMA.ROLES
+  UNION ALL SELECT 'constraint', CONSTRAINT_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = '' AND CONSTRAINT_TYPE IN ('FOREIGN KEY', 'CHECK')
+      AND NOT STARTS_WITH(CONSTRAINT_NAME, 'CK_IS_NOT_NULL_')
+  UNION ALL SELECT 'model', MODEL_NAME FROM INFORMATION_SCHEMA.MODELS
+    WHERE MODEL_SCHEMA = ''
+) WHERE LOWER(name) = LOWER(@graph)`;
+
+// The key columns of each primary key and unique index on the tables whose
+// lower-case names @tables lists: each row gives the table's schema, its name,
+// the index's name and one column.
+const SPANNER_UNIQUE_KEYS_SQL = `SELECT i.TABLE_SCHEMA, i.TABLE_NAME,
+    i.INDEX_NAME, c.COLUMN_NAME
+  FROM INFORMATION_SCHEMA.INDEXES AS i
+  JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS c
+    ON c.TABLE_CATALOG = i.TABLE_CATALOG AND c.TABLE_SCHEMA = i.TABLE_SCHEMA
+    AND c.TABLE_NAME = i.TABLE_NAME AND c.INDEX_NAME = i.INDEX_NAME
+    AND c.INDEX_TYPE = i.INDEX_TYPE
+  WHERE i.IS_UNIQUE AND c.ORDINAL_POSITION IS NOT NULL
+    AND LOWER(i.TABLE_NAME) IN UNNEST(@tables)`;
+
+// A Spanner type as Spanner writes it, such as `INT64` or `ARRAY<STRING>`.
+function spannerTypeName(type: SpannerType|undefined): string {
+  if (!type) return 'an unknown type';
+  return type.code === 'ARRAY' ?
+      `ARRAY<${spannerTypeName(type.arrayElementType)}>` :
+      type.code;
+}
+
+// A column or name as Spanner stores it, without its backticks, in lower case,
+// since Spanner compares names ignoring case.
+const storedName = (name: string) => name.replace(/^`|`$/g, '').toLowerCase();
+
+// The live check of the graph that `model` deploys to `target`, before any
+// write. It reads the database's schema, and plans a query of what each node
+// and edge table of the graph reads, so Spanner reports a column the table
+// lacks and SQL it cannot run. It finds a graph named like another object of
+// its database, a key that no primary key or unique index of its table backs,
+// a property that two tables give different types, and an edge's join column
+// whose type differs from the column it references. It changes nothing. `at`
+// names the deployment. Returns one message per problem.
+export async function validateSpannerGraph(
+    at: string, model: SemanticModel, target: SpannerGraphTarget,
+    spanner: SpannerClient): Promise<string[]> {
+  let elements: GraphElement[];
+  try {
+    ({elements} =
+         generateSpannerPropertyGraph(model, {graphName: target.graphName}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return [];
+  }
+  const name = `${target.project}/${target.instance}/${target.database}`;
+  // Each table of the target database the graph reads, which push has
+  // checked are all its tables.
+  const tables =
+      elements.filter(e => databaseOf(e.dataSource) === `spanner/${name}`);
+  const failed = (what: string, res: {message?: string; status: number}) =>
+      `${at}: could not ${what} Spanner database ${name} to check the graph ` +
+      `before anything is written: ${storeMessage(res.message, res.status)}`;
+  const opened = await spanner.createSession(
+      target.project, target.instance, target.database);
+  const session = opened.result?.name;
+  if (!session) return [failed('open a session on', opened)];
+  const label = (e: GraphElement) => e.kind === 'node' ?
+      `the node table of entity '${e.name}'` :
+      `the edge table of relationship '${e.name}'`;
+  const errors: string[] = [];
+  try {
+    const named = await spanner.executeQuery(session, SPANNER_NAMES_SQL, {
+      params: {graph: target.graphName},
+      paramTypes: {graph: {code: 'STRING'}},
+    });
+    if (named.status !== 200) return [failed('read the schema of', named)];
+    for (const [kind, found] of named.result?.rows ?? []) {
+      errors.push(
+          `${at}: Spanner database ${name} already has ${
+              kind === 'index' ? 'an' : 'a'} ${kind} named '${found}', and ` +
+          `a graph cannot share its name with another object of its ` +
+          `database, compared ignoring case; rename the graph in the target.`);
+    }
+
+    // The table each element reads as written, its name, and its schema and
+    // name, in lower case.
+    const tableOf = (e: GraphElement) => {
+      const written = boundTable(e.dataSource, [], '', t => t);
+      const parts = written.split('.').map(storedName);
+      const table = parts[parts.length - 1];
+      const key = `${parts.length > 1 ? parts[0] : ''}.${table}`;
+      return {written, name: table, key};
+    };
+    const keys = await spanner.executeQuery(session, SPANNER_UNIQUE_KEYS_SQL, {
+      params: {tables: [...new Set(tables.map(e => tableOf(e).name))]},
+      paramTypes: {tables: {code: 'ARRAY', arrayElementType: {code: 'STRING'}}},
+    });
+    if (keys.status !== 200) return [failed('read the schema of', keys)];
+    // The columns of each unique index, by table and index.
+    const unique = new Map<string, Map<string, Set<string>>>();
+    for (const [schema, table, index, column] of keys.result?.rows ?? []) {
+      const key = `${storedName(String(schema))}.${storedName(String(table))}`;
+      const indexes = unique.get(key) ?? new Map<string, Set<string>>();
+      const columns = indexes.get(String(index)) ?? new Set<string>();
+      indexes.set(String(index), columns.add(storedName(String(column))));
+      unique.set(key, indexes);
+    }
+    // An edge of a foreign key has the key of its source's node table, so
+    // each table and key is reported once.
+    const keyChecked = new Set<string>();
+    for (const e of tables) {
+      const table = tableOf(e);
+      const indexes = unique.get(table.key);
+      const columns = e.key.map(storedName);
+      const checked = `${table.key}\u0000${columns.join('\u0000')}`;
+      if (!indexes || keyChecked.has(checked)) continue;
+      keyChecked.add(checked);
+      const backed = [...indexes.values()].some(
+          index => [...index].every(c => columns.includes(c)));
+      if (backed) continue;
+      const written = `(${e.key.join(', ')})`;
+      errors.push(
+          `${at}: ${label(e)} is keyed by ${written}, but neither the ` +
+          `primary key of table ${table.written} nor a unique index on it ` +
+          `is made of those columns, so Spanner cannot prove the key ` +
+          `unique. Key it by columns that hold the table's primary key, or ` +
+          `create a unique index on ${written}.`);
+    }
+
+    // The type Spanner gives each property, by its name in lower case.
+    const typed = new Map<string, Array<{where: string; type: SpannerType}>>();
+    // Plans a query of `read` on `table`, and gives the type Spanner gives
+    // each text it reads, or undefined when Spanner refuses the query.
+    const plan = async (what: string, table: string, read: string[]) => {
+      // The table gets an alias the query does not name, since a name that
+      // matches the table's own reads as its row and not as a column, as
+      // `order` does in table `Order`.
+      const texts = [...new Set(read)];
+      const list = texts.join(', ');
+      const sql = `SELECT ${list} FROM ${table} AS ${
+          unusedName(list, 'kcmd_table')}`;
+      const res = await spanner.executeQuery(session, sql, {plan: true});
+      if (res.status !== 200) {
+        errors.push(
+            `${at}: Spanner cannot read ${what} from table ${table}: ${
+                storeMessage(res.message, res.status)} kcmd asked Spanner ` +
+            `to plan: ${sql}`);
+        return undefined;
+      }
+      const fields = res.result?.metadata?.rowType?.fields ?? [];
+      return new Map(texts.map((t, i) => [t, fields[i]?.type]));
+    };
+    const planned = new Map<GraphElement, Map<string, SpannerType|undefined>>();
+    for (const e of tables) {
+      const types = await plan(label(e), e.table, [
+        ...e.properties.map(p => p.text), ...e.key,
+        ...e.references.flatMap(r => r.from),
+      ]);
+      if (!types) continue;
+      planned.set(e, types);
+      for (const p of e.properties) {
+        const type = types.get(p.text);
+        if (!type) continue;
+        const key = p.name.toLowerCase();
+        typed.set(key, [...typed.get(key) ?? [], {where: label(e), type}]);
+      }
+      // Each SOURCE KEY and DESTINATION KEY column of an edge has the type of
+      // the column it references, read by that node's own query when it can.
+      for (const {entity, from: joined, columns} of e.references) {
+        const node = tables.find(n => n.kind === 'node' && n.name === entity);
+        if (!node) continue;
+        const own = planned.get(node);
+        const refTypes = own && columns.every(c => own.has(c)) ? own :
+            await plan(
+                `the columns relationship '${e.name}' references in entity '${
+                    entity}'`,
+                node.table, columns);
+        columns.forEach((ref, i) => {
+          const from = types.get(joined[i]);
+          const to = refTypes?.get(ref);
+          if (!from || !to || JSON.stringify(from) === JSON.stringify(to)) {
+            return;
+          }
+          errors.push(
+              `${at}: relationship '${e.name}' joins column ${joined[i]} of ` +
+              `table ${e.table}, of type ${spannerTypeName(from)}, to column ${
+                  ref} of entity '${entity}', of type ${
+                  spannerTypeName(to)}; Spanner needs each join column to ` +
+              `have the type of the column it references. Join on columns ` +
+              `of one type.`);
+        });
+      }
+    }
+    for (const [key, found] of typed) {
+      if (new Set(found.map(f => JSON.stringify(f.type))).size < 2) continue;
+      const property = elements.flatMap(e => e.properties)
+                           .find(p => p.name.toLowerCase() === key)!.name;
+      errors.push(
+          `${at}: property '${property}' has ${
+              listed(found.map(
+                  f => `type ${spannerTypeName(f.type)} in ${f.where}`))}, ` +
+          `but a Spanner graph gives a property one type. Cast the ` +
+          `expressions to one type, or rename the fields.`);
+    }
+    return errors;
+  } finally {
+    // A leaked session expires on its own, so a failed delete is not reported.
+    try {
+      await spanner.deleteSession(session);
+    } catch {
+      // Nothing to report.
+    }
+  }
 }
 
 

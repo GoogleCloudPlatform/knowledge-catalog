@@ -35,8 +35,8 @@ Knowledge Catalog.
 
 | Flag | Effect |
 |------|--------|
-| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still publishes the model to Knowledge Catalog first. |
-| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. Push refuses it with `--deployment`, in either order. |
+| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
+| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
@@ -48,19 +48,23 @@ Push runs in two phases:
    and runs the local checks of every deployment in `deployments:`. The checks
    that read a deployment's store run only for the deployments this push
    deploys: its BigQuery dataset or Spanner database, its BigQuery source
-   tables, a dry run of its BigQuery graph DDL, and each action statement,
-   which BigQuery dry-runs and Spanner plans. It also prints each graph's
-   warnings, such as a metric the graph leaves out. Knowledge Catalog receives
+   tables, a dry run of its BigQuery graph DDL, the Spanner graph check, and
+   each action statement, which BigQuery dry-runs and Spanner plans. It also
+   prints the warnings of each graph this push deploys, such as a metric the
+   graph leaves out. Knowledge Catalog receives
    every profile, so this phase prints the load warnings of each profile,
    whether or not a selected deployment applies it, each prefixed with
-   `profile '<name>':`. (Spanner
-   cannot dry-run a property graph's DDL without executing it, so a Spanner
-   deployment whose graph DDL Spanner rejects fails in the second phase, after
-   Knowledge Catalog is written.)
+   `profile '<name>':`. Spanner cannot dry-run a property graph's DDL without
+   executing it. The Spanner graph check plans a query of what each node and
+   edge table reads and reads the database's schema instead (see
+   [Validation](#validation)). A graph whose DDL Spanner still rejects fails in
+   the second phase below, after Knowledge Catalog is written.
 2. **Publish and deploy phase:** Publishes the model file (as written) and any
    sibling `<model>.profile.<name>.yaml` files to Knowledge Catalog, then
    deploys each selected deployment in order with the profile it names. An
-   AlloyDB deployment deploys no graph.
+   AlloyDB deployment deploys no graph. When a graph fails to deploy, push
+   stops, and its error says that Knowledge Catalog already holds the new
+   model. Fixing the cause and pushing again finishes the deploy.
 
 ### pull
 
@@ -534,7 +538,7 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
+| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. Before anything is written, push refuses a key whose columns hold neither the table's primary key nor the columns of a unique index. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | — dropped | Spanner has no `MEASURE`, so a Spanner deployment uses a profile that excludes every metric, and push rejects one that leaves a metric available |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
@@ -548,8 +552,9 @@ differs from BigQuery Graph in five ways:
   available. The
   BigQuery-only rule that a metric must resolve to a single entity therefore does
   not apply to a Spanner target (see [Validation](#validation)).
-  Push refuses a Spanner deployment that names no profile in a model with
-  metrics; name a profile with `metrics_exclude: "*"`.
+  Every push refuses a Spanner deployment that names no profile in a model
+  with metrics, whether or not it deploys that deployment; name a profile with
+  `metrics_exclude: "*"`.
 - **No per-element `OPTIONS`.** `description` and `ai_context` are not emitted
   into the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
@@ -573,10 +578,9 @@ written. Without that flag, the source check reads the same instance first and
 stops the push when it cannot.
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
-Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
-are **not** probed before deploy. Its actions are: every `sql` executor
-statement is planned against the target database first, on both legs (see
-[Validation](#validation)).
+Spanner DDL. Before anything is written, push plans a query of what each node
+and edge table reads in the target database, and every `sql` executor
+statement of its actions, on both legs (see [Validation](#validation)).
 
 ## What gets created in Knowledge Catalog
 
@@ -792,7 +796,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   them must be a BigQuery built-in function whose name has no dot, or one with
   the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
   text. A BigQuery or Spanner graph cannot hold an entity and a relationship
-  whose names match ignoring case. A BigQuery graph also cannot hold a metric
+  whose names match ignoring case. The `graphs/<g>` segment of a Spanner
+  target names the graph. Spanner takes a graph name that starts with a
+  letter, holds only letters, digits and underscores, and is at most 128
+  characters long. The name cannot be that of a table the graph reads,
+  ignoring case. The expression of a Spanner graph property cannot hold a
+  subquery. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line
@@ -834,8 +843,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   A field the model file binds to one of its tables then needs SQL in that
   dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
   sources are in that database. Spanner creates no property graph in a
-  PostgreSQL-dialect database, so push refuses a Spanner deployment there
-  before anything is written. *(live — needs `spanner.databases.get` on the
+  PostgreSQL-dialect database, so every push refuses a Spanner deployment
+  there before anything is written, whether or not it deploys that deployment.
+  *(live — needs `spanner.databases.get` on the
   database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
@@ -973,9 +983,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   rule. Each error from the check offers the flag and says what it skips. The
   flag gets no BigQuery or Spanner deployment past a missing table. A BigQuery
   deployment still probes each table it reads before anything is written, as
-  the next check says. A Spanner deployment's graph DDL fails on a missing
-  table after Knowledge Catalog is written. `kcmd profiles` does not run the
-  source check.
+  the next check says. A Spanner deployment still plans a query of each table
+  it reads before anything is written, in the Spanner graph check below.
+  `kcmd profiles` does not run the source check.
   *(live — needs the reads listed under [Permissions](#permissions))*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
@@ -985,10 +995,29 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   the tables of the deployments it would deploy, each in the location of the
   graph's dataset when push can read it. A table in another location fails the
   push, and the error names the table's location when BigQuery reports it. A
-  **Spanner-targeting** model's sources live in Spanner (a different system) and
-  are **not** probed here. The `source` construct and the resource names it takes
+  **Spanner-targeting** model's sources live in Spanner, and the Spanner graph
+  check below reads them. The `source` construct and the resource names it takes
   are defined in [model spec §7.1](model_spec.md#71-table-sources).
   *(live — needs BigQuery access)*
+* **Spanner accepts each Spanner graph push deploys.** Push checks the graph
+  of each Spanner deployment it would deploy against the target database,
+  after the edition check and before anything is written. For each node and
+  edge table it plans a query, with `queryMode: PLAN`, of the key columns,
+  join columns and property expressions the table reads. Spanner refuses a
+  column the table does not have and SQL it cannot run, and the error names
+  the entity or relationship and the query. The plan gives each property's
+  type, and push refuses a property that two tables give different types. It
+  also refuses an edge's join column whose type differs from the type of the
+  node column it references. Push also reads the database's
+  `INFORMATION_SCHEMA`. It refuses a graph whose name matches a table, view,
+  index, sequence, change stream, schema, role, constraint or model of the
+  database, ignoring case. It refuses a node or edge table whose key columns
+  hold neither the table's primary key nor the columns of a unique index. Push
+  does not check the key of a view. Spanner accepts a view's key only when it
+  is the primary key of the one table the view reads, or the view's `GROUP BY`
+  or `SELECT DISTINCT` columns. Push stops when it cannot open a session on
+  the database.
+  *(live — needs query access to the database)*
 * **Every `sql` executor statement is accepted by the store it will run
   against.** Each statement is sent to the bound store with the request that
   means *plan it, do not run it* — `dryRun` on BigQuery, `queryMode: PLAN` in an
@@ -1042,8 +1071,9 @@ model is present), on the database the target names:
   completion
 * `spanner.sessions.create` and `spanner.sessions.delete`,
   `spanner.databases.select`, and
-  `spanner.databases.beginOrRollbackReadWriteTransaction` — the DML pre-flight
-  plans each statement on a session, and a `PLAN` of a DML statement has to open
+  `spanner.databases.beginOrRollbackReadWriteTransaction` — the Spanner graph
+  check reads the schema and plans its queries on a session, and the DML
+  pre-flight plans each statement on one. A `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
 * `spanner.instances.get` on the instance, to read the instance's edition

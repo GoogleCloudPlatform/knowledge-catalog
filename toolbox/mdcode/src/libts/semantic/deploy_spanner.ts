@@ -16,6 +16,7 @@
 // (src/tool/commands.ts) to print.
 //
 
+import {errorMessage} from '../gcp/api';
 import * as context from '../gcp/context';
 import {Operation, SpannerClient} from '../gcp/spanner';
 
@@ -103,7 +104,17 @@ async function awaitOperationDone(
     };
   }
   if (op.error) {
-    return {ok: false, error: op.error.message || `code ${op.error.code}`};
+    // Spanner escapes the quotes and line breaks of the operation's
+    // `message`, and its LocalizedMessage detail holds the text as written,
+    // which errorMessage reads first.
+    const localized = (op.error.details ?? []).some(
+        (d: any) => d?.['@type']?.endsWith('LocalizedMessage'));
+    return {
+      ok: false,
+      error: op.error.message || localized ?
+          errorMessage(JSON.stringify({error: op.error})) :
+          `code ${op.error.code}`,
+    };
   }
   return {ok: true};
 }

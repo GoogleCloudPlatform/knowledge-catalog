@@ -57,7 +57,9 @@ scenarios('push --no-deployment', [
     services: {preflight: {prepared: {...PREPARED, warnings: ['w']}}},
     code: 0,
     events: ['preflight', 'apply'],
-    called: {bq: 0, spanner: 0, sources: 0},
+    // Push generates each deployment's graph offline, and deploys none.
+    calls: ['generate g1', 'generate g2'],
+    called: {spanner: 0, sources: 0},
     warnings: ['Warning: w'],
     then: [{
       deployments: [{name: 'g1', profile: 'prod'}],
