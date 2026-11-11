@@ -99,6 +99,11 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. The summary counts the files it deletes. |
 
+When pull refuses a local model file, the refusal says how to keep or delete
+that file. On macOS and Windows, file names that differ only in letter case
+name the same file, so when pull prints more than one refusal, follow one
+refusal's choice and run pull again before you follow the next.
+
 ### import
 
 ```bash
