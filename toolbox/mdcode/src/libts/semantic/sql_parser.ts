@@ -175,13 +175,14 @@ export function mysqlForEngine(sql: string): string {
   return mysqlForEngineAt(sql).text;
 }
 
-// `sql`, a MySQL text, as mysqlForEngine writes it, with the index in `sql` of
-// each code point of that text, and the engine's tokens of that text when one
-// tokenize read all of it. Each change can turn the rest of the text into code
-// or into a comment, so the first one goes first. The engine then reads again
-// from the start of the gap or token that held the marker, up to the end of the
-// line of the next marker. A token after that line shows whether a string or a
-// comment is still open there, and then the engine reads to the end of the text.
+// Returns `text`, which is `sql`, a MySQL text, as mysqlForEngine writes it.
+// `from[i]` is the index in `sql` of code point i of `text`. `tokens` holds the
+// engine's tokens of `text` when one call to tokenize read all of it. Each
+// change can turn the rest of the text into code or into a comment, so the
+// first one goes first. The engine then reads again from the start of the gap
+// or token that held the marker, up to the end of the line of the next marker.
+// When a string or a comment is still open there, which a token placed after
+// the line shows, the engine reads to the end of the text.
 function mysqlForEngineAt(sql: string):
     {text: string; from: number[]; tokens?: SqlToken[]} {
   if (!loadedEngine) {
