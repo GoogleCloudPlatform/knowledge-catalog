@@ -369,6 +369,13 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "TIMESTAMP '2024-01-31 10:00:00' + INTERVAL 1 DAY", {error: 'kcmd does not translate + of a timestamp literal'}],
     ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
     ['POSTGRES', "(d + 1) + INTERVAL '1 month'", {sql: '(d + 1) + INTERVAL 1 MONTH'}],
+    // MySQL's compound units.
+    ['MYSQL', "DATE_ADD(CURDATE(), INTERVAL '1:30' HOUR_MINUTE)", {sql: 'CURRENT_DATE + (INTERVAL 1 HOUR + INTERVAL 30 MINUTE)'}],
+    ['MYSQL', "CURDATE() - INTERVAL '1 2' DAY_HOUR", {sql: 'CURRENT_DATE - (INTERVAL 1 DAY + INTERVAL 2 HOUR)'}],
+    ['MYSQL', "NOW() + INTERVAL '1 2' DAY_HOUR", {sql: "DATE_ADD(DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), INTERVAL 26 HOUR)"}],
+    ['MYSQL', "CURDATE() + INTERVAL '5' SECOND_MICROSECOND", {sql: 'CURRENT_DATE + (INTERVAL 0 SECOND + INTERVAL 500000 MICROSECOND)'}],
+    ['MYSQL', "DATE_ADD(d, INTERVAL '1-2' YEAR_MONTH)", {error: 'kcmd does not translate DATE_ADD with INTERVAL 1-2 YEAR_MONTH on a value that may be a TIMESTAMP'}],
+    ['MYSQL', "CURDATE() + INTERVAL '1:2:3' HOUR_MINUTE", {error: 'kcmd does not translate INTERVAL 1:2:3 HOUR_MINUTE'}],
     ['DATABRICKS', '(d + 1) + INTERVAL 1 HOUR', {sql: 'TIMESTAMP(d + 1) + INTERVAL 1 HOUR'}],
     ['MYSQL', 'd - 1 - INTERVAL 1 DAY', {error: 'kcmd does not translate - of a difference'}],
     ['MYSQL', 'COALESCE(d - 1, d) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of COALESCE'}],

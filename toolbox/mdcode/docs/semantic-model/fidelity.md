@@ -307,7 +307,11 @@ names microseconds.
   as in MySQL, and adds every unit to it.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
-  first.
+  first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
+  HOUR_MINUTE`, becomes one INTERVAL per part, read from a number or a string
+  by MySQL's rules: fewer numbers fill the smallest parts, and the digits of
+  microseconds are a fraction of a second. The parts are then added as a sum
+  of INTERVALs is, below.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
   DATE and to a DATE plus an INTERVAL. An INTERVAL string can name several
@@ -351,7 +355,8 @@ to a value, it gets the form and type that its smallest unit gets in the list
 above. Where that form is `+`, import keeps the sum as written, and each of
 its units must be one the list adds to the result. BigQuery then adds months
 first, then days, then time, as PostgreSQL and Databricks do. Where that form
-is DATE_ADD, the INTERVALs must add up to whole days or whole months, so
+is DATE_ADD, the INTERVALs must add up to one amount of their smallest unit,
+so they must all be months and years, or all be weeks and smaller units.
 Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
 `DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
 years, or weeks and smaller units, as Databricks does. A single INTERVAL

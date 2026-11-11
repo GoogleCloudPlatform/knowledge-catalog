@@ -444,7 +444,7 @@ function transpileWith(
   try {
     // A text already in the target dialect needs no translation.
     if (read === write && !spanner) return {id: r.id, sql: r.expression};
-    const source = read === 'mysql' ? mysqlForEngine(r.expression) : r.expression;
+    const source = read === 'mysql' ? mysqlCompounds(engine, mysqlForEngine(r.expression)) : r.expression;
     // A comment that starts the text keeps the engine from translating the
     // functions in it, so the engine reads the text after it.
     const {text, comments} = sqlComments(engine, source, read);
@@ -786,6 +786,9 @@ interface DateTable {
   // True when an INTERVAL may restrict a string to the fields down to a unit,
   // as INTERVAL '90 minutes' HOUR does (see restricted).
   fields?: true;
+  // The compound units an INTERVAL may name, such as HOUR_MINUTE, with the
+  // units of their parts (see compoundParts).
+  compounds?: Record<string, Unit[]>;
   // The groups of units that one INTERVAL value may join, in a dialect whose
   // INTERVALs are values: a sum or difference of INTERVALs, such as INTERVAL
   // '1 day' + INTERVAL '2 hours', or an INTERVAL times an amount.
@@ -835,6 +838,14 @@ const DATE_TABLES: Record<string, DateTable> = {
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
     words: {}, expressions: true, intervals: UNITS.filter(u => u !== 'MILLISECOND'),
+    compounds: {
+      YEAR_MONTH: ['YEAR', 'MONTH'], DAY_HOUR: ['DAY', 'HOUR'], DAY_MINUTE: ['DAY', 'HOUR', 'MINUTE'],
+      DAY_SECOND: ['DAY', 'HOUR', 'MINUTE', 'SECOND'],
+      DAY_MICROSECOND: ['DAY', 'HOUR', 'MINUTE', 'SECOND', 'MICROSECOND'], HOUR_MINUTE: ['HOUR', 'MINUTE'],
+      HOUR_SECOND: ['HOUR', 'MINUTE', 'SECOND'], HOUR_MICROSECOND: ['HOUR', 'MINUTE', 'SECOND', 'MICROSECOND'],
+      MINUTE_SECOND: ['MINUTE', 'SECOND'], MINUTE_MICROSECOND: ['MINUTE', 'SECOND', 'MICROSECOND'],
+      SECOND_MICROSECOND: ['SECOND', 'MICROSECOND'],
+    },
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
       DATE: {
@@ -1005,8 +1016,9 @@ interface DateSum {
   asDate?: boolean;
   addition: Addition;
   // The values in an INTERVAL value that import writes as the source does,
-  // for the checks.
+  // for the checks, and the value itself when a function adds it.
   values?: any[];
+  interval?: any;
 }
 
 // The date arithmetic in `node`, a source node in the engine's dialect `read`.
@@ -1034,7 +1046,7 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
     const first = !!values[0];
     const [side, operand] = first ? [value.left, value.right] : [value.right, value.left];
     const added = intervalOf(side, read);
-    const written = added ? `INTERVAL ${intervalText(added)}` : 'an INTERVAL value';
+    const written = added ? `INTERVAL ${intervalText(added, table)}` : 'an INTERVAL value';
     if (first && kind === 'sub') return `- with ${written} first`;
     const joined = values[first ? 0 : 1]!;
     if (typeof joined === 'string') return joined;
@@ -1064,9 +1076,13 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   const added = how !== 'part' && args.length === 2 ? bare(args[1])?.interval : undefined;
   if (added && how !== 'days') {
     const parsed = readInterval(added, table);
-    const spelling = `${name} with INTERVAL ${intervalText(added)}`;
+    const spelling = `${name} with INTERVAL ${intervalText(added, table)}`;
     if (typeof parsed === 'string') return `${name} with ${parsed}`;
-    if (parsed.length > 1) return spelling;
+    if (parsed.length > 1) {
+      const text = `INTERVAL ${intervalText(added, table)}`;
+      const joined = {parts: parsed.map(p => ({...p, text, negative: false})), values: []};
+      return valueOn(table, read, {operand: args[0], joined, subtract, op: name, call: true, interval: args[1]});
+    }
     return sumOn(table, read, {operand: args[0], ...parsed[0], subtract, call: true, name, spelling, unitText: spelling});
   }
   const [part, amount, operand] = how === 'part' ? args : [undefined, args[1], args[0]];
@@ -1104,7 +1120,7 @@ function functionAmount(amount: any, table: DateTable): unknown {
 // restricted to that unit (see restricted), as is a PostgreSQL cast with
 // fields, such as '90 minutes'::interval hour.
 function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}[]|string {
-  const text = `INTERVAL ${intervalText(added)}`;
+  const text = `INTERVAL ${intervalText(added, table)}`;
   // A number, or a string such as '1' or '1 day'. A hex, bit, national or
   // triple-quoted string is refused, since the sources read some of them as
   // another number.
@@ -1115,6 +1131,9 @@ function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}[]
   const simple = added.unit?.type === 'simple' && UNITS.includes(unit);
   if (written === undefined && table.expressions && !literal && simple) return [{amount: added.this, unit}];
   if (written === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
+  const span = added.unit?.type === 'span' ? `${unitName(added.unit.this)}_${unitName(added.unit.expression)}` : '';
+  const compound = table.compounds?.[span];
+  if (compound) return compoundParts(written, compound) ?? text;
   const whole = /^\s*[+-]?\d+\s*$/.test(written);
   const named = simple && table.keywords !== false && (!table.intervals || table.intervals.includes(unit));
   const fields = added.fields ?? (named && table.fields && !whole ? unit : undefined);
@@ -1123,6 +1142,46 @@ function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}[]
     return !parts ? text : fields ? restricted(parts, fields) : parts;
   }
   return named && whole ? [{amount: wholeNumber(written), unit}] : text;
+}
+
+// The INTERVALs MySQL reads from `text`, the amount of an INTERVAL with a
+// compound unit whose parts are `units`, such as '1:30' for HOUR_MINUTE. A
+// minus sign first, after any spaces, negates every part. Each part is a whole
+// number, with any characters other than digits between them, and fewer
+// numbers fill the smallest parts. The digits of microseconds are a fraction
+// of a second, so fewer than six are scaled up: '1.5' SECOND_MICROSECOND is
+// 1.5 seconds. Undefined for no number or more numbers than parts, which
+// MySQL reads as 0 or NULL.
+function compoundParts(text: string, units: Unit[]): {amount: any; unit: Unit}[]|undefined {
+  const trimmed = text.replace(/^\s+/, '');
+  const negative = trimmed.startsWith('-');
+  const groups = (negative ? trimmed.slice(1) : trimmed).match(/\d+/g) ?? [];
+  if (!groups.length || groups.length > units.length || groups.some(g => g.length > 18)) return undefined;
+  const values = [...units.slice(groups.length).map(() => 0n), ...groups.map(g => BigInt(g))];
+  const last = groups[groups.length - 1];
+  if (units.at(-1) === 'MICROSECOND' && last.length < 6) values[values.length - 1] *= 10n ** BigInt(6 - last.length);
+  return units.map((unit, i) => ({amount: wholeNumber(`${negative ? '-' : ''}${values[i]}`), unit}));
+}
+
+// `sql`, a MySQL text, with each compound unit of an INTERVAL whose amount is
+// a number or a string, such as HOUR_MINUTE in INTERVAL '1:30' HOUR_MINUTE,
+// written as the span HOUR TO MINUTE. The engine reads a span, and MySQL has
+// none, so readInterval reads the span as the compound unit.
+function mysqlCompounds(engine: PolyglotEngine, sql: string): string {
+  const tokens = engine.tokenize(sql, 'mysql').tokens ?? [];
+  const chars = [...sql];
+  const type = (i: number) => tokens[i]?.token_type;
+  for (let i = tokens.length - 1; i >= 2; i--) {
+    const name = String(tokens[i].text).toUpperCase();
+    const first = type(i - 2) === 'DASH' ? i - 3 : i - 2;
+    if (type(i) !== 'VAR' || !DATE_TABLES.mysql.compounds![name] || !['STRING', 'NUMBER'].includes(type(i - 1)!) ||
+        type(first) !== 'INTERVAL') {
+      continue;
+    }
+    const {start, end} = tokens[i].span;
+    chars.splice(start, end - start, ...name.replace('_', ' TO '));
+  }
+  return chars.join('');
 }
 
 // The INTERVALs in `text`, an INTERVAL string such as '2 days', in `table`'s
@@ -1205,7 +1264,7 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
   const added = intervalOf(b, read);
   if (added) {
     const parsed = readInterval(added, table);
-    const text = `INTERVAL ${intervalText(added)}`;
+    const text = `INTERVAL ${intervalText(added, table)}`;
     return typeof parsed === 'string' ? parsed : {parts: parsed.map(p => ({...p, text, negative: false})), values: []};
   }
   const kind = kindOf(b) ?? '';
@@ -1241,36 +1300,43 @@ function intervalTyped(node: any, read: string): boolean {
   return operands.some(o => intervalTyped(o, read));
 }
 
-// The days or months that `parts`, INTERVALs of whole numbers, add up to, as
-// one amount and unit, or undefined. A week is 7 days, a quarter 3 months and
-// a year 12 months, in each source as in BigQuery.
-const FOLDS: Partial<Record<Unit, number>>[] = [{DAY: 1, WEEK: 7}, {MONTH: 1, QUARTER: 3, YEAR: 12}];
+// The one amount and unit that `parts`, INTERVALs of whole numbers, add up
+// to, in their smallest unit, or undefined. They must all be months, quarters
+// and years, or all be weeks or smaller units. A week is 7 days, a quarter 3
+// months and a year 12 months, in each source as in BigQuery. A day is 24
+// hours, as it is for a DATETIME and for a timestamp in UTC.
+const FOLDS: Partial<Record<Unit, bigint>>[] = [
+  {WEEK: 7n * 86400000000n, DAY: 86400000000n, ...MICROS}, {YEAR: 12n, QUARTER: 3n, MONTH: 1n},
+];
 function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined {
   const fold = FOLDS.find(f => parts.every(p => f[p.unit]));
   const numbers = parts.map(p => numberText(p.amount));
   if (!fold || parts.some((p, i) => p.times || numbers[i] === undefined)) return undefined;
-  const total = parts.reduce(
-      (t, p, i) => t + (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * BigInt(fold[p.unit]!), 0n);
-  return {amount: wholeNumber(String(total)), unit: Object.keys(fold)[0] as Unit};
+  const total = parts.reduce((t, p, i) => t + (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * fold[p.unit]!, 0n);
+  const unit = parts.reduce((a, p) => fold[p.unit]! < fold[a]! ? p.unit : a, parts[0].unit);
+  return {amount: wholeNumber(String(total / fold[unit]!)), unit};
 }
 
 // The date arithmetic `operand` plus or minus `joined`, an INTERVAL value of
 // more than one INTERVAL or with a product, in `table`, the table of the
 // engine's dialect `read`, or a message. The row's addition of the value's
 // finest unit gives the form and the type, as in the sources. A DATE_ADD
-// needs one amount, so the INTERVALs must add up to days or months (see
-// folded). A `+` keeps the value as the source writes it, which BigQuery adds
-// months first, then days, then time, as the sources do. Each unit must then
-// be one that the row the addition gives adds with `+`.
+// needs one amount, so the INTERVALs must add up to one amount of their
+// smallest unit (see folded). A `+` keeps the value as the source writes it,
+// which BigQuery adds months first, then days, then time, as the sources do.
+// Each unit must then be one that the row the addition gives adds, where
+// BigQuery's `+` and DATE_ADD agree. A function, such as MySQL's DATE_ADD, has
+// its `interval` added with `+`.
 function valueOn(table: DateTable, read: string, sum: {
-  operand: any; joined: IntervalValue; subtract: boolean; first: boolean; op: string;
+  operand: any; joined: IntervalValue; subtract: boolean; first?: boolean; op: string; call?: boolean;
+  interval?: any;
 }): DateSum|string {
-  const {operand, joined, subtract, first, op} = sum;
+  const {operand, joined, subtract, first, op, call, interval} = sum;
   const found = operandRow(operand, read, table) ?? daysRow(operand, table);
   if (typeof found === 'string') return found;
   if (!found) return `${op} of ${valueName(bare(operand))}`;
   const finest = joined.parts.reduce((a, p) => UNITS.indexOf(p.unit) < UNITS.indexOf(a.unit) ? p : a);
-  const spelled = (p: IntervalPart) => `${op} ${p.text}${p.times ? ' times an amount' : ''}`;
+  const spelled = (p: IntervalPart) => `${op}${call ? ' with' : ''} ${p.text}${p.times ? ' times an amount' : ''}`;
   const row = table.rows[found.row];
   const addition = row.units[finest.unit];
   const note = table.notes?.[finest.unit];
@@ -1279,12 +1345,12 @@ function valueOn(table: DateTable, read: string, sum: {
     const fold = folded(joined.parts);
     const one = fold && row.units[fold.unit];
     if (!one) return `${spelled(finest)} on ${found.name}`;
-    return {operand, amount: fold.amount, unit: fold.unit, subtract, first, addition: one};
+    return {operand, amount: fold.amount, unit: fold.unit, subtract, first, call, addition: one};
   }
   const gives = table.rows[addition.gives];
-  const other = joined.parts.find(p => gives.units[p.unit]?.form !== '+');
+  const other = joined.parts.find(p => !gives.units[p.unit]);
   if (other) return `${spelled(other)} on ${found.name}`;
-  return {operand, amount: undefined, subtract, first, addition, values: joined.values};
+  return {operand, amount: undefined, subtract, first, call, interval, addition, values: joined.values};
 }
 
 // The interval `node`, a side of a `+` or `-` in the engine's dialect `read`,
@@ -2157,13 +2223,15 @@ function spannerAmount(value: any): boolean {
 
 // `value`, an engine interval, as the source writes it after INTERVAL, for a
 // message. Its unit is a name, such as DAY, a node, such as DAY(9), or a span
-// of two of either, such as HOUR TO MINUTE.
-function intervalText(value: any): string {
+// of two of either, such as HOUR TO MINUTE, which is a compound unit, such as
+// HOUR_MINUTE, where `table` has one.
+function intervalText(value: any, table?: DateTable): string {
   const text = intervalAmount(value) ?? '?';
   const spec = value?.unit;
+  const span = [unitName(spec?.this), unitName(spec?.expression)];
   const unit = !spec ? undefined : spec.type === 'simple' ? unitName(spec.unit) :
       spec.type === 'expr' ? unitName(spec) :
-      `${unitName(spec.this)} TO ${unitName(spec.expression)}`;
+      table?.compounds?.[span.join('_')] ? span.join('_') : span.join(' TO ');
   return unit ? `${text} ${unit}` : `'${text}'`;
 }
 
@@ -2281,6 +2349,15 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(n => rewrite(n));
     const sum = isNode(node) ? dateSum(node, read) : undefined;
+    // A function that adds an INTERVAL value becomes `+` or `-`, in parentheses
+    // unless it is the `whole` text.
+    if (typeof sum === 'object' && !sum.unit && sum.call) {
+      changed = true;
+      const kind = sum.subtract ? 'sub' : 'add';
+      const template = sqlExpressionTree(sum.subtract ? 'x - y' : 'x + y', dialect)[kind];
+      const written = {[kind]: {...template, left: sum.operand, right: {paren: {this: sum.interval}}}};
+      return rewrite(whole ? written : {paren: {this: written}});
+    }
     if (typeof sum === 'object' && sum.unit) {
       changed = true;
       // An operand of DATE_ADD or TIMESTAMP needs no parentheses.
@@ -2290,9 +2367,10 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       }
       return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
-    // An INTERVAL in an INTERVAL value is BigQuery's INTERVAL of its unit.
+    // An INTERVAL that import keeps as the source writes it, in an INTERVAL
+    // value, is BigQuery's INTERVAL of each of its units.
     const table = DATE_TABLES[read];
-    const added = table?.sums && isNode(node) && intervalOf(node, read);
+    const added = table && isNode(node) && intervalOf(node, read);
     const parsed = added && readInterval(added, table);
     if (parsed && typeof parsed === 'object') {
       changed = true;
