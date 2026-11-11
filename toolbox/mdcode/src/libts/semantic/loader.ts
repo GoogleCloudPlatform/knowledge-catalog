@@ -49,6 +49,10 @@ export interface LoadOptions {
   // when it is not the document's own. kcmd import uses the word of the
   // flavor it writes.
   messageFlavor?: FormatVersion;
+  // Set when kcmd import checks what it writes for a file another product
+  // wrote, unless it writes a GOOGLE block over that file. The load sets
+  // SemanticModel.thirdPartyImport on each model.
+  thirdPartyImport?: boolean;
 }
 
 export interface LoadResult {
@@ -2325,6 +2329,7 @@ function convertModel(
   // (e.g. a pull) can return the model in that same flavor.
   const model: SemanticModel =
       {name: m.name, version, entities, relationships, metrics};
+  if (opts.thirdPartyImport) model.thirdPartyImport = true;
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
   if (deployments.length) model.deployments = deployments;
@@ -3040,6 +3045,12 @@ function keysAt(schema: z.ZodType, path: readonly PropertyKey[]): string[] {
   if (!(object instanceof z.ZodObject)) return [];
   return Object.keys(object.shape)
       .filter(k => !UNLISTED_KEYS.has(object.shape[k]));
+}
+
+// The keys a Google-flavor model file takes on the object at `path` below its
+// model, such as ['datasets', 0, 'fields', 0] for a field.
+export function modelFileKeysAt(path: readonly PropertyKey[]): string[] {
+  return keysAt(makeDocumentSchema(true, true), ['semantic_model', 0, ...path]);
 }
 
 // Where `path` points in `input.doc`: the innermost named object, as messages
@@ -3977,7 +3988,8 @@ export function parseSource(
     // a model file's bare names.
     const viaImport = importVersion ?
         `\nOr run '${
-            importCommand('--source-prefix <prefix>', importVersion)}' to ` +
+            importCommand(
+                '--source-prefix <prefix>', {version: importVersion})}' to ` +
             `complete each bare table name from the database or Knowledge ` +
             `Catalog entry group that <prefix> names.` :
         '';

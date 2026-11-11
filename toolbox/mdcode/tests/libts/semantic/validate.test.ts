@@ -683,9 +683,10 @@ describe('inheritance rules', () => {
   });
 
   // A redeclaration sets `expression` and nothing else.
-  test('a subtype redeclaring an inherited field with nothing set is rejected', () => {
+  test('a subtype redeclaring an inherited field with no expression is rejected', () => {
     for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
-                     {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
+                     {name: 'name', importedDialect: 'SNOWFLAKE'},
+                     {name: 'name', type: 'Integer' as const}]) {
       expect(check({
         entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
       }).join('\n')).toContain(
@@ -1814,6 +1815,51 @@ ${metricBlock}`).models[0];
           `as 'entity.field'; a metric reads fields, never columns.`,
         ]);
       }
+    });
+
+    // [the metric's name, its expression, the message, its entity when not
+    // orders]. Metric 'revenue' is anchored on orders. 'amount' is a metric on
+    // orders and a field of customer.
+    const at = (name: string) => `metric '${name}' in model 'm' (doc)`;
+    test.each<[string, string, string | undefined, string?]>([
+      ['avg_order', 'revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, and a ` +
+       'metric over other metrics is not supported in this version; write the expression ' +
+       "of 'revenue' in its place."],
+      ['avg_order', 'orders.revenue / COUNT(*)', `${at('avg_order')}: 'revenue' is a metric, ` +
+       'and a metric over other metrics is not supported in this version; write the ' +
+       "expression of 'revenue' in its place."],
+      // A bare metric name reads that metric, even when another entity has a
+      // field of that name, and reads a field of the metric's own entity.
+      ['avg_order', 'SUM(amount) / COUNT(*)', `${at('avg_order')}: 'amount' is a metric, and a ` +
+       'metric over other metrics is not supported in this version; write the expression ' +
+       "of 'amount' in its place."],
+      ['avg_cust', 'SUM(amount)', `${at('avg_cust')}: 'amount' must be written as ` +
+       "'entity.field'; a metric reads fields, never columns.", 'customer'],
+      // A metric that reads its own name reads a column or a missing field.
+      ['total', 'SUM(total)', `${at('total')}: 'total' must be written as 'entity.field'; a ` +
+       'metric reads fields, never columns.'],
+      ['total', 'SUM(orders.total)', `${at('total')}: expression references 'orders.total', ` +
+       "but entity 'orders' has no field 'total'; metric expressions must reference declared " +
+       'fields, not physical columns.'],
+      // A metric's name on another entity or under an unknown qualifier is
+      // no read of that metric.
+      ['avg_order', 'SUM(orders.net_amount) / SUM(customer.revenue)', `${at('avg_order')}: ` +
+       "expression references 'customer.revenue', but entity 'customer' has no field " +
+       "'revenue'; metric expressions must reference declared fields, not physical columns."],
+      ['avg_order', 'ordrs.revenue / COUNT(*)', `${at('avg_order')}: 'ordrs.revenue' has ` +
+       "qualifier 'ordrs', which is not a declared entity in model 'm'; write 'entity.field' " +
+       'starting with a declared entity.'],
+      ['avg_order', 'SUM(orders.net_amount) / COUNT(*)', undefined],
+    ])('a metric %s over %s gets the message for what it reads', (name, expression, message, entity = 'orders') => {
+      const m = model({
+        entities: [orders(), customer()],
+        metrics: [
+          {name: 'revenue', expression: 'SUM(orders.net_amount)', entity: 'orders'},
+          {name: 'amount', expression: 'SUM(orders.net_amount)', entity: 'orders'},
+          {name, expression, entity, authoredEntity: entity},
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)])).toEqual(message ? [message] : []);
     });
 
     test('rejects a dotted reference whose qualifier is not a declared entity or differs in case without emitting Rule 1', () => {
@@ -3870,6 +3916,76 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
            m.entities.find(e => e.name === 'member')!.keys = ['code'];
            expect(check(m)).toEqual([]);
          });
+  });
+
+  // Spanner compares names ignoring case.
+  describe('Spanner graphs', () => {
+    const table = (t: string) =>
+        SPANNER_TARGET.replace(/graphs\/g$/, `tables/${t}`);
+    // Entities employee and purchase on tables employees and Order, each with
+    // a field of the name, datatype and expression `fields` gives, in a graph
+    // named `graph`. The expression is `c` unless given.
+    const graphOf =
+        (graph: string, fields = [['code', 'String'], ['code', 'String']]) =>
+            check(loadOne('commerce', `    deployments:
+      - { name: sp, target: ${SPANNER_TARGET.replace(/g$/, graph)} }
+    entities:
+${['employee', 'purchase'].map((e, i) => `      - name: ${e}
+        source: ${table(['employees', 'Order'][i])}
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: ${fields[i][0]}, datatype: ${fields[i][1]}, expression: ${
+              JSON.stringify(fields[i][2] ?? 'c')} }
+`).join('')}`));
+    const IN = (problem: string) =>
+        `model 'commerce' (commerce) deployment 'sp' targets Spanner${problem}`;
+
+    test('refuses a graph name Spanner does not accept or that names a table the graph reads, ignoring case', () => {
+      const name = (g: string) => IN(
+          ` graph '${g}', but a Spanner graph name starts with a letter, ` +
+          'holds only letters, digits and underscores, and is at most 128 ' +
+          'characters long; rename the graph in the target.');
+      const long = `g${'x'.repeat(128)}`;
+      for (const g of ['my-graph', '1graph', '_g', long]) {
+        expect(graphOf(g)).toEqual([name(g)]);
+      }
+      expect(graphOf('ORDER')).toEqual([IN(
+          " graph 'ORDER', which has the name of table 'Order' that entity " +
+          "'purchase' reads; a graph cannot share its name with a table of " +
+          'its database, compared ignoring case. Rename the graph in the ' +
+          'target.')]);
+      for (const g of ['g_1', 'select', long.slice(1)]) {
+        expect({g, errors: graphOf(g)}).toEqual({g, errors: []});
+      }
+    });
+
+    // Spanner types a property by its expression, which the live check reads.
+    test('accepts a property that two tables declare with different datatypes', () => {
+      expect(graphOf('g', [['score', 'Decimal'], ['score', 'Float']]))
+          .toEqual([]);
+    });
+
+    test('refuses a property expression that holds a subquery', () => {
+      const subquery = (owners: string) => IN(
+          `, where property 'code' of ${owners} holds a subquery, which ` +
+          'Spanner refuses in a property expression; write the expression ' +
+          'without a subquery.');
+      for (const [expression, other, errors] of [
+             ['(SELECT MAX(c) FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['EXISTS (SELECT 1 FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['c IN (SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             ['ARRAY(SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
+             // A property of one SQL in two tables is reported once.
+             ['(SELECT 1)', '(SELECT 1)',
+              [subquery("entity 'employee' and entity 'purchase'")]],
+             ['c IN (1, 2)', 'c', []],
+           ] as Array<[string, string, string[]]>) {
+        expect({expression, errors: graphOf('g', [
+                  ['code', 'String', expression], ['code', 'String', other],
+                ])}).toEqual({expression, errors});
+      }
+    });
   });
 });
 

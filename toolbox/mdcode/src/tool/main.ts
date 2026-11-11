@@ -41,7 +41,8 @@ function assertScopeSupported(basePath = '.'): void {
   const scope = (parsed as {scope?: unknown}|null)?.scope;
   const isSemantic = (s: unknown): boolean =>
       typeof s === 'string' &&
-      (s === 'semantic-model' || s.startsWith('semantic-model.'));
+      (s === 'semantic-model' || s.startsWith('semantic-model.') ||
+       s === 'context-set' || s.startsWith('context-set.'));
   if (isSemantic(scope) || (Array.isArray(scope) && scope.some(isSemantic))) {
     throw new Error(UNSUPPORTED_SEMANTIC_SCOPE_MESSAGE);
   }
@@ -72,9 +73,13 @@ const initCmd = cli.command('init', 'Initialize a new catalog snapshot')
         '--kb <id>',
         'Identifier of the Knowledge Base EntryGroup (project.location.id)');
 if (ENABLE_SEMANTIC) {
-  initCmd.option(
-      '--semantic-model <id>',
-      'Semantic model scope as <projectId>.<locationId>.<entryGroupId>');
+  initCmd
+      .option(
+          '--semantic-model <id>',
+          'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
+      .option(
+          '--context-set <id>',
+          'Context set scope as <projectId>.<locationId>.<entryGroupId>');
 }
 initCmd.option('--pull', 'Optionally pull catalog entries during initialization')
     .option(
@@ -119,7 +124,10 @@ pushCmd
     .option(
         '--dry-run',
         'Run every check and show what would change, without applying anything')
-    .option('--validate-only', 'Same as --dry-run');
+    .option('--validate-only', 'Same as --dry-run')
+    .option(
+        '--propagation-timeout <seconds>',
+        'Seconds to wait for IAM permissions to propagate on a newly created OKF context set (default: 120; 0 disables waiting)');
 if (ENABLE_SEMANTIC) {
   pushCmd
       .option(

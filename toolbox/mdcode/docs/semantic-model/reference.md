@@ -11,11 +11,19 @@ needs. For what of your metadata survives a deploy or a pull, see
 
 ```bash
 kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
+kcmd init --context-set <projectId>.<locationId>.<entryGroupId>
 ```
 
 Provisions the Knowledge Catalog entry group named by the scope (idempotent — an
 existing group is fine) and creates its local directory,
-`catalog/EntryGroups/<entryGroupId>/`. Author `<model>.yaml` there.
+`catalog/EntryGroups/<entryGroupId>/`. Author `<model>.yaml` there. With
+`--context-set`, `init` creates the entry group as a context set (`type:
+context-set`), also creates `bundle/` for OKF concept markdown and
+`bundle/_links.yaml`, and lists `dataplex-types.global.overview` under
+`snapshot.aspects` in `catalog.yaml`. If an entry group with that ID already
+exists without `type: context-set`, `init --context-set` fails and asks you to
+choose a new context set ID because an existing entry group's type cannot be
+changed.
 
 ### push
 
@@ -35,8 +43,8 @@ Knowledge Catalog.
 
 | Flag | Effect |
 |------|--------|
-| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still publishes the model to Knowledge Catalog first. |
-| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. Push refuses it with `--deployment`, in either order. |
+| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
+| `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
@@ -48,19 +56,23 @@ Push runs in two phases:
    and runs the local checks of every deployment in `deployments:`. The checks
    that read a deployment's store run only for the deployments this push
    deploys: its BigQuery dataset or Spanner database, its BigQuery source
-   tables, a dry run of its BigQuery graph DDL, and each action statement,
-   which BigQuery dry-runs and Spanner plans. It also prints each graph's
-   warnings, such as a metric the graph leaves out. Knowledge Catalog receives
+   tables, a dry run of its BigQuery graph DDL, the Spanner graph check, and
+   each action statement, which BigQuery dry-runs and Spanner plans. It also
+   prints the warnings of each graph this push deploys, such as a metric the
+   graph leaves out. Knowledge Catalog receives
    every profile, so this phase prints the load warnings of each profile,
    whether or not a selected deployment applies it, each prefixed with
-   `profile '<name>':`. (Spanner
-   cannot dry-run a property graph's DDL without executing it, so a Spanner
-   deployment whose graph DDL Spanner rejects fails in the second phase, after
-   Knowledge Catalog is written.)
+   `profile '<name>':`. Spanner cannot dry-run a property graph's DDL without
+   executing it. The Spanner graph check plans a query of what each node and
+   edge table reads and reads the database's schema instead (see
+   [Validation](#validation)). A graph whose DDL Spanner still rejects fails in
+   the second phase below, after Knowledge Catalog is written.
 2. **Publish and deploy phase:** Publishes the model file (as written) and any
    sibling `<model>.profile.<name>.yaml` files to Knowledge Catalog, then
    deploys each selected deployment in order with the profile it names. An
-   AlloyDB deployment deploys no graph.
+   AlloyDB deployment deploys no graph. When a graph fails to deploy, push
+   stops, and its error says that Knowledge Catalog already holds the new
+   model. Fixing the cause and pushing again finishes the deploy.
 
 ### pull
 
@@ -90,53 +102,63 @@ kcmd import <file> --flavor <ossie|google>
 Imports a semantic model file into the flavor `--flavor` names. Import changes
 a value only when that flavor rejects it. When the file's own flavor rejects
 the value too, the change is a repair. A file another product wrote is
-repaired, and each repair is reported as a warning. Renaming a dialect such as
-`GOOGLE_SQL` or `bigquery` is a repair. In a vanilla file written as vanilla,
-recasing a datatype such as `integer` is a repair, and so is writing a string
-`expression` as an `ANSI_SQL` entry under `dialects`. The other changes convert
-the file between flavors and are not reported. A conversion moves each value
-the two flavors place differently, such as a dataset's `extends`, between its
-own key and a `GOOGLE` block, as written. A conversion to vanilla drops an
-empty `extends`, `deployments` or relationship `description` instead of writing
-a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
-when nothing else is left in it. A file written for kcmd converts between
-flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
-a Google-flavor `<file>` go in with it. A profile's sources stay as written,
-even with `--source-prefix`. Import runs push's checks of the model and its
-bindings on what it writes, and stops where push stops. Unlike push, it
-reports every deployment target in no accepted form. Without
-`--input first-party`, it still reports each profile's problems when the model
-file has a source push rejects. The checks cover the model's names,
-descriptions, fields, keys, metrics, relationships, inheritance, actions and
-constraints. They also cover the model file's own bindings and each profile
-import writes. For each deployment they cover its profile, bindings, metrics,
-tables and graph. A profile file beside a vanilla `<file>` and a
+repaired, and each repair is reported as a warning. Under
+`--input first-party`, each repair is an error that says what the file needs.
+Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla
+file written as vanilla, recasing a datatype such as `integer` is a repair, and
+so is writing a string `expression` as an `ANSI_SQL` entry under `dialects`.
+When import writes the Google flavor, removing a field's `expression` that has
+no entry in a supported SQL dialect is a repair, and so is removing a `source`
+that is a query. Under `--input first-party`, the error for the field asks for
+an entry in a supported dialect, and the error for the source asks for a table.
+On an abstract entity, each asks to remove the `expression` or `source`
+instead, since an abstract entity has no table and its fields take no
+expression.
+The other changes convert the file between flavors and are not reported. A
+conversion moves each value the two flavors place differently, such as a
+dataset's `extends`, between its own key and a `GOOGLE` block, as written. A
+conversion to vanilla drops an empty `extends`, `deployments` or relationship
+`description` instead of writing a `GOOGLE` block for it, and drops an empty
+`custom`, with its `ai_context` when nothing else is left in it. A file written
+for kcmd converts between flavors exactly or not at all. The
+`<model>.profile.<name>.yaml` files beside a Google-flavor `<file>` go in with
+it. A profile's sources stay as written, even with `--source-prefix`. Import
+runs push's checks of the model and its bindings on what it writes, and stops
+where push stops. Unlike push, it reports every deployment target in no
+accepted form. Without `--input first-party`, it still reports each profile's
+problems when the model file has a source push rejects. The checks cover the
+model's names, descriptions, fields, keys, metrics, relationships, inheritance,
+actions and constraints. They also cover the model file's own bindings and each
+profile import writes. For each deployment they cover its profile, bindings,
+metrics, tables and graph. A profile file beside a vanilla `<file>` and a
 `<model>.profiles/` directory beside `<file>` are checked too. The checks also
 make sure Knowledge Catalog can store each aspect push writes. The deployment
 checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
 description and synonym limits. Import reports what these checks reject as an
 error under `--input first-party` and as a warning otherwise, except a
 deployment target in no accepted form, which is an error either way. It reports
-their warnings as warnings in either mode. They include push's warnings about the Knowledge
-Catalog entries, about the fields each deployment leaves out and about each
-graph. Import leaves out push's notes. A profile file that does not parse is
-always an error. Under `--input first-party`, a message from these checks names
-the input file that holds what it reports. The checks that read a service stay
-with push, such as whether each source names a table Knowledge Catalog knows
-about. For its checks, import reads only each table's dialect, as push does: a
-Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
-table's from its database. Import then judges each table in that dialect. When
-it cannot read a table's dialect, it warns with push's reason and skips the
-checks that need the dialect: whether a field has SQL in its table's dialect,
-what an `ANSI_SQL` text reads when every table of the model file or profile is
-such a table, and whether a profile's or the model file's tables are in one
-database when only that table's entry can say. Tables of two systems are never
-in one database, so import still reports a profile or model file that binds a
-BigQuery table beside such a table.
-Nothing is written
-when the import reports an error. Import rewrites only the values it changes,
-and every other line of the file stays as written, with its comments, blank
-lines, quoting, indentation and line endings. Comments on anything import
+their warnings as warnings in either mode. They include push's warnings about
+the Knowledge Catalog entries, about the fields each deployment leaves out and
+about each graph. Import leaves out push's notes. A profile file that does not
+parse is always an error. Under `--input first-party`, a message from these
+checks names the input file that holds what it reports. Without it, a message
+that suggests a `kcmd import` command leaves out `--input first-party`, so the
+command imports the same input. An import that writes a `GOOGLE` block over its
+input keeps that flag, since the command then reads the file the import wrote.
+The checks that read a service stay with push, such as whether each source
+names a table Knowledge Catalog knows about. For its checks, import reads only
+each table's dialect, as push does: a Cloud SQL or third-party table's from its
+Knowledge Catalog entry, and a Spanner table's from its database. Import then
+judges each table in that dialect. When it cannot read a table's dialect, it
+warns with push's reason and skips the checks that need the dialect: whether a
+field has SQL in its table's dialect, what an `ANSI_SQL` text reads when every
+table of the model file or profile is such a table, and whether a profile's or
+the model file's tables are in one database when only that table's entry can
+say. Tables of two systems are never in one database, so import still reports a
+profile or model file that binds a BigQuery table beside such a table. Nothing
+is written when the import reports an error. Import rewrites only the values it
+changes, and every other line of the file stays as written, with its comments,
+blank lines, quoting, indentation and line endings. Comments on anything import
 removes or moves elsewhere in the file are dropped, such as those on a key that
 goes into or out of a `GOOGLE` block. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.
@@ -317,7 +339,7 @@ becomes one part of that graph:
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. A measure over a field that reads another column also adds that column as a property, and a measure over other SQL adds a property named `<metric>_input`. A column whose name another property in the graph already has goes through a `<metric>_input` property too. |
-| Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | `MEASURE` on a node table | must resolve to a single entity and read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; BigQuery's built-in scalar SQL may combine them, as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a user-defined function may not (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down; a supertype forms no node table of its own (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
@@ -332,6 +354,29 @@ see [Validation](#validation)); add `--print` to see the generated DDL.
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Reading metrics with `GRAPH_EXPAND`
+
+A query reads a metric by flattening the graph with `GRAPH_EXPAND` and wrapping
+the measure in `AGG()`, as the
+[codelab](codelab.md#query-semantic-model-metrics) shows. `GRAPH_EXPAND` reads
+the graph from one root table, the node table of an entity that no relationship
+names as its `to`. It joins every other table to the root with LEFT JOINs, so it
+reads only the rows that some root row reaches. A metric on another entity
+counts only the rows of that entity the root reaches. A graph with more than one
+root needs a `start_node`.
+
+When the graph reaches one table by two paths, a query that names a column of
+that table as `<entity>_<field>`, measures included, fails with "Unrecognized
+name". The column still appears in the output of `BQ.SHOW_GRAPH_EXPAND_SCHEMA`.
+Instead, name the column as `<relationship>_<entity>_<field>`, where
+`<relationship>` is one of the relationships whose `to` is the table. BigQuery's
+error suggests that name. That name reads the table along the path through that
+relationship. Or pass `start_node => '<entity>'` to read the graph from another
+table, such as one that reaches the table by one path. The function then reads
+only the rows that table reaches, which changes what each metric counts. BigQuery's
+[graph measures](https://docs.cloud.google.com/bigquery/docs/graph-measures)
+page gives the full rules.
 
 ### Class hierarchies (`extends` → labels)
 
@@ -501,8 +546,8 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
-| Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
+| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. Keyed by the entity's primary key; Spanner rejects the graph unless the table's primary key or a unique index covers that key. Before anything is written, push refuses a key whose columns hold neither the table's primary key nor the columns of a unique index. The node table lists the entity's bound fields, and one with none is written with `NO PROPERTIES`. |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
 | Metric | — dropped | Spanner has no `MEASURE`, so a Spanner deployment uses a profile that excludes every metric, and push rejects one that leaves a metric available |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
@@ -515,8 +560,9 @@ differs from BigQuery Graph in five ways:
   available. The
   BigQuery-only rule that a metric must resolve to a single entity therefore does
   not apply to a Spanner target (see [Validation](#validation)).
-  Push refuses a Spanner deployment that names no profile in a model with
-  metrics; name a profile with `metrics_exclude: "*"`.
+  Every push refuses a Spanner deployment that names no profile in a model
+  with metrics, whether or not it deploys that deployment; name a profile with
+  `metrics_exclude: "*"`.
 - **No per-element `OPTIONS`.** `description` and `ai_context` are not emitted
   into the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
@@ -540,10 +586,9 @@ written. Without that flag, the source check reads the same instance first and
 stops the push when it cannot.
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
-Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
-are **not** probed before deploy. Its actions are: every `sql` executor
-statement is planned against the target database first, on both legs (see
-[Validation](#validation)).
+Spanner DDL. Before anything is written, push plans a query of what each node
+and edge table reads in the target database, and every `sql` executor
+statement of its actions, on both legs (see [Validation](#validation)).
 
 ## What gets created in Knowledge Catalog
 
@@ -638,9 +683,9 @@ pushed a first generation, with dotted entity and metric ids
 over that entry group deletes those entries and links. Pull rebuilds no model
 pushed with the first-generation types, and warns about it instead.
 
-Each relationship other than a many-to-many association has an entry of its
-own. Entry ids are `<model>`, `<model>/entities/<entity>`,
-`<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
+Each relationship has an entry of its own. Entry ids are `<model>`,
+`<model>/entities/<entity>`, `<model>/metrics/<metric>` and
+`<model>/relationships/<relationship>`.
 
 A `semantic-link` joins each ordered pair of related entities. Built-in
 `reference` links run from each relationship's entry to the entries of its
@@ -696,9 +741,13 @@ broken — and links to the definition it enforces:
 Before these checks even run, the document must **load**, and the loader is strict:
 `version` is required and must be `0.2.0.dev0` (vanilla Ossie) or
 `0.2.0.dev0/google` (the extended profile); every object is closed, so an unknown
-key — including a native key under vanilla, or a `custom_extensions` block under
-`/google` — is rejected; names must be unique within their scope; every
-`extends` must name an entity defined in the model; every dialect entry must use
+key, including a native key under vanilla, is rejected. A `GOOGLE`
+`custom_extensions` block is rejected under `/google` and on a field under
+vanilla. Another vendor's block is accepted on the model, a dataset, a field, a
+relationship and a metric in both flavors. The `GOOGLE` blocks on one object are
+merged, and a key that two of them set is rejected. Names must be unique within
+their scope; every `extends` must name an entity defined in the model; every
+dialect entry must use
 one of the supported SQL dialects ([model spec §2.5](model_spec.md#25-expressions));
 a plain-string `expression` is allowed in a model file
 only under `0.2.0.dev0/google` (while a profile binding accepts a plain-string
@@ -755,7 +804,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   them must be a BigQuery built-in function whose name has no dot, or one with
   the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
   text. A BigQuery or Spanner graph cannot hold an entity and a relationship
-  whose names match ignoring case. A BigQuery graph also cannot hold a metric
+  whose names match ignoring case. The `graphs/<g>` segment of a Spanner
+  target names the graph. Spanner takes a graph name that starts with a
+  letter, holds only letters, digits and underscores, and is at most 128
+  characters long. The name cannot be that of a table the graph reads,
+  ignoring case. The expression of a Spanner graph property cannot hold a
+  subquery. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line
@@ -797,8 +851,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   A field the model file binds to one of its tables then needs SQL in that
   dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
   sources are in that database. Spanner creates no property graph in a
-  PostgreSQL-dialect database, so push refuses a Spanner deployment there
-  before anything is written. *(live — needs `spanner.databases.get` on the
+  PostgreSQL-dialect database, so every push refuses a Spanner deployment
+  there before anything is written, whether or not it deploys that deployment.
+  *(live — needs `spanner.databases.get` on the
   database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
@@ -834,51 +889,50 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   — projecting the same field, or sharing a declared type — must each carry
   their own `description`. Each executor must carry its coordinates (an `mcp`
   server + tool, a `rest` endpoint + method, a `grpc` service + method, or at
-  least one non-blank `sql` statement) with no blank field. A coordinate omitted altogether is rejected earlier, when the
-  model is parsed. An action with *no* executor is not an error at all: the
-  executor is a physical binding, so an action no binding performs here is still
-  a declaration worth publishing. Each name in the
-  action's `guards` must resolve to a constraint that the same model declares. A
-  guard resolving to nothing leaves the author believing the write is checked
-  when nothing checks it. Every `concept` in the action's `affects` must
-  likewise resolve to an entity or a relationship the same model declares, and
-  its `fields` must be fields of that concept — for a relationship, the
-  properties of the junction table backing a many-to-many edge, so a plain
-  foreign-key edge has none. Naming fields beside a `delete` is rejected,
-  because a `delete` takes the whole instance. An affected concept that resolves
-  to nothing is reported and then left alone, since every later check about it
-  is meaningless; undeclared fields do not chain that way, so a concept that
-  does resolve reports every field it does not have. Everything that reads the
-  ontology — the concept check and the field check both — stands down on a
-  profile push, because pruning drops whole entities and whole relationships as
-  well as unbound fields, and an action reaches no graph in any case. Pruning
-  now drops an action that names a dropped *concept*, so for the concept check
-  the offending action is gone before the check would run; it does not drop one
-  whose `affects` names a pruned *field*, so a blast radius can still name a
-  field the published entity no longer carries, and nothing reports it. The
-  fields-beside-a-`delete` check reads only the entry, so it still applies. A `sql` executor is checked further, because it carries the
+  least one non-blank `sql` statement) with no blank field. A coordinate omitted
+  altogether is rejected earlier, when the model is parsed. An action with *no*
+  executor is not an error at all: the executor is a physical binding, so an
+  action no binding performs here is still a declaration worth publishing. Each
+  name in the action's `guards` must resolve to a constraint that the same model
+  declares. A guard resolving to nothing leaves the author believing the write
+  is checked when nothing checks it. Every `concept` in the action's `affects`
+  must likewise resolve to an entity or a relationship the same model declares,
+  and its `fields` must be fields of that concept. A relationship declares no
+  fields of its own, so a field named on one is rejected. Naming fields beside a
+  `delete` is rejected, because a `delete` takes the whole instance. An affected
+  concept that resolves to nothing is reported and then left alone, since every
+  later check about it is meaningless; undeclared fields do not chain that way,
+  so a concept that does resolve reports every field it does not have.
+  The concept check and the field check both read the ontology, and both stand
+  down on a profile push, because pruning drops whole entities and
+  whole relationships as well as unbound fields, and an action reaches no graph
+  in any case. Pruning now drops an action that names a dropped *concept*, so
+  for the concept check the offending action is gone before the check would run;
+  it does not drop one whose `affects` names a pruned *field*, so a blast radius
+  can still name a field the published entity no longer carries, and nothing
+  reports it. The fields-beside-a-`delete` check reads only the entry, so it
+  still applies. A `sql` executor is checked further, because it carries the
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares.
   Together those are what let every value be bound instead of interpolated, so
   an argument cannot reach the store as SQL. Where the key of an inserted row
   comes from is the statement's own business: a SQL function such as
-  `GENERATE_UUID()`, a declared parameter, or a key column left out where it
-  has a default. `affects` has no bearing on it. A declared parameter hands the
-  key to the caller, and since the verb check reads only a statement's first
-  word, an upsert passes and overwrites the row that key names. Four further
-  rules are enforced at parse time: exactly one executor kind (`executor
-  requires exactly one kind, but 2 given (mcp, rest)`),
-  the closed `create` / `modify` / `delete` vocabulary for `operation`, the
-  rejection of a repeated guard name, and the rejection of a repeated
-  concept-and-operation pair in `affects`. Every check named so far is static —
-  it reads the document alone — so it runs on every push, regardless of
-  destination. What the *names* in a statement mean is settled live instead, by
-  the store the profile binds: see the DML pre-flight under
-  [Validation](#validation). Note that actions themselves
-  deploy **only** through the Knowledge Catalog leg (BigQuery and Spanner graph
-  deployments warn that actions are not deployed to the graph). *(static, plus a
-  live pre-flight for a `sql` executor)*
+  `GENERATE_UUID()`, a declared parameter, or a key column left out where it has
+  a default. `affects` has no bearing on it. A declared parameter hands the key
+  to the caller, and since the verb check reads only a statement's first word,
+  an upsert passes and overwrites the row that key names. Four further rules are
+  enforced at parse time: exactly one executor kind (`executor requires exactly
+  one kind, but 2 given (mcp, rest)`), the closed `create` / `modify` / `delete`
+  vocabulary for `operation`, the rejection of a repeated guard name, and the
+  rejection of a repeated concept-and-operation pair in `affects`. Every check
+  named so far is static. It reads the document alone, so it runs on every
+  push, whatever the destination. What the *names* in a statement mean is
+  settled live instead, by the store the profile binds: see the DML pre-flight
+  under [Validation](#validation). Note that actions themselves deploy **only**
+  through the Knowledge Catalog leg (BigQuery and Spanner graph deployments warn
+  that actions are not deployed to the graph). *(static, plus a live pre-flight
+  for a `sql` executor)*
 * **Every constraint states its rule as a judgment.** A constraint has one
   body, `judgment`, and it must be non-empty; one declaring no judgment states
   no rule at all, and the error names it. `expression` is a reserved key: a
@@ -934,7 +988,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   profile here. Push reads the entry of a Cloud SQL or third-party table for
   its dialect instead, and a missing entry stops the push even with
   `--skip-source-check`. That flag skips the source check and its location
-  rule. `kcmd profiles` does not run the source check.
+  rule. Each error from the check offers the flag and says what it skips. The
+  flag gets no BigQuery or Spanner deployment past a missing table. A BigQuery
+  deployment still probes each table it reads before anything is written, as
+  the next check says. A Spanner deployment still plans a query of each table
+  it reads before anything is written, in the Spanner graph check below.
+  `kcmd profiles` does not run the source check.
   *(live — needs the reads listed under [Permissions](#permissions))*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
@@ -944,10 +1003,29 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   the tables of the deployments it would deploy, each in the location of the
   graph's dataset when push can read it. A table in another location fails the
   push, and the error names the table's location when BigQuery reports it. A
-  **Spanner-targeting** model's sources live in Spanner (a different system) and
-  are **not** probed here. The `source` construct and the resource names it takes
+  **Spanner-targeting** model's sources live in Spanner, and the Spanner graph
+  check below reads them. The `source` construct and the resource names it takes
   are defined in [model spec §7.1](model_spec.md#71-table-sources).
   *(live — needs BigQuery access)*
+* **Spanner accepts each Spanner graph push deploys.** Push checks the graph
+  of each Spanner deployment it would deploy against the target database,
+  after the edition check and before anything is written. For each node and
+  edge table it plans a query, with `queryMode: PLAN`, of the key columns,
+  join columns and property expressions the table reads. Spanner refuses a
+  column the table does not have and SQL it cannot run, and the error names
+  the entity or relationship and the query. The plan gives each property's
+  type, and push refuses a property that two tables give different types. It
+  also refuses an edge's join column whose type differs from the type of the
+  node column it references. Push also reads the database's
+  `INFORMATION_SCHEMA`. It refuses a graph whose name matches a table, view,
+  index, sequence, change stream, schema, role, constraint or model of the
+  database, ignoring case. It refuses a node or edge table whose key columns
+  hold neither the table's primary key nor the columns of a unique index. Push
+  does not check the key of a view. Spanner accepts a view's key only when it
+  is the primary key of the one table the view reads, or the view's `GROUP BY`
+  or `SELECT DISTINCT` columns. Push stops when it cannot open a session on
+  the database.
+  *(live — needs query access to the database)*
 * **Every `sql` executor statement is accepted by the store it will run
   against.** Each statement is sent to the bound store with the request that
   means *plan it, do not run it* — `dryRun` on BigQuery, `queryMode: PLAN` in an
@@ -1001,8 +1079,9 @@ model is present), on the database the target names:
   completion
 * `spanner.sessions.create` and `spanner.sessions.delete`,
   `spanner.databases.select`, and
-  `spanner.databases.beginOrRollbackReadWriteTransaction` — the DML pre-flight
-  plans each statement on a session, and a `PLAN` of a DML statement has to open
+  `spanner.databases.beginOrRollbackReadWriteTransaction` — the Spanner graph
+  check reads the schema and plans its queries on a session, and the DML
+  pre-flight plans each statement on one. A `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
 * `spanner.instances.get` on the instance, to read the instance's edition
@@ -1071,10 +1150,16 @@ and each aspect type attached, so a push needs, on the destination entry group:
 > The `reference`, `sql-expressions` and semantic-type permissions are not
 > listed there yet, so confirm them against your project's IAM once granted.
 
-`kcmd init --semantic-model` creates what a later push only references, so it
-needs more than push does, in the destination project:
+`kcmd init --semantic-model` (and `kcmd init --context-set`) creates what a
+later push only references, so it needs more than push does, in the destination
+project:
 
-* `dataplex.entryGroups.create` — the destination entry group
+* `dataplex.entryGroups.create` — the destination entry group for
+  `--semantic-model`, or `dataplex.entryGroups.createContextSet` for
+  `--context-set` (granted by `roles/dataplex.contentCreator` on the project;
+  teammates and CI working on an existing context set need
+  `roles/dataplex.contentEditor` on the group)
+* `dataplex.operations.get` — to wait for its creates and updates to finish
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
   `dataplex.entryTypes.create` — the custom `semantic-action` and
   `semantic-constraint` pairs. Init patches an aspect

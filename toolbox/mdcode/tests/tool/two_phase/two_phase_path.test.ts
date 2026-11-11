@@ -114,7 +114,7 @@ scenarios('the two-phase push path', [
     ],
   },
   {
-    name: 'a Spanner deployment that names no profile is refused when the model has metrics, after the table check, and deploys when it has none, and one under a profile whose metrics_exclude is "*" deploys',
+    name: 'a Spanner deployment that names no profile is refused when the model has metrics, after the table check, also when the push leaves it out, and deploys when it has none, and one under a profile whose metrics_exclude is "*" deploys',
     deployments: [{name: 'sp', target: spannerGraph('g')}],
     entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
     metrics: [{
@@ -127,6 +127,17 @@ scenarios('the two-phase push path', [
     called: {preflight: 0},
     nothingWritten: true,
     then: [{
+      flags: {deployment: false},
+      code: 1, errors: [err(msg.spannerMetrics('sp'))], nothingWritten: true,
+    }, {
+      deployments: [
+        {name: 'sp', target: spannerGraph('g')},
+        {name: 'sp2', target: spannerGraph('g2'), profile: 'ops'},
+      ],
+      profiles: {ops: {...boundAt(SPANNER_CUSTOMER), metrics_exclude: '*'}},
+      flags: {deployment: ['sp2']},
+      code: 1, errors: [err(msg.spannerMetrics('sp'))], nothingWritten: true,
+    }, {
       entities: [CUSTOMER, {...CUSTOMER, name: 'Orders'}],
       code: 1,
       errors: ['Customer', 'Orders'].map(

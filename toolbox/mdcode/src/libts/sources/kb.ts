@@ -33,6 +33,10 @@ export class KnowledgeBaseSource implements CatalogSource {
     this._entryGroup = entryGroup;
   }
 
+  get entryGroupCreateTime(): string | undefined {
+    return this._entryGroup?.createTime;
+  }
+
   async *entries(ctx: gcp.ApiContext): AsyncGenerator<gcp.Entry, void, unknown> {
     // Enumerate all entries in the EntryGroup
 

@@ -147,7 +147,7 @@ export class CatalogManifest {
       type === Sources.KB
         ? new OfflineKnowledgeBaseSource(type, name, eg)
         : new OfflineEntryGroupSource(type, name, eg);
-    const aspects = [...source.defaultAspects];
+    const aspects = layout === 'okf' ? [] : [...source.defaultAspects];
     return new CatalogManifest(
       source,
       aspects.length ? { aspects } : undefined,
@@ -173,6 +173,11 @@ export class CatalogManifest {
 
   static async initWithSemanticModel(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.SEMANTIC_MODEL, name, ctx);
+    return CatalogManifest.forNewSource(source);
+  }
+
+  static async initWithContextSet(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const source = await createSource(Sources.CONTEXT_SET, name, ctx);
     return CatalogManifest.forNewSource(source);
   }
 

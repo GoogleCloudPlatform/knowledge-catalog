@@ -64,6 +64,13 @@ export interface ImportSemanticModelOptions {
    * file that holds them.
    */
   fileName?: string;
+  /**
+   * Whether writing the model file `fileName` replaces the input file. When
+   * it does and the written file has a `GOOGLE` block, a message in a
+   * third-party import that names an import command names one with
+   * `--input first-party`, which reads that file.
+   */
+  overwritesInput?: (fileName: string) => Promise<boolean>;
 }
 
 /** Lists the entries of an entry group. */
@@ -170,6 +177,11 @@ interface ImportDocument {
   errors: string[];
   /** Appends `msg` to `errors` in strict mode or `warnings` otherwise. */
   warnOrError: (msg: string) => void;
+  /**
+   * Reports a repair: `done`, what import changed, as a warning, or in strict
+   * mode, which writes nothing, `needed`, what the input needs, as an error.
+   */
+  repair: (done: string, needed: string) => void;
 }
 
 const STANDARD_AI_CONTEXT_KEYS =
@@ -487,6 +499,8 @@ function parseImportDocument(
     warnings,
     errors,
     warnOrError: (msg: string) => (strict ? errors : warnings).push(msg),
+    repair: (done: string, needed: string) =>
+        strict ? errors.push(needed) : warnings.push(done),
   };
 }
 
@@ -804,7 +818,7 @@ function completeFromEntryGroup(
 /**
  * When the output's flavor rejects `obj.datatype`, writes it in its canonical
  * casing, such as `Integer` for `integer`, or deletes an `Opaque` in another
- * casing. The change goes through `warnOrError` when the input's flavor
+ * casing. The change goes through `doc.repair` when the input's flavor
  * rejects the value too.
  */
 function normalizeDatatype(
@@ -816,10 +830,15 @@ function normalizeDatatype(
   const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
   if (!res.ok) return;
   if (!normalizeDataType(obj.datatype, doc.inputVersion).ok) {
-    doc.warnOrError(
-        res.type === undefined ?
-            `${label}: removed datatype '${obj.datatype}'.` :
-            `${label}: rewrote datatype '${obj.datatype}' to '${res.type}'.`);
+    if (res.type === undefined) {
+      doc.repair(
+          `${label}: removed datatype '${obj.datatype}'.`,
+          `${label}: remove datatype '${obj.datatype}'.`);
+    } else {
+      doc.repair(
+          `${label}: rewrote datatype '${obj.datatype}' to '${res.type}'.`,
+          `${label}: write datatype '${obj.datatype}' as '${res.type}'.`);
+    }
   }
   if (res.type === undefined) {
     delete obj.datatype;
@@ -852,15 +871,18 @@ function normalizeExpressionDialects(
         (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
-        doc.warnOrError(
-            `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`);
+        doc.repair(
+            `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`,
+            `${label}: write dialect '${entry.dialect}' as '${mapped}'.`);
         entry.dialect = mapped;
         doc.modified = true;
       }
       kept.push(entry);
     } else {
-      doc.warnOrError(
-          `${label}: dropped unsupported dialect '${entry.dialect}'.`);
+      doc.repair(
+          `${label}: dropped unsupported dialect '${entry.dialect}'.`,
+          `${label}: remove the entry for unsupported dialect '${
+              entry.dialect}'.`);
       doc.modified = true;
     }
   }
@@ -936,9 +958,11 @@ function truncateDescription(
     // The cut never ends on the first half of a surrogate pair.
     const cut =
         text.slice(0, MAX_ENTRY_DESCRIPTION).replace(/[\uD800-\uDBFF]$/, '');
-    doc.warnOrError(
+    doc.repair(
         `${label}: truncated 'description' from ${text.length} ` +
-        `to ${cut.length} characters.`);
+            `to ${cut.length} characters.`,
+        `${label}: 'description' has ${text.length} characters; shorten it ` +
+            `to ${MAX_ENTRY_DESCRIPTION} or fewer.`);
     obj.description = cut;
     doc.modified = true;
   }
@@ -947,24 +971,32 @@ function truncateDescription(
 /**
  * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
  * with a warning in the Google version (or recording an error in the vanilla
- * version) if no supported SQL dialect remains.
+ * version) if no supported SQL dialect remains. `abstract` is true for a field
+ * of an abstract entity, which takes no expression.
  */
 function repairField(
-    f: Record<string, any>, dsName: string, doc: ImportDocument): void {
+    f: Record<string, any>, dsName: string, doc: ImportDocument,
+    abstract = false): void {
   const fLabel = `field '${dsName}.${f.name}'`;
   normalizeDatatype(f, fLabel, doc);
   if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
-          `${fLabel}: no supported SQL dialect remains in 'expression', ` +
+          `${fLabel}: 'expression' has no entry in a supported SQL dialect, ` +
           `and version '${OSSIE_VERSION}' requires an 'expression' on ` +
-          `every field.`);
+          `every field; add one.`);
     } else {
       delete f.expression;
       doc.modified = true;
-      doc.warnOrError(
+      doc.repair(
           `${fLabel}: no supported SQL dialect remains; removed ` +
-          `'expression' and left the field unbound.`);
+              `'expression' and left the field unbound.`,
+          abstract ?
+              `${fLabel}: 'expression' has no entry in a supported SQL ` +
+                  `dialect; remove 'expression', since a field of abstract ` +
+                  `entity '${dsName}' takes none.` :
+              `${fLabel}: 'expression' has no entry in a supported SQL ` +
+                  `dialect; add one.`);
     }
   }
 }
@@ -983,12 +1015,16 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // formats.
   const word = entityWord(doc.targetVersion);
   const dsLabel = `${word} '${ds.name}'`;
+  // A vanilla file has no abstract entity, and requires 'source' and
+  // 'expression'.
+  const abstract = doc.inputVersion === GOOGLE_VERSION && ds.abstract === true;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     // Push rejects whitespace around a source. A query is reported below.
     if (trimmed !== ds.source && !hasUnquotedWhitespace(trimmed)) {
-      doc.warnOrError(
-          `${dsLabel}: removed the whitespace around source '${trimmed}'.`);
+      doc.repair(
+          `${dsLabel}: removed the whitespace around source '${trimmed}'.`,
+          `${dsLabel}: remove the whitespace around source '${trimmed}'.`);
       ds.source = trimmed;
       doc.modified = true;
     }
@@ -1003,9 +1039,13 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
             `every ${word}.`);
       } else {
-        doc.warnOrError(
+        doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
-            `${word} is now unbound.`);
+                `${word} is now unbound.`,
+            abstract ?
+                `${dsLabel}: source '${trimmed}' is a query; remove ` +
+                    `'source', since an abstract entity has no table.` :
+                `${dsLabel}: source '${trimmed}' is a query; name a table.`);
         delete ds.source;
         doc.modified = true;
       }
@@ -1054,7 +1094,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // its `fields`.
   truncateDescription(ds, dsLabel, doc);
   for (const f of asRecords(ds.fields)) {
-    repairField(f, String(ds.name ?? ''), doc);
+    repairField(f, String(ds.name ?? ''), doc, abstract);
   }
 }
 
@@ -1071,7 +1111,8 @@ function repairMetric(
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
-        `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
+        `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
+        `add one.`);
     return true;
   }
   if (!keepsMetric(mt, doc, translatesLater)) return false;
@@ -1095,14 +1136,18 @@ function keepsMetric(
   if (problem) {
     // In strict mode nothing is written, so the author edits the input.
     const flavor = doc.strict ? doc.inputVersion : doc.targetVersion;
-    const how = flavor === OSSIE_VERSION ?
-        `with 'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+    const anchor = flavor === OSSIE_VERSION ?
+        `'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
             `metric (or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
             `the metric)` :
-        `with an 'entity' anchor`;
-    doc.warnOrError(
+        `'entity' on the metric`;
+    const how =
+        flavor === OSSIE_VERSION ? `with ${anchor}` : `with an 'entity' anchor`;
+    doc.repair(
         `${mtLabel}: removed unanchored metric whose expression ` +
-        `${problem}; add the metric back ${how}.`);
+            `${problem}; add the metric back ${how}.`,
+        `${mtLabel}: its expression ${problem}; set ${anchor}, or scope ` +
+            `its expression to one entity.`);
     doc.modified = true;
     return false;
   }
@@ -1174,9 +1219,12 @@ async function repairDocument(
     for (const extra of doc.root.semantic_model.slice(1)) {
       const name =
           isRecord(extra) && typeof extra.name === 'string' ? extra.name : '';
-      doc.warnOrError(
-          `Removed extra model${name ? ` '${name}'` : ''} from ` +
-          `'semantic_model'; the format allows one model per document.`);
+      const model = `model${name ? ` '${name}'` : ''}`;
+      doc.repair(
+          `Removed extra ${model} from 'semantic_model'; the format allows ` +
+              `one model per document.`,
+          `Move extra ${model} from 'semantic_model' into its own file; the ` +
+              `format allows one model per document.`);
     }
     doc.root.semantic_model = [doc.root.semantic_model[0]];
     doc.modified = true;
@@ -1190,8 +1238,10 @@ async function repairDocument(
     if (typeof d.target !== 'string' || d.target === d.target.trim()) continue;
     d.target = d.target.trim();
     doc.modified = true;
-    doc.warnOrError(
+    doc.repair(
         `deployment '${d.name}': removed the whitespace around target '${
+            d.target}'.`,
+        `deployment '${d.name}': remove the whitespace around target '${
             d.target}'.`);
   }
 
@@ -1273,7 +1323,7 @@ function adaptToGoogleVersion(doc: ImportDocument): void {
  * string expressions into a single-entry `ANSI_SQL` dialect list, and moves
  * plain relationship `description`s into a `GOOGLE` `custom_extensions` block.
  * The vanilla flavor rejects the last two forms, so in a vanilla file each of
- * those changes is a repair and goes through `warnOrError`.
+ * those changes is a repair and goes through `doc.repair`.
  */
 function adaptToOssieVersion(doc: ImportDocument): void {
   // 0. A Google file takes the vanilla version and entity list, and each
@@ -1308,9 +1358,11 @@ function adaptToOssieVersion(doc: ImportDocument): void {
     };
     doc.modified = true;
     if (doc.inputVersion === OSSIE_VERSION) {
-      doc.warnOrError(
+      doc.repair(
           `${label}: wrote the string expression as an 'ANSI_SQL' ` +
-          `dialects entry.`);
+              `dialects entry.`,
+          `${label}: write the string expression as an 'ANSI_SQL' ` +
+              `dialects entry.`);
     }
   };
   for (const ds of doc.datasets) {
@@ -1331,9 +1383,11 @@ function adaptToOssieVersion(doc: ImportDocument): void {
     putGoogleBlock(r, {description: r.description});
     delete r.description;
     doc.modified = true;
-    doc.warnOrError(
+    doc.repair(
         `relationship '${r.name}': moved 'description' into a ` +
-        `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
+            `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`,
+        `relationship '${r.name}': move 'description' into a ` +
+            `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
   }
 }
 
@@ -1850,6 +1904,11 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
+  // Third-party import refuses a file with a GOOGLE block, so a command that
+  // reads such a file written over the input takes --input first-party.
+  const thirdPartyImport = !doc.strict &&
+      !(documentHasGoogleBlock(doc.root) &&
+        await opts.overwritesInput?.(fileName));
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
@@ -1863,6 +1922,7 @@ async function validateOutputDocument(
           warnUnacceptedSource: !doc.strict,
           fieldTextChecked: true,
           sourceDialects: load.sourceDialects,
+          thirdPartyImport,
         });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.

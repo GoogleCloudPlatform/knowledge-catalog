@@ -584,6 +584,20 @@ function unwrapped(node: any): any {
   return node;
 }
 
+// Whether `expression`, read in `dialect`, holds a subquery at any depth, such
+// as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`. False when
+// the SQL parser cannot read it.
+export function holdsSubquery(expression: string, dialect: string): boolean {
+  const holds = (node: unknown): boolean => {
+    if (Array.isArray(node)) return node.some(holds);
+    if (node === null || typeof node !== 'object') return false;
+    return Object.entries(node).some(
+        ([kind, value]) =>
+            kind === 'subquery' || kind === 'select' || holds(value));
+  };
+  return holds(sqlExpressionTree(expression, dialect));
+}
+
 // Whether the parser's tree `node` holds an aggregate, a window or a subquery
 // at any depth.
 function nestsAggregateOrSubquery(node: unknown): boolean {

@@ -10,6 +10,7 @@ import * as md from './metadata';
 import { CatalogManifest } from './manifest';
 import { CatalogLayout, createLayout, Layouts } from './layout';
 import { BUNDLE_DIR, OkfLayout } from './layouts/okf';
+import { SplitLayout } from './layouts/split';
 import { entryGroupCoordinates } from './source';
 
 export interface SnapshotOptions {
@@ -40,6 +41,9 @@ export class CatalogSnapshot {
       const coords = entryGroupCoordinates(manifest.source);
       const bundlePath = path.join(this.basePath, BUNDLE_DIR);
       this._layout = createLayout(Layouts.OKF, bundlePath, coords.container);
+    } else if (effectiveLayout === Layouts.SPLIT) {
+      const coords = entryGroupCoordinates(manifest.source);
+      this._layout = createLayout(Layouts.SPLIT, this.basePath, coords.container);
     } else {
       const catalogPath = path.join(this.basePath, 'catalog');
       this._layout = createLayout(
@@ -51,7 +55,8 @@ export class CatalogSnapshot {
                             ctx: gcp.ApiContext,
                             options: SnapshotOptions = {}): Promise<CatalogSnapshot> {
     const snapshot = new CatalogSnapshot(basePath, manifest, ctx, options);
-    if (!(snapshot._layout instanceof OkfLayout)) {
+    if (!(snapshot._layout instanceof OkfLayout) &&
+        !(snapshot._layout instanceof SplitLayout)) {
       await snapshot._buildTypes(manifest);
     }
     await snapshot._layout.init();
@@ -235,7 +240,9 @@ export class CatalogSnapshot {
     // never carry a parentEntry back to the service (toServiceEntry drops it),
     // so recording one would be misleading -- skip them.
     if (entry.parentEntry &&
-        (this._layout instanceof OkfLayout || !this.manifest.source.ingestedEntries)) {
+        (this._layout instanceof OkfLayout ||
+         this._layout instanceof SplitLayout ||
+         !this.manifest.source.ingestedEntries)) {
       local.resource.parent =
         this.manifest.source.localName({ ...entry, name: entry.parentEntry });
     }
@@ -261,7 +268,9 @@ export class CatalogSnapshot {
       return undefined;
     }
 
-    if (this._layout instanceof OkfLayout) {
+    const isOkf =
+      this._layout instanceof OkfLayout || this._layout instanceof SplitLayout;
+    if (isOkf) {
       if (!this._entryTypes.has(entry.type)) {
         const typeName = dataplex._typeRefToName(entry.type, 'entry');
         const stub: dataplex.EntryType = { name: typeName, requiredAspects: [] };
@@ -281,7 +290,7 @@ export class CatalogSnapshot {
       serviceName,
       this.manifest,
       this._entryTypes,
-      this._layout instanceof OkfLayout
+      isOkf
     );
   }
 }

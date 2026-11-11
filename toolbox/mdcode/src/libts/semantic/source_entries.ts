@@ -91,6 +91,11 @@ type Checked<T> = {result: T; unfound?: string}|{problem: string};
 //   property graph over both (2026-11-04).
 // - A job with no location runs in the primary.
 //
+// Each message ends by saying what --skip-source-check skips. A BigQuery
+// deployment probes each table it reads before push writes anything, and a
+// Spanner deployment's graph DDL reads each of its tables, so the flag gets
+// neither past a missing table. An AlloyDB deployment deploys no graph.
+//
 // Reads each table's location and looks its entry up once per location it
 // may sit in, and reads each instance once and each catalog at most once
 // through each API; tables are checked in parallel, and a table's locations in
@@ -132,7 +137,7 @@ export async function sourceEntryErrors(
     const problem = await problems.get(table.resourceName)!;
     if (problem) {
       errors.push(`entity '${entity}' in profile '${profile}': source '${
-          table.resourceName}' ${problem}`);
+          table.resourceName}' ${problem}${skipsLookup(table)}`);
     }
     if (table.system !== 'bigquery' && table.system !== 'biglake') continue;
     const located = await locations.get(table.resourceName)!;
@@ -155,8 +160,9 @@ export async function sourceEntryErrors(
         `profile '${profile}' of model '${model.name}' binds tables that ` +
         `share no BigQuery location: ${listed.join(', ')}. ` +
         `BigQuery runs each query in one location, so no query can join ` +
-        `them. Bind them to tables that share a location, or pass ` +
-        `--skip-source-check.`);
+        `them. Bind them to tables that share a location. ` +
+        `--skip-source-check skips this check, but a deployment that reads ` +
+        `these tables still checks their locations itself.`);
   }
   return errors;
 }
@@ -178,13 +184,30 @@ async function problemOf(
     if ('result' in res) return undefined;
     if ('error' in res) return failedProblem(res).problem;
   }
-  return `names no table Knowledge Catalog knows about. The table may not ` +
-      `exist, or you may not be allowed to read its catalog entry.${
+  // A BigQuery table exists here, since getTable read its location.
+  const bigquery = table.system === 'bigquery';
+  return `names no table Knowledge Catalog knows about. ${
+             bigquery ?
+                 'BigQuery has the table, but Knowledge Catalog has no entry ' +
+                     'for it that you may read.' :
+                 'The table may not exist, or you may not be allowed to read ' +
+                     'its catalog entry.'}${
              table.system === 'alloydb' ?
                  ' A new AlloyDB cluster can take hours to appear in the ' +
                      'catalog after Dataplex integration is turned on.' :
-                 ''}${locations.unfound ?? ''} Fix the source, or pass ` +
-      `--skip-source-check.`;
+                 ''}${locations.unfound ?? ''} ${
+             bigquery ? 'Fix the access or the source.' :
+                 'Create the table or fix the source.'}`;
+}
+
+// What --skip-source-check skips, said after a message about `table`'s
+// source. No deployment checks an AlloyDB table again.
+function skipsLookup(table: SourceTable): string {
+  return ` --skip-source-check skips this lookup${
+      table.system === 'alloydb' ?
+          '' :
+          ', but a deployment that reads the table still checks the table ' +
+              'itself'}.`;
 }
 
 // `location`, which is kept in lower case, as BigQuery writes it: a
@@ -339,11 +362,12 @@ async function checked<T>(
   return {
     problem: res.status === 404 ?
         `names ${kind} that does not exist: ${what} found nothing (HTTP ` +
-            `404).${hint} Fix the source, or pass --skip-source-check.` :
+            `404).${hint} Create the ${kind.replace(/^an? /, '')} or fix the ` +
+            `source.` :
         `could not be checked: ${what} was refused (HTTP 403).${
             res.message ? ` ${res.message}` : ''}${hint} The ` +
             `source's catalog entry was not looked up. Fix the access or ` +
-            `the source, or pass --skip-source-check.`,
+            `the source.`,
   };
 }
 
@@ -386,16 +410,13 @@ function failedProblem(res: {error: string; status?: number}, hint = ''):
     {problem: string} {
   return res.status === undefined || isTransientStatus(res.status) ?
       transientProblem(res.error) :
-      {
-        problem: `could not be checked: ${res.error}${hint} Fix the source, ` +
-            `or pass --skip-source-check.`,
-      };
+      {problem: `could not be checked: ${res.error}${hint} Fix the source.`};
 }
 
 // The problem for a read that failed with `detail`, which may pass on retry.
 function transientProblem(detail: string): {problem: string} {
   return {
-    problem: `could not be checked; try again, or pass --skip-source-check: ${
-        detail}`,
+    problem: `could not be checked; try again: ${detail}${
+        /[.!?]$/.test(detail) ? '' : '.'}`,
   };
 }

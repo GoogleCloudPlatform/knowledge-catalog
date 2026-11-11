@@ -1,10 +1,10 @@
 // API client for Cloud Spanner, covering three surfaces kcmd needs: Database
 // Admin (updateDatabaseDdl, getDatabase and getOperation) to check the
 // database and deploy Spanner Graph DDL; the data plane (sessions and
-// executeSql) to PLAN an action's DML against the live database before
-// publishing it; and Instance Admin (getInstance and getInstanceConfig) to
-// find the region where Knowledge Catalog keeps a table's entry and to read an
-// instance's edition.
+// executeSql) to read the schema, and to PLAN what a graph reads and an
+// action's DML against the live database before publishing either; and
+// Instance Admin (getInstance and getInstanceConfig) to find the region where
+// Knowledge Catalog keeps a table's entry and to read an instance's edition.
 
 import * as api from './api';
 import * as context from './context';
@@ -31,19 +31,26 @@ export interface Session {
 }
 
 
-// The response to executeSql. Under queryMode PLAN nothing is executed, so the
-// only field that matters is `stats.queryPlan`: its presence is the signal that
-// Spanner parsed, resolved and type-checked the statement.
+// The response to executeSql. Under queryMode PLAN nothing is executed: the
+// presence of `stats.queryPlan` is the signal that Spanner parsed, resolved
+// and type-checked the statement, and `metadata.rowType` gives the type of
+// each column a query returns. A query run without PLAN returns `rows` too,
+// each a list of values, and leaves `rows` out when it returns none.
 export interface ResultSet {
+  metadata?: {rowType?: {fields?: Array<{name?: string; type?: SpannerType}>}};
+  rows?: unknown[][];
   stats?: {queryPlan?: {planNodes?: Array<{[key: string]: any}>}};
   [key: string]: any;
 }
 
 
-// A Spanner parameter type code (`INT64`, `STRING`, `TIMESTAMP`, ...), in the
-// shape the executeSql `paramTypes` map takes.
+// A Spanner type (`INT64`, `STRING`, `TIMESTAMP`, ...), in the shape the
+// executeSql `paramTypes` map takes and a row type gives. An ARRAY names the
+// type of its elements.
 export interface SpannerType {
   code: string;
+  arrayElementType?: SpannerType;
+  [key: string]: any;
 }
 
 
@@ -146,6 +153,25 @@ export class SpannerClient extends api.ApiClient {
   // of the read-write transactions it began and never committed.
   async deleteSession(sessionName: string): Promise<api.ApiResult<{}>> {
     return await this._delete<{}>(sessionName);
+  }
+
+  // Runs a query in a single-use read-only transaction, which is what
+  // executeSql gives a request that names no transaction, so it writes
+  // nothing. With `plan`, Spanner plans the query and runs none of it.
+  async executeQuery(
+      sessionName: string, sql: string,
+      options: {
+        plan?: boolean;
+        params?: Record<string, unknown>;
+        paramTypes?: Record<string, SpannerType>;
+      } = {}): Promise<api.ApiResult<ResultSet>> {
+    const body: Record<string, unknown> = {sql};
+    if (options.plan) body.queryMode = 'PLAN';
+    if (options.params) {
+      body.params = options.params;
+      body.paramTypes = options.paramTypes;
+    }
+    return await this._post<ResultSet>(`${sessionName}:executeSql`, body);
   }
 
   // Plans a DML statement WITHOUT executing it, and without writing anything.

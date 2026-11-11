@@ -35,6 +35,10 @@ export class EntryGroupSource implements CatalogSource {
     this.ingestedEntries = this._name[2].startsWith('@');
   }
 
+  get entryGroupCreateTime(): string | undefined {
+    return this._entryGroup?.createTime;
+  }
+
   async *entries(ctx: gcp.ApiContext): AsyncGenerator<gcp.Entry, void, unknown> {
     // Enumerate all entries in the EntryGroup
 

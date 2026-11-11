@@ -41,11 +41,11 @@ function conceptFiles(dir: string, realRoot?: string): string[] {
     .readdirSync(dir, {withFileTypes: true})
     .sort((a, b) => a.name.localeCompare(b.name))
     .flatMap((e) => {
-      // OKF v0.3 §3.2(4): dot-prefixed files and directories are not part of the bundle.
+      // Skip hidden dot-files and dot-directories (e.g. `.git`, `.staging`).
       if (e.name.startsWith('.')) return [];
       const p = path.join(dir, e.name);
       if (e.isSymbolicLink()) {
-        // OKF v0.3 §3.2(5): do not follow symlinks that resolve outside the bundle root.
+        // Do not follow symlinks that resolve outside the bundle root.
         let realTarget: string;
         let stat: fs.Stats;
         try {
@@ -71,9 +71,19 @@ function toPosixId(root: string, file: string): string {
 
 /**
  * Resolves the catalog entry ID a concept file maps to, or `undefined` when the
- * file should be skipped (`<group>_entry`, reserved `log.md` at any level,
- * untyped non-concept `.md` files per OKF v0.3 §3.2, or a generated `index.md`
- * shadowed by an explicit `agents.md` / `<dir>.md`).
+ * file should be skipped (`<group>_entry`, reserved `log.md` at any level per
+ * OKF v0.2 §§3.1, 9, or a generated `index.md` shadowed by an explicit
+ * `agents.md` / `<dir>.md`).
+ *
+ * Documented `kcmd` OKF workspace extensions beyond OKF v0.2:
+ * - Root `bundle/index.md` maps to the `agents` catalog entry and
+ *   `bundle/<dir>/index.md` maps to `<dir>` (unless shadowed by an explicit
+ *   `bundle/agents.md` or `bundle/<dir>.md` when `index.md` carries no explicit
+ *   concept metadata).
+ * - A `log.md` carrying `x-kcmd` / `extra` metadata from a pulled remote entry
+ *   is preserved as an entry rather than skipped.
+ * - `conceptFiles()` skips hidden dot-paths (e.g. `.git`, `.staging`) and
+ *   symlinks resolving outside `bundle/`.
  */
 function resolvedEntryName(
   id: string,
@@ -98,7 +108,7 @@ function resolvedEntryName(
     frontmatter[EXTRA_KEY] !== undefined ||
     hasConceptType;
 
-  // OKF v0.3 §§3.1, 9: `log.md` at any level is a reserved history file, never
+  // OKF v0.2 §§3.1, 9: `log.md` at any level is a reserved history file, never
   // a concept, unless it is a pulled remote entry carrying `x-kcmd` / `extra`.
   if (
     (id === 'log' || id.endsWith('/log')) &&
@@ -122,14 +132,6 @@ function resolvedEntryName(
     !hasExplicitMeta &&
     fs.existsSync(path.join(bundlePath, `${id.slice(0, -'/index'.length)}.md`))
   ) {
-    return undefined;
-  }
-
-  // OKF v0.3 §3.2(2): a non-index `.md` file with no `type` in frontmatter
-  // (e.g. `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SKILL.md`) is not a
-  // concept; consumers skip it rather than rejecting the bundle.
-  const isIndex = id === 'index' || id.endsWith('/index');
-  if (!isIndex && !hasConceptType) {
     return undefined;
   }
 

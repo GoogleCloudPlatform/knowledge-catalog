@@ -17,7 +17,9 @@ Which backend a push deploys to — BigQuery or Spanner — is set by each entry
 ## The round-trip matrix
 
 Rows are what you authored; columns are its fate in each direction. `✓` = comes
-back as authored; `—` = not present in that destination. Footnotes carry the
+back as authored, in the normal forms that
+[What pull recovers](#what-pull-recovers) lists; `—` = not present in that
+destination. Footnotes carry the
 nuances that don't fit a cell. BigQuery and Spanner each get a column; they
 agree on every structural row and differ only where a Spanner target has no
 `MEASURE` and no `OPTIONS` metadata, and in which SQL text a field reads — see
@@ -33,8 +35,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Primary key                                                    | `semantic-entity.primaryKey`    | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | — dropped                                                            |
 | Metric                                                         | `semantic-metric` entry         | ✓ (type⁵)                                      | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
-| Relationship (1:1 / 1:N)                                       | `semantic-relationship` entry¹⁵ | ✓⁶                                             | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
-| Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
+| Relationship                                                   | `semantic-relationship` entry¹⁵ | ✓⁶                                             | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Entity `extends`                                               | `semantic-entity.extends`       | ✓                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
@@ -170,9 +171,8 @@ provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 Every push publishes the model file as written to Knowledge Catalog: every
-entity, metric, and relationship the document declares, apart from a
-many-to-many association, which has no entry yet. A `pull` rebuilds the model
-and profile files from that metadata alone, and changes a local file only
+entity, metric, and relationship the document declares. A `pull` rebuilds the
+model and profile files from that metadata alone, and changes a local file only
 where it differs (see [What pull recovers](#what-pull-recovers)).
 
 A logical model still produces complete entries (footnote 10).
@@ -218,11 +218,7 @@ that first pass is byte-for-byte stable.
 
 `affects` stores only what the author wrote, which is why it survives a partial
 pull intact. Whether a `concept` is an entity or an edge is not recorded, so
-nothing about it has to be re-resolved — and nothing can go stale. That matters
-most for a many-to-many relationship, which never reaches the catalog at all: a
-pull recovers each relationship from its own entry, and a many-to-many
-relationship has none, so a concept naming an M:N edge would look unresolvable
-on a model that is perfectly well-formed. It comes back untouched instead.
+nothing about it has to be re-resolved, and nothing can go stale.
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
 under the model entry, with the rule and any `instructions` in a
@@ -301,8 +297,13 @@ The BigQuery value can differ from the source's value in these cases:
   other result.
 
 Spanner's default time zone, America/Los_Angeles, is written into the date and
-time functions of a `SPANNER` text. Snowflake's default time zone is written
-into the current date and time functions of a `SNOWFLAKE` text.
+time functions of a `SPANNER` text. A Spanner database created with another
+`default_time_zone` reads those functions in its own time zone, so the
+translated text can give other dates and hours than the database does. For such
+a database, edit by hand the translated `BIGQUERY` entries of the fields and
+metrics that read it, so that they name its time zone.
+Snowflake's default time zone is written into the current date and time
+functions of a `SNOWFLAKE` text.
 
 ## To Spanner
 
@@ -348,10 +349,14 @@ that holds what the catalog holds stays byte for byte. A changed string keeps
 its quoting or block style, and other changed values are written in pull's form.
 When the catalog reorders a list whose order counts, such as an entity's fields,
 an item that moves, or an item it moves past, can be written in pull's form too.
-Pull writes a file whole, with none of its comments, key order or formatting,
-when there is no local file, when the local file does not load or is not valid
-UTF-8, and when changing only those values would not give what the catalog
-holds.
+The JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
+profiles, changes the same way and keeps its layout. When that `data` would
+then not hold what the catalog holds, it comes back as the catalog holds it,
+and the rest of the file still changes only where it differs. Another
+vendor's `data` comes back as the catalog holds it. Pull writes a file whole,
+with none of its comments, key order or formatting, when there is no local
+file, when the local file does not load or is not valid UTF-8, and when
+changing only those values would not give what the catalog holds.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 Pull reads the second-generation types. It rebuilds the model file, profile
@@ -367,8 +372,21 @@ not prune the model to a deployment's profile first.
 
 - A field or metric typed `Opaque` comes back with no `datatype`, since push
   stores one with no type as `Opaque` too.
+- A `datatype` written in another letter case comes back in its canonical
+  case, such as `Integer` for `integer`.
+- A Google-flavor model that names its entities under `datasets:` comes back
+  with `entities:`.
+- A description comes back without the spaces and line breaks at its start and
+  end, since push stores it trimmed. A `description: |` block of more than one
+  line comes back as `|-`, and a one-line block as a plain string. An action
+  parameter's own description is stored as written and comes back unchanged.
 - `ai_context` comes back in the object form, and its custom members come
-  back sorted by name.
+  back sorted by name. A number in a custom member comes back in its JSON form,
+  since that is how the catalog stores it. `1.0` comes back as `1`, and `2.50`
+  as `2.5`.
+- In a vanilla model, the `GOOGLE` blocks on an object come back as one block
+  under the name `GOOGLE`, after the other vendors' blocks. When its `data`
+  comes back as the catalog holds it, the `data` is compact JSON.
 - A profile's `metrics_exclude` comes back as `"*"` when it excludes every
   metric, and otherwise as a list in name order.
 - Entities, relationships, metrics, actions and constraints come back sorted
