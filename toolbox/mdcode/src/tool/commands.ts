@@ -1027,6 +1027,9 @@ interface TwoPhaseScope {
     catalog: Map<string, OverviewSidecar>;
     local: Array<{entryId: string; path: string}>;
   };
+  // Set when the model and profile texts are the ones pull writes. Pull
+  // writes them as UTF-8, so their bytes on disk are not checked.
+  pulled?: boolean;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
@@ -1182,6 +1185,7 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
+    if (scope.pulled) continue;
     for (const file of [modelFile, ...profileDocs(base.document)]) {
       const error = checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
@@ -1931,7 +1935,9 @@ async function pushRefusal(
   const profileDocs = () => profiles;
   const load = {readWithoutDialect: true};
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load, overviews}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load, overviews,
+           pulled: true},
+      true);
   return 'errors' in checked ? checked.errors[0]?.error : undefined;
 }
 

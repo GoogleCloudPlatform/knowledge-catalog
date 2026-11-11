@@ -2129,6 +2129,19 @@ describe('a pull', () => {
     expect(messages(console.warn)).not.toContain('push refuses');
   });
 
+  // Pull writes its files as UTF-8, so --dry-run does not read the bytes of a
+  // file it has not written yet.
+  test('under --dry-run gives no warning for text that holds U+FFFD',
+       async () => {
+         fs.writeFileSync(
+             path.join(dir, 'catalog.yaml'),
+             'scope: semantic-model.test-project.us.commerce_eg\n');
+         pulled({...SECOND_GEN, description: 'Replaced \uFFFD char'});
+
+         expect(await pull({dryRun: true})).toBe(0);
+         expect(messages(console.warn)).not.toContain('push refuses');
+       });
+
   // Pull keeps a local sidecar the catalog lacks, and push reads it, so
   // --dry-run warns about one push rejects, as the real pull does.
   test('under --dry-run warns about a kept local sidecar push rejects',
