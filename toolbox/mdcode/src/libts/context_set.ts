@@ -154,7 +154,10 @@ export function metadataUpdate(
 export function writeContextSetMetadata(
     path: string, metadata: ContextSetMetadata): MetadataKey[] {
   const original = fs.readFileSync(path, 'utf8');
-  const {document, text} = parseForUpdate(original);
+  // A byte order mark stays outside the text yaml_update edits, which would
+  // count it as a column and indent the keys it adds.
+  const bom = original.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const {document, text} = parseForUpdate(original.slice(bom.length));
   const root = document.toJS() as Record<string, unknown>;
   const changed = METADATA_KEYS.filter(
       k => !sameValue(metadataOfManifest(root)[k], metadata[k]));
@@ -168,7 +171,8 @@ export function writeContextSetMetadata(
       root[key] = value;
     }
   }
-  fs.writeFileSync(path, updateText(text, document, root, links), 'utf8');
+  fs.writeFileSync(
+      path, bom + updateText(text, document, root, links), 'utf8');
   return changed;
 }
 

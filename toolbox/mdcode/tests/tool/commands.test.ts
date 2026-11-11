@@ -2051,7 +2051,7 @@ describe('a pull', () => {
              `by an older kcmd (first-generation aspects: semantic-model, ` +
              `semantic-entity, semantic-metric). Pull wrote nothing for it; ` +
              `push it again with the current kcmd`);
-         expect(messages(logSpy)).toContain('Wrote nothing.');
+         expect(messages(logSpy)).toContain('Wrote no model files.');
          expect(links).not.toHaveBeenCalled();
          expect(fs.existsSync(path.join('catalog', 'EntryGroups', entryGroup)))
              .toBe(false);

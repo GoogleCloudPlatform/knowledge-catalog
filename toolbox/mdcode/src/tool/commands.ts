@@ -1718,8 +1718,8 @@ async function pullSemanticModel(
 
   if (!result.models.length) {
     console.log(
-        result.firstGeneration ? 'Wrote nothing.' :
-                                 'No semantic models found; nothing to pull.');
+        result.firstGeneration ? 'Wrote no model files.' :
+                                 'No semantic models found.');
     return 0;
   }
 

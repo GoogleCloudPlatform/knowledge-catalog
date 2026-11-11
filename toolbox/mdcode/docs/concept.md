@@ -251,8 +251,10 @@ scope: <type>.<name>              # The resources in the snapshot. Examples:
 # layout. `kcmd pull` sets them from the entry group, and removes a key the
 # entry group leaves unset. `kcmd push` writes only the keys that differ, last
 # (the last write wins). An absent key, or one with no value, is not managed;
-# `description: ""` clears the description. Use `>-` for several lines: `|`
-# keeps a trailing newline that push sends. At most 1,024 characters for the
+# `description: ""` clears the description, and an empty value stays in the
+# file after a pull. Write several lines with `>-`, which joins them with
+# spaces, or `|-`, which keeps the line breaks; `|` adds a trailing newline
+# that push sends. At most 1,024 characters for the
 # description and 256 for the display name; push fails before any write when a
 # value is longer.
 displayName: Sales
