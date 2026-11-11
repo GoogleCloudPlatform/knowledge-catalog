@@ -323,9 +323,9 @@ counts as days. Import translates no date arithmetic from ANSI_SQL, since the
 databases an ANSI_SQL text runs on add a unit as different types. From a
 SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
 days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
-does. Import leaves any other date arithmetic untranslated, such as a sum of
-two INTERVALs, an amount that is not a whole number, or a function such as MAX
-plus an INTERVAL.
+does. From the other databases, import leaves any other date arithmetic
+untranslated, such as a sum of two INTERVALs, an amount that is not a whole
+number, or a function such as MAX plus an INTERVAL.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
