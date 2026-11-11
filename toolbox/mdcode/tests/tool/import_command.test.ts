@@ -554,6 +554,23 @@ describe('kcmd import', () => {
     });
   }
 
+  // Push refuses an unquoted action statement with a comment on the same line.
+  test('a first-party file with a comment after an action statement gets push\'s error, and nothing is written', async () => {
+    write('retail.yaml',
+          model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"').replace('datasets:', 'entities:') +
+          '    actions:\n      - name: purge\n        parameters: [{name: k, type: Integer}]\n' +
+          '        executor:\n          sql:\n            statements:\n' +
+          "              - UPDATE orders SET doc = doc #- '{draft}' WHERE order_id = @k\n");
+    expect(await importModel('retail.yaml', {flavor: 'google', input: 'first-party', out: 'out'}))
+        .toBe(1);
+    expect(errors).toEqual([
+      "Error: action 'purge' in model 'retail' (retail) has a sql executor whose statement 1 " +
+      "has a comment on the same line, so YAML reads the statement as 'UPDATE orders SET doc = " +
+      "doc'. Put the statement in quotes, or write it as a block scalar with '|'.",
+    ]);
+    expect(filesIn('out')).toEqual([]);
+  });
+
   test('a bare source without --source-prefix is written as it is, with the engine\'s warning', async () => {
     write('retail.yaml', model('orders'));
     const result = await engine.importSemanticModelYaml(model('orders'), {flavor: 'ossie'});
