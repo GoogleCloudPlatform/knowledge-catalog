@@ -131,6 +131,34 @@ describe('an OKF workspace (layout: okf)', () => {
     expect(createEg).not.toHaveBeenCalled();
   });
 
+  test('push fails, naming why, when creating the context set fails', async () => {
+    writeManifest('layout: okf\n');
+    spyOn(CatalogClient.prototype, 'getEntryGroup').mockImplementation(
+      async () => ({status: 404, message: 'not found'}) as any,
+    );
+    const op = 'projects/test-project/locations/us/operations/op-1';
+    spyOn(CatalogClient.prototype, 'createEntryGroup').mockImplementation(
+      async () => ok({name: op, done: false}) as any,
+    );
+    spyOn(CatalogClient.prototype, 'getOperation').mockImplementation(
+      async () =>
+        ok({
+          name: op,
+          done: true,
+          error: {code: 7, message: "Permission 'dataplex.entryGroups.setIamPolicy' denied"},
+        }),
+    );
+    const error = spyOn(console, 'error').mockImplementation(() => {});
+    const pushSpy = spyOn(CatalogSync.prototype, 'push');
+
+    expect(await push({})).toBe(1);
+    expect(String(error.mock.calls[0][0])).toContain(
+      "creating context set 'test-project.us.kb': " +
+        "Permission 'dataplex.entryGroups.setIamPolicy' denied",
+    );
+    expect(pushSpy).not.toHaveBeenCalled();
+  });
+
   test('init --format okf routes to initOkfWorkspace and forwards --pull', async () => {
     const okf = spyOn(initOkfMod, 'initOkfWorkspace').mockImplementation(
       async () => 0,

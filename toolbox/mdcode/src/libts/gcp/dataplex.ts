@@ -8,6 +8,7 @@ import * as crm from './crm';
 
 export interface EntryGroup {
   name: string;
+  type?: string;
   [key: string]: any;
 }
 
@@ -34,6 +35,14 @@ export interface Operation {
   metadata?: {
     failedRequests?: Record<string, { code?: number; message?: string; }>;
   };
+}
+
+// Whether `value`, such as the result of a create, is a long-running
+// operation rather than the created resource.
+export function isOperation(value: unknown): value is Operation {
+  return typeof value === 'object' && value !== null &&
+      typeof (value as {name?: unknown}).name === 'string' &&
+      (value as {name: string}).name.includes('/operations/');
 }
 
 // One element of a BatchChangeMetadata request. Exactly one arm is set.
@@ -333,7 +342,7 @@ export class CatalogClient extends api.ApiClient {
   }
 
   async createEntryGroup(project: string, location: string, 
-                         entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
+                         entryGroupId: string, entryGroup?: Omit<EntryGroup, 'name'>): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
     const resourceName = `${parent}/entryGroups`;
 
@@ -404,7 +413,7 @@ export class CatalogClient extends api.ApiClient {
   // failure message.
   async pollOperation(op: Operation|undefined, what: string,
                       timeoutMs = 120000):
-      Promise<{ operation?: Operation; error?: string }> {
+      Promise<{ operation?: Operation; error?: string; unreadable?: boolean }> {
     if (!op || !op.name) return { operation: op };
     if (op.done) return { operation: op, error: operationFailure(op, what) };
 
@@ -421,7 +430,8 @@ export class CatalogClient extends api.ApiClient {
       if (polled.status >= 400 && polled.status < 500 &&
           polled.status !== 429) {
         return {
-          error: `${what}: reading ${op.name}: ${polled.message || polled.status}`
+          error: `${what}: reading ${op.name}: ${polled.message || polled.status}`,
+          unreadable: true,
         };
       }
       if (polled.status !== 200 || !polled.result) continue;
@@ -600,4 +610,114 @@ export function _nameToTypeRef(name: string): string {
     throw new Error(`Invalid type name: ${name}`);
   }
   return `${nameParts[1]}.${nameParts[3]}.${nameParts[5]}`;
+}
+
+
+// What an entry-group create did: whether it created the group, the group
+// that already existed when it was read back, and why it failed.
+export interface EntryGroupCreation {
+  created: boolean;
+  existing?: EntryGroup;
+  error?: string;
+}
+
+// How long an entry-group create is waited for.
+const ENTRY_GROUP_CREATE_TIMEOUT_MS = 120000;
+
+
+// Creates entry group `entryGroup` with `body` (undefined for a plain group)
+// and waits for the create to finish: the operation can fail after the
+// request is accepted. Errors start with `label`. An entry group that already
+// exists (409) is success, with `created` false, and is left as it is. So is
+// a create refused (403) for a group the caller can read, since a caller
+// without create permission may be refused the create of one that exists;
+// that group is returned.
+//
+// A caller may create a group but not read the create's operation (it lacks
+// `dataplex.operations.get`, as `roles/dataplex.contentCreator` and
+// `roles/datacatalog.entryGroupCreator` do). Then the wait reads the group
+// instead, within the same time, until it exists and has `body`'s type: a
+// group reads back without its type until the create finishes.
+export async function createEntryGroupAndWait(
+    catalog: CatalogClient, project: string, location: string,
+    entryGroup: string, body?: Omit<EntryGroup, 'name'>,
+    label = `creating entry group '${project}.${location}.${entryGroup}'`,
+    timeoutMs = ENTRY_GROUP_CREATE_TIMEOUT_MS): Promise<EntryGroupCreation> {
+  const deadline = Date.now() + timeoutMs;
+  const failed = (why: unknown) => ({created: false, error: `${label}: ${why}`});
+  const res =
+      await catalog.createEntryGroup(project, location, entryGroup, body);
+  if (res.status === 409) return {created: false};
+  if (res.status === 403) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status === 200) return {created: false, existing: found.result};
+  }
+  if (res.status !== 200) return failed(res.message || res.status);
+  if (!isOperation(res.result)) return {created: true};
+  const polled = await catalog.pollOperation(res.result, label, timeoutMs);
+  if (!polled.unreadable) {
+    return polled.error ? {created: false, error: polled.error} :
+                          {created: true};
+  }
+  // The operation cannot be read: wait for the group itself.
+  let delayMs = 500;
+  while (Date.now() < deadline) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status === 200 &&
+        (body?.type === undefined || found.result?.type === body.type)) {
+      return {created: true};
+    }
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    delayMs = Math.min(delayMs * 2, 5000);
+  }
+  return {
+    created: false,
+    error: `${polled.error}; the entry group was not ready within ${
+        timeoutMs}ms either`,
+  };
+}
+
+
+// The entry-group type of a context set.
+export const CONTEXT_SET_TYPE = 'context-set';
+
+
+// Creates entry group `entryGroup` as a context set (type `context-set`),
+// with `metadata`'s display name and description, and waits for the create
+// to finish. An existing context set is success, with `created` false, and
+// is left as it is. An existing group of another type is an error: a group's
+// type cannot be changed, so it can never become a context set.
+export async function createContextSet(
+    catalog: CatalogClient, project: string, location: string,
+    entryGroup: string,
+    metadata: {displayName?: string; description?: string} = {},
+    timeoutMs = ENTRY_GROUP_CREATE_TIMEOUT_MS): Promise<EntryGroupCreation> {
+  const name = `${project}.${location}.${entryGroup}`;
+  const result = await createEntryGroupAndWait(
+      catalog, project, location, entryGroup,
+      {type: CONTEXT_SET_TYPE, ...metadata},
+      `creating context set '${name}'`,
+      timeoutMs);
+  if (result.error || result.created) return result;
+  let existing = result.existing;
+  if (!existing) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status !== 200) {
+      return {
+        created: false,
+        error: `reading entry group '${name}': ${
+            found.message || found.status}`,
+      };
+    }
+    existing = found.result;
+  }
+  if (existing?.type !== CONTEXT_SET_TYPE) {
+    return {
+      created: false,
+      existing,
+      error: `entry group '${name}' exists but is not a context set, and an ` +
+          `entry group's type cannot be changed; use a new context set ID.`,
+    };
+  }
+  return {created: false, existing};
 }

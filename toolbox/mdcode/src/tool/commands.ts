@@ -24,7 +24,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
-import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
@@ -195,16 +195,14 @@ export async function init(options: InitOptions): Promise<number> {
     // success. A 409, or a 403 with a lookup that finds the group, means the
     // group exists.
     const catalog = new dataplex.CatalogClient(ctx);
-    const res = await catalog.createEntryGroup(
-        source.project, source.location, source.entryGroup);
-    const exists = await existsAfterCreate(
-        res.status,
-        () => catalog.getEntryGroup(
-            source.project, source.location, source.entryGroup));
-    if (res.status !== 200 && !exists) {
-      console.error(
-          `Error: failed to create entry group '${source.name}': ` +
-          `${res.message || res.status}`);
+    // A plain entry group, as before: creating a context set needs other
+    // permissions, so it is never a side effect of this scope. The create's
+    // operation can still fail after the request is accepted, so init waits
+    // for it and reports the failure.
+    const created = await dataplex.createEntryGroupAndWait(
+        catalog, source.project, source.location, source.entryGroup);
+    if (created.error) {
+      console.error(`Error: ${created.error}`);
       return 1;
     }
     // A few constructs have no built-in system type, so the entry and aspect
@@ -645,27 +643,19 @@ export async function push(options: PushOptions): Promise<number> {
         snapshot = await kcmd.CatalogSnapshot.fromManifest('.', pendingManifest, ctx);
       } else {
         const rootMeta = extractOkfRootMetadata('.', project, location, groupId);
-        const catalog = new dataplex.CatalogClient(ctx);
-        const createRes = await catalog.createEntryGroup(
+        const created = await dataplex.createContextSet(
+          new dataplex.CatalogClient(ctx),
           project,
           location,
           groupId,
           {
-            type: 'context-set',
             ...(rootMeta.displayName ? {displayName: rootMeta.displayName} : {}),
             ...(rootMeta.description ? {description: rootMeta.description} : {}),
-          } as any,
+          },
         );
-        if (createRes.status !== 200 && createRes.status !== 409) {
-          throw err;
-        }
-        if ((createRes.result as any)?.name?.includes('/operations/')) {
-          await catalog.awaitOperation(
-            createRes.result as any,
-            'createEntryGroup',
-          );
-        }
-        createdEg = true;
+        if (created.error) return printErrors(created.error);
+        // A group that already existed (a create race) is reconciled below.
+        createdEg = created.created;
         snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
       }
     }
