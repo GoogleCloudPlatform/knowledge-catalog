@@ -496,8 +496,10 @@ describe('profile translation', () => {
 `;
   const SF_JSON = '{ "dialect": "SNOWFLAKE", "expression": "NVL(order_id, 0)" }';
   const BQ_JSON = '{ "dialect": "BIGQUERY", "expression": "COALESCE(order_id, 0)" }';
+  const DIALECTS = `${SF_JSON},\n                            ${BQ_JSON}`;
   test.each([
-    ['over several lines', lines, `${SF_JSON},\n                            ${BQ_JSON}`],
+    ['over several lines', lines, DIALECTS],
+    ['over lines indented deeper than the file', (d: string) => lines(d).replace(/^ {10}/gm, '              '), DIALECTS],
     ['on one line', line, `${SF_JSON}, ${BQ_JSON}`],
   ])('writes only the translated entry into a GOOGLE block written %s', async (_, block, dialects) => {
     const res = await importSemanticModelYaml(ossieDoc({extra: block(SF_JSON)}), ossie);

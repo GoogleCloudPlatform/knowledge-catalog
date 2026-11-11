@@ -436,6 +436,16 @@ function setScalar(
   if (!/^(BLOCK|QUOTE_SINGLE)/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
+  // A block scalar written again keeps the indentation of its lines of text.
+  const indent = blockIndent(u.text, node);
+  if (indent !== undefined && /^[|>][-+]?\r?\n/.test(s)) {
+    const pad = ' '.repeat(slot.col + u.step);
+    s = s.split(u.nl)
+            .map((line, i) => i && line.startsWith(pad) ?
+                     ' '.repeat(indent) + line.slice(pad.length) :
+                     line)
+            .join(u.nl);
+  }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';
@@ -796,6 +806,18 @@ function rangeOf(u: Update, node: yaml.Node): [number, number, string] {
  */
 function headerTail(t: string, from: number): string|undefined {
   return /^[|>][-+0-9]*(.*)/.exec(t.slice(from, lineEnd(t, from)))?.[1];
+}
+
+/**
+ * The indentation of the first line of text of the block scalar `node`, or
+ * undefined when `node` is not a block scalar, its header sets the
+ * indentation, or it has no line of text.
+ */
+function blockIndent(t: string, node: yaml.Scalar): number|undefined {
+  const [from, to] = node.range!;
+  if (!/^[|>][-+]?(?![-+0-9])/.test(t.slice(from, to))) return undefined;
+  const line = t.slice(from, to).split('\n').slice(1).find(l => l.trim());
+  return line === undefined ? undefined : indentOf(line);
 }
 
 function lineStart(t: string, p: number): number {
