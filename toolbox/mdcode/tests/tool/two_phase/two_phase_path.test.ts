@@ -128,9 +128,7 @@ scenarios('the two-phase push path', [
     nothingWritten: true,
     then: [{
       flags: {deployment: false},
-      code: 1,
-      errors: [err(msg.spannerMetrics('sp'))],
-      nothingWritten: true,
+      code: 1, errors: [err(msg.spannerMetrics('sp'))], nothingWritten: true,
     }, {
       deployments: [
         {name: 'sp', target: spannerGraph('g')},
@@ -138,9 +136,7 @@ scenarios('the two-phase push path', [
       ],
       profiles: {ops: {...boundAt(SPANNER_CUSTOMER), metrics_exclude: '*'}},
       flags: {deployment: ['sp2']},
-      code: 1,
-      errors: [err(msg.spannerMetrics('sp'))],
-      nothingWritten: true,
+      code: 1, errors: [err(msg.spannerMetrics('sp'))], nothingWritten: true,
     }, {
       entities: [CUSTOMER, {...CUSTOMER, name: 'Orders'}],
       code: 1,

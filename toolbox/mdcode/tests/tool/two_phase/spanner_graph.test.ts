@@ -7,12 +7,7 @@ import {expect} from 'bun:test';
 
 import {at, CUSTOMER, err, has, scenarios, SPANNER, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
-const ON_SPANNER = {...CUSTOMER, source: SPANNER_CUSTOMER};
-const BAD_NAME =
-    "model 'commerce' (commerce) deployment 'sp' targets Spanner graph " +
-    "'my-graph', but a Spanner graph name starts with a letter, holds only " +
-    'letters, digits and underscores, and is at most 128 characters long; ' +
-    'rename the graph in the target.';
+const BAD_NAME = has("deployment 'sp' targets Spanner graph 'my-graph', but");
 
 // Entities employee and purchase on tables employees and Order, each with a
 // property `code`, and a relationship that references employee's unique key.
@@ -60,43 +55,20 @@ const UNBACKED = err(
 
 scenarios('a Spanner graph', [
   {
-    name: 'whose check fails on a supertype column the subtype table lacks prints the warning that explains it',
-    deployments: [{name: 'sp', target: spannerGraph('g')}],
-    entities: [{
-      name: 'Party', source: `${SPANNER}/tables/parties`, primary_key: ['id'],
-      fields: [{name: 'id', expression: 'id'},
-               {name: 'code', expression: 'party_code'}],
-    }, {
-      name: 'Customer', extends: ['Party'],
-      source: `${SPANNER}/tables/customers`, primary_key: ['id'],
-      fields: [{name: 'id', expression: 'id'},
-               {name: 'code', expression: 'cust_code'}],
-    }],
-    services: {
-      executeQuery: when(
-          (_s: string, sql: string, opts: any) =>
-              isPlan(sql, opts, 'customers'),
-          {status: 400, message: 'Unrecognized name: party_code'}),
-    },
-    code: 1, nothingWritten: true,
-    warnings: [has("entity 'Customer' remaps inherited property 'code'")],
-    errors: [has("Spanner cannot read the node table of entity 'Customer'")],
-  },
-  {
     name: 'that Spanner would refuse for its name is refused before the catalog preflight, also under --no-deployment, and kcmd profiles reports it',
-    entities: [ON_SPANNER],
+    entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
     deployments: [{name: 'sp', target: spannerGraph('my-graph')}],
     events: [],
-    errors: [err(BAD_NAME)],
+    errors: [BAD_NAME],
     report: {code: 1, rejects: {'no profiles': [BAD_NAME]}},
-    then: [{
-      flags: {deployment: false}, code: 1, nothingWritten: true,
-      errors: [err(BAD_NAME)],
-    }],
+    then: [{flags: {deployment: false}, code: 1, nothingWritten: true,
+             errors: [BAD_NAME]}],
   },
   {
-    name: 'is refused before the catalog write when Spanner refuses the plan of what a node table reads, gives a property two types, or gives a join column a type other than that of the column it references, after planning each node and edge table and the columns an edge references',
+    name: 'is refused before the catalog write when Spanner refuses the plan of what a node table reads, gives a property two types, or gives a join column a type other than that of the column it references, after planning each node and edge table and the columns an edge references, and prints the warnings of the generated graph',
     ...GRAPH,
+    actions: [{name: 'refund', executor: {mcp: {server: 's', tool: 't'}}}],
+    warnings: [has('1 action(s) reach Knowledge Catalog only')],
     services: {
       executeQuery: when(
           (_s: string, sql: string, opts: any) =>

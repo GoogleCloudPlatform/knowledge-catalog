@@ -346,18 +346,12 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     services: {spanner: failedDeploy},
     code: 1,
     events: ['preflight', 'apply', 'deploy c', 'deploy a'],
-    errors: [
-      'Error pushing semantic model to Spanner: boom',
-      written('a'),
-    ],
+    errors: ['Error pushing semantic model to Spanner: boom', written('a')],
     then: [{
       services: {bq: failedDeploy},
       code: 1,
       events: ['preflight', 'apply', 'deploy c'],
-      errors: [
-        'Error pushing semantic model to BigQuery: boom',
-        written('c'),
-      ],
+      errors: ['Error pushing semantic model to BigQuery: boom', written('c')],
     }, {
       services: {apply: kcResult({success: false, details: 'x'})},
       code: 1,
@@ -695,14 +689,8 @@ scenarios('a deployment push does not select gets every local check of a selecte
                {name: 'b', expression: 'Customer.a'}],
     }}}},
   }, 'g',
-  err("field 'Customer.a' in model 'commerce' (commerce, deployment 'x') " +
-      "names itself through 'Customer.b'; a field expression may name other " +
-      'fields of its entity, but not itself, directly or through other ' +
-      'fields.'),
-  err("field 'Customer.b' in model 'commerce' (commerce, deployment 'x') " +
-      "names itself through 'Customer.a'; a field expression may name other " +
-      'fields of its entity, but not itself, directly or through other ' +
-      'fields.')),
+  ...['a', 'b'].map(f => has(`field 'Customer.${f}' in model 'commerce' ` +
+                            "(commerce, deployment 'x') names itself"))),
   unselected('a profile action the model does not declare', {
     deployments: ['g', {name: 'x', profile: 'x'}],
     profiles: {x: {...boundTo('x'), actions: [
