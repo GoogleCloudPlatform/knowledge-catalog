@@ -859,7 +859,8 @@ const MAY_BE_TIMESTAMP = 'a value that may be a TIMESTAMP';
 // Databricks in UTC, and Snowflake in America/Los_Angeles, with TIMESTAMP read
 // as TIMESTAMP_NTZ. A column may be a DATE, a DATETIME or a TIMESTAMP in
 // BigQuery, so its row holds only the units that give the source's value and
-// type for each. BigQuery's DATE_ADD adds no hour, minute or second to a DATE,
+// type for each, or that BigQuery rejects for one, such as a month on a
+// TIMESTAMP. BigQuery's DATE_ADD adds no hour, minute or second to a DATE,
 // and no week, month, quarter or year to a TIMESTAMP. Its `+` gives a DATETIME
 // for a DATE plus any INTERVAL, and adds no month, quarter or year to a
 // TIMESTAMP. An ANSI_SQL text runs by the rules of its tables' database, and
@@ -889,7 +890,10 @@ const DATE_TABLES: Record<string, DateTable> = {
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP,
-        units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column'), ...adds(SUB_DAY, '+', 'column')},
+        units: {
+          ...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column'),
+          ...adds(SUB_DAY, '+', 'column'),
+        },
       },
       DATE: {
         type: 'DATE', name: 'a DATE',
@@ -923,7 +927,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     ] as [bigint, string[]][]).flatMap(([n, words]) => words.map(w => [w, ['YEAR', n]]))),
     severalUnits: true, fields: true, sums: [[...UNITS]],
     rows: {
-      column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'column')},
+      column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'column')},
       date: {
         type: 'DATE', name: 'a DATE',
         units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'timestamp'),
@@ -969,7 +973,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP,
-        units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
+        units: {...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
         days: {form: '+', gives: 'column'},
       },
       DATE: {
@@ -1008,7 +1012,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']],
     rows: {
       column: {
-        name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
+        name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
         days: {form: '+', gives: 'column'},
       },
       DATE: {
@@ -1042,7 +1046,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     rows: {
       column: {
         name: 'a value that may be a date or a TIMESTAMP',
-        units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
+        units: {...adds(['DAY', 'MONTH', 'QUARTER', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
       },
       date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
       datetime: {type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime')},

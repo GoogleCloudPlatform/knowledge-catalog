@@ -295,15 +295,17 @@ an expression, such as a column, which import writes as it is. BigQuery rejects
 an amount that is not an INT64, where the database may round it. SQL Server's
 DATEADD reads a string of a whole number, such as '1', as the number. A column
 can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
-only the units that keep the value and type of each. From MySQL, Databricks and
-SQL Server it adds a week to a column as 7 days, which BigQuery's DATE_ADD also
-adds to a TIMESTAMP. An amount n of weeks that is an expression becomes `7 *
-(n)` days. These are the units it adds, by database. Milliseconds and
-microseconds go wherever seconds go, where the database names them: PostgreSQL
-and Databricks name both, and MySQL names microseconds.
+only the units that keep the value and type of each. It also adds months,
+quarters and years to a column, which BigQuery rejects for a TIMESTAMP column.
+From MySQL, Databricks and SQL Server it adds a week to a column as 7 days,
+which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks that
+is an expression becomes `7 * (n)` days. These are the units it adds, by
+database. Milliseconds and microseconds go wherever seconds go, where the
+database names them: PostgreSQL and Databricks name both, and MySQL names
+microseconds.
 
-- MySQL: seconds, minutes, hours, days and weeks to a column, and every unit from
-  seconds to years to a value it can see is a DATE, such as the current date.
+- MySQL: every unit from seconds to years to a column and to a value it can
+  see is a DATE, such as the current date.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
   as in MySQL, and adds every unit to it.
@@ -314,23 +316,24 @@ and Databricks name both, and MySQL names microseconds.
   by MySQL's rules: fewer numbers fill the smallest parts, and the digits of
   microseconds are a fraction of a second. The parts are then added as a sum
   of INTERVALs is, below.
-- PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
-  current timestamp, which stays a TIMESTAMP, and months and years too to a
-  DATE and to a DATE plus an INTERVAL. Months and years go to the current
-  timestamp as a DATETIME in UTC, which BigQuery reads back as a TIMESTAMP:
-  `NOW() + INTERVAL '1 month'` becomes `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP(),
-  'UTC') + INTERVAL 1 MONTH, 'UTC')`. An INTERVAL string can name several
-  units, such as '1 day 2 hours', and decades, centuries and millennia, which
-  count as 10, 100 and 1000 years. A cast to INTERVAL with fields, such as
-  `'90 minutes'::interval hour`, and `INTERVAL '90 minutes' HOUR` become the
-  INTERVAL PostgreSQL computes, here `INTERVAL 1 HOUR`.
-- Snowflake: seconds, minutes, hours and days to a column, and every unit to a
-  DATE. It writes CURRENT_TIMESTAMP as CURRENT_DATETIME('America/Los_Angeles')
-  and adds days, weeks, months, quarters and years to it. An INTERVAL string
+- PostgreSQL: every unit to a column, to a DATE and to a DATE plus an
+  INTERVAL, and to the current timestamp, which stays a TIMESTAMP. A DATE plus
+  an INTERVAL gives a DATETIME, as it gives a timestamp in PostgreSQL. Months
+  and years go to the current timestamp as a DATETIME in UTC, which BigQuery
+  reads back as a TIMESTAMP: `NOW() + INTERVAL '1 month'` becomes
+  `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP(), 'UTC') + INTERVAL 1 MONTH, 'UTC')`.
+  An INTERVAL string can name several units, such as '1 day 2 hours', and
+  decades, centuries and millennia, which count as 10, 100 and 1000 years. A
+  cast to INTERVAL with fields, such as `'90 minutes'::interval hour`, and
+  `INTERVAL '90 minutes' HOUR` become the INTERVAL PostgreSQL computes, here
+  `INTERVAL 1 HOUR`.
+- Snowflake: seconds, minutes, hours, days, months, quarters and years to a
+  column, and every unit to a DATE. It writes CURRENT_TIMESTAMP as
+  CURRENT_DATETIME('America/Los_Angeles') and adds days, weeks, months,
+  quarters and years to it. An INTERVAL string
   names at most days, and DATEADD names any unit. Nothing is added to a value
   plus hours, minutes or seconds.
-- Databricks: days and weeks to a column, and days, weeks, months and years to
-  a DATE.
+- Databricks: days, weeks, months and years to a column and to a DATE.
   date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
   Three-argument dateadd and date_add, such as `dateadd(HOUR, 3, d)`, add
   every unit to a DATE or the current timestamp, which they read as a
@@ -339,8 +342,8 @@ and Databricks name both, and MySQL names microseconds.
   UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
   hours, days and weeks to the current timestamp, a TIMESTAMP, and months and
   years to it as a DATETIME in UTC, as from PostgreSQL.
-- SQL Server: days and weeks to a column, and days, weeks, months, quarters and
-  years to a date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
+- SQL Server: days, weeks, months, quarters and years to a column and to a
+  date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
   and adds every unit to it.
 
@@ -379,8 +382,8 @@ year-month INTERVAL in whole months.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
-NOW(), or a TIMESTAMP column compared with MySQL's NOW(). Then edit that
-field's `BIGQUERY` entry.
+NOW(), a TIMESTAMP column compared with MySQL's NOW(), or a TIMESTAMP column
+plus a month. Then edit that field's `BIGQUERY` entry.
 
 The BigQuery value can differ from the source's value in these cases:
 
@@ -391,8 +394,8 @@ The BigQuery value can differ from the source's value in these cases:
 - A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days can be an
   hour off across a daylight saving change. Snowflake adds a day in its default
   time zone, America/Los_Angeles, where BigQuery adds 24 hours.
-- A MySQL TIMESTAMP column plus or minus any unit gives a DATETIME in MySQL and
-  a TIMESTAMP in BigQuery, with the same value in UTC.
+- A MySQL TIMESTAMP column plus or minus a unit of a week or less gives a
+  DATETIME in MySQL and a TIMESTAMP in BigQuery, with the same value in UTC.
 - MySQL's NOW() counts whole seconds and SQL Server's GETDATE() counts 1/300 of
   a second, where CURRENT_DATETIME counts microseconds. A comparison with a time
   in the same second can then give the other result.
