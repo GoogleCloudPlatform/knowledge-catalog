@@ -273,7 +273,8 @@ warning.
 SQL that gives the same value in BigQuery for ordinary data, whatever the
 column types are. It translates aggregates, CASE, COALESCE and other NULL
 handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
-basic casts, and a few string and date functions.
+basic casts, and a few string and date functions. Its warning about any other
+text names the first part it does not translate.
 
 It reads each database's SQL under that database's default settings:
 PostgreSQL, MySQL, SQL Server and Databricks in UTC, Snowflake in
@@ -283,46 +284,49 @@ entries edited by hand.
 
 It translates a date or time plus or minus a whole number of one unit. The
 value can be a column, a cast to DATE, a DATE literal, the current date, the
-current timestamp, or another such sum. Each way a database writes the same sum
-gets the same translation: `+` or `-` with an INTERVAL, a function such as
-DATE_ADD or DATEADD with any unit name the database documents, or a whole
-number of days. A column can be a DATE, a DATETIME or a TIMESTAMP in BigQuery,
-so import adds to a column only the units that keep the value and type of each.
-These are the units it adds, by database:
+current timestamp, or, where the list below allows, another such sum. Each way
+a database writes the same sum gets the same translation: `+` or `-` with an
+INTERVAL, a function such as DATE_ADD, ADDDATE, DATEADD or TIMESTAMPADD with
+any unit name the database documents, or a whole number of days. A column can
+be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
+only the units that keep the value and type of each. These are the units it
+adds, by database:
 
 - MySQL: seconds, minutes, hours and days to a column, and every unit from
   seconds to years to a value it can see is a DATE, such as the current date.
-  It writes NOW() and CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME
-  as in MySQL, and adds every unit to it.
+  It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
+  CURRENT_DATETIME('UTC'), a DATETIME as in MySQL, and adds every unit to it.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
-  DATE. A whole number added to a DATE counts as days.
+  DATE and to a DATE plus an INTERVAL.
 - Snowflake: seconds, minutes, hours and days to a column, and every unit to a
   DATE. It writes CURRENT_TIMESTAMP as CURRENT_DATETIME('America/Los_Angeles')
   and adds days, weeks, months, quarters and years to it. An INTERVAL string
-  names at most days, and DATEADD names any unit. A whole number added to a
-  DATE counts as days.
+  names at most days, and DATEADD names any unit. Nothing is added to a value
+  plus hours, minutes or seconds.
 - Databricks: days to a column, and days, weeks, months and years to a DATE.
-  date_add and date_sub give a DATE, as in Databricks. It adds seconds,
-  minutes, hours, days and weeks to the current timestamp, a TIMESTAMP. A whole
-  number added to a DATE counts as days.
+  date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
+  It adds seconds, minutes, hours, days and weeks to the current timestamp, a
+  TIMESTAMP.
 - SQL Server: days to a column, and days, weeks, months, quarters and years to
-  a cast to date. It writes GETDATE() and CURRENT_TIMESTAMP as
-  CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server, and adds every unit to
-  it.
+  a date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
+  CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
+  and adds every unit to it.
 
-Import translates no date arithmetic from ANSI_SQL, since the databases an
-ANSI_SQL text runs on add a unit as different types. A SPANNER text keeps its
-date arithmetic, which is BigQuery's. Import leaves any other date arithmetic
-untranslated, such as a sum of two INTERVALs, an amount that is not a whole
-number, or a function such as MAX plus an INTERVAL.
-Its warning about any other text names the first part it does not translate. It
-names a function and a date part as the author wrote them, such as `CHAR_LENGTH`
-or `DATEPART` with part `w`.
+From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
+counts as days. Import translates no date arithmetic from ANSI_SQL, since the
+databases an ANSI_SQL text runs on add a unit as different types. From a
+SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
+days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
+does. Import leaves any other date arithmetic untranslated, such as a sum of
+two INTERVALs, an amount that is not a whole number, or a function such as MAX
+plus an INTERVAL. It names a function and a date part as the author wrote them,
+such as `CHAR_LENGTH` or `DATEPART` with part `w`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
-one the expression needs, such as a DATETIME column compared with the current
-time. Then edit that field's `BIGQUERY` entry.
+one the expression needs, such as a DATETIME column compared with PostgreSQL's
+NOW(), or a TIMESTAMP column compared with MySQL's NOW(). Then edit that
+field's `BIGQUERY` entry.
 
 The BigQuery value can differ from the source's value in these cases:
 
@@ -330,13 +334,11 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
-- A TIMESTAMP column plus or minus days can be an hour off across a daylight
-  saving change. MySQL, PostgreSQL, Snowflake and Databricks add a
-  day in the session time zone, so a day there can be 23 or 25 hours, where
-  BigQuery adds 24. Snowflake's default time zone, America/Los_Angeles, has
-  daylight saving time. MySQL also adds hours, minutes and seconds in the local
-  time. A MySQL TIMESTAMP plus or minus any unit gives a DATETIME, where
-  BigQuery gives a TIMESTAMP.
+- A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days can be an
+  hour off across a daylight saving change. Snowflake adds a day in its default
+  time zone, America/Los_Angeles, where BigQuery adds 24 hours.
+- A MySQL TIMESTAMP column plus or minus any unit gives a DATETIME in MySQL and
+  a TIMESTAMP in BigQuery, with the same value in UTC.
 - MySQL's NOW() counts whole seconds and SQL Server's GETDATE() counts 1/300 of
   a second, where CURRENT_DATETIME counts microseconds. A comparison with a time
   in the same second can then give the other result.
