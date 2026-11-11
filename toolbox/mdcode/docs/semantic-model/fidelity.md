@@ -284,12 +284,16 @@ America/Los_Angeles with TIMESTAMP read as TIMESTAMP_NTZ, and Spanner in
 America/Los_Angeles. A database set up another way can need its `BIGQUERY`
 entries edited by hand.
 
-It translates a date or time plus or minus a whole number of one unit. The
-value can be a column, a cast to DATE, a DATE literal, the current date, the
-current timestamp, or, where the list below allows, another such sum. Each way
-a database writes the same sum gets the same BigQuery value and type: `+` or `-`
+It translates a date or time plus or minus an amount of one unit. The value
+can be a column, a cast to DATE, a DATE literal, the current date, the current
+timestamp, or, where the list below allows, another such sum. Each way a
+database writes the same sum gets the same BigQuery value and type: `+` or `-`
 with an INTERVAL, a function such as DATE_ADD, ADDDATE, DATEADD or TIMESTAMPADD
-with any unit name the database documents, or a whole number of days. A column
+with any unit name the database documents, or a whole number of days. The
+amount is a whole number. In a function and in MySQL's INTERVAL it can also be
+an expression, such as a column, which import writes as it is. BigQuery rejects
+an amount that is not an INT64, where the database may round it. SQL Server's
+DATEADD reads a string of a whole number, such as '1', as the number. A column
 can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
 only the units that keep the value and type of each. These are the units it
 adds, by database:
@@ -297,7 +301,8 @@ adds, by database:
 - MySQL: seconds, minutes, hours and days to a column, and every unit from
   seconds to years to a value it can see is a DATE, such as the current date.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
-  CURRENT_DATETIME('UTC'), a DATETIME as in MySQL, and adds every unit to it.
+  DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
+  as in MySQL, and adds every unit to it.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first.
@@ -324,8 +329,8 @@ databases an ANSI_SQL text runs on add a unit as different types. From a
 SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
 days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
 does. From the other databases, import leaves any other date arithmetic
-untranslated, such as a sum of two INTERVALs, an amount that is not a whole
-number, or a function such as MAX plus an INTERVAL.
+untranslated, such as a sum of two INTERVALs, an amount that is a fraction,
+or a function such as MAX plus an INTERVAL.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's

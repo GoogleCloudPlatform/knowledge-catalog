@@ -701,8 +701,8 @@ function lookup<T>(entries: Record<string, T>): Record<string, T> {
 
 // --- Date arithmetic ------------------------------------------------------------
 //
-// Import translates a date or time plus or minus a whole number of one unit
-// only as its dialect's table in DATE_TABLES gives. Each spelling of the same
+// Import translates a date or time plus or minus an amount of one unit only
+// as its dialect's table in DATE_TABLES gives. Each spelling of the same
 // arithmetic reads as one operand, amount and unit, and so finds the same row:
 // MySQL's `x - INTERVAL 7 DAY` and DATE_SUB(x, INTERVAL 7 DAY), or Snowflake's
 // `x - INTERVAL '7 days'` and DATEADD(day, -7, x). A `+` may name the INTERVAL
@@ -764,6 +764,12 @@ interface DateTable {
   // False when an INTERVAL may not name its unit outside its string, as in
   // INTERVAL 1 DAY or INTERVAL '1' DAY.
   keywords?: false;
+  // True when an INTERVAL's amount may be any expression, as in INTERVAL n
+  // DAY.
+  expressions?: true;
+  // True when DATEADD reads a string of a whole number, such as '1', as the
+  // number.
+  stringAmounts?: true;
   // The units an INTERVAL may name, when the dialect documents fewer than for
   // its function.
   intervals?: Unit[];
@@ -811,7 +817,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
-    words: {},
+    words: {}, expressions: true,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
       DATE: {
@@ -926,7 +932,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   // depends on the date's type.
   tsql: {
     date: 'date', today: ['CURRENT_DATE'], now: {functions: ['GETDATE', 'CURRENT_TIMESTAMP'], row: 'datetime'},
-    functions: {DATEADD: 'part'}, quotedParts: false, intervals: [],
+    functions: {DATEADD: 'part'}, quotedParts: false, intervals: [], stringAmounts: true,
     words: named({
       SECOND: ['ss', 's'], MINUTE: ['mi', 'n'], HOUR: ['hh'],
       DAY: ['dd', 'd', 'dayofyear', 'dy', 'y', 'weekday', 'dw', 'w'], WEEK: ['wk', 'ww'],
@@ -951,7 +957,7 @@ const DATE_TABLES: Record<string, DateTable> = {
 };
 
 // One date arithmetic in a source text: `operand` plus or minus `amount`, a
-// whole number of `unit`, and what its row gives. A whole number added as days
+// whole number or an expression of `unit`, and what its row gives. A whole number added as days
 // that import writes as the source does has no unit. The INTERVAL may come
 // `first`. A `call` is a function, such as DATEADD. With `asDate`, the source
 // reads an operand that is not a DATE as a DATE first.
@@ -1021,10 +1027,8 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   }
   const [part, amount, operand] = how === 'part' ? args : [undefined, args[1], args[0]];
   if (how === 'interval' || args.length !== (how === 'part' ? 3 : 2) || added) return name;
-  const written = numberText(amount);
-  if (written === undefined) return `${name} by ${valueName(bare(amount))}`;
-  if (!/^-?\d+$/.test(written)) return `${name} of a fraction`;
-  const whole = wholeNumber(written);
+  const whole = functionAmount(amount, table);
+  if (typeof whole === 'string') return `${name} ${whole}`;
   const spelling = how === 'part' ? `${name} with part '${partName(part) ?? '?'}'` : name;
   const unit = how !== 'part' ? 'DAY' : table.quotedParts === false && bare(part)?.literal ? undefined :
       table.words[String(partName(part)).toLowerCase()];
@@ -1034,8 +1038,23 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   });
 }
 
+// The amount of `amount`, the number of units a function such as DATEADD(day,
+// n, d) adds, in `table`'s dialect, as import writes it, or a message. A
+// number is whole, and a string of a whole number is the number where the
+// dialect reads it so. Any other expression is written as it is. BigQuery
+// rejects one that is not an INT64, where the sources may round it.
+function functionAmount(amount: any, table: DateTable): unknown {
+  const b = bare(amount);
+  const text = literalText(b?.literal);
+  const string = b?.literal?.literal_type === 'string' && /^\s*[+-]?\d+\s*$/.test(text ?? '');
+  const written = numberText(b) ?? (table.stringAmounts && string ? text : undefined);
+  if (written === undefined) return b?.literal ? `by ${valueName(b)}` : amount;
+  return /^\s*[+-]?\d+\s*$/.test(written) ? wholeNumber(written) : 'of a fraction';
+}
+
 // The amount and the unit of `added`, an engine interval, in `table`'s
-// dialect, or a message. The amount is a whole number.
+// dialect, or a message. The amount is a whole number, or an expression where
+// the dialect's INTERVAL takes one.
 function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}|string {
   const text = `INTERVAL ${intervalText(added)}`;
   // A number, or a string such as '1' or '1 day'. A hex, bit, national or
@@ -1044,6 +1063,11 @@ function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}|s
   const literal = bare(added.this)?.literal;
   const written = numberText(added.this) ??
       (literal?.literal_type === 'string' && typeof literal.value === 'string' ? literal.value : undefined);
+  const keyword = String(added.unit?.unit).toUpperCase() as Unit;
+  if (written === undefined && table.expressions && !literal && added.unit?.type === 'simple' &&
+      UNITS.includes(keyword)) {
+    return {amount: added.this, unit: keyword};
+  }
   if (written === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
   if (added.unit === null) {
     const [, amount, word] = /^\s*([+-]?\d+)\s*([a-z]+)\s*$/i.exec(written) ?? [];
@@ -2032,7 +2056,7 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       // An operand of DATE_ADD needs no parentheses.
       let operand = sum.operand;
       while (sum.addition.form === 'DATE_ADD' && operand?.paren) operand = operand.paren.this;
-      return dateCall(sum, rewrite(operand), whole, dialect);
+      return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
     const exact = isNode(node) ? exactForm(node, read) : undefined;
     if (exact && typeof exact === 'object') changed = true;
@@ -2057,18 +2081,18 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       {error: written.error ?? 'the text could not be written for the engine'};
 }
 
-// The DATE_CALL for `sum`, with `operand`, its operand ready for the engine,
-// in `dialect`: the operand, the amount, the unit and BigQuery's form, and
-// 'DATE' when the source reads the operand as a DATE first. A sum written with
-// `+` or `-` for a function call goes in parentheses, unless it is the `whole`
-// text.
-function dateCall(sum: DateSum, operand: unknown, whole: boolean, dialect: string): unknown {
+// The DATE_CALL for `sum`, with `operand` and `amount`, its operand and amount
+// ready for the engine, in `dialect`: the operand, the amount, the unit and
+// BigQuery's form, and 'DATE' when the source reads the operand as a DATE
+// first. A sum written with `+` or `-` for a function call goes in
+// parentheses, unless it is the `whole` text.
+function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolean, dialect: string): unknown {
   const op = sum.first ? 'INTERVAL +' : sum.subtract ? '-' : '+';
   const form = sum.addition.form === 'DATE_ADD' ? (sum.subtract ? 'DATE_SUB' : 'DATE_ADD') :
       sum.call && !whole ? `(${op})` : op;
   const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
   const text = (value: string) => ({literal: {literal_type: 'string', value}});
-  const args = [operand, sum.amount, text(sum.unit!), text(form)];
+  const args = [operand, amount, text(sum.unit!), text(form)];
   return {function: {...call, args: sum.asDate ? [...args, text('DATE')] : args}};
 }
 
