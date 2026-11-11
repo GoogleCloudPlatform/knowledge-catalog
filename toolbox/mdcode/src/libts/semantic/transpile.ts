@@ -838,7 +838,7 @@ function writtenCall(
   const slice = (from: SqlToken, to: SqlToken) =>
       chars.slice(from.span.start, to.span.end).join('');
   const tokens = engine.tokenize(text, read).tokens ?? [];
-  const wanted = JSON.stringify(withoutComments(node));
+  const wanted = JSON.stringify(treeWithoutComments(node));
   for (const [i, t] of tokens.entries()) {
     if (tokens[i + 1]?.token_type !== 'L_PAREN') continue;
     // The arguments, split at each comma outside parentheses.
@@ -857,7 +857,7 @@ function writtenCall(
     }
     if (end < 0) continue;
     const tree = sqlExpressionTree(slice(t, tokens[end]), dialect);
-    if (JSON.stringify(withoutComments(tree)) === wanted) {
+    if (JSON.stringify(treeWithoutComments(tree)) === wanted) {
       return {
         name: slice(t, t),
         args: args.filter(a => a.length),
@@ -894,13 +894,13 @@ function writtenPart(node: any, part: string, call: WrittenCall):
 }
 
 // `node` with no comments, which a tree keeps beside the tokens they follow.
-function withoutComments(node: any): any {
-  if (Array.isArray(node)) return node.map(withoutComments);
+function treeWithoutComments(node: any): any {
+  if (Array.isArray(node)) return node.map(treeWithoutComments);
   if (!node || typeof node !== 'object') return node;
   return Object.fromEntries(
       Object.entries(node)
           .filter(([k]) => !k.endsWith('comments'))
-          .map(([k, v]) => [k, withoutComments(v)]));
+          .map(([k, v]) => [k, treeWithoutComments(v)]));
 }
 
 // Whether `v` is an engine node: an object with one key, its kind, whose value
