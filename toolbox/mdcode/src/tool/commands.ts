@@ -1882,29 +1882,41 @@ async function pullSemanticModel(
     ];
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
-      // kept by renaming it and its profile files to the files pull writes,
-      // unless one of those files is already there, an earlier file is
-      // renamed to it, or two of its files would be renamed to one. The
-      // advice to delete either model file names its profile files too. When
-      // only profile files are in the way, the advice names them.
+      // kept by renaming it and its profile files to the files pull writes.
+      // Each refusal offers choices, and following one choice of each
+      // refusal ends with a pull that succeeds. The first file that holds a
+      // model is told to keep it, by deleting the files in the way and one
+      // of each two files of one profile, then renaming the rest. A file is
+      // told to delete its own files when --force-remove would delete other
+      // files too. --force-remove is named with every file it deletes.
       const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
       // A file by its path in the entry group directory.
       const shown = (p: string) => path.relative(groupDir, p);
       const file = (name: string) => shown(layout.modelPath(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
-      // --force-remove also deletes each local profile file of the catalog's
-      // model and each overview sidecar that this pull leaves out, so the
-      // advice names them after a stale model's own files.
+      // Every file --force-remove deletes: each stale model's files, then each
+      // local profile file of the catalog's model and each overview sidecar
+      // that this pull leaves out.
       const left = unwrittenFiles(
                        layout, pulled.name,
                        [...pulledFiles, ...sidecars].map(f => f.fileName))
                        .map(f => shown(f.path));
-      const removal = (own: string[]) => quoted([...own, ...left]);
+      const removed = [
+        ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
+        ...left,
+      ];
+      const forceRemove = (them: string) =>
+          `re-run with --force-remove to delete ${them} and pull the catalog's`;
+      // `choices` as the sentence that ends a refusal.
+      const offer = (choices: string[]) => {
+        const text = choices.join(', or ');
+        return `${text[0].toUpperCase()}${text.slice(1)}.`;
+      };
       const errors: string[] = [];
       const othersFiles: string[] = [];
       const others: string[] = [];
-      // Each model an earlier rename keeps, and the model file that holds it.
-      const claimed = new Map<string, string>();
+      // Each model a refusal tells a file to keep, and that file.
+      const kept = new Map<string, string>();
       for (const name of staleLocal) {
         const declared = layout.declaredModelName(name);
         if (declared !== undefined &&
@@ -1916,60 +1928,74 @@ async function pullSemanticModel(
               f => f.profileName === undefined ?
                   file(declared) :
                   `${stem}.profile.${f.profileName}.yaml`);
+          // The files renamed to each file pull writes, by its index in
+          // `files`. Two files hold one profile when a sibling profile file
+          // and a file in the older directory have the same profile name.
+          const groups = [...new Set(targets)].map(
+              t => files.flatMap((_, i) => targets[i] === t ? [i] : []));
+          const twice = groups.filter(g => g.length > 1);
           const taken = [...new Set(targets)].filter(
               t => fs.existsSync(path.join(groupDir, t)));
-          // The catalog's model file when it holds this model too, else an
-          // earlier file renamed to it.
+          // The catalog's model file when it holds this model too, else the
+          // file a refusal before this one tells to keep it.
           const holder = layout.declaredModelName(stem) === declared ?
               stem :
-              claimed.get(declared);
-          if (holder !== undefined || taken.length) {
-            // The other model file, if any, that the advice may delete.
-            const other =
-                holder ?? (taken.includes(file(declared)) ? stem : undefined);
-            const withProfiles = files.length > 1 ||
-                (other !== undefined && localFiles(other).length > 1);
-            errors.push(
-                `local model file '${file(name)}' holds model '${declared}', ` +
-                (holder !== undefined ?
-                     `which '${file(holder)}' also holds` :
-                     `which pull writes as '${file(declared)}', and ${
-                         quoted(taken)} ${
-                         taken.length > 1 ? 'are' : 'is'} already there`) +
-                (other !== undefined ?
-                     `. Delete one of them` :
-                     `. Delete ${quoted(taken)} and pull again, or delete '${
-                         file(name)}'`) +
-                `${withProfiles ? ' with its profile files' : ''}, ` +
-                `or re-run with --force-remove to delete ${removal(own)} and ` +
-                `pull the catalog's.`);
-            continue;
-          }
-          // A sibling profile file and a file in the older directory with
-          // the same profile name would be renamed to one file.
-          const dup = targets.findIndex((t, i) => targets.indexOf(t) < i);
-          if (dup >= 0) {
-            const both = own.filter((_, i) => targets[i] === targets[dup]);
-            errors.push(
-                `local model file '${file(name)}' holds model '${declared}', ` +
-                `and its profile '${files[dup].profileName}' is in both ${
-                    quoted(both)}. Delete one of them, or re-run with ` +
-                `--force-remove to delete ${removal(own)} and pull the ` +
-                `catalog's.`);
-            continue;
-          }
-          claimed.set(declared, name);
-          const renames = [
-            `the file to '${targets[0]}'`,
-            ...own.slice(1).map((f, i) => `'${f}' to '${targets[i + 1]}'`),
-          ];
+              kept.get(declared);
+          // What stops the rename, or else where it goes.
+          const where = holder !== undefined ?
+              `, which '${file(holder)}' also holds` :
+              taken.length ?
+              `, which pull writes as '${file(declared)}', and ${
+                  quoted(taken)} ${taken.length > 1 ? 'are' : 'is'} already ` +
+                  'there' :
+              twice.length ? '' :
+                             `, which pull writes as '${file(declared)}'`;
+          const facts = where + twice.map(
+              g => `, and its profile '${files[g[0]].profileName}' is in ` +
+                  `both ${quoted(g.map(i => own[i]))}`).join('');
           const them = files.length > 1 ? 'them' : 'it';
+          const choices: string[] = [];
+          let renamesOnly = false;
+          if (!kept.has(declared)) {
+            kept.set(declared, name);
+            // The files in the way: the model file pull writes, with its
+            // profile files, and each other file at a name pull writes.
+            const inTheWay = [...new Set([
+              ...fs.existsSync(path.join(groupDir, file(declared))) ?
+                  localFiles(stem).map(f => shown(f.path)) :
+                  [],
+              ...taken,
+            ])];
+            const deletes = [
+              ...inTheWay.map(f => `'${f}'`),
+              ...twice.map(g => `one of ${quoted(g.map(i => own[i]))}`),
+            ];
+            // A plain rename keeps its short form, which names the model
+            // file as "the file".
+            renamesOnly = !deletes.length;
+            const renames = groups.map(g => {
+              const to = `'${targets[g[0]]}'`;
+              if (g.length > 1) {
+                return `the other${
+                    twice.length > 1 ?
+                        ` of ${quoted(g.map(i => own[i]))}` :
+                        ''} to ${to}`;
+              }
+              return g[0] === 0 && renamesOnly ? `the file to ${to}` :
+                                                 `'${own[g[0]]}' to ${to}`;
+            });
+            choices.push(
+                (deletes.length ? `delete ${listed(deletes)} and rename ` :
+                                  'rename ') +
+                `${listed(renames)} to keep ${them}`);
+          }
+          if (staleLocal.length > 1) choices.push(`delete ${quoted(own)}`);
+          choices.push(forceRemove(
+              renamesOnly && removed.length === own.length ? them :
+                                                             quoted(removed)));
           errors.push(
-              `local model file '${file(name)}' holds model '${declared}', ` +
-              `which pull writes as '${file(declared)}'. Rename ${
-                  listed(renames)} to keep ${them}, or re-run with ` +
-              `--force-remove to delete ${
-                  left.length ? removal(own) : them} and pull the catalog's.`);
+              `local model file '${file(name)}' holds model '${declared}'${
+                  facts}. ${offer(choices)}`);
         } else {
           othersFiles.push(...localFiles(name).map(f => shown(f.path)));
           others.push(
@@ -1984,9 +2010,12 @@ async function pullSemanticModel(
         errors.push(
             `local model(s) ${localList} do not match the catalog model ${
                 catalogList} in this entry group. An entry group holds ` +
-            `one model, so pull will not leave two behind. Re-run with ` +
-            `--force-remove to delete ${removal(othersFiles)} and pull the ` +
-            `catalog's.`);
+            `one model, so pull will not leave two behind. ${offer([
+              ...others.length < staleLocal.length ?
+                  [`delete ${quoted(othersFiles)}`] :
+                  [],
+              forceRemove(quoted(removed)),
+            ])}`);
       }
       return printErrors(...errors);
     }

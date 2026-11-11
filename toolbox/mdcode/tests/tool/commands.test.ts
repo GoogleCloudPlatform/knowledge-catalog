@@ -2246,99 +2246,179 @@ describe('a pull', () => {
   });
 
   // A local model file that holds the catalog's model under another name is
-  // kept by renaming it and its profile files, unless a file the rename
-  // writes is there already, an earlier file is renamed to it, or two of its
-  // files would be renamed to one. The refusal names what to do and each file
-  // --force-remove deletes, and writes nothing.
+  // kept by renaming it and its profile files. The refusal names each step
+  // of each choice, and --force-remove with each file it deletes, and writes
+  // nothing. Following one choice of each refusal makes pull succeed, and the
+  // next pull changes nothing.
   const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
+  const force = (files: string) =>
+      `re-run with --force-remove to delete ${files} and pull the catalog's.`;
+  const rename = (from: string, to: string) => `${from}>${to}`;
+  // [label, the local files, the model each model file holds, the refusal,
+  // the choices: '-<file>' deletes it, '<a>><b>' renames a to b, and 'force'
+  // pulls with --force-remove]
   test.each([
-    ['the rename that keeps it', ['mysales.yaml'],
+    ['the rename that keeps it', ['mysales.yaml'], 'commerce',
      holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
-         "'commerce.yaml' to keep it, or re-run with --force-remove to " +
-         "delete it and pull the catalog's.", 'commerce'],
+         "'commerce.yaml' to keep it, or " + force('it'),
+     [[rename('mysales.yaml', 'commerce.yaml')], ['force']]],
     ['the rename of each profile file', ['mysales.yaml', 'mysales.profile.prod.yaml'],
+     'commerce',
      holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
          "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
-         "'commerce.profile.prod.yaml' to keep them, or re-run with " +
-         "--force-remove to delete them and pull the catalog's.", 'commerce'],
-    ['the rename of each file in the older profile directory',
-     ['mysales.yaml', 'mysales.profiles/prod.yaml'],
+         "'commerce.profile.prod.yaml' to keep them, or " + force('them'),
+     [[rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the rename of a file in the older profile directory',
+     ['mysales.yaml', 'mysales.profiles/prod.yaml'], 'commerce',
      holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
          "'commerce.yaml' and 'mysales.profiles/prod.yaml' to " +
-         "'commerce.profile.prod.yaml' to keep them, or re-run with " +
-         "--force-remove to delete them and pull the catalog's.", 'commerce'],
-    ['no two renames onto one profile file',
-     ['mysales.yaml', 'mysales.profile.prod.yaml', 'mysales.profiles/prod.yaml'],
+         "'commerce.profile.prod.yaml' to keep them, or " + force('them'),
+     [[rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['one profile in both forms',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'mysales.profiles/prod.yaml'], 'commerce',
      holds + "and its profile 'prod' is in both 'mysales.profile.prod.yaml' " +
-         "and 'mysales.profiles/prod.yaml'. Delete one of them, or re-run " +
-         "with --force-remove to delete 'mysales.yaml', " +
+         "and 'mysales.profiles/prod.yaml'. Delete one of " +
          "'mysales.profile.prod.yaml' and 'mysales.profiles/prod.yaml' and " +
-         "pull the catalog's.", 'commerce'],
-    ['no rename onto the catalog model\'s file',
-     ['commerce.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'],
-     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
-         "profile files, or re-run with --force-remove to delete " +
-         "'mysales.yaml' and 'mysales.profile.prod.yaml' and pull the " +
-         "catalog's.", 'commerce'],
-    ['no second rename onto one file', ['mysales.yaml', 'sales2.yaml'],
-     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
-         "'commerce.yaml' to keep it, or re-run with --force-remove to " +
-         "delete it and pull the catalog's.\nError: local model file " +
-         "'sales2.yaml' holds model 'commerce', which 'mysales.yaml' also " +
-         "holds. Delete one of them, or re-run with --force-remove to " +
-         "delete 'sales2.yaml' and pull the catalog's.", 'commerce'],
-    ['the profile files of the file that also holds it',
-     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'],
-     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
-         "profile files, or re-run with --force-remove to delete " +
-         "'mysales.yaml' and pull the catalog's.", 'commerce'],
-    ['the catalog model\'s file in the older directory, which pull deletes',
-     ['commerce.yaml', 'commerce.profiles/prod.yaml', 'mysales.yaml'],
-     holds + "which 'commerce.yaml' also holds. Delete one of them with its " +
-         "profile files, or re-run with --force-remove to delete " +
-         "'mysales.yaml' and 'commerce.profiles/prod.yaml' and pull the " +
-         "catalog's.", 'commerce'],
-    ['no rename onto a profile file already there',
-     ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'],
+         "rename 'mysales.yaml' to 'commerce.yaml' and the other to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml', 'mysales.profile.prod.yaml' and " +
+               "'mysales.profiles/prod.yaml'"),
+     [['-mysales.profiles/prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')],
+      ['-mysales.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')],
+      ['force']]],
+    ['a profile file already there',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'], 'commerce',
      holds + "which pull writes as 'commerce.yaml', and " +
          "'commerce.profile.prod.yaml' is already there. Delete " +
-         "'commerce.profile.prod.yaml' and pull again, or delete " +
-         "'mysales.yaml' with its profile files, or re-run with " +
-         "--force-remove to delete 'mysales.yaml' and " +
-         "'mysales.profile.prod.yaml' and pull the catalog's.", 'commerce'],
-    ['no rename onto a file that holds another model',
-     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'],
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['a profile file already there for one in the older directory',
+     ['mysales.yaml', 'mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml', and " +
+         "'commerce.profile.prod.yaml' is already there. Delete " +
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' and 'mysales.profiles/prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profiles/prod.yaml'"),
+     [['-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the file pull writes, which holds another model',
+     ['commerce.yaml', 'mysales.yaml'], {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'},
      holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' is " +
-         "already there. Delete one of them with its profile files, or " +
-         "re-run with --force-remove to delete 'mysales.yaml' and pull the " +
-         "catalog's.",
-     {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'} as Record<string, string>],
-    ['the model a file declares under another name', ['old.yaml'],
+         "already there. Delete 'commerce.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " + force("'mysales.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml')], ['force']]],
+    ['the file pull writes, which holds another model, and its profile file',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'],
+     {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'},
+     holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' and " +
+         "'commerce.profile.prod.yaml' are already there. Delete " +
+         "'commerce.yaml' and 'commerce.profile.prod.yaml' and rename " +
+         "'mysales.yaml' to 'commerce.yaml' and 'mysales.profile.prod.yaml' " +
+         "to 'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.yaml', '-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the catalog model\'s file, which holds it too',
+     ['commerce.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "rename 'mysales.yaml' to 'commerce.yaml' and " +
+         "'mysales.profile.prod.yaml' to 'commerce.profile.prod.yaml' to " +
+         "keep them, or " + force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the catalog model\'s file, which holds it too, and its profile file',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " + force("'mysales.yaml'"),
+     [['-commerce.yaml', '-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml')],
+      ['force']]],
+    ['the catalog model\'s file, which holds it too, and its profile in the older directory',
+     ['commerce.yaml', 'commerce.profiles/prod.yaml', 'mysales.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "'commerce.profiles/prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " +
+         force("'mysales.yaml' and 'commerce.profiles/prod.yaml'"),
+     [['-commerce.yaml', '-commerce.profiles/prod.yaml', rename('mysales.yaml', 'commerce.yaml')],
+      ['force']]],
+    ['two files that hold it', ['mysales.yaml', 'sales2.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'") + "\nError: local model " +
+         "file 'sales2.yaml' holds model 'commerce', which 'mysales.yaml' " +
+         "also holds. Delete 'sales2.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'"),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
+      ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    ['two files that hold it beside the catalog model\'s file, which holds it too',
+     ['commerce.yaml', 'mysales.yaml', 'sales2.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "rename 'mysales.yaml' to 'commerce.yaml' to keep it, or delete " +
+         "'mysales.yaml', or " + force("'mysales.yaml' and 'sales2.yaml'") +
+         "\nError: local model file 'sales2.yaml' holds model 'commerce', " +
+         "which 'commerce.yaml' also holds. Delete 'sales2.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
+      ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    ['the model a file declares under another name', ['old.yaml'], 'other',
      "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
          "model 'commerce' in this entry group. An entry group holds one " +
          "model, so pull will not leave two behind. Re-run with " +
          "--force-remove to delete 'old.yaml' and pull the catalog's.",
-     'other'],
-  ])('refuses a local file that holds another model name, naming %s',
-     async (_, files, error, declares) => {
-       writeRoundTripWorkspace();
-       for (const f of fs.readdirSync(entryGroupDir())) fs.rmSync(local(f));
-       for (const f of files) {
-         fs.mkdirSync(path.dirname(local(f)), {recursive: true});
-         fs.writeFileSync(local(f), f.includes('.profile') ?
-             ROUND_TRIP_PROFILE :
-             ROUND_TRIP_MODEL.replace('name: commerce', `name: ${
-                 typeof declares === 'string' ? declares : declares[f]}`));
-       }
-       pulled();
+     [['force']]],
+    ['another model beside a file that holds it', ['mysales.yaml', 'old.yaml'],
+     {'mysales.yaml': 'commerce', 'old.yaml': 'other'},
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force("'mysales.yaml' and 'old.yaml'") + "\nError: local model(s) " +
+         "'other' in 'old.yaml' do not match the catalog model 'commerce' in " +
+         "this entry group. An entry group holds one model, so pull will " +
+         "not leave two behind. Delete 'old.yaml', or " +
+         force("'mysales.yaml' and 'old.yaml'"),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-old.yaml'],
+      ['-mysales.yaml', '-old.yaml'], ['force']]],
+  ] as Array<[string, string[], string|Record<string, string>, string, string[][]]>)(
+      'refuses a local file that holds another model name, naming %s, and each choice works',
+      async (_, files, declares, error, choices) => {
+        pulled();
+        for (const choice of choices) {
+          writeRoundTripWorkspace();
+          fs.rmSync(entryGroupDir(), {recursive: true});
+          for (const f of files) {
+            fs.mkdirSync(path.dirname(local(f)), {recursive: true});
+            fs.writeFileSync(local(f), f.includes('.profile') ?
+                ROUND_TRIP_PROFILE :
+                ROUND_TRIP_MODEL.replace('name: commerce', `name: ${
+                    typeof declares === 'string' ? declares : declares[f]}`));
+          }
+          (console.error as Mock<any>).mockClear();
+          expect(await pull()).toBe(1);
+          expect(messages(console.error)).toBe(error);
+          const left = fs.readdirSync(
+              entryGroupDir(), {encoding: 'utf8', recursive: true});
+          expect(left.filter(f => f.endsWith('.yaml')).sort())
+              .toEqual([...files].sort());
 
-       expect(await pull()).toBe(1);
-       expect(messages(console.error)).toBe(error);
-       const left = fs.readdirSync(
-           entryGroupDir(), {encoding: 'utf8', recursive: true});
-       expect(left.filter(f => f.endsWith('.yaml')).sort())
-           .toEqual([...files].sort());
-     });
+          for (const step of choice) {
+            const [from, to] = step.split('>');
+            if (step.startsWith('-')) fs.rmSync(local(step.slice(1)));
+            else if (to) fs.renameSync(local(from), local(to));
+          }
+          expect(await pull({forceRemove: choice.includes('force')})).toBe(0);
+          (console.log as Mock<any>).mockClear();
+          expect(await pull()).toBe(0);
+          expect(messages(console.log)).toContain('Wrote 0 new and 0 updated file(s)');
+        }
+      });
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
