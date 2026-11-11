@@ -105,14 +105,12 @@ export class BigQueryClient extends api.ApiClient {
   // a cheap pre-flight probe over any reference form BigQuery can resolve.
   //
   // `namedParameterTypes` maps a `@name` reference to its BigQuery type code
-  // (`INT64`, `STRING`, ...) and is only useful with `dryRun`: a dry run
-  // infers an unbound `@name` from the column or function it meets, and types
-  // a parameter selected bare in INSERT ... SELECT as INT64 -- supplying them
-  // is what makes BigQuery type-check each parameter against the column it is
-  // used with. BigQuery infers parameters only when the request declares none:
-  // once one is declared, every `@name` the statement reads must be declared
-  // too. The values sent are empty (`parameterValue: {}`, an unset value),
-  // because a dry run never evaluates them.
+  // (`INT64`, `STRING`, ...) and is only useful with `dryRun`, where BigQuery
+  // checks each declared type against the column the parameter is used with.
+  // BigQuery infers parameter types only when the request declares none, so
+  // once one is declared, every `@name` the statement reads must be declared.
+  // The values sent are empty (`parameterValue: {}`, an unset value), because
+  // a dry run never evaluates them.
   async query(project: string, sql: string, location?: string, dryRun?: boolean, namedParameterTypes?: Record<string, string>): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     const body: Record<string, any> = { query: sql, useLegacySql: false };

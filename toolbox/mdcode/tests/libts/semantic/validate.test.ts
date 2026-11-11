@@ -295,7 +295,7 @@ describe('action parameters', () => {
 // answers from a declared schema. Whether the REAL backends refuse the same
 // statements is a question only a live run can settle; see the e2e tests.
 describe('action statement pre-flight', () => {
-  const ACCOUNT = {account: ['account_id', 'balance']};
+  const ACCOUNT = {account: ['account_id', 'balance', 'memo']};
 
   // An action whose sql executor runs `statements`, with three declared
   // parameters the statements may reference.
@@ -414,7 +414,7 @@ describe('action statement pre-flight', () => {
     // store to infer.
     test('omits an Opaque parameter rather than guessing a type', async () => {
       const spanner = new SpannerClientMock();
-      spanner.schema = mockSchema({account: ['account_id', 'balance', 'memo']});
+      spanner.schema = mockSchema(ACCOUNT);
       await validateSpannerActionStatements(
           [spannerModel(
               [sqlAction(['UPDATE account SET memo = @note WHERE 1=1'])])],
@@ -601,7 +601,7 @@ describe('action statement pre-flight', () => {
        'UPDATE account SET memo = @note WHERE account_id = @id', {}],
     ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();
-      bq.dmlSchema = mockSchema({account: ['account_id', 'balance', 'memo']});
+      bq.dmlSchema = mockSchema(ACCOUNT);
       await validateBigQueryActionStatements(
           [bqModel([sqlAction([statement])])], bq, 'p');
       expect(bq.dryRunDml[0].parameterTypes).toEqual(types);

@@ -12,7 +12,7 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DEFAULT_PROFILE, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -1994,11 +1994,9 @@ async function validateOutputDocument(
     const withFiles = withProfileFiles(base, () => profiles);
     // Push then refuses an action statement YAML reads differently from how
     // it is written, in the model file and in each profile file.
-    const changed = 'errors' in withFiles ? [] : [
-      {fileName: model.name, text: content, name: DEFAULT_PROFILE},
-      ...profiles,
-    ].flatMap(f => yamlChangedStatementErrors(
-                  f.text, f.fileName, base.model, f.name));
+    const changed = 'errors' in withFiles ?
+        [] :
+        yamlChangedStatementErrors(base, content, () => profiles);
     for (const error of changed) doc.warnOrError(error);
     if (changed.length) return;
     const checked = 'errors' in withFiles ? withFiles : await localChecks(

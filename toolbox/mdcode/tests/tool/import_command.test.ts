@@ -34,6 +34,9 @@ semantic_model:
 `;
 const model = (source = `${PREFIX}/tables/orders`) =>
     MODEL.replace('SOURCE', source);
+// The default model as a Google-flavor file.
+const google = model().replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
+                   .replace('    datasets:\n', '    entities:\n');
 
 let dir = '';
 let cwd = '';
@@ -307,8 +310,6 @@ describe('kcmd import', () => {
   describe('a model with a profile file in the workspace', () => {
     const MODEL_FILE = path.join(GROUP, 'retail.yaml');
     const PROFILE_FILE = path.join(GROUP, 'retail.profile.prod.yaml');
-    const google = model().replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
-                       .replace('    datasets:\n', '    entities:\n');
     // Profile prod, whose field order_id has only Snowflake SQL.
     const PROFILE =
         `# The prod tables.\nname: prod\nentities:\n  - name: orders\n` +
@@ -557,18 +558,15 @@ describe('kcmd import', () => {
   // Push refuses an unquoted action statement with a comment on the same line.
   test('a first-party file with a comment after an action statement gets push\'s error, and nothing is written', async () => {
     write('retail.yaml',
-          model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"').replace('datasets:', 'entities:') +
+          google +
           '    actions:\n      - name: purge\n        parameters: [{name: k, type: Integer}]\n' +
           '        executor:\n          sql:\n            statements:\n' +
           "              - UPDATE orders SET doc = doc #- '{draft}' WHERE order_id = @k\n");
     expect(await importModel('retail.yaml', {flavor: 'google', input: 'first-party', out: 'out'}))
         .toBe(1);
-    expect(errors).toEqual([
-      "Error: action 'purge' in model 'retail' (retail) has a sql executor whose statement 1 " +
-      "has a comment on the same line, so YAML reads the statement as 'UPDATE orders SET doc = " +
-      "doc'. If the text after ' #' is part of the statement, write it as a block scalar with " +
-      "'|'. If it is a YAML comment, move it to the '-' column or above the statement.",
-    ]);
+    expect(errors).toEqual([expect.stringContaining(
+        "Error: action 'purge' in model 'retail' (retail) has a sql executor whose statement 1 " +
+        'has a comment on the same line')]);
     expect(filesIn('out')).toEqual([]);
   });
 

@@ -9,7 +9,7 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {ALLOYDB, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
+import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -362,15 +362,26 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
       code: 0,
     }, {
+      files: {'commerce.yaml': modelWriting([
+        '- "UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k"',
+        "- 'UPDATE customer SET doc = doc -- every row?", "  WHERE c_key = @k'",
+      ])},
+      errors: [has('statement 1 has a SQL comment'), has('statement 2 has a SQL comment')],
+    }, {
       files: {'commerce.yaml': modelWriting(
           ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
           {deployments: ['g']})},
       errors: [has('has a SQL comment on a line YAML joins to the next one')],
     }, {
-      files: {'commerce.yaml': modelWriting(
-          ['- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k'],
-          {deployments: [{name: 'pg', target: ALLOYDB}],
-           entities: [{...CUSTOMER, source: `${ALLOYDB}/schemas/public/tables/customer`}]})},
+      // Profile p deploys to AlloyDB alone.
+      deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': withStatementLines(
+          profileFile('p', {
+            ...boundAt(`${ALLOYDB}/schemas/public/tables/customer`),
+            actions: [{name: 'purge', executor: ONE_STATEMENT}],
+          }),
+          '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k')},
       code: 0,
     }],
   },

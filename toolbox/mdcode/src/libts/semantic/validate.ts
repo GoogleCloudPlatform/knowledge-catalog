@@ -1025,8 +1025,9 @@ function sqlExecutorErrors(
   return errors;
 }
 
-// The errors for each `sql` executor statement in the model or profile file
-// `text` that YAML reads differently from how it is written:
+// The errors for each `sql` executor statement that YAML reads differently
+// from how it is written, in the model file `text` of `base` and in each of
+// its profile files:
 //   1. An unquoted statement with a comment on the same line. YAML ends an
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
@@ -1035,12 +1036,66 @@ function sqlExecutorErrors(
 //   3. A statement whose YAML style joins its lines into one, with a SQL line
 //      comment on a line before the last. Joined, the comment also covers the
 //      lines after it.
-// The file holds binding profile `profile`, or DEFAULT_PROFILE for the model
-// file. `file` names the file in each message. Empty for text with a YAML
-// error, which the load reports.
 export function yamlChangedStatementErrors(
-    text: string, file: string, model: SemanticModel,
-    profile: string): string[] {
+    base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
+  const {document, model} = base;
+  const advice = (what: string) =>
+      `If ${what} is part of the statement, write it as a block scalar with ` +
+      `'|'. If it is a YAML comment, move it to the '-' column or above the ` +
+      `statement.`;
+  const errors: string[] = [];
+  // The model file holds the inline bindings and goes by its document name,
+  // as in the other action messages.
+  for (const file of [
+         {name: DEFAULT_PROFILE, text, fileName: document},
+         ...profileDocs(document),
+       ]) {
+    const dialects = statementDialects(model, file.name);
+    for (const {action, index, aliased, statement, dashColumn} of
+             writtenStatements(file.text)) {
+      const at = `action '${action}' in model '${model.name}' (${
+          file.fileName}) has a sql executor whose statement ${index + 1}`;
+      const after = file.text.slice(statement.range![1]);
+      const commentIndent =
+          /^[ \t]*\r?\n([ \t]*)#/.exec(after)?.[1].length ?? -1;
+      if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
+        errors.push(
+            `${at} has a comment on the same line, so YAML reads the ` +
+            `statement as '${statement.value}'. ${
+                advice("the text after ' #'")}`);
+      } else if (statement.type === 'PLAIN' && !aliased &&
+                 commentIndent > dashColumn) {
+        errors.push(
+            `${at} is followed by a comment line indented under it, so YAML ` +
+            `reads the statement as '${statement.value}'. ${
+                advice('the comment line')}`);
+      } else if (joinedLinesCommented(statement, file.text, dialects)) {
+        errors.push(
+            `${at} has a SQL comment on a line YAML joins to the next one, ` +
+            `so the comment also covers the lines after it. Write it as a ` +
+            `block scalar with '|', which keeps its line breaks.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// One `sql` executor statement in a model or profile file.
+interface WrittenStatement {
+  action: string;
+  // 0-based position in the executor's `statements` list.
+  index: number;
+  // Whether the list item is an alias of `statement`.
+  aliased: boolean;
+  statement: yaml.Scalar;
+  // The column of the list's '-'.
+  dashColumn: number;
+}
+
+// Each `sql` executor statement in the model or profile file `text`. A model
+// file lists actions under each model, and a profile file at its top level.
+// Empty for text with a YAML error, which the load reports.
+function writtenStatements(text: string): WrittenStatement[] {
   const doc = yaml.parseDocument(text, YAML_OPTIONS);
   if (doc.errors.length) return [];
   const resolved = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
@@ -1055,53 +1110,28 @@ export function yamlChangedStatementErrors(
     const seq = nodeAt(n, ...path);
     return yaml.isSeq(seq) ? seq.items : [];
   };
-  // A model file lists actions under each model, and a profile file at its
-  // top level.
   const actions = [
     ...listAt(doc.contents, 'semantic_model')
         .flatMap(m => listAt(m, 'actions')),
     ...listAt(doc.contents, 'actions'),
   ];
-  const dialects = statementDialects(model, profile);
-  const errors: string[] = [];
-  for (const action of actions) {
-    const name = nodeAt(action, 'name');
+  return actions.flatMap(action => {
     const statements = nodeAt(action, 'executor', 'sql', 'statements');
-    if (!yaml.isSeq(statements)) continue;
+    if (!yaml.isSeq(statements)) return [];
+    const name = nodeAt(action, 'name');
     const start = statements.range![0];
-    const dash = start - text.lastIndexOf('\n', start - 1) - 1;
-    statements.items.forEach((item, i) => {
+    const dashColumn = start - text.lastIndexOf('\n', start - 1) - 1;
+    return statements.items.flatMap((item, index) => {
       const statement = resolved(item);
-      if (!yaml.isScalar(statement)) return;
-      const at = `action '${yaml.isScalar(name) ? name.value : ''}' in model '${
-          model.name}' (${file}) has a sql executor whose statement ${i + 1}`;
-      const after = text.slice(statement.range![1]);
-      // The indent of a comment line right after the statement.
-      const next = /^[ \t]*\r?\n([ \t]*)#/.exec(after)?.[1].length ?? -1;
-      if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
-        errors.push(
-            `${at} has a comment on the same line, so YAML reads the ` +
-            `statement as '${statement.value}'. If the text after ' #' is ` +
-            `part of the statement, write it as a block scalar with '|'. If ` +
-            `it is a YAML comment, move it to the '-' column or above the ` +
-            `statement.`);
-      } else if (statement.type === 'PLAIN' && item === statement &&
-                 next > dash) {
-        errors.push(
-            `${at} is followed by a comment line indented under it, so YAML ` +
-            `reads the statement as '${statement.value}'. If the comment ` +
-            `line is part of the statement, write it as a block scalar with ` +
-            `'|'. If it is a YAML comment, move it to the '-' column or ` +
-            `above the statement.`);
-      } else if (joinedLinesCommented(statement, text, dialects)) {
-        errors.push(
-            `${at} has a SQL comment on a line YAML joins to the next one, ` +
-            `so the comment also covers the lines after it. Write it as a ` +
-            `block scalar with '|', which keeps its line breaks.`);
-      }
+      return yaml.isScalar(statement) ? [{
+        action: yaml.isScalar(name) ? String(name.value) : '',
+        index,
+        aliased: item !== statement,
+        statement,
+        dashColumn,
+      }] : [];
     });
-  }
-  return errors;
+  });
 }
 
 // The dialects of the stores binding profile `profile` runs statements
@@ -1119,16 +1149,17 @@ function statementDialects(model: SemanticModel, profile: string): string[] {
 // the lines after it, as any of `dialects` reads the statement. The join can
 // only take tokens away, by putting them inside such a comment, so the
 // statement YAML reads then has fewer tokens than the statement with its line
-// breaks kept. With no dialect, `#` is not a comment, since PostgreSQL reads
-// it as an operator, and `--` is.
+// breaks kept. With no dialect, only `--` starts a comment, since PostgreSQL
+// reads `#` as an operator.
 function joinedLinesCommented(
     statement: yaml.Scalar, text: string, dialects: string[]): boolean {
   const kept = withLineBreaks(statement, text);
   if (kept === undefined) return false;
   return (dialects.length ? dialects : ['ANSI_SQL']).some(dialect => {
-    const joined = sqlTokens(String(statement.value), dialect);
-    const written = sqlTokens(kept, dialect);
-    return !!joined && !!written && joined.length < written.length;
+    const joinedTokens = sqlTokens(String(statement.value), dialect);
+    const keptTokens = sqlTokens(kept, dialect);
+    return !!joinedTokens && !!keptTokens &&
+        joinedTokens.length < keptTokens.length;
   });
 }
 
@@ -1142,20 +1173,16 @@ function withLineBreaks(statement: yaml.Scalar, text: string): string|
   const written = text.slice(statement.range![0], statement.range![1]);
   if (!written.includes('\n')) return undefined;
   let kept: unknown;
-  try {
-    if (statement.type === 'PLAIN') {
-      kept = written;
-    } else if (statement.type === 'QUOTE_SINGLE') {
-      kept = written.slice(1, -1).replace(/''/g, "'");
-    } else if (statement.type === 'QUOTE_DOUBLE') {
-      kept = yaml.parse(
-          written.replace(/(?<!\\)((?:\\\\)*)(\r?\n)/g, '$1\\n\\$2'),
-          YAML_OPTIONS);
-    } else if (statement.type === 'BLOCK_FOLDED') {
-      kept = yaml.parse(`|${written.slice(1)}`, YAML_OPTIONS);
-    }
-  } catch {
-    // The rewritten text does not parse, so the statement is not checked.
+  if (statement.type === 'PLAIN') {
+    kept = written;
+  } else if (statement.type === 'QUOTE_SINGLE') {
+    kept = written.slice(1, -1).replace(/''/g, "'");
+  } else if (statement.type === 'QUOTE_DOUBLE') {
+    kept = yaml.parse(
+        written.replace(/(?<![\\\r])((?:\\\\)*)(\r?\n)/g, '$1\\n\\$2'),
+        YAML_OPTIONS);
+  } else if (statement.type === 'BLOCK_FOLDED') {
+    kept = yaml.parse(`|${written.slice(1)}`, YAML_OPTIONS);
   }
   return typeof kept === 'string' ? kept : undefined;
 }

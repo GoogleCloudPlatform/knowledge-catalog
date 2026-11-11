@@ -1186,22 +1186,15 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    // The model file goes by its document name, as in the other action
-    // messages, and holds the inline bindings. Pull writes its files as
-    // UTF-8, so their bytes are not checked.
-    const changed: string[] = [];
-    for (const file of [
-           {...modelFile, label: base.document, profile: DEFAULT_PROFILE},
-           ...profileDocs(base.document)
-               .map(p => ({...p, label: p.fileName, profile: p.name})),
-         ]) {
+    // Pull writes its files as UTF-8, so their bytes are not checked.
+    for (const file of [modelFile, ...profileDocs(base.document)]) {
       const error = scope.pulled ?
           undefined :
           checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
-      changed.push(...yamlChangedStatementErrors(
-          file.text, file.label, base.model, file.profile));
     }
+    const changed =
+        yamlChangedStatementErrors(base, modelFile.text, profileDocs);
     if (changed.length) return fail(...changed);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
