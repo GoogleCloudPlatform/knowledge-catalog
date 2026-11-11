@@ -1203,8 +1203,8 @@ project someone else set up. Actions and constraints are optional
 constructs, so init reports a refusal to create their types as a warning and
 carries on; every model that declares neither still pushes and pulls. Any other
 failure to create a type stops init, rather than leaving a later push to hit an
-opaque parsing error. When the write quota refuses a create, init says to run
-it again in a minute.
+opaque parsing error. When the write quota refuses the create of a type, init
+says to run it again in a minute.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.
