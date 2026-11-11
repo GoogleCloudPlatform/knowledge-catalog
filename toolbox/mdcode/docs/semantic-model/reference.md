@@ -99,7 +99,7 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. The summary counts the files it deletes. |
 
-When pull refuses a local model file, the refusal says how to keep or delete
+When pull refuses a local model file, the refusal names what you can do with
 that file. On macOS and Windows, file names that differ only in letter case
 name the same file, so when pull prints more than one refusal, follow one
 refusal's choice and run pull again before you follow the next.
@@ -876,10 +876,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a
-  BigQuery entry for a text it can translate. A message that suggests that
-  command with `--input first-party` also names the first problem push would
-  report once the command has translated the file, since the command writes
-  nothing until that problem is fixed. Every push
+  BigQuery entry for a text it can translate. Before a message suggests that
+  command, kcmd runs the import it names, writing nothing. When that import
+  would stop, the message also names the first error it would stop on. Every
+  push
   runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
