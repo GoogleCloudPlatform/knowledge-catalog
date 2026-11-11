@@ -787,10 +787,9 @@ gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
   --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
 ```
 
-> **Why the tables come before the Spanner push.** Deploying the Spanner graph
-> applies the DDL through the `updateDatabaseDdl` long-running operation; it does
-> not create the tables, and for a model like this one — which declares no
-> actions — it does not read them either. So the tables must exist first.
+> **Why the tables come before the Spanner push.** Push does not create the
+> tables. Its graph check reads them before anything is written, so the tables
+> must exist first.
 
 ### Inspect the binding profiles
 
