@@ -1310,6 +1310,7 @@ function valueName(node: any): string {
   const kind = kindOf(node) ?? '';
   const value = node?.[kind];
   const type = kind === 'literal' && value.literal_type.replaceAll('_', ' ');
+  if (type === 'date' || type === 'timestamp') return `a ${type.toUpperCase()} literal`;
   if (type) return `${article(type)} ${type}`;
   if (kind === 'cast' || kind === 'try_cast') return `a cast to ${typeName(castType(value.to), '')}`;
   if (kind === 'function') return String(value.name).toUpperCase();
