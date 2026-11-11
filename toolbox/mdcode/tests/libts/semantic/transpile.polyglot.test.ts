@@ -664,9 +664,13 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'CURRENT_DATE = 20240101', {error: 'kcmd does not translate = on a DATE and a number'}],
     ['POSTGRES', "DATE_TRUNC('month', CURRENT_DATE)", {sql: 'TIMESTAMP(DATE_TRUNC(CURRENT_DATE, MONTH))'}],
     ['POSTGRES', "DATE_TRUNC('day', CURRENT_DATE)", {sql: 'TIMESTAMP(CURRENT_DATE)'}],
-    // A SPANNER INTERVAL whose amount is neither a whole number nor a column, or
-    // one outside DATE_ADD and the like with a unit other than days, hours or
-    // minutes.
+    // A SPANNER INTERVAL of weeks, of an expression, or in EXTRACT.
+    ['SPANNER', 'COALESCE(i, INTERVAL 1 WEEK)', {sql: "COALESCE(i, INTERVAL '1' WEEK)"}],
+    ['SPANNER', 't + INTERVAL (1+1) DAY', {sql: 't + INTERVAL (1 + 1) DAY'}],
+    ['SPANNER', 'EXTRACT(DAY FROM INTERVAL 1 YEAR)', {sql: "EXTRACT(DAY FROM INTERVAL '1' YEAR)"}],
+    // A SPANNER INTERVAL whose amount is neither a whole number nor an
+    // expression, or one outside DATE_ADD, EXTRACT and the like with a unit
+    // other than weeks, days, hours or minutes.
     ['SPANNER', "d + INTERVAL '1 day'", {error: "kcmd does not translate INTERVAL '1 day'"}],
     ['SPANNER', 'd + (INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
     ['SPANNER', 'd + COALESCE(INTERVAL 1 MONTH, INTERVAL 2 DAY)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],

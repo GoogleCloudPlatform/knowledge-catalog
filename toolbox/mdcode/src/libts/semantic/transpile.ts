@@ -2133,22 +2133,26 @@ function valueName(node: any): string {
 }
 
 // Whether import keeps `value`, an engine interval in a SPANNER text outside
-// DATE_ADD and the other functions of SPANNER_ADDS: a whole number or a column
-// of days, hours or minutes. BigQuery adds no month or year to a TIMESTAMP,
-// and such an INTERVAL can reach `+` or `-` through COALESCE, a product or
-// any other expression.
+// DATE_ADD and the other functions of SPANNER_ADDS: an amount of weeks, days,
+// hours or minutes. A week is 7 days, as in BigQuery, since Spanner's
+// INTERVAL has no part for weeks. BigQuery adds no month or year to a
+// TIMESTAMP, and such an INTERVAL can reach `+` or `-` through COALESCE, a
+// product or any other expression.
 function spannerInterval(value: any): boolean {
-  return spannerAmount(value) && ['DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
+  return spannerAmount(value) &&
+      ['WEEK', 'DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
 }
 
 // The functions that add their INTERVAL as Spanner does, for any unit they take.
 const SPANNER_ADDS = new Set(['DATE_ADD', 'DATE_SUB', 'TIMESTAMP_ADD', 'TIMESTAMP_SUB']);
 
 // Whether `value`, an engine interval in a SPANNER text, names one unit and a
-// whole number or a column.
+// whole number or an expression, which Spanner and BigQuery both need to be an
+// INT64.
 function spannerAmount(value: any): boolean {
-  const text = intervalAmount(value);
-  return value?.unit?.type === 'simple' && (!!bare(value.this)?.column || /^\s*[+-]?\d+\s*$/.test(text ?? ''));
+  const b = bare(value?.this);
+  const expression = !!b && !b.literal && b.boolean === undefined;
+  return value?.unit?.type === 'simple' && (expression || /^\s*[+-]?\d+\s*$/.test(intervalAmount(value) ?? ''));
 }
 
 // `value`, an engine interval, as the source writes it after INTERVAL, for a
@@ -2714,7 +2718,10 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     if (!['zoned', 'interval', 'date', 'timestamp'].includes(type!) && SPANNER_DATE_PARTS.has(part)) {
       return `EXTRACT of ${part} from a value that may be a TIMESTAMP`;
     }
-    return [value.this];
+    // Spanner and BigQuery give an INTERVAL's parts as Y-M D H:M:S, so EXTRACT
+    // takes an INTERVAL of any unit, as DATE_ADD does.
+    const interval = bare(value.this)?.interval;
+    return interval && spannerAmount(interval) ? [interval.this] : [value.this];
   }
   if (kind === 'interval') return spannerInterval(value) ? [value.this] : `INTERVAL ${intervalText(value)}`;
   if (kind === 'cast' || kind === 'safe_cast') {

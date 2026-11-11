@@ -333,13 +333,16 @@ names microseconds.
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
 counts as days. A column plus a whole number, such as `(d + 1) + INTERVAL '1
 day'`, gets an INTERVAL as a DATE does. None of the three adds an INTERVAL to
-a number or a whole number to a timestamp, and BigQuery does neither. Import translates no date arithmetic from ANSI_SQL, since the
-databases an ANSI_SQL text runs on add a unit as different types. From a
-SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
-days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
-does. From the other databases, import leaves any other date arithmetic
-untranslated, such as an amount that is a fraction, or a function such as MAX
-plus an INTERVAL.
+a number or a whole number to a timestamp, and BigQuery does neither. Import
+translates no date arithmetic from ANSI_SQL, since the databases an ANSI_SQL
+text runs on add a unit as different types. From a SPANNER text it keeps
+DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and
+minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
+7 days in both. The amount is a whole number or an expression, such as
+`INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
+BigQuery give its parts the same way. From the other databases, import leaves
+any other date arithmetic untranslated, such as an amount that is a fraction,
+or a function such as MAX plus an INTERVAL.
 
 From PostgreSQL and Databricks, import also translates a sum or difference of
 INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
