@@ -1083,7 +1083,8 @@ export function yamlChangedStatementErrors(
             `${at} has a comment on the same line, so YAML reads the ` +
             `statement as '${statement.value}'. If the text after ' #' is ` +
             `part of the statement, write it as a block scalar with '|'. If ` +
-            `it is a YAML comment, move it to its own line.`);
+            `it is a YAML comment, move it to the '-' column or above the ` +
+            `statement.`);
       } else if (statement.type === 'PLAIN' && item === statement &&
                  next > dash) {
         errors.push(

@@ -304,7 +304,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         'whose statement 1 has a comment on the same line, so YAML reads the ' +
         "statement as 'UPDATE customer SET doc = doc'. If the text after ' #' " +
         "is part of the statement, write it as a block scalar with '|'. If it " +
-        'is a YAML comment, move it to its own line.')],
+        "is a YAML comment, move it to the '-' column or above the statement.")],
     then: [{
       files: {'commerce.yaml': modelWriting([
         '- UPDATE customer SET doc = doc WHERE c_key = @k',
