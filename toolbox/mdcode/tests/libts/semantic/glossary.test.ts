@@ -7,14 +7,17 @@
 // Running example (neutral): an order table and a customer table, with a
 // small revenue vocabulary.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
 import {checkGlossary, glossaryDoc, glossaryFromDataplex, glossaryId, GlossaryRequest, LINK_TYPES, linkId, planGlossary, splitTermDescription, termDescription, termEntryName} from '../../../src/libts/semantic/glossary';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(loadSqlEngine);
 
 const GOOGLE = '0.2.0.dev0/google';
 
@@ -23,7 +26,7 @@ function doc(glossary: any, version = GOOGLE) {
     version,
     semantic_model: [{
       name: 'shop',
-      datasets: [
+      [version === GOOGLE ? 'entities' : 'datasets']: [
         {
           name: 'Party',
           abstract: true,
@@ -31,7 +34,7 @@ function doc(glossary: any, version = GOOGLE) {
         },
         {
           name: 'Customer',
-          source: 'bigquery:data-proj.sales.customers',
+          source: 'bigquery.googleapis.com/projects/data-proj/datasets/sales/tables/customers',
           primary_key: ['customerId'],
           extends: ['Party'],
           fields: [
@@ -41,7 +44,7 @@ function doc(glossary: any, version = GOOGLE) {
         },
         {
           name: 'Order',
-          source: 'bigquery:data-proj.sales.orders',
+          source: 'bigquery.googleapis.com/projects/data-proj/datasets/sales/tables/orders',
           primary_key: ['orderId'],
           fields: [
             {name: 'orderId', expression: 'order_id', datatype: 'String'},
@@ -348,10 +351,10 @@ describe('Dataplex request plan', () => {
     const sources = sem.map(l => [l.body.entryReferences[0].name.split('/entries/')[1],
                                   l.body.entryReferences[0].path]);
     expect(sources).toEqual(expect.arrayContaining([
-      ['shop.metrics.revenue', undefined],
-      ['shop.entities.Order', undefined],
-      ['shop.entities.Order', 'Schema.total'],
-      ['shop.entities.Customer', 'Schema.displayName'],
+      ['shop/metrics/revenue', undefined],
+      ['shop/entities/Order', undefined],
+      ['shop/entities/Order', 'Schema.total'],
+      ['shop/entities/Customer', 'Schema.displayName'],
     ]));
     expect(sem[0].path).toBe('projects/222/locations/us/entryGroups/shop_eg/entryLinks');
   });

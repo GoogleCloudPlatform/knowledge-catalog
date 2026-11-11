@@ -11,7 +11,7 @@
 //   * Knowledge Catalog -- the `Inverse: <name>.` trailer on the join
 //     description, parsed back on pull.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
@@ -20,6 +20,9 @@ import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_ca
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const GOOGLE = '0.2.0.dev0/google';
 
@@ -30,15 +33,15 @@ function doc(extra = '  inverse: hasOpportunity', version = GOOGLE): string {
   return `version: ${version}
 semantic_model:
   - name: deals
-    datasets:
+    ${version === GOOGLE ? 'entities' : 'datasets'}:
       - name: Client
-        source: bigquery:proj.ds.client
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/client
         primary_key: [client_id]
         fields:
           - { name: client_id, expression: client_id }
           - { name: name, expression: name }
       - name: Opportunity
-        source: bigquery:proj.ds.opportunity
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/opportunity
         primary_key: [opportunity_id]
         fields:
           - { name: opportunity_id, expression: opportunity_id }
@@ -181,10 +184,10 @@ describe('Knowledge Catalog: the Inverse trailer', () => {
   const OPTS = {project: 'dest', location: 'us', entryGroup: 'eg'};
 
   function joinDescription(model: SemanticModel): string|undefined {
-    const {entryLinks} = generateCatalogResources(model, OPTS);
-    const link = entryLinks.find(l => l.aspects);
-    const aspect = Object.values(link!.aspects!)[0] as any;
-    return aspect.data.joins[0].description;
+    const {entries} = generateCatalogResources(model, OPTS);
+    const relEntry = entries.find(
+        e => e.entryType?.endsWith('/semantic-relationship'))!;
+    return relEntry.entrySource?.description;
   }
 
   test('push appends the inverse to the join description', () => {

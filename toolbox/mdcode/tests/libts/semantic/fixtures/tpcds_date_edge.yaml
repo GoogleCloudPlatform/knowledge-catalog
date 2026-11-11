@@ -7,9 +7,10 @@
 # target, so date_dim declares the one its join uses.
 #
 # Not to be confused with fixtures/ossie/tpcds_semantic_model.yaml: that is the
-# Apache Ossie reference example, copied verbatim to test that the loader parses
-# the canonical spec example faithfully. This one is hand-authored to isolate
-# the edge cases above for the loader -> BigQuery DDL goldens.
+# Apache Ossie reference example, copied with its sources rewritten, to test
+# that the loader parses the canonical spec example faithfully. This one is
+# hand-authored to isolate the edge cases above for the loader -> BigQuery DDL
+# goldens.
 
 version: "0.2.0.dev0"
 
@@ -19,7 +20,7 @@ semantic_model:
 
     datasets:
       - name: store_sales
-        source: tpcds.public.store_sales
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales
         primary_key: [ss_item_sk, ss_ticket_number]
         description: Fact table containing all store sales transactions
         fields:
@@ -77,7 +78,7 @@ semantic_model:
             description: Net profit from the sale
 
       - name: customer
-        source: tpcds.public.customer
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
         primary_key: [c_customer_sk]
         description: Customer dimension with demographic information
         fields:
@@ -106,7 +107,7 @@ semantic_model:
             description: Customer last name
 
       - name: item
-        source: tpcds.public.item
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
         primary_key: [i_item_sk]
         description: Item/Product dimension
         fields:
@@ -139,7 +140,7 @@ semantic_model:
             description: Current price of the item
 
       - name: store
-        source: tpcds.public.store
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
         primary_key: [s_store_sk]
         description: Store dimension with location attributes
         fields:
@@ -179,7 +180,7 @@ semantic_model:
             description: Number of employees at the store
 
       - name: date_dim
-        source: date_dim
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim
         primary_key: [ss_sold_date_sk]
         description: Date dimension with calendar attributes
         custom_extensions:

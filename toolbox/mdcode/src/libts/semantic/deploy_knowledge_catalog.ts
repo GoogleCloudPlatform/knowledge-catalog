@@ -7,61 +7,57 @@
 // catalog Entries + Aspects (the pure emitter in knowledge_catalog.ts), and
 // writes them through the Knowledge Catalog client.
 //
-// Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
-// aspect types — and the built-in `schema` aspect — are built-in system types
-// in `dataplex-types/global`, while `kcmd`-owned custom types (such as
-// `semantic-action` and `semantic-constraint`) live in the destination project.
-// Push does NOT provision any type, nor the entry group (those are created at
-// `init`); it only validates and writes entries and entry links. The caller
-// needs `dataplex.entryGroups.useSemanticModelAspect` on the destination entry
-// group.
+// Types: the `semantic-model`/`semantic-entity`/`semantic-metric`/
+// `semantic-relationship` entry and aspect types — and the built-in `schema`,
+// `guidelines`, `overview`, `semantic-extensions` and `sql-expressions` aspects
+// — are built-in system types in `dataplex-types/global`, while `kcmd`-owned
+// custom types (`semantic-action` and `semantic-constraint`) live in the
+// destination project. Push does NOT provision any type, nor the entry group
+// (those are created at `init`); it only validates and writes entries and entry
+// links.
 //
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):
-//   * Preflight validates that exactly one model is deployed per entry group
-//     and that each file copy -- a whole file, or one part of a file too large
-//     for one aspect -- fits in one aspect, snapshots the destination entry
-//     group to guard against foreign models (unless `--force-remove` is set),
-//     and checks that any required custom entry/aspect types exist in the
-//     target project, with the part fields when a file is stored in parts.
+//   * Preflight validates that exactly one model is deployed per entry group,
+//     snapshots the destination entry group to guard against foreign models
+//     (unless `--force-remove` is set), and checks that any required custom
+//     entry/aspect types exist in the target project. It also checks every
+//     aspect's size.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
 //     `semantic-explore`).
-//   * Relationship edges are published as `schema-join` entry links between
-//     the two entity entries, under both layouts, after that model's entries
-//     exist. Reconciliation also recognizes `semantic-relationship` links. A
-//     re-push first deletes any orphaned relationship links (no longer
-//     emitted) and stale links (whose type or endpoint references changed),
-//     then creates new or recreated links and updates unchanged links' aspects
-//     in place. The caller additionally needs
-//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`
-//     on the destination entry group.
+//   * Relationships are published as entry links after that model's entries
+//     exist: a `semantic-link` per ordered pair of related entities, a
+//     `reference` link from each relationship entry to each of its entities,
+//     and one from each entity to each parent it extends. When
+//     `bigQueryEntries` is resolved, `@bigquery` binding links (`schema-join`
+//     to node view / table and graph node entries) are reconciled non-fatally.
+//     All link writes retry HTTP 429 quota responses (`withLinkQuotaRetry`).
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
-//   * Binding links (K3): when the caller resolves where the model's BigQuery
-//     entries live (`bigQueryEntries`), each bound entity's schema-join links
-//     to its `@bigquery` view or table and graph node entries are written
-//     after its relationship links. Their other end is outside the model, so
-//     they are owned by ID prefix: the model's binding links no longer emitted,
-//     or whose endpoints changed, are deleted first, and a link that fails to
-//     write is a warning rather than a failed push.
-//   * Annotation aspects (K1): an update names every provisioned annotation
-//     aspect key (`customAspects`), so one the model no longer fills is removed.
+//   * The anchor's write labels it `kcmd-push-state: writing`, and the push's
+//     last write, after the deletions, relabels it `finished`.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
 // print.
 
+import {isDeepStrictEqual} from 'node:util';
+
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import * as crm from '../gcp/crm';
-import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {collectCustomTypes, customAspectKey, customTypeHome, FILE_COPY_PART_FIELDS, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isRelationshipLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
-import {entryIdOf, fileCopySlug, slug} from './kc_ids';
+import {ConstraintRates} from './constraint_enforcement';
+import {BigQueryEntryLocator} from './kc_annotations';
+import {resolveBigQueryEntries} from './kc_closure_env';
+import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
+import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
+import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -80,36 +76,17 @@ export interface KcDeployOptions {
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
-  // Emit the SQL-expression fields not yet in the published system-type
-  // templates (per-field `schema.semantics` and `semantic-metric.expression`).
-  // Off by default so the push matches the live types; see
-  // KcGenerateOptions.emitExpressions.
-  emitExpressions?: boolean;
-  // K1: the annotation aspect types provisioned in the destination project
-  // (probed by the caller, see kc_custom_types.provisionedCustomAspects).
-  // See KcGenerateOptions.customAspects.
-  customAspects?: readonly string[];
-  // K3: where the model's BigQuery entries live, resolved by the caller.
-  // Present = write binding links (non-fatally) and reconcile stale ones.
-  bigQueryEntries?: kcEmit.BigQueryEntryLocator;
-  // Per model, the measured rates of the constraints its node views enforce.
-  // See KcGenerateOptions.constraintRates.
-  constraintRates?: kcEmit.KcGenerateOptions['constraintRates'];
-  // Emit the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
-  // Consumed by `emitModels` when called through `preflightKnowledgeCatalog` or
-  // `deployKnowledgeCatalog`, and by `updateEntry` when computing `aspectKeys`
-  // (including when called through `deployEmittedModels`, which takes
-  // already-emitted resources from an origin with its own emitter).
-  v2Aspects?: boolean;
-  // The file copies of the model file and its profile files, which the
-  // emitter stores when v2Aspects is off. Consumed by `emitModels` like
-  // v2Aspects.
-  sourceFiles?: FileCopy[];
-  // Set when the caller has already checked that the file-copy type exists
-  // in the destination project. The preflight then does not look that type
-  // up again. It still looks up every other custom type the model uses.
-  fileCopyTypeChecked?: boolean;
+  // The overview sidecar of each entry, by entry id, which the emitter writes
+  // into the entry's overview.
+  overviews?: ReadonlyMap<string, OverviewSidecar>;
+  // Resolved `@bigquery` dataset locations and project numbers for entity
+  // binding links (K3).
+  bigQueryEntries?: BigQueryEntryLocator;
+  // Measured constraint violation rates per model -> entity -> constraint.
+  constraintRates?: ReadonlyMap<string, ConstraintRates>;
+  // Append derived runtime grounding trailers (`Contents:`, `Read through:`,
+  // `Relationships:`, `Query:`) on entry descriptions.
+  groundingTrailers?: boolean;
   // Called with the warnings once the preflight passes, before the first
   // catalog write, so a caller can show them before anything is written. The
   // result carries them too. Not called for validateOnly or when the preflight
@@ -128,11 +105,8 @@ export interface KcDeployOptions {
   entryCreateTries?: number;
   // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
   entryCreateRetryMs?: number;
-  // How many times to try an entry-link write that the per-minute entry-link
-  // quota refused (HTTP 429). Default LINK_WRITE_TRIES.
+  // Optional overrides for entry-link HTTP 429 quota retries.
   linkWriteTries?: number;
-  // Base delay before retrying a rate-limited entry-link write, in ms; the n-th
-  // retry waits n times this. Default LINK_RETRY_MS.
   linkRetryMs?: number;
 }
 
@@ -141,8 +115,7 @@ export interface KcDeployResult {
   success: boolean;
   // On failure, a human-readable reason; unset on success.
   details?: string;
-  // Loader and emitter warnings collected across all documents (e.g. a skipped
-  // many-to-many relationship, or a metric that could not be lowered).
+  // Loader and emitter warnings collected across all documents.
   warnings: string[];
   // New entries created in the entry group (0 for validateOnly).
   created: number;
@@ -152,16 +125,18 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join or semantic-relationship) entry links written --
-  // created, updated, or recreated (0 for validateOnly).
+  // Entry links written -- created, updated, or recreated (0 for
+  // validateOnly).
   linked: number;
+  // Entry links the lookup found with the same endpoints and aspects, so push
+  // sent no request for them (0 for validateOnly).
+  unchangedLinks: number;
   // Orphaned relationship links deleted -- from relationships dropped or
   // renamed on a still-present model, and from force-removed models (0 for
   // validateOnly).
   unlinked: number;
-  // K3: binding links (entity -> @bigquery view/table and graph node)
-  // written. Set only when the push was given a BigQueryEntryLocator; a
-  // binding link that fails is a warning, not a failed push.
+  // K3: `@bigquery` binding links written. Set only when `bigQueryEntries` was
+  // supplied; a binding link that fails is a warning, not a failed push.
   bound?: number;
   // A human-readable plan of what would be written: the sole output of a
   // validateOnly run, and also returned (for --print) on a real push.
@@ -176,9 +151,8 @@ interface Counts {
   updated: number;
   deleted: number;
   linked: number;
+  unchangedLinks: number;
   unlinked: number;
-  // Binding links written. Set once a model emits binding links, so a push
-  // without a BigQueryEntryLocator reports none (see KcDeployResult.bound).
   bound?: number;
 }
 
@@ -220,13 +194,13 @@ function sleep(ms: number): Promise<void> {
 // Runs one entry-link write, retrying while the entry-link quota refuses it.
 async function withLinkQuotaRetry<T>(
     opts: KcDeployOptions,
-    write: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+    call: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
   const tries = opts.linkWriteTries ?? LINK_WRITE_TRIES;
   const retryMs = opts.linkRetryMs ?? LINK_RETRY_MS;
-  let res = await write();
+  let res = await call();
   for (let attempt = 1; attempt < tries && res.status === 429; attempt++) {
     await sleep(retryMs * attempt);
-    res = await write();
+    res = await call();
   }
   return res;
 }
@@ -237,36 +211,21 @@ async function withLinkQuotaRetry<T>(
  *
  * The method performs the following actions:
  *   1. Translates the IR models into catalog resources.
- *   2. Verifies that exactly one model is being deployed and that each file
- *      copy fits in one aspect, builds the dry-run plan, and returns early
- *      when `opts.validateOnly` is set.
- *   3. Lists the destination entry group and fails if an unrecognized model's
- *      anchor entry is present without `--force-remove`.
+ *   2. Verifies that exactly one model is being deployed, builds the dry-run
+ *      plan, and returns early when `opts.validateOnly` is set.
+ *   3. Fails when the destination entry group does not exist. Lists it and
+ *      fails if an unrecognized model's anchor entry is present without
+ *      `--force-remove`.
  *   4. Verifies that every custom entry type and aspect type required by the
- *      model exists in the target project. Skips the file-copy type when
- *      `opts.fileCopyTypeChecked` is set.
+ *      model exists in the target project.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
+ * Step 2 also checks every aspect's size.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const emit = emitModels(models, opts);
-  if (emit.error) {
-    return {
-      result: {
-        success: false,
-        details: emit.error,
-        warnings: emit.warnings,
-        created: 0,
-        updated: 0,
-        deleted: 0,
-        linked: 0,
-        unlinked: 0,
-        plan: [],
-      },
-    };
-  }
   return preflightEmittedModels(emit.emitted, emit.warnings, ctx, opts);
 }
 
@@ -275,15 +234,21 @@ export async function preflightKnowledgeCatalog(
  *
  * The method performs the following actions:
  *   1. Removes foreign models when `--force-remove` is set.
- *   2. Writes each emitted model's entries and relationship links and deletes
- *      any orphaned links and entries.
+ *   2. Writes each emitted model's entries and relationship links (plus any
+ *      `@bigquery` binding links) and deletes any orphaned links and entries.
  */
 export async function applyKnowledgeCatalog(
     prepared: KcPreparedDeploy, ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [...prepared.warnings];
-  const counts:
-      Counts = {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  const counts: Counts = {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    linked: 0,
+    unchangedLinks: 0,
+    unlinked: 0,
+  };
   const plan = prepared.plan;
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -293,24 +258,10 @@ export async function applyKnowledgeCatalog(
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
-  // Some of this model's writes may have landed before a failure in them.
-  // The catalog may then lack some or all of this push's file copies, and
-  // pull refuses that until a push succeeds.
-  const storesCopies = emitted.some(
-      m => m.resources.entries.some(e => entryTypeId(e) === FILE_COPY_TYPE_ID));
-  const failed = (details: string) => result(
-      false,
-      storesCopies ?
-          `${details.replace(/\.$/, '')}. The catalog may now lack some or ` +
-              `all of this push's file copies, so push again before you pull.` :
-          details);
-
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
     if (foreignAnchorIds.length) {
-      // This runs before any of this model's writes. A failure here leaves
-      // none of this push's file copies, so it gets the note too, and so
-      // does a thrown error.
+      // A thrown error is reported like a failed delete.
       const removed =
           await removeForeignModels(
               cat, opts, existing, foreignAnchorIds, isScopeProject)
@@ -321,20 +272,20 @@ export async function applyKnowledgeCatalog(
                      }));
       counts.deleted += removed.deleted;
       counts.unlinked += removed.unlinked;
-      if (removed.error) return failed(removed.error);
+      if (removed.error) return result(false, removed.error);
     }
   }
 
   // Write each emitted model's entries and relationship links and delete any
   // orphaned resources. A thrown error, such as a network failure, can stop
   // the writes partway too, so it is reported the same way. The counts then
-  // leave out what the step that threw had already written. A binding link
-  // that fails adds a warning to `warnings` and does not stop the writes.
+  // leave out what the step that threw had already written.
   const written =
       await writeEmittedModels(
           cat, opts, emitted, existing, counts, warnings, isScopeProject)
-          .catch((err: any) => ({error: String(err?.message || err).trim()}));
-  if (written.error) return failed(written.error);
+          .catch((err: any): WriteModelsOutcome =>
+                     ({error: String(err?.message || err).trim()}));
+  if (written.error) return result(false, written.error);
 
   return result(true);
 }
@@ -370,25 +321,89 @@ export async function deployEmittedModels(
 }
 
 /**
+ * Post-BigQuery grounding pass for two-phase `kcmd push`: once BigQuery node
+ * views and property graphs have been deployed (and optional `constraintRates`
+ * measured), resolves `@bigquery` entry locations/project numbers, reconciles
+ * non-fatal `@bigquery` `bindingLinks`, and refreshes entity descriptions when
+ * `constraintRates` are present. No-op when `prepared.emitted` is empty.
+ */
+export async function syncBigQueryCatalogGrounding(
+    prepared: KcPreparedDeploy, models: LoadedModel[],
+    constraintRates: ReadonlyMap<string, ConstraintRates>|undefined,
+    ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<{bound: number; warnings: string[]}> {
+  if (!prepared.emitted.length) return {bound: 0, warnings: []};
+  const warnings: string[] = [];
+  const bigQueryEntries =
+      await resolveBigQueryEntries(models.map(m => m.model), ctx);
+  const cat = new CatalogClient(ctx);
+  const isScopeProject = scopeProjectMatcher(ctx, opts.project);
+  let bound = 0;
+
+  for (const {model} of models) {
+    const resources = kcEmit.generateCatalogResources(model, {
+      project: opts.project,
+      location: opts.location,
+      entryGroup: opts.entryGroup,
+      systemTypeProject: opts.systemTypeProject,
+      systemTypeLocation: opts.systemTypeLocation,
+      overviews: opts.overviews,
+      bigQueryEntries,
+      constraintRates,
+      groundingTrailers: true,
+    });
+    for (const w of resources.warnings) warnings.push(`[${model.name}] ${w}`);
+
+    if (constraintRates?.get(model.name)?.size) {
+      for (const entry of resources.entries) {
+        if (!entry.entryType?.endsWith('/entryTypes/semantic-entity')) continue;
+        await writeEntry(cat, opts, entry, new Map());
+      }
+    }
+
+    if (resources.bindingLinks) {
+      const entityNames = collectEntityNames(resources.entries);
+      const lookedUp = entityNames.length ?
+          await lookupEntryLinks(cat, opts, entityNames, isScopeProject) :
+          {links: new Map<string, EntryLink>()};
+      if (!lookedUp.error) {
+        const stale = findStaleBindingLinks(
+            model.name, resources.bindingLinks, lookedUp.links);
+        await deleteEntryLinks(cat, opts, stale);
+      }
+      for (const link of resources.bindingLinks) {
+        const res = await writeBindingLink(cat, opts, link)
+                        .catch((err: any) => ({
+                                 error: `entry link '${linkId(link)}': ${
+                                     String(err?.message || err).trim()}`,
+                               }));
+        if (res.error) {
+          warnings.push(`[${model.name}] binding link skipped: ${res.error}`);
+        } else {
+          bound++;
+        }
+      }
+    }
+  }
+  return {bound, warnings: [...new Set(warnings)]};
+}
+
+/**
  * Runs read-only preflight checks on already-emitted models.
- *
- * The method performs the following checks:
- *   1. Validates locally that `emitted` contains a single model and that each
- *      file copy fits in one aspect, builds the dry-run plan, and returns
- *      early when `opts.validateOnly` is set.
- *   2. Lists the destination entry group and validates that it contains no
- *      foreign models unless `--force-remove` is set.
- *   3. Validates that every custom type used by the model exists in the
- *      target project. Skips the file-copy type when
- *      `opts.fileCopyTypeChecked` is set.
  */
 async function preflightEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
     opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const warnings: string[] = [...emitWarnings];
-  const counts: Counts =
-      {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  const counts: Counts = {
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    linked: 0,
+    unchangedLinks: 0,
+    unlinked: 0,
+  };
   let plan: string[] = [];
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -403,8 +418,8 @@ async function preflightEmittedModels(
   // Once `validateEmittedModels` passes and `emitted` is non-empty, `emitted`
   // is guaranteed to contain exactly one model (`emitted[0]`).
   const model = emitted[0];
-  const sizeValidation = validateFileCopySizes(model, result);
-  if (!sizeValidation.success) return {result: sizeValidation};
+  const aspectsError = emittedAspectsError(model);
+  if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
   if (opts.validateOnly) return {result: result(true)};
 
@@ -413,6 +428,15 @@ async function preflightEmittedModels(
   //    reconciliation. A re-emitted entry is never a deletion candidate, so a
   //    pre-write snapshot is correct for all three.
   const cat = new CatalogClient(ctx);
+  // The listing reads a missing group as empty, so read the group itself.
+  const group =
+      await cat.getEntryGroup(opts.project, opts.location, opts.entryGroup)
+          .catch((err: any) => `reading entry group '${opts.entryGroup}': ${
+                     err?.message || String(err)}`);
+  if (typeof group === 'string') return {result: result(false, group)};
+  if (isNotFoundStatus(group)) {
+    return {result: result(false, missingEntryGroupMessage(opts))};
+  }
   const listing = await listEntryGroup(cat, opts);
   if (listing.error) return {result: result(false, listing.error)};
   const existing = listing.entries;
@@ -432,10 +456,6 @@ async function preflightEmittedModels(
 /**
  * Returns any `semantic-model` anchor IDs in `existing` that do not match the
  * input `model`'s anchor ID.
- *
- * A foreign anchor ID exists when the remote entry group already contains a
- * different `semantic-model` entry (for example, when the model was renamed
- * locally or a different model is pushed to the same entry group).
  */
 function findForeignAnchorIds(
     model: EmittedModel|undefined, existing: readonly Entry[]): string[] {
@@ -446,13 +466,6 @@ function findForeignAnchorIds(
 
 /**
  * Validates that `emitted` contains a single model.
- *
- * Only one semantic model per entry group is supported (so two models cannot
- * share an entry group or collide on entry IDs, and `kcmd pull` can
- * unambiguously read the group back).
- *
- * An empty workspace is a clean no-op under `--validate-only` and a
- * configuration error on a real push.
  */
 function validateEmittedModels(
     emitted: EmittedModel[], opts: KcDeployOptions, warnings: string[],
@@ -480,14 +493,18 @@ export function oneModelPerEntryGroupMessage(
       `separate entry groups.`;
 }
 
+/** The error for a push to an entry group that does not exist. */
+function missingEntryGroupMessage(opts: KcDeployOptions): string {
+  const {project, location, entryGroup} = opts;
+  return `entry group '${entryGroup}' does not exist in location ` +
+      `'${location}' of project '${project}'; run 'kcmd init ` +
+      `--semantic-model ${project}.${location}.${entryGroup}' to create it, ` +
+      `or correct the scope in catalog.yaml.`;
+}
+
 /**
  * Validates that `existing` (the destination entry-group snapshot) contains no
  * foreign `semantic-model` anchors unless `--force-remove` is set.
- *
- * If the entry group already contains a different model (for example, when a
- * model was renamed or replaced locally), pushing without removing the old
- * model would leave multiple models in the same entry group. We fail by
- * default unless the caller passes `--force-remove` to delete the old model.
  */
 function validateEntryGroup(
     model: EmittedModel, existing: Entry[], opts: KcDeployOptions,
@@ -507,325 +524,84 @@ function validateEntryGroup(
 // The largest aspect data Dataplex accepts: 120 KiB of its JSON form, in UTF-8
 // bytes, with escaping counted. The schema aspect may hold 2 MiB.
 export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
-
-// Protobuf Struct wire-format overhead (field tags, type wrappers, length
-// varints) adds ~1 KiB when Dataplex deserializes aspect data on the server.
-// We reserve headroom so each stored part stays safely within the 120 KiB limit.
-export const ASPECT_DATA_HEADROOM_BYTES = 2048;
-export const MAX_PART_DATA_BYTES =
-    MAX_ASPECT_DATA_BYTES - ASPECT_DATA_HEADROOM_BYTES;
-
-// The most parts push stores one file in: sixteen aspects, a little under
-// 2 MiB of file text. A file whose copy needs more is too large to store.
-export const MAX_FILE_COPY_PARTS = 16;
+const MAX_SCHEMA_ASPECT_DATA_BYTES = 2 * 1024 * 1024;
 
 /**
- * Validates that every file copy in `model` fits in one aspect. Each part of
- * a file stored in parts is a copy of its own.
- *
- * A file too large to store then fails before any write, naming the file,
- * rather than partway through the writes. Push runs the same check on its
- * copies, with `checkFileCopies`, before any graph deploys.
+ * The emitter's warnings for `models`, and the first aspect too large to
+ * store, which is why push's catalog leg cannot write them. Calls no service.
  */
-function validateFileCopySizes(
-    model: EmittedModel, result: ResultBuilder): KcDeployResult {
+export function checkCatalogAspects(
+    models: LoadedModel[],
+    opts: KcDeployOptions): {error?: string; warnings: string[]} {
+  const emit = emitModels(models, opts);
+  const error = emit.emitted.map(emittedAspectsError).find(e => e);
+  return {error, warnings: emit.warnings};
+}
+
+// Why push cannot write what `model` emits, or undefined when it can.
+function emittedAspectsError(model: EmittedModel): string|undefined {
   for (const entry of model.resources.entries) {
-    if (entryTypeId(entry) !== FILE_COPY_TYPE_ID) continue;
-    for (const aspect of Object.values(entry.aspects ?? {})) {
-      const error = fileCopySizeError(aspect.data ?? {});
-      if (error) return result(false, error);
-    }
+    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`);
+    if (error) return error;
   }
-  return result(true);
-}
-
-/**
- * The copies a push stores of `files`, the model and profile files it read,
- * each carrying `pushId` and, as `pushFileCount`, the number of files.
- *
- * A file whose copy fits one aspect is one copy, as read. A larger file is
- * stored in the fewest parts whose aspect data each fits one aspect. Each part
- * is a copy of its own that carries the file's name, its `part` number from 1
- * and the `partCount`, and joining the parts in order gives the file back
- * exactly. A part ends at a line break whenever the file still fits in as many
- * parts, and never inside a character. Returns `error` instead, naming the
- * file, when a file needs more than MAX_FILE_COPY_PARTS parts.
- *
- * A file stored in parts counts once in `pushFileCount`. A pull that knows
- * parts joins them before it compares; one that counts every copy as a file
- * finds more copies than the count and refuses the catalog, rather than write
- * one part as the whole file.
- */
-export function storedFileCopies(
-    files: readonly FileCopy[],
-    pushId: string): {files: FileCopy[]; error?: string} {
-  const stored: FileCopy[] = [];
-  for (const {fileName, content} of files) {
-    const split = fileCopyParts(
-        {fileName, content, pushId, pushFileCount: files.length});
-    if (split.error !== undefined) return {files: [], error: split.error};
-    stored.push(...split.parts);
-  }
-  return {files: stored};
-}
-
-// One file's copies, given its copy with the push id and copy count: the copy
-// itself when it fits one aspect, else the file's parts (see
-// storedFileCopies), or why the file is too large to store.
-function fileCopyParts(file: FileCopy):
-    {parts: FileCopy[]; error?: undefined}|{parts?: undefined; error: string} {
-  const whole = dataBytes(kcEmit.fileCopyData(file));
-  if (whole <= MAX_PART_DATA_BYTES) return {parts: [file]};
-  const tooLarge = {
-    error: `file '${file.fileName}' is too large to store in Knowledge ` +
-        `Catalog: its copy takes ${whole} bytes, and push stores a file in at ` +
-        `most ${MAX_FILE_COPY_PARTS} parts of at most ${
-               MAX_PART_DATA_BYTES} bytes each.`,
-  };
-  const text = file.content;
-  const n = text.length;
-  // Each UTF-16 unit takes at least one byte of aspect data, so a longer text
-  // cannot fit in the parts at all.
-  if (n > MAX_FILE_COPY_PARTS * MAX_PART_DATA_BYTES) return tooLarge;
-
-  // `at[i]` is how many bytes `text[0, i)` takes inside the JSON string, in
-  // UTF-8 with escapes, so a slice takes `at[end] - at[start]`.
-  const at = new Int32Array(n + 1);
-  for (let i = 0; i < n; i++) at[i + 1] = at[i] + jsonUnitBytes(text, i);
-
-  // The room a part leaves for its text: the limit less the aspect data
-  // around the text, which grows with the digits of its numbers.
-  const room = (part: number, partCount: number) => MAX_PART_DATA_BYTES -
-      dataBytes(kcEmit.fileCopyData({...file, content: '', part, partCount}));
-  // The furthest end of a part from `start` whose text fits in `bytes`. It
-  // never falls between the two units of a surrogate pair.
-  const furthest = (start: number, bytes: number) => {
-    const limit = at[start] + bytes;
-    let lo = start;
-    let hi = n;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2);
-      if (at[mid] <= limit) {
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    return lo > start && lo < n && isHighSurrogate(text.charCodeAt(lo - 1)) &&
-            isLowSurrogate(text.charCodeAt(lo)) ?
-        lo - 1 :
-        lo;
-  };
-  // How many parts, numbered from `first`, the text from `start` on takes
-  // when each part holds as much as fits, or Infinity when that is more
-  // than the parts up to `partCount`. Filling each part is what takes the
-  // fewest parts.
-  const partsFrom = (start: number, first: number, partCount: number) => {
-    let pos = start;
-    let part = first;
-    while (pos < n) {
-      if (part > partCount) return Infinity;
-      const end = furthest(pos, room(part, partCount));
-      if (end <= pos) return Infinity;
-      pos = end;
-      part++;
-    }
-    return part - first;
-  };
-
-  // The fewest parts. The room depends on how many digits `partCount` has,
-  // so each digit count is tried in turn, from one.
-  let partCount = 0;
-  for (let top = 9; partCount === 0; top = top * 10 + 9) {
-    const most = Math.min(top, MAX_FILE_COPY_PARTS);
-    const needed = partsFrom(0, 1, most);
-    if (needed <= most) {
-      partCount = needed;
-    } else if (most === MAX_FILE_COPY_PARTS) {
-      return tooLarge;
-    }
-  }
-
-  // Each part but the last holds as much as fits, or ends after its last
-  // line break instead when the rest still fits in the parts left.
-  const parts: FileCopy[] = [];
-  let start = 0;
-  for (let part = 1; part <= partCount; part++) {
-    let end = n;
-    if (part < partCount) {
-      end = furthest(start, room(part, partCount));
-      const lineEnd = text.lastIndexOf('\n', end - 1) + 1;
-      if (lineEnd > start && lineEnd < end &&
-          partsFrom(lineEnd, part + 1, partCount) <= partCount - part) {
-        end = lineEnd;
-      }
-    }
-    parts.push({...file, content: text.slice(start, end), part, partCount});
-    start = end;
-  }
-  return {parts};
-}
-
-// How many bytes the UTF-16 unit at `i` adds inside a JSON string, in UTF-8:
-// two for a short escape, six for a `\u` escape, and a surrogate pair's four
-// on its first unit. A lone surrogate is escaped too.
-function jsonUnitBytes(text: string, i: number): number {
-  const c = text.charCodeAt(i);
-  if (c === 0x22 || c === 0x5c) return 2;
-  if (c < 0x20) {
-    return c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d ?
-        2 :
-        6;
-  }
-  if (c < 0x80) return 1;
-  if (c < 0x800) return 2;
-  if (isHighSurrogate(c)) {
-    return isLowSurrogate(text.charCodeAt(i + 1)) ? 4 : 6;
-  }
-  if (isLowSurrogate(c)) {
-    return isHighSurrogate(text.charCodeAt(i - 1)) ? 0 : 6;
-  }
-  return 3;
-}
-
-function isHighSurrogate(c: number): boolean {
-  return c >= 0xd800 && c <= 0xdbff;
-}
-
-function isLowSurrogate(c: number): boolean {
-  return c >= 0xdc00 && c <= 0xdfff;
-}
-
-// The size of aspect data as Dataplex measures it: its JSON form in UTF-8.
-function dataBytes(data: Record<string, any>): number {
-  return new TextEncoder().encode(JSON.stringify(data)).length;
-}
-
-/**
- * Checks a push's file copies before anything is written. Returns the error
- * to report, or undefined when every copy fits in one aspect and no two file
- * names map to one entry id.
- *
- * Push calls it before any graph deploys. Every copy of a model shares the
- * model's part of the entry id, so two file names collide when their slugs
- * do. A file stored in parts also claims the id of each part, so another
- * file whose slug is one of those collides with it too.
- */
-export function checkFileCopies(files: readonly FileCopy[]): string|undefined {
-  // The file that holds each entry id, and the file that claims each slug or
-  // part id.
-  const stored = new Map<string, string>();
-  const claimedBy = new Map<string, string>();
-  for (const file of files) {
-    const tooLarge = fileCopySizeError(kcEmit.fileCopyData(file));
-    if (tooLarge) return tooLarge;
-    const id = fileCopySlug(file.fileName, file.part);
-    const claims = [slug(file.fileName), id];
-    const earlier = stored.get(id) ??
-        claims.map(c => claimedBy.get(c))
-            .find(name => name !== undefined && name !== file.fileName);
-    if (earlier !== undefined) {
-      return `files '${earlier}' and '${file.fileName}' both map to one ` +
-          `entry id; rename one of them`;
-    }
-    stored.set(id, file.fileName);
-    for (const c of claims) claimedBy.set(c, file.fileName);
+  for (const link of model.resources.entryLinks) {
+    const error = aspectDataError(link.aspects, `entry link '${linkId(link)}'`);
+    if (error) return error;
   }
   return undefined;
 }
 
-// Why the aspect data of one file copy is too large to store, or undefined
-// when it fits.
-function fileCopySizeError(data: Record<string, any>): string|undefined {
-  const bytes = dataBytes(data);
-  if (bytes <= MAX_ASPECT_DATA_BYTES) return undefined;
-  return `file '${data.fileName}' is too large to store in Knowledge ` +
-      `Catalog: its copy takes ${bytes} bytes, and one aspect holds at most ` +
-      `${MAX_ASPECT_DATA_BYTES}.`;
+// Why Knowledge Catalog cannot store one of `aspects`, which `owner` carries,
+// or undefined when each fits.
+function aspectDataError(
+    aspects: Record<string, Aspect>|undefined, owner: string): string|
+    undefined {
+  for (const [key, aspect] of Object.entries(aspects ?? {})) {
+    const type = aspectTypeIdOfKey(key);
+    const bytes = storedJsonBytes(aspect.data ?? {});
+    const limit = type === 'schema' ? MAX_SCHEMA_ASPECT_DATA_BYTES :
+                                      MAX_ASPECT_DATA_BYTES;
+    if (bytes > limit) {
+      return `aspect '${key}' of ${owner} is too large to store in ` +
+          `Knowledge Catalog: its data takes ${bytes} bytes, and one ` +
+          `aspect holds at most ${limit}.`;
+    }
+  }
+  return undefined;
 }
 
-/**
- * Checks that the destination's file-copy aspect type has the fields a part
- * of a file stored in parts carries. Returns the error to report, or
- * undefined when no copy is a part or the type has them. Makes no network
- * call when no copy is a part.
- *
- * A project whose type an earlier kcmd created lacks them until
- * `kcmd init --semantic-model` patches the type, so push runs this before
- * anything is written.
- */
-export async function checkFileCopyParts(
-    cat: Pick<CatalogClient, 'getAspectType'>, dest: {project: string},
-    copies: readonly FileCopy[]): Promise<string|undefined> {
-  const part = copies.find(f => f.part !== undefined);
-  if (!part) return undefined;
-  const home = customTypeHome(dest);
-  const res =
-      await cat.getAspectType(home.project, home.location, FILE_COPY_TYPE_ID);
-  if (!isOkStatus(res)) {
-    return `checking aspect type '${FILE_COPY_TYPE_ID}' ` +
-        `(HTTP ${res.status}): ${errText(res)}`;
-  }
-  const fields = new Set(
-      (res.result?.metadataTemplate?.recordFields ?? []).map((f: any) => f?.name));
-  const missing = FILE_COPY_PART_FIELDS.filter(f => !fields.has(f));
-  if (!missing.length) return undefined;
-  return `file '${part.fileName}' is too large for one aspect, so push ` +
-      `stores it in ${part.partCount} parts, but aspect type ` +
-      `'${FILE_COPY_TYPE_ID}' in project '${dest.project}' has no ` +
-      `${missing.map(f => `'${f}'`).join(' or ')} field to hold a part; run ` +
-      `'kcmd init --semantic-model' to add ${
-          missing.length === 1 ? 'it' : 'them'}, then push again.`;
+// The UTF-8 bytes of `data`'s JSON as Dataplex counts them. Dataplex writes
+// < > & = ' U+2028 and U+2029 as six-byte \uXXXX escapes.
+function storedJsonBytes(data: unknown): number {
+  const json = JSON.stringify(data);
+  return new TextEncoder().encode(json).length +
+      5 * (json.match(/[<>&=']/g)?.length ?? 0) +
+      3 * (json.match(/[\u2028\u2029]/g)?.length ?? 0);
+}
+
+// The aspect type id in an aspect key, `<project>.<location>.<type>` with an
+// optional `@<path>`.
+function aspectTypeIdOfKey(key: string): string {
+  return key.split('@')[0].split('.').pop() ?? '';
 }
 
 /**
  * Validates that every kcmd-owned custom type (`semantic-action`,
- * `semantic-constraint`, `semantic-model-file`) used by `model` exists in the
- * target project.
- *
- * Unlike built-in system types in `dataplex-types`, custom entry and aspect
- * types are provisioned in the destination project by `kcmd init`;
- * checking them up front in preflight fails fast with an actionable message
- * before any catalog entries or entry links are written, rather than failing
- * mid-push when creating an action or constraint entry.
- *
- * Skips the file-copy type when `opts.fileCopyTypeChecked` is set, because
- * the caller has already looked it up. Otherwise, when the model stores a
- * file in parts, it also checks that the file-copy aspect type has the part
- * fields (see `checkFileCopyParts`). Makes no network calls when no type is
- * left to check.
+ * `semantic-constraint`) used by `model` exists in the target project.
  */
 async function validateCustomTypes(
     cat: CatalogClient, model: EmittedModel, opts: KcDeployOptions,
     result: ResultBuilder): Promise<KcDeployResult> {
-  const typeIds = collectCustomTypes(model.resources.entries).filter(
-      id => !(opts.fileCopyTypeChecked && id === FILE_COPY_TYPE_ID));
-  const error = await checkCustomTypes(cat, opts, typeIds) ??
-      (typeIds.includes(FILE_COPY_TYPE_ID) ?
-           await checkFileCopyParts(cat, opts, emittedFileCopies(model)) :
-           undefined);
+  const error = await checkCustomTypes(
+      cat, opts, collectCustomTypes(model.resources.entries));
   return error ? result(false, error) : result(true);
-}
-
-// The file copies a model's emitted entries hold, read from their aspects.
-function emittedFileCopies(model: EmittedModel): FileCopy[] {
-  return model.resources.entries
-      .filter(e => entryTypeId(e) === FILE_COPY_TYPE_ID)
-      .flatMap(
-          e => Object.values(e.aspects ?? {})
-                   .map(a => (a.data ?? {}) as FileCopy));
 }
 
 /**
  * Checks that each custom type in `typeIds` exists in the destination
  * project. Returns the error to report, or undefined when every one exists.
- *
- * Push also calls it before any graph deploys, for the file-copy type every
- * push with v2Aspects off needs, followed by `checkFileCopyParts` when it
- * stores a file in parts. Push then sets `fileCopyTypeChecked`, so the
- * catalog preflight looks up only the other custom types.
  */
-export async function checkCustomTypes(
+async function checkCustomTypes(
     cat: CatalogClient, dest: {project: string},
     typeIds: readonly string[]): Promise<string|undefined> {
   const home = customTypeHome(dest);
@@ -854,38 +630,24 @@ export async function checkCustomTypes(
  * Turns every authored model into its catalog resources.
  *
  * Pure (no network I/O), so the dry-run plan and any generation warnings are
- * produced even when a later write fails. A malformed GOOGLE
- * `custom_extension` (reached via the `semantic-model` aspect) throws; report
- * it against its document, as the BigQuery leg does, rather than letting it
- * escape as an uncaught stack trace.
+ * produced even when a later write fails.
  */
 function emitModels(models: LoadedModel[], opts: KcDeployOptions):
-    {emitted: EmittedModel[]; warnings: string[]; error?: string} {
+    {emitted: EmittedModel[]; warnings: string[]} {
   const emitted: EmittedModel[] = [];
   const warnings: string[] = [];
-  for (const {document, model} of models) {
-    let resources: kcEmit.KcResources;
-    try {
-      resources = kcEmit.generateCatalogResources(model, {
-        project: opts.project,
-        location: opts.location,
-        entryGroup: opts.entryGroup,
-        systemTypeProject: opts.systemTypeProject,
-        systemTypeLocation: opts.systemTypeLocation,
-        emitExpressions: opts.emitExpressions,
-        customAspects: opts.customAspects,
-        bigQueryEntries: opts.bigQueryEntries,
-        constraintRates: opts.constraintRates,
-        v2Aspects: opts.v2Aspects,
-        sourceFiles: opts.sourceFiles,
-      });
-    } catch (err: any) {
-      return {
-        emitted,
-        warnings,
-        error: `Model '${model.name}' (${document}): ${err.message || err}`,
-      };
-    }
+  for (const {model} of models) {
+    const resources = kcEmit.generateCatalogResources(model, {
+      project: opts.project,
+      location: opts.location,
+      entryGroup: opts.entryGroup,
+      systemTypeProject: opts.systemTypeProject,
+      systemTypeLocation: opts.systemTypeLocation,
+      overviews: opts.overviews,
+      bigQueryEntries: opts.bigQueryEntries,
+      constraintRates: opts.constraintRates,
+      groundingTrailers: opts.groundingTrailers,
+    });
     for (const w of resources.warnings) warnings.push(`[${model.name}] ${w}`);
     emitted.push({model: model.name, resources});
   }
@@ -939,33 +701,18 @@ function planSummary(
   return lines;
 }
 
+interface WriteModelsOutcome {
+  error?: string;
+}
+
 /**
  * Writes every model's entries and relationship links and deletes orphaned
  * resources in model order.
- *
- * For each model, the method performs the following actions:
- *   1. Creates or updates the model's entries (anchor first).
- *   2. Looks up the model's existing relationship links when the pre-write
- *      entry group contains entities owned by the model.
- *   3. Deletes any orphaned relationship links (no longer emitted) and stale
- *      relationship links (changed type or endpoints) owned by the model.
- *      Before the first delete, reads each emitted link ID the lookup did not
- *      return, and fails when push may not change the link under it.
- *   4. Creates or updates the model's relationship links.
- *   5. When the model emits binding links (K3), deletes the model's binding
- *      links it no longer emits or whose endpoints changed, then writes the
- *      current ones. A binding link that fails to write is a warning, not a
- *      failed push.
- *   6. Deletes any existing entries owned by the model that are no longer
- *      emitted.
- *
- * Progress accumulates into `counts`, so a mid-way failure still reports what
- * had been written.
  */
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[], counts: Counts, warnings: string[],
-    isScopeProject: ProjectMatcher): Promise<{error?: string}> {
+    isScopeProject: ProjectMatcher): Promise<WriteModelsOutcome> {
   for (const {model, resources} of emitted) {
     const entries =
         await writeEntries(cat, opts, resources.entries, existing);
@@ -973,17 +720,6 @@ async function writeEmittedModels(
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
 
-    // When the pre-write listing contains entity entries this model owns, look
-    // up the model's existing links once and share the map between
-    // findOrphanedEntryLinks (to delete dropped or renamed links) and
-    // findStaleEntryLinks (to delete links whose type or endpoints changed).
-    // Look up links via the model's entity entries known to the server (the
-    // pre-write snapshot `existing`), not the ones this push emits: only a
-    // server-side entry can already carry a link, and enumerating the snapshot
-    // also reaches a link both of whose endpoints were removed in this push
-    // (neither is re-emitted, but both entries are still present in `existing`
-    // until `deleteEntries` deletes them at the end). On a first push there are
-    // no such entries, so no lookup is made.
     const existingEntityNames = resources.entries.length ?
         collectEntityNames(collectOwnedEntries(resources, existing)) :
         [];
@@ -1001,35 +737,34 @@ async function writeEmittedModels(
       existingLinks = lookedUp.links;
     }
 
-    // Find orphaned links (dropped or renamed) and stale links (same ID,
-    // changed type or endpoints) in `existingLinks` and delete both BEFORE
-    // creating current links so renamed links, swapped endpoint pairs, and
-    // taken-over endpoint pairs do not collide with an existing link.
     const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
     const staleLinks = findStaleEntryLinks(resources, existingLinks);
-    if (staleLinks.error) {
-      return {error: `Model '${model}': ${staleLinks.error}`};
-    }
-    // Before a link is deleted, read each emitted ID the lookup did not
-    // return. A link under one of them that push may not change would fail
-    // its write after the delete and leave the relationship with no link.
+    const foundUnchanged = new Set<string>();
     if (orphanedLinks.length || staleLinks.links.length) {
       for (const link of resources.entryLinks) {
         if (existingLinks.has(linkId(link))) continue;
         const read =
-            await readEmittedLink(cat, opts, resources, link, isScopeProject)
+            await readEmittedLink(cat, link)
                 .catch((err: any): ReadLinkOutcome => ({
                          error: `entry link '${linkId(link)}': ${
                              String(err?.message || err).trim()}`,
                        }));
         if (read.error) return {error: `Model '${model}': ${read.error}`};
+        if (read.existing && !isStaleLink(read.existing, link)) {
+          foundUnchanged.add(linkId(link));
+        }
       }
     }
-    // `deletedLinks` collects the links deleted so far. An error after a
-    // delete gets the push-again hint when a link is missing because of it.
     const deletedLinks: EntryLink[] = [];
-    const hint = (written: ReadonlySet<string> = new Set()) =>
-        restoreHint(deletedLinks, resources.entryLinks, written);
+    const hint =
+        (written: ReadonlySet<string> = new Set(),
+         blocked: ReadonlySet<string> = new Set()) =>
+            restoreHint(
+                deletedLinks, resources.entryLinks,
+                new Set([
+                  ...staleLinks.current.keys(), ...foundUnchanged, ...written,
+                ]),
+                blocked);
     const orphanedLinkDeletions =
         await deleteEntryLinks(cat, opts, orphanedLinks);
     counts.unlinked += orphanedLinkDeletions.deleted.length;
@@ -1052,22 +787,22 @@ async function writeEmittedModels(
       };
     }
 
-    // Links reference this model's entity entries, so they follow the entries
-    // above (both endpoints must exist first).
-    const links = await writeEntryLinks(
-        cat, opts, resources, staleLinks.current, isScopeProject);
+    const links =
+        await writeEntryLinks(cat, opts, resources, staleLinks.current);
     counts.linked += links.linked;
+    counts.unchangedLinks += links.unchanged;
     deletedLinks.push(...links.deleted);
     if (links.error) {
-      return {error: `Model '${model}': ${links.error}${hint(links.written)}`};
+      return {
+        error: `Model '${model}': ${links.error}${
+            hint(links.written, links.blocked)}`,
+      };
     }
 
     // K3: binding links point into `@bigquery`, whose entries exist only once
     // BigQuery has created the view / graph and Dataplex has indexed it. A
     // refusal there says nothing about the model, so each is written on its
-    // own and a failure is a warning. A push that emits binding links first
-    // deletes the model's binding links it no longer emits, or whose
-    // endpoints changed; one without a locator leaves them alone.
+    // own and a failure is a warning.
     if (resources.bindingLinks) {
       const staleBindings =
           findStaleBindingLinks(model, resources.bindingLinks, existingLinks);
@@ -1106,26 +841,59 @@ async function writeEmittedModels(
             model}' failed: ${message}`,
       };
     }
+
+    if (resources.entries.length) {
+      const anchor = resources.entries[0];
+      const error =
+          await finishPush(cat, opts, anchor)
+              .catch((err: any) =>
+                         String(err?.message || err).trim() || 'unknown error');
+      if (error) {
+        return {
+          error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
+              `entry '${entryId(anchor)}' to ${PUSH_FINISHED} failed: ` +
+              `${error.replace(/\.$/, '')}. Push again before you pull.`,
+        };
+      }
+    }
   }
   return {};
 }
 
 /**
+ * Labels the model entry `anchor` finished, and returns the error when that
+ * fails.
+ */
+async function finishPush(
+    cat: CatalogClient, opts: KcDeployOptions,
+    anchor: Entry): Promise<string|undefined> {
+  const read = await cat.getEntry(
+      opts.project, opts.location, opts.entryGroup, entryId(anchor),
+      undefined, {keepSourceResource: true});
+  if (!isOkStatus(read)) return errText(read);
+  const {name, entryType} = anchor;
+  const entrySource = withPushState(read.result?.entrySource, PUSH_FINISHED);
+  const res =
+      await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
+  return isOkStatus(res) ? undefined : errText(res);
+}
+
+// `source` with its kcmd-push-state label set to `state`.
+function withPushState(
+    source: Entry['entrySource'], state: string): Entry['entrySource'] {
+  return {...source, labels: {...source?.labels, [PUSH_STATE_LABEL]: state}};
+}
+
+/**
  * Returns the push-again hint for an error, or '' when no link is missing.
- *
- * A link is missing when this push deleted a link and did not write the
- * emitted link that takes its place. An emitted link takes the place of a
- * deleted link when it has the same ID or joins the same two entries. A link
- * deleted because its relationship was dropped has no such emitted link, and
- * pushing again does not bring it back.
  */
 function restoreHint(
     deletedLinks: readonly EntryLink[], emittedLinks: readonly EntryLink[],
-    writtenIds: ReadonlySet<string>): string {
+    presentIds: ReadonlySet<string>, blockedIds: ReadonlySet<string>): string {
   const ends = (link: EntryLink) =>
       link.entryReferences.map(r => entryId(r)).sort().join('|');
   const missing = emittedLinks.some(
-      link => !writtenIds.has(linkId(link)) &&
+      link => !presentIds.has(linkId(link)) && !blockedIds.has(linkId(link)) &&
           deletedLinks.some(
               d => linkId(d) === linkId(link) || ends(d) === ends(link)));
   return missing ? ' (push again to restore the link)' : '';
@@ -1138,22 +906,9 @@ interface ReconcileOutcome {
 
 /**
  * Returns the entries in `existing` that `resources` owns but no longer emits.
- *
- * An entry becomes orphaned when a child resource (such as an entity, metric,
- * action, constraint, or explore) is deleted or renamed in the model since the
- * last push. Only child entries under `resources.ownedPrefixes` are ever
- * touched: entries outside those prefixes and the model anchor (always
- * re-emitted) are never deleted here.
- *
- * Deleting a whole model is handled by the `--force-remove` guard, and orphaned
- * relationship links by `findOrphanedEntryLinks` and `deleteEntryLinks`. This
- * step reads the pre-write snapshot `existing`, so it issues no list call of
- * its own (a re-emitted entry is never a deletion candidate, so the snapshot
- * stays correct).
  */
 function findOrphanedEntries(
     resources: kcEmit.KcResources, existing: Entry[]): Entry[] {
-  // An emitter that produced no entries has no anchor and owns nothing.
   if (!resources.entries.length) return [];
   const emittedIds = new Set(resources.entries.map(entryId));
   return existing.filter(
@@ -1162,8 +917,6 @@ function findOrphanedEntries(
 
 /**
  * Deletes every entry in `entries`.
- *
- * A 404 response on delete counts as success because the entry is already gone.
  */
 async function deleteEntries(
     cat: CatalogClient, opts: KcDeployOptions,
@@ -1173,7 +926,6 @@ async function deleteEntries(
     const id = entryId(entry);
     const res =
         await cat.deleteEntry(opts.project, opts.location, opts.entryGroup, id);
-    // A 404 means it is already gone -- reconciliation's goal is met.
     if (isOkStatus(res) || isNotFoundStatus(res)) {
       deleted++;
       continue;
@@ -1185,19 +937,12 @@ async function deleteEntries(
 
 /**
  * Snapshots the destination entry group's entries once, before any write.
- *
- * A brand-new entry group can briefly fail to list its entries collection (the
- * same propagation window `createEntry` rides out); treat only that
- * not-yet-visible error as empty so any other listing failure (such as a
- * backend error or permission problem) is surfaced rather than masked.
  */
 async function listEntryGroup(
     cat: CatalogClient,
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
   const entries: Entry[] = [];
   try {
-    // Push writes listed source fields back, so it keeps each `resource` as
-    // stored.
     for await (const entry of cat.listEntries(
         opts.project, opts.location, opts.entryGroup,
         {keepSourceResource: true})) {
@@ -1217,7 +962,6 @@ async function listEntryGroup(
 }
 
 interface LinkReconcileOutcome {
-  // The links deleted, in the order given.
   deleted: EntryLink[];
   error?: {linkId: string; message: string};
 }
@@ -1228,20 +972,8 @@ interface LinkLookupOutcome {
 }
 
 /**
- * Looks up all relationship entry links in the destination entry group
- * referencing any of `entityNames`.
- *
- * Links are looked up per referenced entry -- the only server-side access path
- * -- so a link between two of the entities is returned twice and deduplicated
- * here by bare link ID. Queries `lookupEntryLinks` and filters the results to
- * relationship links (`isRelationshipLink`) stored in the destination entry
- * group
- * (`projects/<project>/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
- * `isScopeProject` tells whether a link's project part names the destination
- * project. A link whose project number push cannot resolve is kept.
- * `isLinkOwner` accepts such a link only when its references spell the same
- * project as its name, so no reference in another project counts as the
- * model's own.
+ * Looks up all model links in the destination entry group referencing any of
+ * `entityNames`.
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
@@ -1260,8 +992,11 @@ async function lookupEntryLinks(
     }
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];
-      if (!project || (await isScopeProject(project)) === false) continue;
-      if (!isRelationshipLink(link)) continue;
+      if (!project) continue;
+      const inScope = (await isScopeProject(project)) ??
+          link.entryReferences.every(
+              r => r.name.startsWith(`projects/${project}/`));
+      if (!inScope || !isModelLink(link)) continue;
       const id = linkId(link);
       if (!links.has(id)) links.set(id, link);
     }
@@ -1269,36 +1004,12 @@ async function lookupEntryLinks(
   return {links};
 }
 
-/**
- * Tells whether the project part of a resource name names the destination
- * project. Resolves to undefined when the part is a project number and the
- * destination's number is unknown.
- */
 type ProjectMatcher = (nameProject: string) => Promise<boolean|undefined>;
 
-/**
- * Returns a function that tells whether the project part of a resource name
- * that Dataplex returned names the destination project, `project`.
- *
- * Dataplex spells link references, and the names of looked-up links, with the
- * project number. When `project` is a project ID, the number comes from Cloud
- * Resource Manager. When Resource Manager does not give it, the function
- * resolves to undefined for every other project number.
- */
 function scopeProjectMatcher(
     ctx: context.ApiContext, project: string): ProjectMatcher {
   let crmNumber: Promise<string|undefined>|undefined;
   return async (nameProject: string) => {
-    // Check whether `nameProject` refers to the destination `project`:
-    //   1. If `nameProject === project`, they already match verbatim.
-    //   2. If `nameProject` is not a numeric project number, it is a different
-    //      project's string ID and cannot match `project`. Only a numeric
-    //      `nameProject` can still refer to `project` (when `project` is a
-    //      project ID and Dataplex returned `nameProject` as a project number).
-    //   3. Otherwise, resolve `project`'s number via Cloud Resource Manager
-    //      (caching the Promise in `crmNumber` so it is called at most once)
-    //      and compare `nameProject` against it. Without the number, the
-    //      answer is unknown.
     if (nameProject === project) return true;
     if (!/^\d+$/.test(nameProject)) return false;
     const number = await (crmNumber ??= crm.projectNumber(project, ctx));
@@ -1308,10 +1019,6 @@ function scopeProjectMatcher(
 
 /**
  * Deletes every entry link in `links`.
- *
- * A 404 response on delete counts as success because the link is already gone.
- * A thrown error, such as a network failure, is returned like a failed
- * response, so the caller can name the link and keep its counts.
  */
 async function deleteEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions,
@@ -1321,8 +1028,10 @@ async function deleteEntryLinks(
     const id = linkId(link);
     let del: ApiResult<EntryLink>;
     try {
-      del = await cat.deleteEntryLink(
-          opts.project, opts.location, opts.entryGroup, id);
+      del = await withLinkQuotaRetry(
+          opts,
+          () => cat.deleteEntryLink(
+              opts.project, opts.location, opts.entryGroup, id));
     } catch (err: any) {
       const message = String(err?.message || err).trim();
       return {deleted, error: {linkId: id, message}};
@@ -1339,17 +1048,10 @@ async function deleteEntryLinks(
 /**
  * Returns the relationship entry links in `existingLinks` that `resources`
  * owns but no longer emits.
- *
- * An entry link becomes orphaned when a relationship is deleted or renamed in
- * the model since the last push, or when a relationship stops being published
- * (for example, if one of its endpoint entities is removed). A link touching an
- * entry outside `resources` is never treated as owned, so a binding link into
- * `@bigquery` is reconciled by findStaleBindingLinks instead.
  */
 function findOrphanedEntryLinks(
     resources: kcEmit.KcResources,
     existingLinks: Map<string, EntryLink>): EntryLink[] {
-  // An emitter that produced no entries has no anchor and owns nothing.
   if (!resources.entries.length || !existingLinks.size) return [];
   const emittedLinkIds = new Set(resources.entryLinks.map(linkId));
   return [...existingLinks.values()].filter(
@@ -1358,110 +1060,41 @@ function findOrphanedEntryLinks(
 }
 
 interface StaleLinksOutcome {
-  // The model's own links under an emitted ID whose type or endpoints changed.
   links: EntryLink[];
-  // Emitted IDs whose looked-up link is the model's own with the same type and
-  // endpoints.
-  current: Set<string>;
-  error?: string;
+  current: Map<string, EntryLink>;
 }
 
 /**
  * Returns the existing entry links in `existingLinks` that share a bare link ID
- * with an emitted link in `resources.entryLinks` but have a different link type
- * or endpoint references, so they must be deleted before recreating the link.
- *
- * Fails with `error` (before any link is deleted) if a matching existing link
- * references an entry outside `resources`.
+ * with an emitted link in `resources.entryLinks` but have different endpoint
+ * references.
  */
 function findStaleEntryLinks(
     resources: kcEmit.KcResources,
     existingLinks: Map<string, EntryLink>): StaleLinksOutcome {
   const links: EntryLink[] = [];
-  const current = new Set<string>();
+  const current = new Map<string, EntryLink>();
   if (!existingLinks.size) return {links, current};
   for (const link of resources.entryLinks) {
     const id = linkId(link);
     const existingLink = existingLinks.get(id);
-    // Check whether `existingLink` is stale and safe to delete:
-    //   1. If no link with this ID exists yet, `writeEntryLinks` creates it.
-    //   2. If an existing link with this ID references an entry outside this
-    //      model, we do not own it and must fail before deleting anything.
-    //   3. If we own it and its link type and endpoint references are
-    //      unchanged, `writeEntryLinks` updates its aspects in place.
-    // Otherwise, its immutable type or endpoints changed, so it is stale.
     if (!existingLink) continue;
-    if (!isLinkOwner(resources, existingLink)) {
-      return {
-        links: [],
-        current,
-        error: outsideReferenceError(resources, existingLink),
-      };
-    }
     if (isStaleLink(existingLink, link)) {
       links.push(existingLink);
     } else {
-      current.add(id);
+      current.set(id, existingLink);
     }
   }
   return {links, current};
 }
 
-/**
- * Returns true when `existingLink` has a different immutable `entryLinkType`
- * or `entryReferences` from `link` and must be deleted and recreated rather
- * than updated in place.
- */
 function isStaleLink(existingLink: EntryLink, link: EntryLink): boolean {
-  return linkTypeId(existingLink) !== linkTypeId(link) ||
-      !sameLinkReferences(existingLink, link);
-}
-
-/**
- * Returns the error for an existing link that holds an ID this model emits and
- * references an entry outside the model. Push does not delete or change such
- * a link.
- */
-function outsideReferenceError(
-    resources: kcEmit.KcResources, link: EntryLink,
-    asReturned: EntryLink = link): string {
-  // A reference whose entry ID this model owns is outside the model because it
-  // names an entry in another entry group or project, so the error gives its
-  // full name, as Dataplex returned it. `asReturned` is `link` before push
-  // respelled its project.
-  const ownedReferences = collectOwnedReferences(resources, link);
-  const externalIds: string[] = [];
-  link.entryReferences.forEach((r, i) => {
-    if (ownedReferences.includes(r)) return;
-    const shown = isEntryOwner(resources, r) ?
-        asReturned.entryReferences[i].name :
-        entryId(r);
-    externalIds.push(`'${shown}'`);
-  });
-  return `entry link '${linkId(link)}' already exists and references ${
-             externalIds.length === 1 ? 'entry' : 'entries'} ${
-             externalIds.join(' and ')} outside this model; ` +
-      `rename the relationship or delete the existing link`;
+  return !sameLinkReferences(existingLink, link);
 }
 
 /**
  * Deletes models already in the entry group that this push does not re-emit
  * (`--force-remove`).
- *
- * For each foreign anchor, looks up its relationship links and then deletes
- * the anchor before anything else. Dataplex deletes an entry's child entries
- * with it, and a link with an entry it references, so a push that stops here
- * leaves the whole foreign model or none of it. Pull then returns the whole
- * model or finds none. The links and the children present in `existing` are
- * deleted after the anchor, and a 404 for one already gone counts as success.
- *
- * A foreign model is by definition not in this push, so its emitter's
- * `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
- * a separator (`.` or `/`), which matches every ID scheme
- * (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
- * names. Naming the segments here would leave a model published by a different
- * emitter with its children orphaned and unreachable -- the anchor goes, so no
- * later push sees a foreign model, and nothing owns the remainder.
  */
 async function removeForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
@@ -1470,10 +1103,6 @@ async function removeForeignModels(
   let deleted = 0;
   let unlinked = 0;
   for (const foreignAnchorId of foreignAnchorIds) {
-    // Find the foreign model's anchor entry and all of its child entries
-    // across both the V1 dotted (`<anchor>.`) and V2/LookML slash (`<anchor>/`)
-    // namespaces, then extract the full resource names of its `semantic-entity`
-    // entries so we can look up their relationship links.
     const foreignAnchor: KcAnchor = {
       anchorId: foreignAnchorId,
       ownedPrefixes: [`${foreignAnchorId}.`, `${foreignAnchorId}/`],
@@ -1481,7 +1110,6 @@ async function removeForeignModels(
     const foreignEntries = collectOwnedEntries(foreignAnchor, existing);
     const foreignEntityNames = collectEntityNames(foreignEntries);
 
-    // Look the links up while their entity entries still exist.
     const lookedUp = await lookupEntryLinks(
         cat, opts, foreignEntityNames, isScopeProject);
     if (lookedUp.error) {
@@ -1494,9 +1122,6 @@ async function removeForeignModels(
       };
     }
 
-    // The anchor goes first and takes its children and their links with it.
-    // A failure before it leaves the foreign model whole. The deletes after it
-    // remove anything Dataplex left and normally get 404.
     const entryFailure = (e: NonNullable<ReconcileOutcome['error']>) => ({
       deleted,
       unlinked,
@@ -1536,30 +1161,17 @@ interface EntriesOutcome {
 
 /**
  * Creates or updates a model's entries in dependency order.
- *
- * The method writes entries in three stages:
- *   1. Writes the model anchor (`entries[0]`) first, since it is the parent of
- *      every child entry.
- *   2. Writes independent child entries (such as entities, actions, and
- *      constraints) concurrently.
- *   3. Writes dependent child entries (`semantic-metric` via
- *      `semantic-metric.entity` and, for LookML, `semantic-explore` via
- *      `semantic-explore.baseEntity` / `joins[].fromEntity`, which reference
- *      entities by name) concurrently.
- *
- * An entry that already exists is updated in place (idempotent re-push).
  */
 async function writeEntries(
     cat: CatalogClient, opts: KcDeployOptions, entries: Entry[],
     existing: Entry[] = []): Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
-  // The entrySource each entry had before this push. An update keeps the
-  // fields kcmd does not own.
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
   const write = (e: Entry) => writeEntry(cat, opts, e, sources);
   const [anchor, ...children] = entries;
 
-  const anchorRes = await write(anchor);
+  const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
+  const anchorRes = await write({...anchor, entrySource});
   if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
 
   let created = anchorRes.updated ? 0 : 1;
@@ -1586,102 +1198,97 @@ async function writeEntries(
 
 interface LinksOutcome {
   linked: number;
-  // IDs of the links written.
+  unchanged: number;
   written: Set<string>;
-  // Existing links deleted so that an emitted link with a new type or new
-  // endpoints could take their ID. The caller uses them for the push-again
-  // hint.
+  blocked: Set<string>;
   deleted: EntryLink[];
   error?: string;
 }
 
 /**
  * Writes a model's relationship entry links concurrently.
- *
- * Both endpoint entries already exist because `writeEntries` runs first, and
- * any orphaned or stale links the lookup found have already been deleted. On
- * the flag-off path the emitter gives each pair of entries at most one link.
- * A stale link the lookup missed is replaced during these writes, so a link
- * that needs the pair it frees can fail with the duplicate-endpoints error.
- * That error gets the push-again hint, and the next push writes the link. Uses
- * `Promise.allSettled` so a thrown network error on one link waits for any
- * in-flight link writes to finish and reports the link ID in the returned
- * error. `current` holds the emitted IDs whose looked-up link is the model's
- * own with the same type and endpoints. `isScopeProject` tells whether a
- * project part names the destination project.
  */
 async function writeEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    current: ReadonlySet<string>,
-    isScopeProject: ProjectMatcher): Promise<LinksOutcome> {
+    current: ReadonlyMap<string, EntryLink>): Promise<LinksOutcome> {
   const entryLinks = resources.entryLinks;
   const written = new Set<string>();
+  const blocked = new Set<string>();
   const deleted: EntryLink[] = [];
-  if (!entryLinks.length) return {linked: 0, written, deleted};
-  const settled = await Promise.allSettled(entryLinks.map(
-      l => writeEntryLink(
-          cat, opts, resources, l, current, isScopeProject)));
-  const res = settled.map((s, i): LinkWriteOutcome => {
-    if (s.status === 'fulfilled') return s.value;
-    const id = linkId(entryLinks[i]);
-    const msg = s.reason?.message || String(s.reason);
-    return {error: `entry link '${id}': ${msg}`};
-  });
+  if (!entryLinks.length) {
+    return {linked: 0, unchanged: 0, written, blocked, deleted};
+  }
+  const settled = await Promise.allSettled(
+      entryLinks.map(l => writeEntryLink(cat, opts, l, current)));
+  const res = await Promise.all(settled.map((s, i): LinkWriteOutcome |
+                                              Promise<LinkWriteOutcome> => {
+    if (s.status === 'rejected') {
+      const id = linkId(entryLinks[i]);
+      const msg = s.reason?.message || String(s.reason);
+      return {error: `entry link '${id}': ${msg}`};
+    }
+    const {conflict} = s.value;
+    return conflict === undefined ?
+        s.value :
+        blockedOutcome(cat, opts, entryLinks[i], conflict);
+  }));
   res.forEach((r, i) => {
     if (r.deleted) deleted.push(r.deleted);
+    if (r.blocked) blocked.add(linkId(entryLinks[i]));
     if (!r.error) written.add(linkId(entryLinks[i]));
   });
-  const linked = res.filter(r => !r.error).length;
+  const unchanged = res.filter(r => r.unchanged).length;
+  const linked = res.filter(r => !r.error && !r.unchanged).length;
   const firstErr = res.find(r => r.error);
-  if (firstErr) return {linked, written, deleted, error: firstErr.error};
-  return {linked, written, deleted};
+  if (firstErr) {
+    return {
+      linked,
+      unchanged,
+      written,
+      blocked,
+      deleted,
+      error: firstErr.error,
+    };
+  }
+  return {linked, unchanged, written, blocked, deleted};
 }
 
 interface WriteOutcome {
-  updated?: boolean;  // true when the resource already existed and was updated
+  updated?: boolean;
   error?: string;
 }
 
 interface LinkWriteOutcome {
-  // The existing link deleted so that the emitted link could take its ID.
+  unchanged?: boolean;
   deleted?: EntryLink;
+  blocked?: boolean;
+  conflict?: string;
   error?: string;
 }
 
 /**
  * Writes a single relationship entry link to Knowledge Catalog.
- *
- * Attempts to create `link`. When `createEntryLink` returns HTTP 409, updates
- * the link under its ID, replaces it, or reports why push cannot write it.
- * `current` holds the emitted IDs whose looked-up link is the model's own with
- * the same type and endpoints. Every create and update retries while the
- * per-minute entry-link quota refuses it (withLinkQuotaRetry).
  */
 async function writeEntryLink(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    link: EntryLink, current: ReadonlySet<string>,
-    isScopeProject: ProjectMatcher): Promise<LinkWriteOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    current: ReadonlyMap<string, EntryLink>): Promise<LinkWriteOutcome> {
   const id = linkId(link);
+  const found = current.get(id);
+  if (found) {
+    if (hasLinkAspects(found, link)) return {unchanged: true};
+    return linkOutcome(link, await updateEntryLink(cat, opts, link));
+  }
   const res = await withLinkQuotaRetry(
       opts,
       () => cat.createEntryLink(
           opts.project, opts.location, opts.entryGroup, id, link));
   if (!isExistsStatus(res)) return linkOutcome(link, res);
-  if (current.has(id)) {
-    return linkOutcome(link, await updateEntryLink(cat, opts, link));
-  }
 
-  // The lookup did not return a link under this ID, so read it.
-  const read = await readEmittedLink(cat, opts, resources, link, isScopeProject);
+  const read = await readEmittedLink(cat, link);
   if (read.error) return {error: read.error};
   if (!read.existing) {
-    // No link holds the ID. Dataplex allows one link of a type between two
-    // entries, so the 409 means another link already joins them.
-    return {error: duplicateEndpointsError(link, errText(res))};
+    return {conflict: errText(res)};
   }
-  // The update patches only the aspects, and a link's type and references are
-  // immutable. The model's own link whose type or endpoints changed is
-  // deleted and created again.
   if (isStaleLink(read.existing, link)) {
     return replaceEntryLink(cat, opts, read.existing, link);
   }
@@ -1689,109 +1296,36 @@ async function writeEntryLink(
 }
 
 interface ReadLinkOutcome {
-  // The model's own relationship link under the emitted ID, with the
-  // destination project spelled as `opts.project`. Unset when no link holds
-  // the ID.
   existing?: EntryLink;
   error?: string;
 }
 
-/**
- * Reads the link under the ID of the emitted link `link` and checks that push
- * may change it.
- *
- * Returns the error when the read fails with anything but 404, when the link
- * is not a relationship link, when it references an entry outside the model,
- * and when push cannot resolve the project number its references need.
- */
 async function readEmittedLink(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    link: EntryLink, isScopeProject: ProjectMatcher): Promise<ReadLinkOutcome> {
-  const id = linkId(link);
+    cat: CatalogClient, link: EntryLink): Promise<ReadLinkOutcome> {
   const found = await cat.getEntryLink(link.name!);
   if (isNotFoundStatus(found)) return {};
   if (!isOkStatus(found) || !found.result) {
-    return {error: `reading entry link '${id}' failed: ${errText(found)}`};
-  }
-  const existing =
-      await respellScopeProject(found.result, opts.project, isScopeProject);
-  if (!existing) {
     return {
-      error: `entry link '${id}' already exists, and push could not get the ` +
-          `number of project '${opts.project}' from Cloud Resource Manager ` +
-          `to check its references; check that the caller has ` +
-          `resourcemanager.projects.get on the project`,
+      error: `reading entry link '${linkId(link)}' failed: ${errText(found)}`,
     };
   }
-  // Push manages relationship links only, as the lookup does.
-  if (!isRelationshipLink(existing)) {
-    return {
-      error: `entry link '${id}' already exists with link type '${
-                 linkTypeId(existing)}'; ` +
-          `rename the relationship or delete the existing link`,
-    };
-  }
-  if (!isLinkOwner(resources, existing)) {
-    return {error: outsideReferenceError(resources, existing, found.result)};
-  }
-  return {existing};
+  return {existing: found.result};
 }
 
-/**
- * Returns the outcome of a write of `link` that returned `res`.
- */
 function linkOutcome(
     link: EntryLink, res: {status: number; message?: string}): LinkWriteOutcome {
   return isOkStatus(res) ? {} :
                            {error: `entry link '${linkId(link)}': ${errText(res)}`};
 }
 
-/**
- * Returns `link` with the destination project spelled as `project` in its name
- * and references, or undefined when a project number in them cannot be
- * resolved.
- *
- * Dataplex spells a read link's name as requested and its references with the
- * project number. `isLinkOwner` compares the two as text, so they must spell
- * the project the same way.
- */
-async function respellScopeProject(
-    link: EntryLink, project: string,
-    isScopeProject: ProjectMatcher): Promise<EntryLink|undefined> {
-  const respell = async (resourceName: string) => {
-    const part = /^projects\/([^/]+)\//.exec(resourceName)?.[1];
-    if (!part) return resourceName;
-    const isScope = await isScopeProject(part);
-    if (isScope === undefined) return undefined;
-    return isScope ?
-        `projects/${project}/${resourceName.slice(`projects/${part}/`.length)}` :
-        resourceName;
-  };
-  const name = link.name && await respell(link.name);
-  const references = await Promise.all(link.entryReferences.map(
-      async r => ({...r, name: await respell(r.name)})));
-  if (name === undefined && link.name !== undefined) return undefined;
-  if (references.some(r => r.name === undefined)) return undefined;
-  return {
-    ...link,
-    name,
-    entryReferences: references as EntryLink['entryReferences'],
-  };
-}
-
-/**
- * Deletes `existingLink`, a stale relationship entry link, and recreates it as
- * `link` with its updated `entryLinkType` and `entryReferences`.
- *
- * Once the delete succeeds, the outcome carries `existingLink`, which the
- * caller uses to add the push-again hint to an error after the delete.
- */
 async function replaceEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, existingLink: EntryLink,
     link: EntryLink): Promise<LinkWriteOutcome> {
   const id = linkId(link);
-  const del = await cat.deleteEntryLink(
-      opts.project, opts.location, opts.entryGroup, id);
+  const del = await withLinkQuotaRetry(
+      opts,
+      () => cat.deleteEntryLink(
+          opts.project, opts.location, opts.entryGroup, id));
   if (!isOkStatus(del) && !isNotFoundStatus(del)) {
     return {error: `entry link '${id}': ${errText(del)}`};
   }
@@ -1807,30 +1341,37 @@ async function replaceEntryLink(
   }
 }
 
-/**
- * Updates an existing entry link's aspects in place, retrying while the
- * entry-link quota refuses it.
- */
+function hasLinkAspects(existing: EntryLink, link: EntryLink): boolean {
+  const stored = new Map(Object.entries(existing.aspects ?? {})
+                             .map(([key, a]) => [keyWithoutProject(key), a]));
+  return Object.entries(link.aspects ?? {}).every(([key, aspect]) => {
+    const found = stored.get(keyWithoutProject(key));
+    return found !== undefined &&
+        isDeepStrictEqual(
+               JSON.parse(JSON.stringify(aspect.data ?? {})), found.data ?? {});
+  });
+}
+
+function keyWithoutProject(key: string): string {
+  const [ref, ...path] = key.split('@');
+  return [ref.split('.').slice(-2).join('.'), ...path].join('@');
+}
+
 async function updateEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<ApiResult<EntryLink>> {
+  if (!link.aspects) return {status: 200};
   return withLinkQuotaRetry(
       opts,
       () => cat.updateEntryLink(
           {name: link.name, aspects: link.aspects} as EntryLink,
-          Object.keys(link.aspects ?? {})));
+          Object.keys(link.aspects!)));
 }
 
 /**
- * Writes one binding link (K3): creates it, and when it already exists (HTTP
- * 409) refreshes its aspects in place. A binding link joins one of the
- * model's entities to an entry in `@bigquery`, outside the model, so it skips
- * the ownership checks `writeEntryLink` makes for relationship links; the
- * caller deleted the model's binding links whose endpoints changed. Some
- * catalog surfaces expose only create and lookup for an entry link and cannot
- * address it by name for the update. The link is then present, so a
- * not-addressable update (404, or a masked 403) counts as written. Both calls
- * retry while the entry-link quota refuses them.
+ * Writes one `@bigquery` binding link (K3): creates it, and when it already
+ * exists (HTTP 409) refreshes its aspects in place. Treats 404/403 on update
+ * as success for catalog surfaces that expose only create and lookup.
  */
 async function writeBindingLink(
     cat: CatalogClient, opts: KcDeployOptions,
@@ -1847,11 +1388,8 @@ async function writeBindingLink(
 }
 
 /**
- * Returns the model's existing binding links (K3) that `bindingLinks` no
- * longer emits, or that hold an emitted ID with another type or other
- * endpoints. The other end of a binding link is in `@bigquery`, so
- * `isLinkOwner` never counts one as the model's own: it is the model's by its
- * ID prefix (see kcEmit.bindingLinkPrefix).
+ * Returns the model's existing `@bigquery` binding links (K3) that
+ * `bindingLinks` no longer emits, or whose type or endpoints changed.
  */
 function findStaleBindingLinks(
     model: string, bindingLinks: readonly EntryLink[],
@@ -1862,33 +1400,45 @@ function findStaleBindingLinks(
     const id = linkId(link);
     if (!id.startsWith(prefix)) return false;
     const current = emitted.get(id);
-    return !current || isStaleLink(link, current);
+    return !current || linkTypeId(link) !== linkTypeId(current) ||
+        isStaleLink(link, current);
   });
 }
 
-/**
- * Returns the error when `createEntryLink` returns 409 because another link
- * under a different ID already connects the same endpoints. `createError` is
- * the text of that 409.
- */
-function duplicateEndpointsError(link: EntryLink, createError: string): string {
+async function blockedOutcome(
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    conflict: string): Promise<LinkWriteOutcome> {
   const id = linkId(link);
-  const endpoints =
-      link.entryReferences.map(r => `'${entryId(r)}'`).join(' and ');
-  return `failed to create entry link '${id}' because another '${
-             linkTypeId(link)}' link already connects ${endpoints}; ` +
-      `Knowledge Catalog returned: ${createError}`;
+  const ends = (l: EntryLink) =>
+      l.entryReferences.map(r => r.name.replace(/^projects\/[^/]+\//, ''))
+          .sort()
+          .join('|');
+  const found = await cat
+                    .lookupEntryLinks(
+                        opts.project, opts.location,
+                        {entry: link.entryReferences[0].name})
+                    .catch(() => undefined);
+  const other = found && isOkStatus(found) ?
+      (found.result ?? [])
+          .find(
+              l => linkId(l) !== id && linkTypeId(l) === linkTypeId(link) &&
+                  ends(l) === ends(link)) :
+      undefined;
+  if (!other) return {error: `entry link '${id}': ${conflict}`};
+  const source = other.entryReferences.find(r => r.type === 'SOURCE');
+  const target = other.entryReferences.find(r => r.type === 'TARGET');
+  const joins = source && target ?
+      `goes from '${entryId(source)}' to '${entryId(target)}'` :
+      `connects ${
+          other.entryReferences.map(r => `'${entryId(r)}'`).join(' and ')}`;
+  return {
+    error: `failed to create entry link '${id}' because another '${
+               linkTypeId(link)}' link '${linkId(other)}' already ${joins}; ` +
+        `delete that link, then push again`,
+    blocked: true,
+  };
 }
 
-/**
- * Writes a single entry to Knowledge Catalog.
- *
- * Attempts to create `entry` (retrying brief entry-group propagation 404s), and
- * if it already exists (HTTP 409), delegates to `updateEntry` with the
- * entrySource `sources` lists for it. An entry `sources` does not hold is read
- * first. That happens after a listing the caller may not make, or when another
- * writer created the entry after the listing.
- */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
     sources: ReadonlyMap<string, Entry['entrySource']>): Promise<WriteOutcome> {
@@ -1909,44 +1459,13 @@ async function writeEntry(
   return {};
 }
 
-// The entrySource fields another writer may set, which an update keeps.
 const KEPT_SOURCE_FIELDS =
     ['resource', 'system', 'platform', 'createTime', 'updateTime'] as const;
 
-/**
- * Updates an existing entry in place after `createEntry` returns HTTP 409.
- *
- * A Dataplex `entries.patch` upserts each aspect `aspectKeys` names that the
- * body carries, removes one the body leaves out only when
- * `deleteMissingAspects` is set, and keeps every aspect `aspectKeys` does not
- * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
- * true` makes a re-push converge: a still-present optional aspect is refreshed,
- * and a removed one (such as `guidelines` when `ai_context.instructions` is
- * deleted, `sql-expressions`, or field-level `guidelines@Schema.<field>`
- * matched by `<project>.<location>.guidelines@*` under `v2Aspects`) is deleted
- * so a later `pull` does not bring it back. Push owns `guidelines` on its own
- * entries -- and, under `v2Aspects`, field-level `guidelines@Schema.<field>` on
- * its entity entries and `sql-expressions` on its entity and metric entries --
- * so it removes any that the model does not declare even if someone added them
- * in the console. Every other aspect another tool attached is left alone,
- * since `aspectKeys` names only the types kcmd writes.
- *
- * The update mask replaces the whole entrySource, so the update carries over
- * fields from `source`, the entrySource the entry had before this push. Of
- * those fields kcmd owns the display name, the description and the
- * `kcmd-push-id` label. The update keeps another writer's `resource`,
- * `system`, `platform`, `createTime` and `updateTime`, and every label but
- * `kcmd-push-id`. It sets that label when `entry` carries it and drops it
- * when not. Dataplex refuses an update that leaves out an `updateTime` the
- * entry has, or moves it back. A kept field another writer changes after
- * `source` was read is written back with the old value. For `updateTime` the
- * update fails instead.
- */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
     source?: Entry['entrySource']): Promise<WriteOutcome> {
-  const {[PUSH_ID_LABEL]: _own, ...others} = source?.labels ?? {};
-  const labels = {...others, ...entry.entrySource?.labels};
+  const labels = {...source?.labels, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
       KEPT_SOURCE_FIELDS.filter(k => source?.[k] !== undefined)
           .map(k => [k, source![k]]));
@@ -1956,20 +1475,7 @@ async function updateEntry(
     ...(Object.keys(labels).length ? {labels} : {}),
   };
   if (Object.keys(merged).length) entry = {...entry, entrySource: merged};
-  // We cannot simply pass `Object.keys(entry.aspects ?? {})` here because
-  // `entry.aspects` only contains the aspects emitted in *this* push. If an
-  // optional aspect (such as `guidelines`, `sql-expressions`, or a column's
-  // `guidelines@Schema.<field>`) was present on a previous push and removed in
-  // this push, it is absent from `entry.aspects` -- and Dataplex only deletes a
-  // removed aspect when its key (or `<project>.<location>.guidelines@*` for
-  // field-level `guidelines`) is still listed in `aspectKeys`.
   const aspectKeys = entryAspectKeys(entry, opts);
-  // K1: every annotation aspect is optional on its entry (attached only when
-  // the element has content for it), so each provisioned one is named the
-  // same way: a removed one is deleted rather than left for a pull to read.
-  for (const id of opts.customAspects ?? []) {
-    aspectKeys.add(customAspectKey(id, {project: opts.project}));
-  }
   const upd = await cat.updateEntry(
       entry, ['entry_source', 'aspects'], [...aspectKeys],
       /* deleteMissingAspects= */ true);
@@ -1979,9 +1485,6 @@ async function updateEntry(
   return {updated: true};
 }
 
-/**
- * Creates an entry, retrying brief 404s on a just-created entry group.
- */
 async function createEntry(
     cat: CatalogClient, opts: KcDeployOptions, id: string,
     entry: Entry): Promise<ApiResult<Entry>> {
@@ -2000,36 +1503,18 @@ async function createEntry(
   return res;
 }
 
-/**
- * Returns true when the API response succeeded with HTTP 200 OK.
- */
 function isOkStatus(res: {status: number}): boolean {
   return res.status === 200;
 }
 
-/**
- * Returns true when a create failed because the resource already exists (HTTP
- * 409 ALREADY_EXISTS), treated as success for idempotent provisioning and
- * re-push.
- */
 function isExistsStatus(res: {status: number}): boolean {
   return res.status === 409;
 }
 
-/**
- * Returns true when the API response failed because the resource does not exist
- * (HTTP 404 NOT_FOUND).
- */
 function isNotFoundStatus(res: {status: number}): boolean {
   return res.status === 404;
 }
 
-/**
- * Returns true for a transient "not visible yet" entry-group propagation error
- * worth retrying, matching the propagation phrasing specifically rather than a
- * bare "not found" (which also covers a genuinely missing aspect or entry
- * type).
- */
 function isPropagationError(res: {message?: string}): boolean {
   const msg = res.message ?? '';
   return /may not exist/i.test(msg) ||

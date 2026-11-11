@@ -12,7 +12,7 @@
 //     extends: [Opportunity]
 //     defined: "salesStage = '5_won'"
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {lowerDefinedEntities, membershipPropertyName, resolveDefinedEntities, validateDefinedEntities} from '../../../src/libts/semantic/defined_entities';
@@ -24,7 +24,10 @@ import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import {pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 import {referencedIdentifiers} from '../../../src/libts/semantic/sql_expr_utils';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(() => loadSqlEngine());
 
 const GEN_OPTS = {project: 'sqlgen-testing', dataset: 'demo'};
 const KC_OPTS = {project: 'dest-proj', location: 'us', entryGroup: 'eg'};
@@ -96,7 +99,12 @@ describe('loader', () => {
     semantic_model: [{
       name: 'm',
       datasets: [
-        {name: 'Opportunity', source: 'bigquery:p.d.opp', primary_key: ['id'], fields: []},
+        {
+          name: 'Opportunity',
+          source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/opp',
+          primary_key: ['id'],
+          fields: [],
+        },
         {name: 'WonOpportunity', extends: ['Opportunity'], ...ds},
       ],
     }],
@@ -122,7 +130,10 @@ describe('loader', () => {
   });
 
   test('a defined dataset with a source is a hard error', () => {
-    expect(() => fromDocument(doc({defined: 'x = 1', source: 'bigquery:p.d.t'})))
+    expect(() => fromDocument(doc({
+             defined: 'x = 1',
+             source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
+           })))
         .toThrow(/a defined dataset is a/);
   });
 
@@ -397,7 +408,11 @@ describe('OSI round-trip', () => {
     // Each source as a load records it, in an accepted form, so the
     // serialized document reloads.
     for (const e of m.entities) {
-      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+      if (e.dataSource) {
+        const [p, d, t] = e.dataSource.split('.');
+        e.authoredSource =
+            `bigquery.googleapis.com/projects/${p}/datasets/${d}/tables/${t}`;
+      }
     }
     const {yaml} = serializeModel(m);
     expect(yaml).toContain('defined:');
@@ -441,7 +456,7 @@ describe('Knowledge Catalog push / pull', () => {
     const won = byName.get('WonOpportunity')!;
     expect(won.definition).toEqual({
       expression: `salesStage = '5_won'`,
-      description: 'Stage 5 of the funnel.',
+      description: 'Stage 5\nof the funnel.',
     });
     expect(won.extends).toEqual(['Opportunity']);
     expect(won.description).toBe('A deal we won.');

@@ -848,33 +848,6 @@ View columns: stageLabel -> `label`, stageOrder -> `sort_order`.
 
 - a vocabulary: bound to its generated view vocab_health_status (code, label, sort_order, definition, iri); no source
 
-## No table
-
-| entity | kind | why |
-|---|---|---|
-| BusinessObject | abstract | abstract: grouped by its subtypes, no table |
-| Party | abstract | abstract: grouped by its subtypes, no table |
-| Organization | abstract | abstract: grouped by its subtypes, no table |
-| Person | abstract | abstract: grouped by its subtypes, no table |
-| OrgUnit | abstract | abstract: grouped by its subtypes, no table |
-| CommercialDocument | abstract | abstract: grouped by its subtypes, no table |
-| Agreement | abstract | abstract: grouped by its subtypes, no table |
-| WonOpportunity | defined | defined: a filter over ClosedOpportunity, no table |
-| LostOpportunity | defined | defined: a filter over ClosedOpportunity, no table |
-| ClosedOpportunity | defined | defined: a filter over Opportunity, no table |
-| ActivePipeline | defined | defined: a filter over Opportunity, no table |
-| HighValueOpportunity | defined | defined: a filter over Opportunity, no table |
-| MegaDeal | defined | defined: a filter over HighValueOpportunity, no table |
-| StrategicAccount | defined | defined: a filter over ClientAccount, no table |
-| PriorityOpportunity | abstract | abstract: grouped by its subtypes, no table |
-| MarketIntelligenceRecord | abstract | abstract: grouped by its subtypes, no table |
-| MasterServicesAgreement | defined | defined: a filter over ContractAgreement, no table |
-| StatementOfWork | defined | defined: a filter over ContractAgreement, no table |
-| Subcontract | defined | defined: a filter over ContractAgreement, no table |
-| Amendment | defined | defined: a filter over ContractAgreement, no table |
-| QAAssuredEngagement | abstract | abstract: grouped by its subtypes, no table |
-| AtRiskEngagement | defined | defined: a filter over Engagement, no table |
-
 ## Relationships
 
 | relationship | from | to | foreign key | profile | hydration |
@@ -937,58 +910,60 @@ View columns: stageLabel -> `label`, stageOrder -> `sort_order`.
 
 ## Dropped tables
 
-- `ps_semantic.booking`: dataset excluded (ps_semantic)
-- `ps_semantic.change_order`: dataset excluded (ps_semantic)
-- `ps_semantic.client_account`: dataset excluded (ps_semantic)
-- `ps_semantic.client_health_scorecard`: dataset excluded (ps_semantic)
-- `ps_semantic.client_stakeholder`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_active_pipeline`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_amendment`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_at_risk_engagement`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_closed_opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_high_value_opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_lost_opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_master_services_agreement`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_mega_deal`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_priority_opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_qa_assured_engagement`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_statement_of_work`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_strategic_account`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_subcontract`: dataset excluded (ps_semantic)
-- `ps_semantic.cls_won_opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.contract_agreement`: dataset excluded (ps_semantic)
-- `ps_semantic.contract_obligation`: dataset excluded (ps_semantic)
-- `ps_semantic.deal_pricing`: dataset excluded (ps_semantic)
-- `ps_semantic.ecosystem_partner`: dataset excluded (ps_semantic)
-- `ps_semantic.employee`: dataset excluded (ps_semantic)
-- `ps_semantic.engagement`: dataset excluded (ps_semantic)
-- `ps_semantic.geographic_region`: dataset excluded (ps_semantic)
-- `ps_semantic.industry_forecast`: dataset excluded (ps_semantic)
-- `ps_semantic.intent_signal`: dataset excluded (ps_semantic)
-- `ps_semantic.key_buyer`: dataset excluded (ps_semantic)
-- `ps_semantic.legacy_deal`: dataset excluded (ps_semantic)
-- `ps_semantic.legacy_master_account`: dataset excluded (ps_semantic)
-- `ps_semantic.lookup_market_unit_key`: dataset excluded (ps_semantic)
-- `ps_semantic.lookup_service_group_key`: dataset excluded (ps_semantic)
-- `ps_semantic.market_unit`: dataset excluded (ps_semantic)
-- `ps_semantic.milestone`: dataset excluded (ps_semantic)
-- `ps_semantic.opportunity`: dataset excluded (ps_semantic)
-- `ps_semantic.opportunity_stage_history`: dataset excluded (ps_semantic)
-- `ps_semantic.partner_alliance`: dataset excluded (ps_semantic)
-- `ps_semantic.pipeline_snapshot`: dataset excluded (ps_semantic)
-- `ps_semantic.price_adjustment`: dataset excluded (ps_semantic)
-- `ps_semantic.pricing_dispute`: dataset excluded (ps_semantic)
-- `ps_semantic.qa_healthcheck`: dataset excluded (ps_semantic)
-- `ps_semantic.rate_card_line`: dataset excluded (ps_semantic)
-- `ps_semantic.revenue_actual`: dataset excluded (ps_semantic)
-- `ps_semantic.sales_credit`: dataset excluded (ps_semantic)
-- `ps_semantic.sales_target`: dataset excluded (ps_semantic)
-- `ps_semantic.sales_team_member`: dataset excluded (ps_semantic)
-- `ps_semantic.service_group`: dataset excluded (ps_semantic)
-- `ps_semantic.staffing_assignment`: dataset excluded (ps_semantic)
-- `ps_semantic.timesheet_entry`: dataset excluded (ps_semantic)
-- `ps_semantic.vocab_contract_status`: dataset excluded (ps_semantic)
-- `ps_semantic.vocab_health_status`: dataset excluded (ps_semantic)
-- `ps_semantic.vocab_pricing_construct`: dataset excluded (ps_semantic)
-- `ps_semantic.vocab_sales_stage`: dataset excluded (ps_semantic)
-- `ps_semantic.wbs_element`: dataset excluded (ps_semantic)
+| table | reason |
+|---|---|
+| `ps_semantic.booking` | dataset excluded (ps_semantic) |
+| `ps_semantic.change_order` | dataset excluded (ps_semantic) |
+| `ps_semantic.client_account` | dataset excluded (ps_semantic) |
+| `ps_semantic.client_health_scorecard` | dataset excluded (ps_semantic) |
+| `ps_semantic.client_stakeholder` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_active_pipeline` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_amendment` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_at_risk_engagement` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_closed_opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_high_value_opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_lost_opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_master_services_agreement` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_mega_deal` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_priority_opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_qa_assured_engagement` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_statement_of_work` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_strategic_account` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_subcontract` | dataset excluded (ps_semantic) |
+| `ps_semantic.cls_won_opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.contract_agreement` | dataset excluded (ps_semantic) |
+| `ps_semantic.contract_obligation` | dataset excluded (ps_semantic) |
+| `ps_semantic.deal_pricing` | dataset excluded (ps_semantic) |
+| `ps_semantic.ecosystem_partner` | dataset excluded (ps_semantic) |
+| `ps_semantic.employee` | dataset excluded (ps_semantic) |
+| `ps_semantic.engagement` | dataset excluded (ps_semantic) |
+| `ps_semantic.geographic_region` | dataset excluded (ps_semantic) |
+| `ps_semantic.industry_forecast` | dataset excluded (ps_semantic) |
+| `ps_semantic.intent_signal` | dataset excluded (ps_semantic) |
+| `ps_semantic.key_buyer` | dataset excluded (ps_semantic) |
+| `ps_semantic.legacy_deal` | dataset excluded (ps_semantic) |
+| `ps_semantic.legacy_master_account` | dataset excluded (ps_semantic) |
+| `ps_semantic.lookup_market_unit_key` | dataset excluded (ps_semantic) |
+| `ps_semantic.lookup_service_group_key` | dataset excluded (ps_semantic) |
+| `ps_semantic.market_unit` | dataset excluded (ps_semantic) |
+| `ps_semantic.milestone` | dataset excluded (ps_semantic) |
+| `ps_semantic.opportunity` | dataset excluded (ps_semantic) |
+| `ps_semantic.opportunity_stage_history` | dataset excluded (ps_semantic) |
+| `ps_semantic.partner_alliance` | dataset excluded (ps_semantic) |
+| `ps_semantic.pipeline_snapshot` | dataset excluded (ps_semantic) |
+| `ps_semantic.price_adjustment` | dataset excluded (ps_semantic) |
+| `ps_semantic.pricing_dispute` | dataset excluded (ps_semantic) |
+| `ps_semantic.qa_healthcheck` | dataset excluded (ps_semantic) |
+| `ps_semantic.rate_card_line` | dataset excluded (ps_semantic) |
+| `ps_semantic.revenue_actual` | dataset excluded (ps_semantic) |
+| `ps_semantic.sales_credit` | dataset excluded (ps_semantic) |
+| `ps_semantic.sales_target` | dataset excluded (ps_semantic) |
+| `ps_semantic.sales_team_member` | dataset excluded (ps_semantic) |
+| `ps_semantic.service_group` | dataset excluded (ps_semantic) |
+| `ps_semantic.staffing_assignment` | dataset excluded (ps_semantic) |
+| `ps_semantic.timesheet_entry` | dataset excluded (ps_semantic) |
+| `ps_semantic.vocab_contract_status` | dataset excluded (ps_semantic) |
+| `ps_semantic.vocab_health_status` | dataset excluded (ps_semantic) |
+| `ps_semantic.vocab_pricing_construct` | dataset excluded (ps_semantic) |
+| `ps_semantic.vocab_sales_stage` | dataset excluded (ps_semantic) |
+| `ps_semantic.wbs_element` | dataset excluded (ps_semantic) |

@@ -14,19 +14,19 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
 };
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text, {allowLegacyBareSource: true}).models[0];
+  return loadModels(text).models[0];
 }
 
 const ACTIONS_DOC =
@@ -73,7 +73,7 @@ function withActions(actions: any[], over: any = {}) {
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [
               {name: 'id', datatype: 'Integer', description: 'The account number.'},
@@ -83,8 +83,7 @@ function withActions(actions: any[], over: any = {}) {
           actions,
           ...over,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 const MCP = {
@@ -169,7 +168,7 @@ describe('loader parses actions', () => {
                 name: 'm',
                 datasets: [{
                   name: 'customer',
-                  source: 'p.d.c',
+                  source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
                   primary_key: ['id'],
                   fields: [{
                     name: 'id',
@@ -193,8 +192,7 @@ describe('loader parses actions', () => {
                   ],
                 }],
               }],
-            },
-            {allowLegacyBareSource: true});
+            });
         const [a, b] = models[0].actions![0].parameters;
         expect(a.label).toBe('Account number');
         expect(a.aiContext).toEqual({synonyms: ['acct']});
@@ -339,7 +337,7 @@ describe('loader parses actions', () => {
             name: 'm',
             datasets: [{
               name: 'customer',
-              source: 'p.d.c',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
               primary_key: ['id'],
               fields: [
                 {name: 'id', datatype: 'Integer', expression: 'id'},
@@ -351,8 +349,7 @@ describe('loader parses actions', () => {
               parameters: [{concept: 'customer', field: 'notes'}],
             }],
           }],
-        },
-        {allowLegacyBareSource: true});
+        });
     expect(models[0].actions![0].parameters[0]).toEqual({
       name: 'notes',
       type: 'String',
@@ -371,10 +368,9 @@ describe('loader parses actions', () => {
           semantic_model: [{
             name: 'm',
             datasets:
-                [{name: 'c', source: 'p.d.c', primary_key: ['id'], fields: []}]
+                [{name: 'c', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c', primary_key: ['id'], fields: []}]
           }],
-        },
-        {allowLegacyBareSource: true});
+        });
     expect(models[0].actions).toBeUndefined();
   });
 
@@ -507,11 +503,7 @@ describe('loader parses actions', () => {
 
 describe('validatePushRequirements gates actions', () => {
   const target =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: [target]})
-  };
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   function loaded(actions: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -525,7 +517,7 @@ describe('validatePushRequirements gates actions', () => {
       relationships: [],
       metrics: [],
       actions,
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -693,8 +685,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // built-in types the other entries reference.
     expect(entry.entryType)
         .toBe('projects/dest/locations/global/entryTypes/semantic-action');
-    // Ids sit alongside `<model>.entities.` and `<model>.metrics.`, and the
-    // action hangs off the model anchor the way a metric does.
+    // The id is `<model>.actions.<name>`, and the action hangs off the model
+    // anchor the way a metric does.
     expect(entry.name)
         .toBe(
             'projects/dest/locations/us/entryGroups/eg/entries/' +
@@ -730,9 +722,28 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     expect(ownedPrefixes).toContain('sales.actions.');
   });
 
+  test('an action whose name gives the entry id of an earlier action is ' +
+           'skipped with a warning',
+       () => {
+         // The id keeps letters, digits, '_', '.' and '-' and turns any other
+         // character into '_'.
+         const {models} = withActions([
+           {name: 'Place_Order', executor: MCP},
+           {name: 'Place Order', executor: MCP},
+         ]);
+         const {entries, warnings} = generateCatalogResources(models[0], OPTS);
+         expect(entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))
+                    .map(e => e.entrySource?.displayName))
+             .toEqual(['Place_Order']);
+         expect(warnings).toContain(
+             'action \'Place Order\': generated entry id ' +
+             '\'m.actions.Place_Order\' duplicates an earlier one; skipped ' +
+             '(rename to avoid overwriting it on publish)');
+       });
+
   test('a pull recovers the actions', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    const {entries} = generateCatalogResources(model, OPTS);
+    const {models} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(model.actions);
   });
 
@@ -743,7 +754,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const unbound: SemanticModel = structuredClone(model);
     delete unbound.actions![0].executor;
 
-    const {entries, entryLinks} = generateCatalogResources(unbound, OPTS);
+    const {entries} = generateCatalogResources(unbound, OPTS);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     const data = entry.aspects!['dest.global.semantic-action'].data!;
     expect(data.executorKind).toBeUndefined();
@@ -759,7 +770,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
       {name: 'quantity', type: 'Integer'},
     ]);
 
-    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(unbound.actions);
     expect(warnings.some(w => w.includes('executor'))).toBe(false);
   });
@@ -767,11 +778,11 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('an entry whose executor names a kind it cannot back is skipped', () => {
     // The other half of the rule above: no kind is a published state, a kind
     // with no coordinates is damage, and damage still degrades itself.
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, OPTS);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     entry.aspects!['dest.global.semantic-action'].data!.mcpTool = '';
 
-    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].actions ?? []).toEqual([]);
     expect(
         warnings.some(w => w.includes('no usable') && w.includes('executor')))
@@ -912,11 +923,13 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
     expect(data.parameters).toEqual([]);
   });
 
-  test('a pull recovers every action unchanged', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
-    // Entries come back ordered by the catalog rather than by the document, so
-    // compare as a set keyed by name.
+  test('a pull recovers every action unchanged, in name order', () => {
+    const {entries} = generateCatalogResources(model, OPTS);
+    // Listed in reverse, so pull's order cannot come from the catalog's.
+    const {models} = modelsFromCatalogResources([...entries].reverse());
+    expect(models[0].actions!.map(a => a.name)).toEqual([
+      'CloseBooks', 'PlaceOrder', 'RefundOrder', 'ReplaceOrder',
+    ]);
     const byName = (m: SemanticModel) =>
         Object.fromEntries((m.actions ?? []).map(a => [a.name, a]));
     expect(byName(models[0])).toEqual(byName(model));
@@ -926,7 +939,7 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
     // Push -> pull -> push has to be a fixed point: if it were not, a pull
     // followed by a push would rewrite entries that nobody edited.
     const first = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(first.entries, first.entryLinks);
+    const {models} = modelsFromCatalogResources(first.entries);
     const second = generateCatalogResources(models[0], OPTS);
 
     const actionsOf = (entries: typeof first.entries) =>
@@ -938,15 +951,10 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
 });
 
 
-describe('actions projecting concepts the push does not publish', () => {
+describe('an action parameter projected from an abstract entity', () => {
   test(
-      'a parameter projected from an abstract entity publishes, with no warning',
+      'publishes with no warning, since the entity has an entry',
       () => {
-        // An abstract entity is a table-less supertype, and the Knowledge
-        // Catalog leg publishes it as a table-less semantic-entity entry. The
-        // parameter publishes whole -- its type and wording were resolved at
-        // load and travel in the aspect -- and the concept it names has an
-        // entry, so there is nothing to warn about.
         const {models} = fromDocument(
             {
               version: '0.2.0.dev0/google',
@@ -960,7 +968,7 @@ describe('actions projecting concepts the push does not publish', () => {
                   },
                   {
                     name: 'customer',
-                    source: 'p.d.c',
+                    source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
                     primary_key: ['id'],
                     fields: [{
                       name: 'id',
@@ -975,16 +983,13 @@ describe('actions projecting concepts the push does not publish', () => {
                   parameters: [{name: 'who', concept: 'party', field: 'partyId'}],
                 }],
               }],
-            },
-            {allowLegacyBareSource: true});
+            });
         // Resolved against the ontology, which includes abstract entities.
         expect(models[0].actions![0].parameters[0].type).toBe('String');
 
-        const {warnings} = generateCatalogResources(models[0], OPTS);
-        expect(warnings.some(
-                   w => w.includes('parameter \'who\'') &&
-                       w.includes('does not publish')))
-            .toBe(false);
+        expect(generateCatalogResources(models[0], OPTS)
+                   .warnings.filter(w => w.includes('parameter \'who\'')))
+            .toEqual([]);
       });
 });
 
@@ -1039,7 +1044,7 @@ describe('parameter description, required, and default', () => {
         });
 
         const cat = generateCatalogResources(models[0], OPTS);
-        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters).toEqual(params);
       });
 
@@ -1055,8 +1060,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         const errs = validatePushRequirements(
-            [{document: 'test.yaml', model: missingDesc.models[0]}],
-            {targetOptional: true});
+            [{document: 'test.yaml', model: missingDesc.models[0]}]);
         expect(errs.some(
                    e => e.includes('multiple parameters of type \'String\'')))
             .toBe(true);
@@ -1074,8 +1078,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         expect(validatePushRequirements(
-                   [{document: 'test.yaml', model: withDesc.models[0]}],
-                   {targetOptional: true}))
+                   [{document: 'test.yaml', model: withDesc.models[0]}]))
             .toEqual([]);
       });
 
@@ -1093,8 +1096,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     const errs = validatePushRequirements(
-        [{document: 'test.yaml', model: missingDesc.models[0]}],
-        {targetOptional: true});
+        [{document: 'test.yaml', model: missingDesc.models[0]}]);
     expect(errs.some(
                e => e.includes('multiple parameters projected from') &&
                    e.includes('customer.id')))
@@ -1119,8 +1121,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     expect(validatePushRequirements(
-               [{document: 'test.yaml', model: withDesc.models[0]}],
-               {targetOptional: true}))
+               [{document: 'test.yaml', model: withDesc.models[0]}]))
         .toEqual([]);
   });
 
@@ -1138,8 +1139,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     const errs = validatePushRequirements(
-        [{document: 'test.yaml', model: missingDesc.models[0]}],
-        {targetOptional: true});
+        [{document: 'test.yaml', model: missingDesc.models[0]}]);
     expect(errs.some(
                e => e.includes('multiple parameters of type \'Integer\'') &&
                    e.includes('parameter \'quantity\' must have')))
@@ -1156,8 +1156,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     expect(validatePushRequirements(
-               [{document: 'test.yaml', model: withDesc.models[0]}],
-               {targetOptional: true}))
+               [{document: 'test.yaml', model: withDesc.models[0]}]))
         .toEqual([]);
   });
 
@@ -1180,7 +1179,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         const cat = generateCatalogResources(models[0], OPTS);
-        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters)
             .toEqual(models[0].actions![0].parameters);
       });
@@ -1197,8 +1196,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         const errs = validatePushRequirements(
-            [{document: 'test.yaml', model: contradictory.models[0]}],
-            {targetOptional: true});
+            [{document: 'test.yaml', model: contradictory.models[0]}]);
         expect(
             errs.some(e => e.includes('\'required: true\' and a \'default\'')))
             .toBe(true);
@@ -1214,7 +1212,7 @@ describe('a published statement and a run read the verb the same way', () => {
   // (`validatePushRequirements`) calls `sqlExecutorErrors` to accept all of
   // these while rejecting non-DML verbs.
   const target =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   function withStatement(sql: string): LoadedModel {
     return {
@@ -1234,10 +1232,7 @@ describe('a published statement and a run read the verb the same way', () => {
           executor: {kind: 'sql', sql: {statements: [sql]}},
           parameters: [],
         }],
-        customExtensions: [{
-          vendorName: 'GOOGLE',
-          data: JSON.stringify({deploymentTargets: [target]}),
-        }],
+        deployments: [{name: 'default', target}],
       } as SemanticModel,
     };
   }
@@ -1297,7 +1292,7 @@ describe('a published statement and a run read the verb the same way', () => {
 
 describe('a lone projection is not blamed for a duplication', () => {
   const target =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   test(
       'one parameter projected from a field, beside a described scalar of the same type',
@@ -1327,10 +1322,7 @@ describe('a lone projection is not blamed for a duplication', () => {
                 {name: 'quantity', type: 'Integer', description: 'How many.'},
               ],
             }],
-            customExtensions: [{
-              vendorName: 'GOOGLE',
-              data: JSON.stringify({deploymentTargets: [target]}),
-            }],
+            deployments: [{name: 'default', target}],
           } as SemanticModel,
         }]);
         expect(errs.length).toBe(1);
@@ -1363,10 +1355,7 @@ describe('a lone projection is not blamed for a duplication', () => {
              type: 'Integer'},
           ],
         }],
-        customExtensions: [{
-          vendorName: 'GOOGLE',
-          data: JSON.stringify({deploymentTargets: [target]}),
-        }],
+        deployments: [{name: 'default', target}],
       } as SemanticModel,
     }]);
     expect(errs.length).toBe(1);
@@ -1412,9 +1401,9 @@ describe('a projection the catalog cannot give back', () => {
   });
 
   test('the concept is a relationship, whose fields no entry records', () => {
-    // Pull rebuilds relationships from `schema-join` entry links alone, and a
-    // link records its two endpoints and nothing else -- so an association's
-    // own fields come back from no entry, published or not.
+    // A relationship entry records its endpoints and join columns, not fields
+    // of its own, and push gives an association no entry at all -- so an
+    // association's own fields come back from no entry.
     const model: SemanticModel = {
       name: 'm',
       entities: [
@@ -1482,7 +1471,7 @@ describe('a projection the catalog cannot give back', () => {
     // would keep passing while the doc drifted, which is the one failure this
     // test exists to catch.
     const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
-    const loaded = loadModels(docYaml, {allowLegacyBareSource: true});
+    const loaded = loadModels(docYaml);
     expect(loaded.warnings).toEqual([]);
     const model = loaded.models[0];
     // The doc writes `source` in the one-key form and `target` in the two-key
@@ -1509,20 +1498,18 @@ describe('a projection the catalog cannot give back', () => {
       },
     ]);
     expect(validatePushRequirements(
-               [{document: 'payments.yaml', model}], {targetOptional: true}))
+               [{document: 'payments.yaml', model}]))
         .toEqual([]);
     const {warnings: kcWarnings} = generateCatalogResources(model, OPTS);
     expect(kcWarnings.some(w => w.includes('parameter'))).toBe(false);
 
-    // The `sql` profile the guide shows next, merged onto that same model.
+    // The `sql` profile the guide shows next, applied onto that same model.
     const operationalYaml =
         yamlFenceFromActionsDoc('## Carrying the write as DML');
-    const merged = mergeProfileOntoDoc(docYaml, operationalYaml, 'operational');
-    expect('error' in merged).toBe(false);
-    if ('error' in merged) return;
-    const mergedModel =
-        loadModels(merged.text, {allowLegacyBareSource: true}).models[0];
-    expect(mergedModel.actions![0].executor).toEqual({
+    const applied = applyProfileFile(model, operationalYaml, 'operational');
+    expect('error' in applied).toBe(false);
+    if ('error' in applied) return;
+    expect(applied.model.actions![0].executor).toEqual({
       kind: 'sql',
       sql: {
         statements: [
@@ -1533,7 +1520,7 @@ describe('a projection the catalog cannot give back', () => {
       },
     });
     expect(validatePushRequirements([
-      {document: 'payments.yaml', model: mergedModel}
+      {document: 'payments.yaml', model: applied.model},
     ])).toEqual([]);
   });
 
@@ -1544,10 +1531,7 @@ describe('a projection the catalog cannot give back', () => {
     expect(docYaml).toContain('field: Account.accountId');
     expect(docYaml).toContain('concept: Account');
     const [source, target] =
-        loadModels(docYaml, {allowLegacyBareSource: true})
-            .models[0]
-            .actions![0]
-            .parameters;
+        loadModels(docYaml).models[0].actions![0].parameters;
     expect([source.concept, source.field, source.type])
         .toEqual([target.concept, target.field, target.type]);
   });

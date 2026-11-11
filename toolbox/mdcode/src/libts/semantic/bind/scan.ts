@@ -227,13 +227,13 @@ export function tableRef(t: Pick<ScanTable, 'project'|'dataset'|'table'>): strin
 
 /** The profile `source` URI of a table. */
 export function tableUri(t: Pick<ScanTable, 'project'|'dataset'|'table'>): string {
-  return `//bigquery.googleapis.com/projects/${t.project}/datasets/${
+  return `bigquery.googleapis.com/projects/${t.project}/datasets/${
       t.dataset}/tables/${t.table}`;
 }
 
 /** The dataset of a BigQuery property-graph deployment target URI. */
 export function targetDataset(uri: string|undefined): string|undefined {
   const m = String(uri ?? '').match(
-      /^\/\/bigquery\.googleapis\.com\/projects\/[^/]+\/datasets\/([^/]+)\//);
+      /^(?:\/\/)?bigquery\.googleapis\.com\/projects\/[^/]+\/datasets\/([^/]+)\//);
   return m ? m[1] : undefined;
 }

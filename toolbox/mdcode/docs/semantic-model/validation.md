@@ -119,7 +119,7 @@ errored and 0 otherwise -- violations are the report, not a failure.
 ## Publishing to Knowledge Catalog
 
 `--publish` writes the results onto the entity entries `kcmd push` publishes
-(`<model>.entities.<Entity>` in the scope's entry group), as one aspect of type
+(`<model>/entities/<Entity>` in the scope's entry group), as one aspect of type
 `projects/<project>/locations/global/aspectTypes/semantic-constraint-results`.
 The aspect type is created on first use in the scope's project. Each entity's
 aspect holds `model`, `profile`, `checkedAt` and a `results[]` array, one
@@ -153,15 +153,16 @@ reported, not created.
 ## Enforcing constraints at consumption time
 
 A binding opts an entity in with one hydration rule, in the model file's inline
-binding or in a profile of the `<model>.profiles/` layout (a profile file,
-`<model>.profile.<name>.yaml`, may not set `hydration`; see
+binding or in a sibling profile file (`<model>.profile.<name>.yaml`; see
 [Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity)):
 
 ```yaml
-# pricing.profiles/bigquery.yaml (excerpt)
+# pricing.profile.bigquery.yaml (excerpt)
+name: bigquery
 entities:
   - name: DealPricing
-    source: //bigquery.googleapis.com/projects/p/datasets/ps_pricing/tables/deal_pricing
+    source: bigquery.googleapis.com/projects/p/datasets/ps_pricing/tables/deal_pricing
+    primary_key: [pricing_id]
     hydration:
       grain: {deterministic: true}
       constraints: enforce
@@ -256,7 +257,7 @@ kcmd test --target bigquery --profile bigquery --location US
 | Flag | Meaning |
 |------|---------|
 | `--target bigquery` | Required; the only engine. |
-| `--profile [name]` | The binding profile whose graph and tables are tested; defaults to `default_profile`, else the inline bindings. |
+| `--profile [name]` | The binding profile whose graph and tables are tested; defaults to the model's inline `default` bindings. |
 | `--out <dir>` | Where the files go (default `contract-tests`). |
 | `--location <location>` | BigQuery processing location for the query jobs; inferred when unset. |
 | `--sql-only` | Write the tests and the manifest and run nothing (also what happens without credentials). |

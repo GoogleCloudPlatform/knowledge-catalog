@@ -7,7 +7,7 @@
 // and a SQL view for the metrics no graph can hold. deployBigQuery deploys
 // them next to the main graph; its BigQuery client is stubbed here.
 
-import {describe, expect, spyOn, test} from 'bun:test';
+import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 
 import * as bq from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
@@ -17,9 +17,12 @@ import {Entity, Field, Metric, Relationship, SemanticModel} from '../../../src/l
 import {LoadedModel} from '../../../src/libts/semantic/loader';
 import {renderComposition} from '../../../src/libts/semantic/metric_composition';
 import {describeMetricGraphPlan, fallbackViewName, GRAPH_EXPAND_MAX_NODE_TABLES, MetricPlacement, planMetricGraphs, rewriteToColumns, sliceGraphName, snakeCase} from '../../../src/libts/semantic/metric_slices';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const TARGET = {project: 'p', dataset: 'd', graphName: 'g'};
-const GRAPHS = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs';
+const GRAPHS = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs';
 
 function f(name: string, column: string, type = 'String'): Field {
   return {name, expression: column, type} as Field;
@@ -48,34 +51,34 @@ function retail(extra: Metric[] = []): SemanticModel {
     entities: [
       {name: 'Party', abstract: true, dataSource: '', keys: [],
        fields: [{name: 'partyName', type: 'String'}]},
-      {name: 'Customer', extends: ['Party'], dataSource: 'p.d.customer', keys: ['customerId'],
+      {name: 'Customer', extends: ['Party'], dataSource: 'p.d.customer', keys: ['customer_id'],
        fields: [f('customerId', 'customer_id'), f('partyName', 'customer_name'),
                 f('segment', 'segment'), f('regionId', 'region_id')]},
-      {name: 'Region', dataSource: 'p.d.region', keys: ['regionId'],
+      {name: 'Region', dataSource: 'p.d.region', keys: ['region_id'],
        fields: [f('regionId', 'region_id'), f('regionName', 'region_name')]},
-      {name: 'Category', dataSource: 'p.d.category', keys: ['categoryId'],
+      {name: 'Category', dataSource: 'p.d.category', keys: ['category_id'],
        fields: [f('categoryId', 'category_id'), f('categoryName', 'category_name')]},
-      {name: 'Product', dataSource: 'p.d.product', keys: ['productId'],
+      {name: 'Product', dataSource: 'p.d.product', keys: ['product_id'],
        fields: [f('productId', 'product_id'), f('productName', 'product_name'),
                 f('categoryId', 'category_id')]},
-      {name: 'Sale', dataSource: 'p.d.sale', keys: ['saleId'],
+      {name: 'Sale', dataSource: 'p.d.sale', keys: ['sale_id'],
        fields: [f('saleId', 'sale_id'), f('customerId', 'customer_id'),
                 f('productId', 'product_id'), f('amount', 'amount', 'Decimal'),
                 f('quantity', 'qty', 'Integer'), f('status', 'status')]},
       {name: 'WonSale', extends: ['Sale'], dataSource: '', keys: [], fields: [],
        definition: {expression: "status = 'won'"}},
-      {name: 'SaleReturn', dataSource: 'p.d.sale_return', keys: ['returnId'],
+      {name: 'SaleReturn', dataSource: 'p.d.sale_return', keys: ['return_id'],
        fields: [f('returnId', 'return_id'), f('saleId', 'sale_id'),
                 f('refund', 'refund_amount', 'Decimal')]},
-      {name: 'Promotion', dataSource: 'p.d.promotion', keys: ['promotionId'],
+      {name: 'Promotion', dataSource: 'p.d.promotion', keys: ['promotion_id'],
        fields: [f('promotionId', 'promotion_id'), f('promotionName', 'name')]},
     ],
     relationships: [
-      rel('soldTo', 'Sale', 'customerId', 'Customer', 'customerId', 'purchases'),
-      rel('ofProduct', 'Sale', 'productId', 'Product', 'productId'),
-      rel('inRegion', 'Customer', 'regionId', 'Region', 'regionId'),
-      rel('inCategory', 'Product', 'categoryId', 'Category', 'categoryId'),
-      rel('returnOf', 'SaleReturn', 'saleId', 'Sale', 'saleId', 'returns'),
+      rel('soldTo', 'Sale', 'customer_id', 'Customer', 'customer_id', 'purchases'),
+      rel('ofProduct', 'Sale', 'product_id', 'Product', 'product_id'),
+      rel('inRegion', 'Customer', 'region_id', 'Region', 'region_id'),
+      rel('inCategory', 'Product', 'category_id', 'Category', 'category_id'),
+      rel('returnOf', 'SaleReturn', 'sale_id', 'Sale', 'sale_id', 'returns'),
       {name: 'promotedBy', source: {entity: 'Sale', columns: []},
        destination: {entity: 'Promotion', columns: []},
        association: {dataSource: 'p.d.sale_promotion', keys: ['sale_id', 'promotion_id'],
@@ -101,10 +104,10 @@ function retail(extra: Metric[] = []): SemanticModel {
 function diamond(extra: Metric[] = []): SemanticModel {
   const m = retail(extra);
   m.entities.find(e => e.name === 'Sale')!.fields.push(f('storeId', 'store_id'));
-  m.entities.push({name: 'Store', dataSource: 'p.d.store', keys: ['storeId'],
+  m.entities.push({name: 'Store', dataSource: 'p.d.store', keys: ['store_id'],
                    fields: [f('storeId', 'store_id'), f('regionId', 'region_id')]} as Entity);
-  m.relationships.push(rel('atStore', 'Sale', 'storeId', 'Store', 'storeId'),
-                       rel('storeRegion', 'Store', 'regionId', 'Region', 'regionId'));
+  m.relationships.push(rel('atStore', 'Sale', 'store_id', 'Store', 'store_id'),
+                       rel('storeRegion', 'Store', 'region_id', 'Region', 'region_id'));
   return m;
 }
 
@@ -116,13 +119,13 @@ function star(dims: number, metrics: Metric[]): SemanticModel {
   return {
     name: 'star',
     entities: [
-      {name: 'Event', dataSource: 'p.d.event', keys: ['eventId'],
+      {name: 'Event', dataSource: 'p.d.event', keys: ['event_id'],
        fields: [f('eventId', 'event_id'), f('value', 'value', 'Decimal'),
                 ...names.map(n => f(key(n), col(n)))]},
-      ...names.map(n => ({name: n, dataSource: `p.d.${n.toLowerCase()}`, keys: [key(n)],
+      ...names.map(n => ({name: n, dataSource: `p.d.${n.toLowerCase()}`, keys: [col(n)],
                           fields: [f(key(n), col(n))]})),
     ],
-    relationships: names.map(n => rel(`to${n}`, 'Event', key(n), n, key(n))),
+    relationships: names.map(n => rel(`to${n}`, 'Event', col(n), n, col(n))),
     metrics,
     actions: [],
     constraints: [],
@@ -134,13 +137,13 @@ function tiny(metrics: Metric[], inverse?: string): SemanticModel {
   return {
     name: 'tiny',
     entities: [
-      {name: 'Customer', dataSource: 'p.d.customer', keys: ['customerId'],
+      {name: 'Customer', dataSource: 'p.d.customer', keys: ['customer_id'],
        fields: [f('customerId', 'customer_id'), f('segment', 'segment')]},
-      {name: 'Sale', dataSource: 'p.d.sale', keys: ['saleId'],
+      {name: 'Sale', dataSource: 'p.d.sale', keys: ['sale_id'],
        fields: [f('saleId', 'sale_id'), f('customerId', 'customer_id'),
                 f('amount', 'amount', 'Decimal'), f('quantity', 'qty', 'Integer')]},
     ],
-    relationships: [rel('soldTo', 'Sale', 'customerId', 'Customer', 'customerId', inverse)],
+    relationships: [rel('soldTo', 'Sale', 'customer_id', 'Customer', 'customer_id', inverse)],
     metrics,
     actions: [],
     constraints: [],
@@ -173,11 +176,13 @@ NODE TABLES (
       qty AS quantity,
       status,
       COALESCE(status = 'won', FALSE) AS isWonSale OPTIONS(description="True when this Sale is a WonSale: status = 'won'."),
+      qty,
       CAST((COALESCE(status = 'won', FALSE)) AS INT64) AS win_rate__agg1_input,
+      sale_id,
       MEASURE(SUM(amount)) AS revenue,
-      MEASURE(SUM(quantity)) AS units,
+      MEASURE(SUM(qty)) AS units,
       MEASURE(SUM(win_rate__agg1_input)) AS win_rate__agg1 OPTIONS(description="Component 1 of metric win_rate: SUM(CAST(Sale.isWonSale AS INT64)). Recombined as described on win_rate."),
-      MEASURE(COUNT(saleId)) AS win_rate__agg2 OPTIONS(description="Component 2 of metric win_rate: COUNT(Sale.saleId). Recombined as described on win_rate.")
+      MEASURE(COUNT(sale_id)) AS win_rate__agg2 OPTIONS(description="Component 2 of metric win_rate: COUNT(Sale.saleId). Recombined as described on win_rate.")
     ),
   \`p.d.product\` AS Product
     KEY(product_id)
@@ -416,7 +421,7 @@ describe('planMetricGraphs: slice selection', () => {
     const sale = p.slices.find(s => s.fact === 'Sale')!;
     expect(sale.measures.get('revenue_per_region__agg2')).toBe('Region');
     expect(sale.ddl).toContain(
-        'MEASURE(COUNT(DISTINCT regionId)) AS revenue_per_region__agg2');
+        'MEASURE(COUNT(DISTINCT region_id)) AS revenue_per_region__agg2');
   });
 
   test('declaration order never changes the plan', () => {
@@ -548,7 +553,7 @@ describe('planMetricGraphs: fallbacks', () => {
     const [view] = plan.views;
     expect(view.sql).toBe(SALE_VIEW_SQL);
     expect(view.uri)
-        .toBe('//bigquery.googleapis.com/projects/p/datasets/d/tables/g__sale_metrics_view');
+        .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/g__sale_metrics_view');
     expect(view.columnFor.get('Customer.partyName')).toBe('Customer_partyName');
   });
 
@@ -650,8 +655,7 @@ describe('deployBigQuery: metric graphs next to the main graph', () => {
 
   function loaded(): LoadedModel[] {
     const model = retail();
-    model.customExtensions =
-        [{vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [URI]})}];
+    model.deployments = [{name: 'default', target: URI}];
     return [{document: 'retail', model}];
   }
 
@@ -685,7 +689,7 @@ describe('deployBigQuery: metric graphs next to the main graph', () => {
         `-- ${GRAPHS}/g__customer_metrics`,
         `-- ${GRAPHS}/g__sale_metrics`,
         `-- ${GRAPHS}/g__sale_return_metrics`,
-        '-- //bigquery.googleapis.com/projects/p/datasets/d/tables/g__sale_metrics_view',
+        '-- bigquery.googleapis.com/projects/p/datasets/d/tables/g__sale_metrics_view',
       ]);
       expect(res.ddl.map(created)).toEqual(CREATED);
       expect(res.metricGraphs).toEqual(

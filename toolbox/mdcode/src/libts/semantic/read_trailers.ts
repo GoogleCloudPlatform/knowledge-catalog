@@ -4,11 +4,11 @@
 // An agent grounds on `lookup_context`, which returns each entry's
 // description and schema -- not its aspects and not its entry links. The
 // names it needs to run a query live in exactly those places: an entity's
-// node view and graph node in the `semantic-binding` aspect and the binding
-// links, and a metric's measure in no catalog field at all (push derives it
-// when it compiles the metric into a graph MEASURE). So push also writes them
-// as the last paragraph of the description, the convention the other
-// trailers follow (`Hydration:`, `Members:`, `Unit:`):
+// node view and graph node in the binding links, and a metric's measure in no
+// catalog field at all (push derives it when it compiles the metric into a
+// graph MEASURE). So push also writes them as trailing paragraphs of the
+// description, the convention the other trailers follow (`Hydration:`,
+// `Members:`, `Unit:`):
 //
 //   <entity description and trailers>
 //
@@ -26,10 +26,10 @@
 // authored: pull peels them off and drops them, and the next push writes them
 // again.
 
-import {googleDeploymentTargets} from './deployment_target';
+import {formatStep} from './derived_relationships';
 import {snakeCase} from './generated_views';
 import {Entity, SemanticModel} from './ir';
-import {EntityPhysical} from './kc_annotations';
+import {EntityPhysical, firstBigQueryTarget} from './kc_annotations';
 import {renderComposition} from './metric_composition';
 import {MetricPlacement, planMetricGraphs} from './metric_slices';
 import {lowerNodeViews} from './node_views';
@@ -85,7 +85,11 @@ export function relationshipItems(
       if (rel.association) {
         return `many-to-many through \`${rel.association.dataSource}\``;
       }
-      if (rel.via?.length) return `derived through ${rel.via.join(', ')}`;
+      if (rel.via?.length) {
+        const steps = rel.via.map(
+            (s: any) => typeof s === 'string' ? s : formatStep(s));
+        return `derived through ${steps.join(', ')}`;
+      }
       const s = rel.source.columns ?? [];
       const d = rel.destination.columns ?? [];
       return s.map((c, i) => {
@@ -185,13 +189,7 @@ export function placementQuery(placement: MetricPlacement): string|undefined {
 export function metricQueries(model: SemanticModel): Map<string, string> {
   const out = new Map<string, string>();
   if (!(model.metrics ?? []).length) return out;
-  let target: ReturnType<typeof googleDeploymentTargets>['bigQuery'][number]|
-      undefined;
-  try {
-    target = googleDeploymentTargets(model).bigQuery[0];
-  } catch {
-    return out;  // malformed extension JSON: validation reports it
-  }
+  const target = firstBigQueryTarget(model);
   if (!target) return out;
   try {
     // Plan on the model the BigQuery push deploys: node-view lowered
@@ -285,7 +283,7 @@ function nameList(names: string[], n: number): string {
  * The model anchor's contents paragraph: every metric and every entity, by
  * name. An agent whose search matched no metric or entity grounds on the anchor
  * and picks from this list the entries to look up
- * (`<model>.metrics.<metric>`, `<model>.entities.<Entity>`). At most `budget`
+ * (`<model>/metrics/<metric>`, `<model>/entities/<Entity>`). At most `budget`
  * characters: metrics first, then entities, and a list that does not fit is
  * cut, saying how many are left. Undefined for a model with neither, or when
  * nothing fits.

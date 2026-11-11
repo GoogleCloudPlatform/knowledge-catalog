@@ -311,11 +311,22 @@ export function hasNoSource(entity: Pick<Entity, 'dataSource'>): boolean {
 export function resolveRelationship(
     model: SemanticModel, entity: Entity, field: string): Relationship|undefined {
   const owners = new Set([entity.name, ...ancestorsOf(model, entity.name)]);
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const colNames = new Set([field]);
+  for (const owner of owners) {
+    const f = byName.get(owner)?.fields.find(x => x.name === field);
+    const expr = f?.expression ?? f?.importedExpression ?? f?.dialects?.[0]?.expression;
+    if (expr) {
+      const bare = expr.trim().replace(/^`(.*)`$/, '$1');
+      const dot = bare.lastIndexOf('.');
+      colNames.add(dot >= 0 ? bare.slice(dot + 1).replace(/^`(.*)`$/, '$1') : bare);
+    }
+  }
   return (model.relationships ?? [])
       .find(
           r => owners.has(r.source.entity) && !r.abstract && !r.via?.length &&
               !r.association && r.source.columns.length === 1 &&
-              r.source.columns[0] === field);
+              colNames.has(r.source.columns[0].replace(/^`(.*)`$/, '$1')));
 }
 
 function ancestorsOf(model: SemanticModel, name: string): string[] {
@@ -337,14 +348,23 @@ function ancestorsOf(model: SemanticModel, name: string): string[] {
  * vocabulary -- a field that reads a member's label.
  */
 export function isMatchableField(dest: Entity, field: string): boolean {
-  if (dest.keys.length === 1 && dest.keys[0] === field) return true;
-  if ((dest.uniqueKeys ?? []).some(u => u.length === 1 && u[0] === field)) {
+  const f = dest.fields.find(x => x.name === field);
+  const expr = f?.expression ?? f?.importedExpression ?? f?.dialects?.[0]?.expression;
+  const bareExpr = expr ? expr.trim().replace(/^`(.*)`$/, '$1') : undefined;
+  const col = bareExpr ?
+      (bareExpr.includes('.') ? bareExpr.slice(bareExpr.lastIndexOf('.') + 1).replace(/^`(.*)`$/, '$1') : bareExpr) :
+      undefined;
+  const matches = (k: string) => {
+    const bk = k.replace(/^`(.*)`$/, '$1');
+    return bk === field || (col !== undefined && bk === col);
+  };
+  if (dest.keys.length === 1 && matches(dest.keys[0])) return true;
+  if ((dest.uniqueKeys ?? []).some(u => u.length === 1 && matches(u[0]))) {
     return true;
   }
   if (dest.members !== undefined) {
-    const f = dest.fields.find(x => x.name === field);
-    const col = f?.expression ?? (f ? snakeCase(f.name) : undefined);
-    return col === 'label';
+    const vcol = f?.expression ?? (f ? snakeCase(f.name) : undefined);
+    return vcol === 'label';
   }
   return false;
 }

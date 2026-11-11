@@ -17,9 +17,9 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
-import {asResourceUri, databaseOf, OSSIE_VERSION} from '../loader';
+import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
 
@@ -43,20 +43,12 @@ export interface AlloyDbDatabase {
   /**
    * `projects/<p>/locations/<l>/clusters/<c>/databases/<d>`. The store's
    * identity, which on AlloyDB reaches all the way down to the PostgreSQL
-   * database: one cluster holds several, and two of them are two stores. A
-   * legacy instance-based target takes the same name, and its instance is in
-   * `instance`.
+   * database: one cluster holds several, and two of them are two stores.
    */
   name: string;
   project: string;
   location: string;
   cluster: string;
-  /**
-   * The instance a connection goes through. A legacy target names it. For
-   * any other target, withPrimaryInstance finds the cluster's primary
-   * instance.
-   */
-  instance?: string;
   database: string;
 }
 
@@ -87,11 +79,6 @@ export type Store = SpannerStore|AlloyDbStore|BigQueryStore;
 export type ChosenStore = SpannerStore|AlloyDbDatabase|BigQueryStore;
 
 
-// The instance-based AlloyDB table URI kcmd used before, which legacy profiles
-// still bind.
-const LEGACY_ALLOYDB_TABLE_SOURCE =
-    /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/[A-Za-z0-9_-]+\/databases\/([A-Za-z0-9_-]+)\/tables\/.+$/;
-
 // A BigQuery table an entity is bound to. The loader rewrites the resource-name
 // URI an author may write into `project.dataset.table`, which is the form the
 // generator emits and the only one that reaches here. The table name takes any
@@ -103,16 +90,11 @@ const BIGQUERY_TABLE_SOURCE = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.[^./]+$/;
 // The database a bound table sits in, or undefined when the source names no
 // table of any backend this module knows. A Spanner or AlloyDB source, in
 // either spelling, takes the loader's databaseOf form, `spanner/<p>/<i>/<db>`
-// or `alloydb/<p>/<l>/<c>/<db>`. An AlloyDB database belongs to its cluster,
-// so an instance in a legacy source is not part of it.
+// or `alloydb/<p>/<l>/<c>/<db>`.
 function storeOf(source: string): string|undefined {
   const database = databaseOf(source);
   if (database?.startsWith('spanner/') || database?.startsWith('alloydb/')) {
     return database;
-  }
-  const legacy = source.match(LEGACY_ALLOYDB_TABLE_SOURCE);
-  if (legacy) {
-    return `alloydb/${legacy[1]}/${legacy[2]}/${legacy[3]}/${legacy[4]}`;
   }
   const bigQuery = source.match(BIGQUERY_TABLE_SOURCE);
   if (bigQuery) return `bigquery/${bigQuery[1]}/${bigQuery[2]}`;
@@ -123,14 +105,21 @@ function storeOf(source: string): string|undefined {
 // Every table the model binds, not just its entities: a many-to-many
 // relationship is backed by a junction table of its own, and an action that
 // creates the edge writes to exactly that one.
-function boundTables(model: SemanticModel): Array<{name: string; source: string}> {
-  const bindings: Array<{name: string; source: string}> = [];
+function boundTables(model: SemanticModel):
+    Array<{name: string; source: string; shown: string}> {
+  const bindings: Array<{name: string; source: string; shown: string}> = [];
   for (const entity of model.entities ?? []) {
-    bindings.push({name: entity.name, source: entity.dataSource ?? ''});
+    bindings.push({
+      name: entity.name,
+      source: entity.dataSource ?? '',
+      shown: writtenSource(entity),
+    });
   }
   for (const relationship of model.relationships ?? []) {
     const source = relationship.association?.dataSource;
-    if (source) bindings.push({name: relationship.name, source});
+    if (source) {
+      bindings.push({name: relationship.name, source, shown: asResourceName(source)});
+    }
   }
   return bindings;
 }
@@ -164,11 +153,11 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
     if (!source) continue;
     const bound = storeOf(source);
     if (!bound) {
-      strays.push(
-          `'${binding.name}' to ${source}, which is not a table in this store`);
+      strays.push(`'${binding.name}' to ${
+          binding.shown}, which is not a table in this store`);
       continue;
     }
-    if (bound !== database) strays.push(`'${binding.name}' to ${source}`);
+    if (bound !== database) strays.push(`'${binding.name}' to ${binding.shown}`);
   }
   return strays;
 }
@@ -179,17 +168,14 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  *
  * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
- * set with it when push rejects those deployments too, so the model is wrong
- * whatever it is used for. Push rejects a target in no accepted form in any
- * deployment, whichever profile the deployment is for, and a target listed
- * twice. It also rejects a GOOGLE block whose data is not valid JSON, and
- * several targets for the profile that leave the store ambiguous. `named`
- * alone means the model binds a table outside its Spanner or AlloyDB store.
+ * set with it when the deployments give no store whatever the model is used
+ * for: a target in no accepted form in any deployment, or several targets for
+ * the profile. `named` alone means the model binds a table outside its Spanner
+ * or AlloyDB store.
  *
  * Neither is set when the profile names no store, unless a target is in no
- * accepted form or listed twice, or a GOOGLE block is not valid JSON. Neither
- * is set either when a BigQuery model binds a table outside the graph's
- * dataset, which push accepts.
+ * accepted form. Neither is set either when a BigQuery model binds a table
+ * outside the graph's dataset.
  */
 export interface StoreError {
   error: string;
@@ -202,100 +188,55 @@ export interface StoreError {
  * The store a model runs against under binding profile `profile`, which
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
- * name none or `default` for `default`. A model with no `deployments` list,
- * such as a vanilla model that lists `deploymentTargets` in its GOOGLE block,
- * names no profile for any of its targets, so they are all for `default`. The
- * instance-based and cluster-based URIs of one AlloyDB database are one store.
- * With several targets, the store is the single operational one, Spanner or
- * AlloyDB.
+ * name none or `default` for `default`. With several targets, the store is the
+ * single operational one, Spanner or AlloyDB.
  *
- * Set `legacyWrapper` for a model a legacy `semantic_model:` wrapper was
- * merged into. Set `deploymentTarget` when the model's deployment comes from a
- * `deployment_target` key, which the loader names `default`, so that a
- * message names the key instead.
+ * Fails five ways:
  *
- * Fails seven ways:
- *
- * 1. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
- * 2. A target is listed twice. Push refuses that on every push, so this fails
- *    the store under every profile.
- * 3. A target names no supported destination. Push checks the target of every
+ * 1. A target names no supported destination. Push checks the target of every
  *    deployment, so this fails the store under every profile.
- * 4. No deployment uses the profile.
- * 5. There are several targets and no single operational one, so which store
+ * 2. No deployment uses the profile.
+ * 3. There are several targets and no single operational one, so which store
  *    is meant is ambiguous.
- * 6. There is no target, so there is nothing to run against.
- * 7. The model binds a table outside the store. For a Spanner or AlloyDB
+ * 4. There is no target, so there is nothing to run against.
+ * 5. The model binds a table outside the store. For a Spanner or AlloyDB
  *    store, a write would land in the wrong place, and the error is named. A
- *    BigQuery graph may read tables in any dataset, and push accepts that, so
+ *    BigQuery graph may read tables in any dataset, so
  *    for a BigQuery store the error is not named.
  */
 export function resolveStore(
-    model: SemanticModel, profile: string = DEFAULT_PROFILE,
-    opts: {legacyWrapper?: boolean; deploymentTarget?: boolean} = {}):
-    ChosenStore|StoreError {
+    model: SemanticModel, profile: string = DEFAULT_PROFILE): ChosenStore|
+    StoreError {
   // Push checks the target of every deployment the model declares, so the
   // targets of every deployment are read before the profile's are picked.
-  let all: GoogleDeploymentTargets;
-  try {
-    all = googleDeploymentTargets(model);
-  } catch (err: any) {
-    // It throws when a GOOGLE block's data is not valid JSON. Push reports
-    // that as an error, so the store fails.
-    return {error: `${err?.message || err}`, named: true, rejected: true};
-  }
+  const all = googleDeploymentTargets(model);
 
-  // The loader reads a vanilla model's `deployments` out of its GOOGLE block.
-  // It keeps a GOOGLE block on the model only when the block lists
-  // `deploymentTargets`, the older form, whose targets carry no deployment
-  // name. A message names that key only for such a block, and names the
-  // block's `deployments` for a vanilla model that lists them, as push does.
+  // The loader reads a vanilla model's `deployments` out of its GOOGLE block,
+  // so a message names the block's `deployments`, as push does.
   const vanilla = model.version === OSSIE_VERSION;
-  const inGoogleBlock = vanilla && model.deployments === undefined &&
-      (model.customExtensions ?? []).some(e => e.vendorName === 'GOOGLE');
-  const where = inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` :
-      vanilla && model.deployments ? `its GOOGLE block's 'deployments'` :
-                                     `'deployments'`;
-
-  // Every push refuses a target listed twice, even beside one that gives a
-  // store. A resource name and its URI name the same target. The loader
-  // refuses a repeat in `deployments`, so a repeat here is in a GOOGLE block.
-  const keys = all.uris.map(asResourceUri);
-  const repeated = all.uris.find((uri, i) => keys.indexOf(keys[i]) < i);
-  if (repeated !== undefined) {
-    return {
-      error: `Model '${model.name}' declares duplicate deployment target '${
-                 repeated}' in ${where}; each deployment must target a ` +
-          `distinct resource.`,
-      named: true,
-      rejected: true,
-    };
-  }
+  const where = vanilla && model.deployments ?
+      `its GOOGLE block's 'deployments'` :
+      `'deployments'`;
 
   // A target in no accepted form is reported, alone or beside one that gives
   // a store, whichever profile its deployment is for.
   if (all.malformed.length) {
     const unparsed =
-        model.deployments?.find(d => d.target === all.malformed[0]);
-    let error: string;
-    if (!unparsed) {
-      error = googleBlockTargetError(model, all.malformed[0]);
-    } else if (opts.deploymentTarget) {
-      error = deploymentTargetKeyError(model, unparsed.target);
-    } else {
-      error = deploymentTargetError(model, unparsed);
-    }
-    return {error, named: true, rejected: true};
+        model.deployments!.find(d => d.target === all.malformed[0])!;
+    return {
+      error: deploymentTargetError(model, unparsed),
+      named: true,
+      rejected: true,
+    };
   }
 
-  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+  const used = deploymentsFor(model, profile);
   if ('error' in used) return used;
-  const {model: scoped, owner} = used;
-  // The profile's targets are among those read above. So this does not
-  // throw, and none of them is in no accepted form.
+  const scoped = used.model;
+  // The profile's targets are among those read above, so none of them is in no
+  // accepted form.
   const targets = googleDeploymentTargets(scoped);
-  const {spanner, bigQuery} = targets;
-  const alloyDb = mergeUriPairs(targets.alloyDb);
+  const {spanner, alloyDb, bigQuery} = targets;
   const declared = spanner.length + alloyDb.length + bigQuery.length;
 
   const operational = [...spanner, ...alloyDb];
@@ -310,7 +251,7 @@ export function resolveStore(
         `deployment targets on two operational backends (${
             counted.join(' and ')})` :
         `${counted[0]} deployment targets`;
-    const names = deploymentNames(scoped, contenders.map(t => t.uri), owner);
+    const names = deploymentNames(scoped, contenders.map(t => t.uri), profile);
     return {
       error: `Model '${model.name}' declares ${what} in ${where}${
                  names}, so which store it runs against is ambiguous; the ` +
@@ -342,7 +283,7 @@ export function resolveStore(
           `target store's table of that name rather than in the bound one. ` +
           `Bind both to the same store.`,
       // A BigQuery graph may read tables in any dataset, BigLake included,
-      // and push accepts that. The model then has no store, and a caller
+      // so the model then has no store, and a caller
       // does not fail.
       ...(store.kind === 'bigquery' ? {} : {named: true}),
     };
@@ -351,55 +292,20 @@ export function resolveStore(
 }
 
 
-// The AlloyDB targets, with each database that is named once by its
-// instance-based URI and once by its cluster-based URI counted once. The
-// instance-based one is kept, whichever is listed first, because it names the
-// instance to connect through. Any other repeat of a database is kept, so two
-// instances of one database count twice. resolveStore has already refused the
-// same URI listed twice.
-function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
-  const byDatabase = new Map<string, AlloyDbTarget[]>();
-  for (const t of targets) {
-    const key = destinationKey(t.uri);
-    byDatabase.set(key, [...(byDatabase.get(key) ?? []), t]);
-  }
-  return targets.filter(t => {
-    const named = byDatabase.get(destinationKey(t.uri))!;
-    const pair = named.length === 2 &&
-        named.some(n => n.instance !== undefined) &&
-        named.some(n => n.instance === undefined);
-    return !pair || t.instance !== undefined;
-  });
-}
-
-
 // The model with only the deployments `profile` uses, or why there are none.
-// `owner` is the profile those deployments are for: `profile` itself, or
-// `default` when a legacy wrapper that no deployment names falls back to the
-// model file's own, as push deploys it. A wrapper that names its own
-// `deployment_target` has replaced the model file's deployments with it. A
-// model with no `deployments` list keeps every target in its GOOGLE block for
-// `default` and for a legacy wrapper. An empty list names no deployment.
-// Either way, any other profile has none.
-function deploymentsFor(
-    model: SemanticModel, profile: string, legacyWrapper: boolean):
-    {model: SemanticModel; owner: string}|{error: string} {
+// A model with no or empty `deployments` list names no deployment.
+function deploymentsFor(model: SemanticModel, profile: string):
+    {model: SemanticModel}|{error: string} {
   const nothingToRun = `so there is no database to run it against`;
   const namedProfile = `binding profile '${profile}' is a named profile, ` +
       `which names no deployment target`;
   if (!model.deployments?.length) {
-    return profile === DEFAULT_PROFILE || legacyWrapper ?
-        {model, owner: DEFAULT_PROFILE} :
+    return profile === DEFAULT_PROFILE ?
+        {model} :
         {error: `${namedProfile}, ${nothingToRun}`};
   }
-  const usedBy = (name: string) => model.deployments!.filter(
-      d => (d.profile ?? DEFAULT_PROFILE) === name);
-  let owner = profile;
-  let used = usedBy(profile);
-  if (!used.length && legacyWrapper) {
-    owner = DEFAULT_PROFILE;
-    used = usedBy(DEFAULT_PROFILE);
-  }
+  const used = model.deployments.filter(
+      d => (d.profile ?? DEFAULT_PROFILE) === profile);
   if (!used.length) {
     // A vanilla model lists its deployments in its GOOGLE block.
     const listed = model.version === OSSIE_VERSION ?
@@ -410,45 +316,35 @@ function deploymentsFor(
       error = `Model '${model.name}' declares no deployment without a ` +
           `'profile' in ${listed}, so there is no store to run against ` +
           `under binding profile '${DEFAULT_PROFILE}'.`;
-    } else if (legacyWrapper) {
-      error = `legacy binding profile '${profile}' names no ` +
-          `'deployment_target', and every deployment in 'deployments' names ` +
-          `another profile, ${nothingToRun}`;
     } else {
       error = `${namedProfile}, and no deployment in ${listed} uses it, ${
           nothingToRun}`;
     }
     return {error};
   }
-  return {model: {...model, deployments: used}, owner};
+  return {model: {...model, deployments: used}};
 }
 
 
 /**
  * The targets binding profile `profile` uses, as resolveStore reads them: its
- * deployments' targets, or every target in a GOOGLE block for `default` and
- * for a legacy wrapper when the model has no `deployments` list. Empty when no
- * deployment is for the profile. Set `legacyWrapper` as for resolveStore.
- * Throws when a GOOGLE block's data is not valid JSON.
+ * deployments' targets. Empty when no deployment is for the profile.
  */
-export function profileTargets(
-    model: SemanticModel, profile: string,
-    opts: {legacyWrapper?: boolean} = {}): string[] {
-  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+export function profileTargets(model: SemanticModel, profile: string):
+    string[] {
+  const used = deploymentsFor(model, profile);
   return 'error' in used ? [] : googleDeploymentTargets(used.model).uris;
 }
 
 
-// The deployments whose targets are `uris`, for a message, or nothing when
-// the targets come from a GOOGLE block, which names none. `owner` is the
+// The deployments whose targets are `uris`, for a message. `profile` is the
 // profile they are for.
 function deploymentNames(
-    model: SemanticModel, uris: string[], owner: string): string {
-  const deployments = model.deployments;
-  if (!deployments) return '';
+    model: SemanticModel, uris: string[], profile: string): string {
+  const deployments = model.deployments ?? [];
   const names =
       uris.map(uri => deployments.find(d => d.target === uri)?.name ?? uri);
-  return ` for profile '${owner}' (${names.join(', ')})`;
+  return ` for profile '${profile}' (${names.join(', ')})`;
 }
 
 
@@ -475,7 +371,6 @@ function storeFor(
       project: alloyDb.project,
       location: alloyDb.location,
       cluster: alloyDb.cluster,
-      ...(alloyDb.instance !== undefined ? {instance: alloyDb.instance} : {}),
       database: alloyDb.database,
     };
   }
@@ -492,16 +387,13 @@ function storeFor(
  * `store` with the instance a connection goes through. An AlloyDB target
  * names a database in a cluster, so this asks the AlloyDB API for the
  * cluster's primary instance. Fails, naming the cluster, when it has none,
- * when the primary is not READY, or when the listing fails. Any other store,
- * and an AlloyDB store that already names its instance, comes back unchanged.
+ * when the primary is not READY, or when the listing fails. Any other store
+ * comes back unchanged.
  */
 export async function withPrimaryInstance(
     store: ChosenStore,
     client: AlloyDbClient): Promise<Store|{error: string}> {
   if (store.kind !== 'alloydb') return store;
-  // A legacy target names its instance. The spread gives the type that says
-  // so.
-  if (store.instance !== undefined) return {...store, instance: store.instance};
   const cluster = `projects/${store.project}/locations/${
       store.location}/clusters/${store.cluster}`;
   let res: ApiResult<Instance[]>;
@@ -540,18 +432,10 @@ export async function withPrimaryInstance(
 }
 
 
-// The message of a failed API call: the error the response body states, or
-// failing that the body as it is, after the HTTP status.
+// The message of a failed API call, after the HTTP status.
 function apiError(res: {status: number; message?: string}): string {
-  try {
-    const message = JSON.parse(res.message ?? '')?.error?.message;
-    if (typeof message === 'string' && message) {
-      return `${res.status} ${message}`;
-    }
-  } catch {
-    // Not JSON: report the body as it is.
-  }
-  return res.message ? `${res.status} ${res.message}` : `${res.status}`;
+  const message = res.message?.trim();
+  return message ? `${res.status} ${message}` : `${res.status}`;
 }
 
 

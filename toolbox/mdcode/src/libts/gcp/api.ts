@@ -7,7 +7,90 @@ import * as context from './context';
 export interface ApiResult<T> {
   status: number;
   result?: T;
+  // For a failed response, the message errorMessage reads from its body.
   message?: string;
+  // For a failed response, its whole body.
+  body?: string;
+}
+
+export interface ApiClientOptions {
+  retryDelayMs?: number;
+}
+
+export interface RequestOptions {
+  retry?: boolean;
+}
+
+const TRANSIENT_TRIES = 4;
+const TRANSIENT_DELAY_CAP_MS = 5000;
+const MAX_MESSAGE_LENGTH = 2000;
+
+// The message in a failed response's body. For a Google API error it is the
+// LocalizedMessage detail, which Spanner leaves unescaped, or else
+// `error.message`. Each BadRequest field violation that the message does not
+// state is appended, with its line breaks replaced by semicolons. Any other
+// body comes back trimmed and cut to 2,000 characters. An HTML page comes back
+// as its text.
+export function errorMessage(body: string): string {
+  const text = body.trim();
+  try {
+    const error = JSON.parse(text)?.error;
+    const details = Array.isArray(error?.details) ? error.details : [];
+    const localized = details.find((d: any) =>
+        d?.['@type']?.endsWith('LocalizedMessage') && isText(d.message));
+    const message = localized?.message ?? error?.message;
+    if (isText(message)) {
+      // Spanner states what is wrong with a name, such as an uppercase
+      // database ID, only in a field violation.
+      const violations = details
+          .filter((d: any) => d?.['@type']?.endsWith('BadRequest'))
+          .flatMap((d: any) =>
+              Array.isArray(d.fieldViolations) ? d.fieldViolations : [])
+          .map((v: any) => v?.description)
+          .filter((v: unknown): v is string =>
+              isText(v) && !message.includes(v.trim()))
+          .map((v: string) => v.trim().replace(/\s*\n\s*/g, '; '));
+      return [message.trim(), ...violations].join(' ');
+    }
+  } catch {
+    // Not JSON, such as a proxy's HTML error page.
+  }
+  const plain = text.startsWith('<') ?
+      text.replace(/<(style|script)\b[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim() :
+      text;
+  return plain.length > MAX_MESSAGE_LENGTH ?
+      `${plain.slice(0, MAX_MESSAGE_LENGTH)}...` : plain;
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+export function isTransientStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+function transientDelayMs(configured?: number): number {
+  if (configured !== undefined && Number.isFinite(configured) && configured >= 0) {
+    return configured;
+  }
+  const raw = process.env.GCP_RETRY_DELAY_MS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 500;
+}
+
+function jitteredDelay(delayMs: number): number {
+  return delayMs > 0 ? Math.round(delayMs * (0.5 + Math.random() * 0.5)) : 0;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
@@ -15,21 +98,27 @@ export class ApiClient {
   private readonly _endpoint: string;
   private readonly _pathPrefix: string;
   private readonly _context: context.ApiContext;
+  private readonly _retryDelayMs?: number;
 
-  constructor(endpoint: string, pathPrefix: string, context: context.ApiContext) {
+  constructor(endpoint: string, pathPrefix: string, context: context.ApiContext,
+              options: ApiClientOptions = {}) {
     this._endpoint = endpoint;
     this._pathPrefix = pathPrefix;
     this._context = context;
+    this._retryDelayMs = options.retryDelayMs;
   }
 
   get context(): context.ApiContext {
     return this._context;
   }
 
+  // Only reads retry: a write that 5xxs may still have landed on the server.
   async _get<T>(resourceName: string,
-                 queryParams?: Record<string, any>): Promise<ApiResult<T>> {
+                 queryParams?: Record<string, any>,
+                 options?: RequestOptions): Promise<ApiResult<T>> {
     const url = `${this._endpoint}/${this._pathPrefix}/${resourceName}`;
-    return this._requestRetry('GET', url, queryParams);
+    return this._requestRetry('GET', url, queryParams, undefined,
+                              options?.retry !== false);
   }
 
   async _post<T>(resourceName: string,
@@ -55,7 +144,8 @@ export class ApiClient {
   private async _requestRetry<T>(method: string,
                                  url: string,
                                  queryParams?: Record<string, any>,
-                                 body?: any): Promise<ApiResult<T>> {
+                                 body?: any,
+                                 retryTransient = false): Promise<ApiResult<T>> {
     if (queryParams) {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(queryParams)) {
@@ -74,23 +164,35 @@ export class ApiClient {
       }
     }
 
-    this._context.log(`${method} ${url}{body ? '\n' : ''}`, body);
+    const tries = retryTransient ? TRANSIENT_TRIES : 1;
+    let delayMs = transientDelayMs(this._retryDelayMs);
+    let response!: Response;
+    for (let attempt = 0; attempt < tries; attempt++) {
+      if (attempt > 0) {
+        await sleep(jitteredDelay(delayMs));
+        delayMs = Math.min(delayMs * 2, TRANSIENT_DELAY_CAP_MS);
+      }
 
-    let response = await this._requestCore(url, { method, body });
-    if (response.status === 401) {
-      this.context.refresh();
+      this._context.log(`${method} ${url}${body ? '\n' : ''}`, body);
+
       response = await this._requestCore(url, { method, body });
+      if (response.status === 401) {
+        this.context.refresh();
+        response = await this._requestCore(url, { method, body });
+      }
+      if (!isTransientStatus(response.status)) break;
     }
 
     const result: ApiResult<T> = { status: response.status };
     if (!response.ok) {
-      result.message = await response.text();
+      result.body = await response.text();
+      result.message = errorMessage(result.body);
     }
     else {
       result.result = await response.json() as T;
     }
 
-    this._context.log(`${response.status}:${result.message ?? ''}\n`, result.result);
+    this._context.log(`${response.status}:${result.body ?? ''}\n`, result.result);
     return result;
   }
 

@@ -11,11 +11,14 @@
 // EcosystemPartner, a node derived from a relationship that carries only its
 // key.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const GEN_OPTS = {project: 'p', dataset: 'd'};
 

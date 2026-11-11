@@ -650,7 +650,7 @@ describe('the Knowledge Catalog aspect', () => {
       expect(update).toHaveBeenCalledTimes(4);
       for (const call of update.mock.calls) expect(call.slice(1)).toEqual([['aspects'], [key]]);
       expect(res.published.length).toBe(3);
-      expect(res.errors).toEqual(['shop.entities.VipCustomer: no such entry (run `kcmd push` first)']);
+      expect(res.errors).toEqual(['shop/entities/VipCustomer: no such entry (run `kcmd push` first)']);
     } finally {
       create.mockRestore();
       update.mockRestore();

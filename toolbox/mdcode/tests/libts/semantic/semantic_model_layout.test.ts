@@ -1,14 +1,14 @@
 // Tests for the SemanticModel layout's pull write-path
-// (src/libts/layouts/semantic-model.ts): modelPath / hasModel /
-// writeModelDocument. These are the sink `pull` writes reconstructed models to;
-// the push-side discovery (modelDocuments) is exercised via the deploy tests.
+// (src/libts/layouts/semantic-model.ts): modelPath / writeModelDocument. These
+// are the sink `pull` writes reconstructed models to; the push-side discovery
+// (modelDocuments) is exercised via the deploy tests.
 
 import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {formatOverviewSidecar, parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
 
 let root: string;
 let catalogPath: string;
@@ -32,7 +32,7 @@ async function layout(entryGroup?: string): Promise<SemanticModelLayout> {
 // Writes `file` into entry group `eg` under the test catalog.
 function writeToGroup(file: string, text: string): void {
   const dir = path.join(catalogPath, 'EntryGroups', 'eg');
-  fs.mkdirSync(dir, {recursive: true});
+  fs.mkdirSync(path.dirname(path.join(dir, file)), {recursive: true});
   fs.writeFileSync(path.join(dir, file), text);
 }
 
@@ -57,14 +57,13 @@ describe('SemanticModelLayout write path', () => {
   test(
       'writeModelDocument creates the file, dirs, and indexes it', async () => {
         const l = await layout('eg');
-        expect(l.hasModel('sales')).toBe(false);
+        expect(fs.existsSync(l.modelPath('sales'))).toBe(false);
 
         l.writeModelDocument('sales', 'version: x\n');
 
         const p = l.modelPath('sales');
         expect(fs.existsSync(p)).toBe(true);
         expect(fs.readFileSync(p, 'utf8')).toBe('version: x\n');
-        expect(l.hasModel('sales')).toBe(true);
         // Indexed, so a subsequent read surfaces it as a model document.
         expect(l.modelDocuments()).toEqual([
           {name: 'sales', text: 'version: x\n'}
@@ -89,7 +88,6 @@ describe('SemanticModelLayout write path', () => {
     l.removeModelDocument('sales');
 
     expect(fs.existsSync(p)).toBe(false);
-    expect(l.hasModel('sales')).toBe(false);
     // De-indexed, so it no longer surfaces as a model document.
     expect(l.modelDocuments()).toEqual([]);
   });
@@ -114,16 +112,6 @@ describe('SemanticModelLayout profile discovery', () => {
     fs.mkdirSync(dir, {recursive: true});
     fs.writeFileSync(path.join(dir, `${name}.yaml`), `# ${name}\n`);
   }
-
-  test('profileDocuments reads <model>.profiles/*.yaml by name', async () => {
-    writeModel('eg', 'commerce', 'version: x\n');
-    writeProfile('eg', 'commerce', 'analytical');
-    writeProfile('eg', 'commerce', 'operational');
-    const l = await layout('eg');
-    expect(l.profileDocuments('commerce').map(p => p.name)).toEqual(
-        ['analytical', 'operational']);
-    expect(l.profileDocuments('commerce')[0].text).toBe('# analytical\n');
-  });
 
   test('a model with no profiles directory yields none', async () => {
     writeModel('eg', 'commerce', 'version: x\n');
@@ -152,12 +140,16 @@ describe('SemanticModelLayout sibling profile files', () => {
     fs.writeFileSync(path.join(groupDir(), file), text);
   }
 
-  test('modelDocuments returns the model and not its profile files', async () => {
-    write('retail.yaml', GOOGLE);
+  test('modelDocuments returns each model, sorted, and not its profile files', async () => {
+    // glob lists files in directory order, not by name; with several models
+    // that order is rarely sorted by chance.
+    const models = ['shop', 'retail', 'commerce', 'zeta', 'alpha', 'orders'];
+    for (const m of models) write(`${m}.yaml`, GOOGLE);
     write('retail.profile.prod.yaml', 'name: prod\n');
     write('retail.profile.yaml', 'name: x\n');
     const l = await layout('eg');
-    expect(l.modelDocuments().map(d => d.name)).toEqual(['retail']);
+    expect(l.modelDocuments().map(d => d.name)).toEqual(
+        ['alpha', 'commerce', 'orders', 'retail', 'shop', 'zeta']);
   });
 
   test('profileDocuments finds sibling files by name, sorted', async () => {
@@ -171,12 +163,14 @@ describe('SemanticModelLayout sibling profile files', () => {
     expect(docs[0].text).toBe('name: prod\n');
   });
 
-  test('the legacy directory is read only when no sibling file exists', async () => {
+  // Push, `kcmd profiles` and `kcmd skills-generate` reject the directory
+  // before they read a profile (see legacyProfileDirs).
+  test('profileDocuments never reads the legacy directory', async () => {
     write('retail.yaml', GOOGLE);
     fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
     fs.writeFileSync(path.join(groupDir(), 'retail.profiles', 'old.yaml'), '# old\n');
     let l = await layout('eg');
-    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['old']);
+    expect(l.profileDocuments('retail')).toEqual([]);
 
     write('retail.profile.prod.yaml', 'name: prod\n');
     l = await layout('eg');
@@ -228,18 +222,6 @@ describe('SemanticModelLayout sibling profile files', () => {
     write('retail.profile.prod.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(/Google-flavor only/);
-    expect(() => l.profilePaths('retail')).toThrow(/Google-flavor only/);
-  });
-
-  test('a legacy profile directory beside a vanilla model is an error', async () => {
-    write('retail.yaml', 'version: 0.2.0.dev0\n');
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    write('retail.profiles/prod.yaml', 'name: prod\n');
-    const l = await layout('eg');
-    const message = "Profile directory 'retail.profiles/' sits beside " +
-        "'retail.yaml', which is a 0.2.0.dev0 document";
-    expect(() => l.profileDocuments('retail')).toThrow(message);
-    expect(() => l.profilePaths('retail')).toThrow(message);
   });
 
   test('profileDocuments gives each file\'s path', async () => {
@@ -268,30 +250,28 @@ describe('SemanticModelLayout sibling profile files', () => {
          ]);
        });
 
-  test('a legacy profile directory beside a Google-flavor model is read', async () => {
-    write('retail.yaml', GOOGLE);
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    write('retail.profiles/prod.yaml', 'name: prod\n');
-    const l = await layout('eg');
-    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
-  });
-
+  // An editor lock file (Emacs `.#<file>`, macOS `._<file>`) is no orphan.
   test('orphanProfilePaths lists profile files with no model', async () => {
     write('retail.yaml', GOOGLE);
     write('retail.profile.prod.yaml', 'name: prod\n');
     write('gone.profile.prod.yaml', 'name: prod\n');
+    write('.#retail.profile.prod.yaml', '');
     const l = await layout('eg');
     expect(l.orphanProfilePaths()).toEqual(
         [path.join(groupDir(), 'gone.profile.prod.yaml')]);
   });
 
-  test('legacyProfileDirs lists <model>.profiles directories', async () => {
-    write('retail.yaml', GOOGLE);
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    const l = await layout('eg');
-    expect(l.legacyProfileDirs()).toEqual(
-        [path.join(groupDir(), 'retail.profiles')]);
-  });
+  // `mv` and `pull --force-remove` leave an emptied directory behind.
+  test('legacyProfileDirs lists <model>.profiles directories with a profile file',
+       async () => {
+         write('retail.yaml', GOOGLE);
+         fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+         write('retail.profiles/old.yaml', '# old\n');
+         fs.mkdirSync(path.join(groupDir(), 'shop.profiles'));
+         const l = await layout('eg');
+         expect(l.legacyProfileDirs()).toEqual(
+             [path.join(groupDir(), 'retail.profiles')]);
+       });
 
   test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
     write('retail.yaml', GOOGLE);
@@ -356,18 +336,18 @@ describe('SemanticModelLayout profile file rules', () => {
       writeToGroup('retail.yaml', `version: 0.2.0.dev0/google\nsemantic_model:\n${model}`);
       expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
           .toEqual(['prod']);
-      writeToGroup('retail.yaml', `version: 0.2.0.dev0\nsemantic_model:\n${model}`);
-      const l = await layout('eg');
-      expect(() => l.profileDocuments('retail'))
-          .toThrow("sits beside 'retail.yaml', which is a 0.2.0.dev0 document");
     }
+    // The version is still read past a key set twice.
+    writeToGroup('retail.yaml', 'version: 0.2.0.dev0\nsemantic_model:\n  - name: retail\n    name: sales\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('retail'))
+        .toThrow("sits beside 'retail.yaml', which is a 0.2.0.dev0 document");
   });
 
   // The layout reads the version as the lookup of block profiles reads it. A
-  // version set twice, or one a YAML error may change or hide, is not read past
-  // the error, so the file is not taken as vanilla, and the lookup reports the
-  // error. A version set once is read past
-  // an error after it, such as more aliases than a load expands.
+  // version set twice, or one past a YAML syntax error, is not read, so the
+  // file is not taken as vanilla, and the lookup reports the error. A version
+  // set once is read past more aliases than a load expands.
   test('the version of a model file that is not valid YAML is read as the block profile lookup reads it', async () => {
     writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
     const rest = 'semantic_model:\n  - name: retail\n';
@@ -380,6 +360,13 @@ describe('SemanticModelLayout profile file rules', () => {
       // left open ahead of it.
       '{version: "0.2.0.dev0", /google, label: "\nsemantic_model: [{name: retail}]}\n',
       'label: "\n  version: \'0.2.0.dev0/google\'\n  note: "\nversion: "0.2.0.dev0"\nx: "\n' + rest,
+      // A quote closed too early on the version, with the rest of the version
+      // on a line after it, after a `#` with no space before it, or after a
+      // lone carriage return.
+      'version: "0.2.0.dev0"\n  /google"\n' + rest,
+      'version: "0.2.0.dev0"\n\n/google"\n' + rest,
+      'version: "0.2.0.dev0"#/google"\n' + rest,
+      'version: "0.2.0.dev0"\r/google"\n' + rest,
     ]) {
       writeToGroup('retail.yaml', text);
       expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
@@ -472,4 +459,69 @@ describe('SemanticModelLayout profile name rules', () => {
     expect(() => l.profileDocuments('retail'))
         .toThrow("change the name in 'retail.profile.prod.yaml' to 'prod'");
   });
+});
+
+
+describe('SemanticModelLayout overview sidecars', () => {
+  test('parseOverviewSidecar reads the frontmatter and trimmed body, and ' +
+           'rejects a frontmatter it cannot hold, naming the file; ' +
+           'formatOverviewSidecar writes them back',
+       () => {
+         const file = 'm/metrics/x.overview.md';
+         const read = (text: string) => parseOverviewSidecar(text, file);
+         const text = '---\ncontentType: HTML\nlinks:\n' +
+             '  - url: https://x.test\n    title: Guide\n' +
+             '  - url: https://y.test\n---\n<p>Hi</p>\n';
+         expect(formatOverviewSidecar(read(text))).toBe(text);
+         // A byte order mark before the frontmatter is skipped.
+         expect(read(`\uFEFF${text}`)).toEqual(read(text));
+         // Content that opens with a `---` line gets an empty frontmatter.
+         const ruled = {content: '---\ntitle: Orders\n---\nOne row.'};
+         expect(read(formatOverviewSidecar(ruled))).toEqual(ruled);
+         expect(read(text.replace('\n<p>', '\n\n<p>')))
+             .toEqual({
+               content: '<p>Hi</p>',
+               contentType: 'HTML',
+               links: [
+                 {url: 'https://x.test', title: 'Guide'},
+                 {url: 'https://y.test'},
+               ],
+             });
+         expect(read('---\ncontentType: HTML\n---\n\n'))
+             .toEqual({contentType: 'HTML'});
+         for (const [text, problem] of [
+                ['---\ntitle: x\n---\n',
+                 "its frontmatter holds only contentType and links, not 'title'."],
+                ['---\ncontentType: TEXT\n---\n',
+                 "contentType is MARKDOWN or HTML, not 'TEXT'."],
+                ['---\nlinks:\n  - title: Guide\n---\n',
+                 'links is a list of entries, each a url and an optional title.'],
+                ['---\ncontentType: "x\n---\n',
+                 'its frontmatter does not parse: Missing closing "quote at ' +
+                     'line 1, column 16:\n\ncontentType: "x\n' +
+                     '               ^\n'],
+              ]) {
+           expect(() => read(text))
+               .toThrow(new Error(`Overview sidecar '${file}': ${problem}`));
+         }
+       });
+
+  test('overviewSidecarPaths finds the sidecars of model, entity, metric ' +
+           'and relationship entries, by entry id',
+       async () => {
+         const dir = path.join(catalogPath, 'EntryGroups', 'eg');
+         for (const id of ['retail', 'retail/metrics/m',
+                           'retail/relationships/r', 'retail/entities/x',
+                           'other']) {
+           writeToGroup(`${id}.overview.md`, 'X.\n');
+         }
+         const l = await layout('eg');
+         expect(l.overviewSidecarPaths())
+             .toEqual(['other', 'retail', 'retail/entities/x',
+                       'retail/metrics/m', 'retail/relationships/r']
+                          .map(entryId => ({
+                                 entryId,
+                                 path: path.join(dir, `${entryId}.overview.md`),
+                               })));
+       });
 });

@@ -144,9 +144,9 @@ glossary. Each model with a `glossary:` block is published as follows:
 6. **`definition` links from the semantic entries** that `kcmd push`
    publishes in the `catalog.yaml` entry group. They use the same body, with
    these sources:
-   - the entity entry `<model>.entities.<Entity>`, with `path: Schema.<field>`
+   - the entity entry `<model>/entities/<Entity>`, with `path: Schema.<field>`
      for a field;
-   - the metric entry `<model>.metrics.<metric>` for a metric.
+   - the metric entry `<model>/metrics/<metric>` for a metric.
 
    The documentation does not say whether definition links are allowed on
    custom entries. If the API refuses one, it is reported as skipped rather

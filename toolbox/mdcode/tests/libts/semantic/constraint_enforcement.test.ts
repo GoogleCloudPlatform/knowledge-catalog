@@ -12,7 +12,7 @@
 // (a warn rule, with spelling repair), and a lost opportunity has no won
 // amount (a warn rule on a defined entity).
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {enforceableEntities} from '../../../src/libts/semantic/bind/run';
 import {constraintsTrailer, planEnforcement, repairSql, spellingKey, splitConstraintsTrailer} from '../../../src/libts/semantic/constraint_enforcement';
@@ -23,6 +23,9 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {lowerNodeViews} from '../../../src/libts/semantic/node_views';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const TARGET = {project: 'p', dataset: 'sem'};
 const KC_OPTS = {project: 'dest-proj', location: 'us', entryGroup: 'eg'};
@@ -385,7 +388,7 @@ describe('the catalog paragraph', () => {
     ...KC_OPTS,
     bigQueryEntries: {datasetLocations: new Map([['p.sem', 'us']])},
     ...(rates ? {constraintRates: new Map([['sales', rates]])} : {}),
-  }).entries.find(e => e.name.endsWith('.entities.DealPricing'))!;
+  }).entries.find(e => e.name.endsWith('/entities/DealPricing'))!;
 
   test('the rules and their rates, between Relationships and Hydration', () => {
     const text = entryOf(RATES).entrySource!.description!;
@@ -447,7 +450,11 @@ describe('kcmd bind --enforce-constraints', () => {
       'version: "0.2.0.dev0/google"',
       'semantic_model:',
       '  - name: sales',
-      '    datasets:',
+      '    deployments:',
+      '      - name: bigquery',
+      '        target: bigquery.googleapis.com/projects/p/datasets/sem/propertyGraphs/g',
+      '        profile: bigquery',
+      '    entities:',
       '      - name: DealPricing',
       '        primary_key: [pricingId]',
       '        fields:',
@@ -465,21 +472,18 @@ describe('kcmd bind --enforce-constraints', () => {
       '        on_violation: reject',
     ].join('\n');
     const profileText = [
-      'version: "0.2.0.dev0/google"',
-      'semantic_model:',
-      '  - name: sales',
-      '    deployment_target: //bigquery.googleapis.com/projects/p/datasets/sem/propertyGraphs/g',
-      '    entities:',
-      '      - name: DealPricing',
-      '        source: //bigquery.googleapis.com/projects/p/datasets/crm/tables/deal_pricing',
-      '        fields:',
-      '          - {name: pricingId, expression: pricing_id}',
-      '          - {name: floorPrice, expression: floor_price}',
-      '          - {name: targetPrice, expression: target_price}',
-      '      - name: Region',
-      '        source: //bigquery.googleapis.com/projects/p/datasets/crm/tables/region',
-      '        fields:',
-      '          - {name: regionId, expression: region_id}',
+      'name: bigquery',
+      'entities:',
+      '  - name: DealPricing',
+      '    source: bigquery.googleapis.com/projects/p/datasets/crm/tables/deal_pricing',
+      '    fields:',
+      '      - {name: pricingId, expression: pricing_id}',
+      '      - {name: floorPrice, expression: floor_price}',
+      '      - {name: targetPrice, expression: target_price}',
+      '  - name: Region',
+      '    source: bigquery.googleapis.com/projects/p/datasets/crm/tables/region',
+      '    fields:',
+      '      - {name: regionId, expression: region_id}',
     ].join('\n');
     expect([...enforceableEntities(modelText, profileText, 'bigquery', 'sales', 'p')])
         .toEqual(['DealPricing']);

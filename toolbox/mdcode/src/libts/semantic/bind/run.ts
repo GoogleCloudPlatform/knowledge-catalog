@@ -15,14 +15,16 @@ import * as yaml from 'yaml';
 import * as api from '../../gcp/api';
 import * as context from '../../gcp/context';
 import {googleDeploymentTargets} from '../deployment_target';
+import {snakeCase} from '../generated_views';
 import {checkHydration} from '../hydration';
 import {Entity, SemanticModel} from '../ir';
-import {loadModels, loadSemanticModels} from '../loader';
+import {loadModels} from '../loader';
 import {lowerNodeViews} from '../node_views';
 import {distinctQueries, evaluateProfile, planBigQueryProfile, ProfileFinding, ProfilePlan, QueryOutcome} from '../profile_bigquery';
-import {applyProfileExclusions, modelFileAloneMessage, profileForDocument} from '../resolve_profiles';
+import {modelFileAloneMessage, profileForDocument} from '../resolve_profiles';
+import {loadSqlEngine} from '../sql_parser';
 import {bindChecks, EntityProposals, evaluateRefinements, planRefinements, tablesByRef} from './hydrate';
-import {ModelBindResult} from './report';
+import {buildProfileRelationships, ModelBindResult} from './report';
 import {CatalogScan, parseScanResult, ScanPattern, scanSql, ScanTable, tableUri} from './scan';
 import {bindEntities, BindThresholds, EntityBinding} from './score';
 
@@ -31,7 +33,8 @@ export type QueryFn = (sql: string) => Promise<QueryOutcome>;
 
 /** Runs `sqls` (each once) with bounded concurrency; outcomes keyed by SQL. */
 export async function runAll(
-    sqls: string[], query: QueryFn, concurrency = 6): Promise<Map<string, QueryOutcome>> {
+    sqls: string[], query: QueryFn, concurrency = 6):
+    Promise<Map<string, QueryOutcome>> {
   const queue = [...new Set(sqls)];
   const out = new Map<string, QueryOutcome>();
   let next = 0;
@@ -45,7 +48,8 @@ export async function runAll(
       }
     }
   };
-  await Promise.all(Array.from({length: Math.max(1, Math.min(concurrency, queue.length))}, worker));
+  await Promise.all(
+      Array.from({length: Math.max(1, Math.min(concurrency, queue.length))}, worker));
   return out;
 }
 
@@ -76,40 +80,80 @@ export interface BindDocumentResult {
   results: ModelBindResult[];
 }
 
-const VERSION = '0.2.0.dev0/google';
-
-/** The draft profile document the profiler reads (no hydration). */
-export function draftProfileDoc(model: string, bindings: EntityBinding[]): Record<string, unknown> {
+/**
+ * The flat draft `ProfileSpec` document the profiler reads (no hydration):
+ * physical keys and relationship join columns included so `planBigQueryProfile`
+ * queries the candidate tables directly.
+ */
+export function draftProfileDoc(
+    profileName: string, bindings: EntityBinding[],
+    model?: SemanticModel): Record<string, unknown> {
   const entities: Array<Record<string, unknown>> = [];
+  const entityByName = new Map((model?.entities ?? []).map(e => [e.name, e]));
   for (const b of bindings) {
+    const e = entityByName.get(b.entity);
     if (b.chosen && (b.status === 'auto' || b.status === 'needs_review')) {
       const [project, dataset, ...rest] = b.chosen.table.split('.');
+      const matched = b.chosen.matches.filter(m => m.typeOk);
+      const matchedNames = new Set(matched.map(m => m.field));
+      const excluded = [
+        ...b.chosen.matches.filter(m => !m.typeOk).map(m => m.field),
+        ...b.chosen.unmatched,
+      ].filter(f => !matchedNames.has(f));
+      const pk = e?.keys?.length ?
+          e.keys.map(
+              k => b.chosen!.matches.find(m => m.field === k)?.column ??
+                  snakeCase(k)) :
+          undefined;
+      const uks = (e?.uniqueKeys ?? [])
+                      .filter(uk => uk.length > 0)
+                      .map(
+                          uk => uk.map(
+                              k => b.chosen!.matches.find(m => m.field === k)
+                                       ?.column ??
+                                  snakeCase(k)));
       entities.push({
         name: b.entity,
         source: tableUri({project, dataset, table: rest.join('.')}),
-        fields: b.chosen.matches.filter(m => m.typeOk)
-                    .map(m => ({name: m.field, expression: m.column})),
+        ...(pk ? {primary_key: pk} : {}),
+        ...(uks.length ? {unique_keys: uks} : {}),
+        ...(matched.length ? {
+          fields: matched.map(m => ({name: m.field, expression: m.column})),
+        } :
+                             {}),
+        ...(excluded.length ? {fields_exclude: excluded} : {}),
       });
-    } else if (b.status === 'vocabulary' && b.vocabFields?.length) {
+    } else if (b.status === 'vocabulary' &&
+               (b.vocabFields?.length || b.vocabUnbound?.length)) {
       entities.push({
         name: b.entity,
-        fields: b.vocabFields.map(v => ({name: v.field, expression: v.column})),
+        ...(b.vocabFields?.length ? {
+          fields:
+              b.vocabFields.map(v => ({name: v.field, expression: v.column})),
+        } :
+                                    {}),
+        ...(b.vocabUnbound?.length ? {fields_exclude: b.vocabUnbound} : {}),
+      });
+    } else if (b.status === 'derived' && b.deriveFrom) {
+      entities.push({
+        name: b.entity,
+        hydration: {derive_from: {relationship: b.deriveFrom.relationship}},
       });
     }
   }
-  return {version: VERSION, semantic_model: [{name: model, entities}]};
+  const relationships = buildProfileRelationships(model, bindings, true);
+  return {
+    name: profileName,
+    entities,
+    ...(relationships.length ? {relationships} : {}),
+  };
 }
 
-// The models of the document `modelText` with the profile `profileText`
-// applied, as push applies it (resolve_profiles' profileForDocument): a profile
-// file applies to the model file loaded on its own; a legacy `semantic_model:`
-// wrapper -- the layout `kcmd bind` writes, which may name its graph with
-// `deployment_target` -- is merged into the text and loaded as push loads one,
-// with its exclusions marked.
+// Applies the flat profile `profileText` to `modelText` using
+// `resolve_profiles.profileForDocument`, exactly as push reads it.
 function loadProfiled(
     modelText: string, profileText: string, profileName: string,
-    docName: string, defaultProject?: string):
-    {models: SemanticModel[]}|{error: string} {
+    docName: string): {models: SemanticModel[]}|{error: string} {
   const res = profileForDocument(
       {name: docName, text: modelText}, [{name: profileName, text: profileText}],
       profileName);
@@ -118,34 +162,32 @@ function loadProfiled(
   }
   if (res.kind === 'error') {
     return {
-      error: res.stage === 'load' ? modelFileAloneMessage(res.error, profileName) :
-                                    res.error,
+      error: res.stage === 'load' ?
+          modelFileAloneMessage(res.error, profileName) :
+          res.error,
     };
   }
-  if (res.kind === 'file') return {models: [res.model]};
-  const loaded = loadSemanticModels(
-      [{
-        name: docName,
-        text: res.text,
-        allowLegacyBareSource: true,
-        excluded: res.excluded,
-      }],
-      {defaultProject, bindingOptional: true});
-  if (loaded.error) return {error: loaded.error};
-  return {
-    models: loaded.models.map(m => applyProfileExclusions(m.model, res.excluded)),
-  };
+  return {models: [res.model]};
 }
 
 async function profileModel(
     input: BindDocumentInput, model: SemanticModel, bindings: EntityBinding[],
-    query: QueryFn): Promise<{plan?: ProfilePlan; findings: ProfileFinding[];
-                              proposals: Map<string, EntityProposals>; notProfiled?: string}> {
+    query: QueryFn): Promise<{
+  plan?: ProfilePlan; findings: ProfileFinding[];
+  proposals: Map<string, EntityProposals>;
+  notProfiled?: string;
+}> {
   const empty = {findings: [], proposals: new Map<string, EntityProposals>()};
-  const loaded = loadProfiled(
-      input.modelText, yaml.stringify(draftProfileDoc(model.name, bindings)),
-      input.profileName, input.docName, input.defaultProject);
-  if ('error' in loaded) return {...empty, notProfiled: `the draft profile does not apply: ${loaded.error}`};
+  const draft =
+      yaml.stringify(draftProfileDoc(input.profileName, bindings, model));
+  const loaded =
+      loadProfiled(input.modelText, draft, input.profileName, input.docName);
+  if ('error' in loaded) {
+    return {
+      ...empty,
+      notProfiled: `the draft profile does not apply: ${loaded.error}`,
+    };
+  }
   const bound = loaded.models.find(m => m.name === model.name);
   if (!bound) return {...empty, notProfiled: 'the draft profile lost the model'};
   const full = planBigQueryProfile(bound);
@@ -169,8 +211,10 @@ async function profileModel(
  */
 export async function bindDocument(
     input: BindDocumentInput, query?: QueryFn): Promise<BindDocumentResult> {
+  await loadSqlEngine();
   const {models, warnings} = loadModels(
-      input.modelText, {bindingOptional: true, defaultProject: input.defaultProject});
+      input.modelText,
+      {bindingOptional: true, defaultProject: input.defaultProject});
   const results: ModelBindResult[] = [];
   for (const model of models) {
     const bindings = bindEntities(model, input.tables, {
@@ -183,6 +227,7 @@ export async function bindDocument(
       proposals: new Map(),
       findings: [],
       warnings: [...warnings],
+      semanticModel: model,
     };
     if (!input.profileData) {
       result.notProfiled = 'run with --no-profile-data';
@@ -209,39 +254,63 @@ export async function bindDocument(
  */
 export function checkProfile(
     modelText: string, profileText: string, profileName: string, docName: string,
-    defaultProject?: string): string[] {
-  const loaded =
-      loadProfiled(modelText, profileText, profileName, docName, defaultProject);
+    _defaultProject?: string): string[] {
+  const loaded = loadProfiled(modelText, profileText, profileName, docName);
   if ('error' in loaded) return [loaded.error];
-  return loaded.models.flatMap(m => checkHydration(m).errors);
+  // Check hydration against the logical model keys/joins with only each
+  // entity's hydration/source/mode overlaid so logical resolve/derive_from
+  // field names match before physical key/join lowering.
+  const baseModels =
+      loadModels(modelText, {bindingOptional: true}).models;
+  const baseByName = new Map(baseModels.map(m => [m.name, m]));
+  return loaded.models.flatMap(m => {
+    const base = baseByName.get(m.name);
+    if (!base) return checkHydration(m).errors;
+    const byEnt = new Map((m.entities ?? []).map(e => [e.name, e]));
+    const hybrid: SemanticModel = {
+      ...base,
+      entities: (base.entities ?? []).map(be => {
+        const pe = byEnt.get(be.name);
+        if (!pe) return be;
+        return {
+          ...be,
+          dataSource: pe.dataSource,
+          hydration: pe.hydration,
+          mode: pe.mode,
+        };
+      }),
+    };
+    return checkHydration(hybrid).errors;
+  });
 }
 
 /**
  * The entities whose node view would apply or report at least one of the
  * model's constraints under the profile (`kcmd bind --enforce-constraints`
- * writes `hydration.constraints: enforce` on exactly these). Planned with the
- * same lowering the push runs, every eligible entity switched on; an entity
- * bound directly, derived, or left without a node view is not listed.
+ * writes `hydration.constraints: enforce` on exactly these).
  */
 export function enforceableEntities(
     modelText: string, profileText: string, profileName: string, docName: string,
-    defaultProject?: string): Set<string> {
+    _defaultProject?: string): Set<string> {
   const out = new Set<string>();
-  const loaded =
-      loadProfiled(modelText, profileText, profileName, docName, defaultProject);
+  const loaded = loadProfiled(modelText, profileText, profileName, docName);
   if ('error' in loaded) return out;
   for (const model of loaded.models) {
     if (!(model.constraints ?? []).length) continue;
     const eligible = (e: Entity) => !e.abstract && !e.definition &&
-        e.members === undefined && e.mode !== 'direct' && !e.hydration?.deriveFrom;
+        e.members === undefined && e.mode !== 'direct' &&
+        !e.hydration?.deriveFrom;
     const all: SemanticModel = {
       ...model,
       entities: (model.entities ?? []).map(
-          e => eligible(e) ?
-              {...e, hydration: {...(e.hydration ?? {}), constraints: 'enforce'}} :
-              e),
+          e => eligible(e) ? {
+            ...e,
+            hydration: {...(e.hydration ?? {}), constraints: 'enforce'},
+          } :
+                             e),
     };
-    let target: {project?: string; dataset?: string} = {project: 'p', dataset: 'kcmd_bind'};
+    let target: {project?: string; dataset?: string} =
+        {project: 'p', dataset: 'kcmd_bind'};
     try {
       const t = googleDeploymentTargets(model).bigQuery[0];
       if (t) target = {project: t.project, dataset: t.dataset};
@@ -261,12 +330,16 @@ export function enforceableEntities(
 
 class CatalogSearchClient extends api.ApiClient {
   constructor(ctx: context.ApiContext) {
-    super(process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com', 'v1', ctx);
+    super(
+        process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com',
+        'v1', ctx);
   }
 
   async search(project: string, query: string): Promise<string[]> {
-    const res = await this._post<{results?: Array<{dataplexEntry?: {fullyQualifiedName?: string}}>}>(
-        `projects/${project}/locations/global:searchEntries`, {}, {query, pageSize: 20});
+    const res = await this._post<{
+      results?: Array<{dataplexEntry?: {fullyQualifiedName?: string}}>;
+    }>(`projects/${project}/locations/global:searchEntries`, {},
+       {query, pageSize: 20});
     if (res.status !== 200 || !res.result) return [];
     return (res.result.results ?? [])
         .map(r => r.dataplexEntry?.fullyQualifiedName ?? '')
@@ -280,13 +353,18 @@ export async function catalogSearchHits(
     ctx: context.ApiContext, project: string, model: SemanticModel,
     tables: ScanTable[]): Promise<Map<string, Set<string>>> {
   const client = new CatalogSearchClient(ctx);
-  const known = new Set(tables.map(t => `${t.project}.${t.dataset}.${t.table}`));
+  const known =
+      new Set(tables.map(t => `${t.project}.${t.dataset}.${t.table}`));
   const hits = new Map<string, Set<string>>();
   for (const e of model.entities ?? []) {
-    if (e.abstract || e.definition || e.members !== undefined || !e.keys?.length) continue;
+    if (e.abstract || e.definition || e.members !== undefined ||
+        !e.keys?.length) {
+      continue;
+    }
     const found = new Set<string>();
     for (const name of [e.name, ...(e.aiContext?.synonyms ?? [])].slice(0, 3)) {
-      for (const ref of await client.search(project, `system=bigquery ${name}`)) {
+      for (const ref of
+               await client.search(project, `system=bigquery ${name}`)) {
         if (known.has(ref)) found.add(ref);
       }
     }

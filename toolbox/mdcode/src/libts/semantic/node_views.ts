@@ -63,11 +63,30 @@
 import {constraintsSentence, enforcedViewSql, EnforcementPlan, PlannedEnforcement, planEnforcement, repairSql} from './constraint_enforcement';
 import {aliased, edgeViewName, GeneratedView, oneLine, snakeCase, sqlInteger, sqlString, tableName, viewRef, ViewTarget} from './generated_views';
 import {hasNoSource, hydrationClauses, isDerivedEntity, isDirect, isMatchableField, isTimestampBound, resolveRelationship} from './hydration';
-import {Entity, Field, fieldBinding, NormalizeRule, Relationship, SemanticModel, VocabularyMember} from './ir';
+import {Entity, expressionForDialect, Field, fieldBinding, NormalizeRule, Relationship, SemanticModel, VocabularyMember} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {stripQualifier} from './sql_expr_utils';
+import {isColumnName, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {quoteIfReserved} from './sql_identifiers';
 import {generatesVocabularyView, isVocabulary, vocabularyViewName, withVocabularyBindings} from './vocabulary';
+
+function fieldSqlOf(f: Field): string|undefined {
+  const raw = expressionForDialect(f, 'BIGQUERY') ?? fieldBinding(f);
+  return raw === undefined ? undefined : sqlWithoutComments(raw);
+}
+
+function bareCol(col: string): string {
+  return col.trim().replace(/^`(.*)`$/, '$1');
+}
+
+function fieldReadingColumn(entity: Entity, col: string): Field|undefined {
+  const target = bareCol(col).toLowerCase();
+  return entity.fields.find(f => {
+    const sql = fieldSqlOf(f);
+    if (sql === undefined) return false;
+    const local = stripQualifier(sql, entity.name).trim();
+    return isColumnName(local) && bareCol(local).toLowerCase() === target;
+  });
+}
 
 export interface NodeViewLowering {
   // The model rewritten to read every node view (the input is not mutated).
@@ -94,7 +113,7 @@ export function withHydrationBindings(entity: Entity): Entity {
   if (!isDerivedEntity(entity) || entity.keys.length !== 1) return entity;
   const key = entity.keys[0];
   const fields = entity.fields.map(
-      f => f.name === key && fieldBinding(f) === undefined ?
+      f => f.name === key && fieldSqlOf(f) === undefined ?
           {...f, expression: snakeCase(key)} :
           f);
   if (!fields.some(f => f.name === key)) {
@@ -221,6 +240,20 @@ interface Planned {
   name: string;         // view name
   ref: string;          // qualified view reference
   columns: Map<string, string>;  // bound field name -> view column
+  extraColumns: string[];        // unmodeled physical key/FK columns kept in view
+}
+
+function viewColOf(p: Planned, colOrField: string): string {
+  const direct = p.columns.get(colOrField);
+  if (direct !== undefined) return direct;
+  const byCol = fieldReadingColumn(p.resolved, colOrField);
+  if (byCol && p.columns.has(byCol.name)) return p.columns.get(byCol.name)!;
+  if (!isDerivedEntity(p.entity) &&
+      !p.resolved.fields.some(f => f.name === colOrField) &&
+      isColumnName(colOrField)) {
+    return bareCol(colOrField);
+  }
+  return colOrField;
 }
 
 /**
@@ -260,6 +293,8 @@ export function lowerNodeViews(
     }
   }
 
+  const anyHydrationOrMode =
+      entities.some(x => Boolean(x.hydration || x.mode !== undefined));
   const planned = new Map<string, Planned>();
   for (const e of entities) {
     if (!wantsNodeView(e)) continue;
@@ -270,6 +305,7 @@ export function lowerNodeViews(
     const at = `entity '${e.name}'`;
     const owner = sourceRefs.get(ref);
     if (owner !== undefined) {
+      if (owner === e.name && !anyHydrationOrMode) continue;
       warnings.push(`${at}: its node view '${ref}' would replace ${
           owner === e.name ? 'its own source table' :
                              `the source table of entity '${owner}'`}; the ` +
@@ -287,7 +323,7 @@ export function lowerNodeViews(
     let clash: string|undefined;
     const bound = isDerivedEntity(e) ?
         resolved.fields.filter(f => f.name === e.keys[0]) :
-        resolved.fields.filter(f => fieldBinding(f) !== undefined);
+        resolved.fields.filter(f => fieldSqlOf(f) !== undefined);
     for (const f of bound) {
       const col = snakeCase(f.name);
       if (owners.has(col)) {
@@ -303,8 +339,30 @@ export function lowerNodeViews(
           `directly (rename one field)`);
       continue;
     }
+    const extraColumns: string[] = [];
+    if (!isDerivedEntity(e)) {
+      const seenCols = new Set([...owners.keys()].map(c => c.toLowerCase()));
+      const structural = [
+        ...(e.keys ?? []),
+        ...(e.uniqueKeys ?? []).flat(),
+        ...relationships
+            .filter(r => !r.abstract && !r.association && r.source.entity === e.name)
+            .flatMap(r => r.source.columns),
+        ...relationships
+            .filter(r => !r.abstract && !r.association && r.destination.entity === e.name)
+            .flatMap(r => r.destination.columns),
+      ];
+      for (const c of structural) {
+        if (columns.has(c) || fieldReadingColumn(resolved, c)) continue;
+        if (resolved.fields.some(f => f.name === c) || !isColumnName(c)) continue;
+        const raw = bareCol(c);
+        if (seenCols.has(raw.toLowerCase())) continue;
+        seenCols.add(raw.toLowerCase());
+        extraColumns.push(raw);
+      }
+    }
     taken.add(name);
-    planned.set(e.name, {entity: e, resolved, name, ref, columns});
+    planned.set(e.name, {entity: e, resolved, name, ref, columns, extraColumns});
   }
 
   const views = new Map<string, GeneratedView>();
@@ -374,6 +432,7 @@ export function lowerNodeViews(
       const col = p.columns.get(f.name);
       if (col === undefined) return f;
       const out: Field = {...f, expression: col};
+      delete out.dialects;
       delete out.importedExpression;
       delete out.importedDialect;
       return out;
@@ -396,33 +455,64 @@ export function lowerNodeViews(
       const col = p.columns.get(f.name);
       if (col === undefined || own.has(f.name)) continue;
       const out: Field = {...f, expression: col};
+      delete out.dialects;
       delete out.importedExpression;
       delete out.importedDialect;
       fields.push(out);
     }
-    return {...e, dataSource: p.ref, fields};
+    const keys = e.keys.map(k => viewColOf(p, k));
+    const uniqueKeys = e.uniqueKeys?.map(uk => uk.map(k => viewColOf(p, k)));
+    return {
+      ...e,
+      dataSource: p.ref,
+      keys,
+      ...(uniqueKeys !== undefined ? {uniqueKeys} : {}),
+      fields,
+    };
   });
 
-  // Resolve rules on directly bound entities become edge views.
+  // Resolve rules on directly bound entities become edge views; other
+  // non-association edges into/from planned entities read their view columns.
   const edgeViews: GeneratedView[] = [];
   const edgePlan: string[] = [];
   const rewrittenByName = new Map(rewritten.map(e => [e.name, e]));
   const newRels = relationships.map(rel => {
     const src = declaredByName.get(rel.source.entity);
-    if (!src || !isDirect(src) || !src.hydration?.resolve?.length) return rel;
-    const rule = src.hydration.resolve.find(r => r.field === rel.source.columns[0]);
-    if (!rule || resolveRelationship(working, src, rule.field) !== rel) {
-      return rel;
+    if (src && isDirect(src) && src.hydration?.resolve?.length) {
+      const rule = src.hydration.resolve.find(r => r.field === rel.source.columns[0]);
+      if (rule && resolveRelationship(working, src, rule.field) === rel) {
+        const built = resolvedEdgeView(
+            rel, rule.match, resolvedByName.get(src.name)!, rewrittenByName,
+            declaredByName, resolvedByName, planned, target, warnings);
+        if (built) {
+          edgeViews.push(built.view);
+          edgePlan.push(`edge view ${built.view.ref} (${rel.name}): ${
+              rule.field} resolved to ${rel.destination.entity} by ${
+              rule.match.join(' or ')}`);
+          return {...rel, association: built.association};
+        }
+      }
     }
-    const built = resolvedEdgeView(
-        rel, rule.match, resolvedByName.get(src.name)!, rewrittenByName,
-        declaredByName, resolvedByName, planned, target, warnings);
-    if (!built) return rel;
-    edgeViews.push(built.view);
-    edgePlan.push(`edge view ${built.view.ref} (${rel.name}): ${
-        rule.field} resolved to ${rel.destination.entity} by ${
-        rule.match.join(' or ')}`);
-    return {...rel, association: built.association};
+    if (rel.abstract || rel.association) return rel;
+    const srcPlan =
+        views.has(rel.source.entity) ? planned.get(rel.source.entity) : undefined;
+    const dstPlan = views.has(rel.destination.entity) ?
+        planned.get(rel.destination.entity) :
+        undefined;
+    if (!srcPlan && !dstPlan) return rel;
+    return {
+      ...rel,
+      source: srcPlan ? {
+        ...rel.source,
+        columns: rel.source.columns.map(c => viewColOf(srcPlan, c)),
+      } :
+                        rel.source,
+      destination: dstPlan ? {
+        ...rel.destination,
+        columns: rel.destination.columns.map(c => viewColOf(dstPlan, c)),
+      } :
+                             rel.destination,
+    };
   });
 
   if (!views.size && !edgeViews.length) return {model, views: [], plan: [], enforcement: new Map()};
@@ -482,8 +572,10 @@ function lookupSource(
         destResolved;
     const column = (n: string): string|undefined => {
       const f = vocab.fields.find(x => x.name === n);
-      const b = f ? fieldBinding(f) : undefined;
-      return b !== undefined ? stripQualifier(b, vocab.name) : undefined;
+      const b = f ? fieldSqlOf(f) : undefined;
+      if (b !== undefined) return stripQualifier(b, vocab.name);
+      if (!f && vocab.fields.some(x => fieldSqlOf(x) === n)) return n;
+      return undefined;
     };
     if (generatesVocabularyView(destResolved)) {
       const cols = [key, ...order].map(column);
@@ -511,8 +603,10 @@ function lookupSource(
   }
   const physical = (n: string): string|undefined => {
     const f = fieldOf(n);
-    const b = f ? fieldBinding(f) : undefined;
-    return b !== undefined ? stripQualifier(b, destResolved.name) : undefined;
+    const b = f ? fieldSqlOf(f) : undefined;
+    if (b !== undefined) return stripQualifier(b, destResolved.name);
+    if (!f && isColumnName(n)) return bareCol(n);
+    return undefined;
   };
   if ([key, ...order].some(n => physical(n) === undefined)) {
     warnings.push(`${at}: resolve against '${destDeclared.name}' is skipped: ` +
@@ -520,11 +614,13 @@ function lookupSource(
             .map(n => `'${n}'`).join(', ')} is not bound there`);
     return undefined;
   }
+  const typeFieldOf = (n: string) =>
+      fieldOf(n) ?? fieldReadingColumn(destResolved, n);
   return {
     from: fromTarget(destDeclared.dataSource),
-    code: {expr: aliased('d', physical(key)!), isText: textual(fieldOf(key))},
+    code: {expr: aliased('d', physical(key)!), isText: textual(typeFieldOf(key))},
     matches: order.map(
-        m => ({expr: aliased('d', physical(m)!), isText: textual(fieldOf(m))})),
+        m => ({expr: aliased('d', physical(m)!), isText: textual(typeFieldOf(m))})),
   };
 }
 
@@ -545,7 +641,12 @@ function viewDescription(
     p: Planned, model: SemanticModel, sourceText: string,
     plan?: EnforcementPlan): string {
   const clauses = hydrationClauses(p.entity, destinationNamer(model, p.entity));
-  const keys = p.entity.keys.map(k => p.columns.get(k) ?? snakeCase(k));
+  const keys = p.entity.keys.map(k => {
+    const col = viewColOf(p, k);
+    return col !== k || p.columns.has(k) || p.extraColumns.includes(k) ?
+        col :
+        snakeCase(k);
+  });
   return [
     p.entity.description?.trim() ? sentence(p.entity.description) :
                                    `Entity ${p.entity.name}.`,
@@ -573,7 +674,7 @@ function tableViewSql(
   const e = p.resolved;
   const at = `entity '${e.name}'`;
   const fieldOf = (n: string) => e.fields.find(f => f.name === n);
-  const local = (f: Field) => stripQualifier(fieldBinding(f)!, e.name);
+  const local = (f: Field) => stripQualifier(fieldSqlOf(f)!, e.name);
   const exprs = new Map<string, string>();
   for (const f of e.fields) {
     if (p.columns.has(f.name)) exprs.set(f.name, aliased('t', local(f)));
@@ -583,11 +684,11 @@ function tableViewSql(
   // A column the hydration names: a field (its column) or a source column.
   const columnRef = (name: string): {expr: string; type: Field['type']} => {
     const f = fieldOf(name);
-    if (f && fieldBinding(f) !== undefined) {
+    if (f && fieldSqlOf(f) !== undefined) {
       return {expr: aliased('t', local(f)), type: f.type};
     }
     const byColumn = e.fields.find(
-        x => fieldBinding(x) !== undefined && local(x) === name);
+        x => fieldSqlOf(x) !== undefined && local(x) === name);
     return {expr: `t.${quoteIfReserved(name)}`, type: byColumn?.type};
   };
 
@@ -644,11 +745,15 @@ function tableViewSql(
     if (current !== undefined) exprs.set(r.field, repairSql(current, r.members));
   }
 
-  const select = [...p.columns.entries()].map(([fieldName, col]) => {
-    const expr = exprs.get(fieldName)!;
-    return expr === `t.${quoteIfReserved(col)}` ? expr :
-                                                  `${expr} AS ${quoteIfReserved(col)}`;
-  });
+  const select = [
+    ...[...p.columns.entries()].map(([fieldName, col]) => {
+      const expr = exprs.get(fieldName)!;
+      return expr === `t.${quoteIfReserved(col)}` ?
+          expr :
+          `${expr} AS ${quoteIfReserved(col)}`;
+    }),
+    ...p.extraColumns.map(col => `t.${quoteIfReserved(col)}`),
+  ];
   let body = [
     'SELECT',
     select.map(s => `  ${s}`).join(',\n'),
@@ -656,7 +761,14 @@ function tableViewSql(
     ...joins,
   ];
   if (h?.grain) {
-    const partition = p.entity.keys.map(k => exprs.get(k) ?? `t.${quoteIfReserved(snakeCase(k))}`);
+    const partition = p.entity.keys.map(k => {
+      const direct = exprs.get(k);
+      if (direct !== undefined) return direct;
+      const byCol = fieldReadingColumn(e, k);
+      if (byCol && exprs.has(byCol.name)) return exprs.get(byCol.name)!;
+      if (!fieldOf(k) && isColumnName(k)) return `t.${quoteIfReserved(bareCol(k))}`;
+      return `t.${quoteIfReserved(snakeCase(k))}`;
+    });
     const order = [
       ...(h.grain.latestBy !== undefined ?
               [`${columnRef(h.grain.latestBy).expr} DESC`] :
@@ -668,7 +780,14 @@ function tableViewSql(
   }
   let enforcement: PlannedEnforcement|undefined;
   if (plan) {
-    const enforced = enforcedViewSql(body, plan, p.columns, n => fieldOf(n)?.type);
+    const colsForEnforced = p.extraColumns.length ?
+        new Map([
+          ...p.columns,
+          ...p.extraColumns.map(c => [c, c] as [string, string]),
+        ]) :
+        p.columns;
+    const enforced =
+        enforcedViewSql(body, plan, colsForEnforced, n => fieldOf(n)?.type);
     if (enforced) body = enforced.body;
     enforcement = {plan, ...(enforced ? {ratesSql: enforced.ratesSql} : {})};
     for (const s of plan.skipped) {
@@ -705,14 +824,28 @@ function derivedViewSql(
   let from: string;
   let column: string;
   let deps: string[] = [];
-  if (srcView && srcView.columns.has(fk)) {
+  const srcViewCol = srcView ?
+      (srcView.columns.get(fk) ??
+       (() => {
+         const byCol = fieldReadingColumn(srcView.resolved, fk);
+         if (byCol && srcView.columns.has(byCol.name)) {
+           return srcView.columns.get(byCol.name);
+         }
+         if (srcView.extraColumns.some(c => c.toLowerCase() === bareCol(fk).toLowerCase())) {
+           return bareCol(fk);
+         }
+         return undefined;
+       })()) :
+      undefined;
+  if (srcView && srcViewCol !== undefined) {
     from = `\`${srcView.ref}\``;
-    column = srcView.columns.get(fk)!;
+    column = srcViewCol;
     deps = [srcName];
   } else {
     const src = resolvedByName.get(srcName);
     const f = src?.fields.find(x => x.name === fk);
-    const b = f ? fieldBinding(f) : undefined;
+    const b = f ? fieldSqlOf(f) :
+                  (src && !f && isColumnName(fk) ? bareCol(fk) : undefined);
     if (!src || hasNoSource(src) || b === undefined) {
       warnings.push(`${at}: hydration.derive_from reads '${srcName}.${fk}', ` +
           `which is not bound; the entity has no rows to read`);
@@ -755,8 +888,8 @@ function resolvedEdgeView(
   if (!dest) return undefined;
   const physical = (n: string): string => {
     const f = src.fields.find(x => x.name === n);
-    const b = f ? fieldBinding(f) : undefined;
-    return b !== undefined ? stripQualifier(b, src.name) : n;
+    const b = f ? fieldSqlOf(f) : undefined;
+    return b !== undefined ? stripQualifier(b, src.name) : bareCol(n);
   };
   const name = edgeViewName(rel.name);
   const ref = viewRef(name, target);
@@ -766,7 +899,8 @@ function resolvedEdgeView(
   const destColumn = `target_${outputName(
       planned.has(dest.name) ? snakeCase(destKey) :
                                physicalOf(dest, destKey))}`;
-  const fkField = src.fields.find(f => f.name === rel.source.columns[0]);
+  const fkField = src.fields.find(f => f.name === rel.source.columns[0]) ??
+      fieldReadingColumn(src, rel.source.columns[0]);
   const description = `Edge ${rel.name} (${rel.source.entity} -> ${
       rel.destination.entity}): each ${rel.source.entity} row paired with the ${
       rel.destination.entity} whose ${match.join(' or ')} matches its ${
@@ -794,8 +928,8 @@ function resolvedEdgeView(
 
 function physicalOf(entity: Entity, fieldName: string): string {
   const f = entity.fields.find(x => x.name === fieldName);
-  const b = f ? fieldBinding(f) : undefined;
-  return b !== undefined ? stripQualifier(b, entity.name) : fieldName;
+  const b = f ? fieldSqlOf(f) : undefined;
+  return b !== undefined ? stripQualifier(b, entity.name) : bareCol(fieldName);
 }
 
 // An output column name derived from a physical column.

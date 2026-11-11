@@ -29,8 +29,8 @@
 // multiplier on the dividend is kept outside (`100 * SAFE_DIVIDE(n, d)`).
 
 import {DefinedEntityInfo, membershipPropertyName} from './defined_entities';
-import {Entity, Metric} from './ir';
-import {blankStringLiterals, mapOutsideStringLiterals, referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {Entity, expressionForDialect, Metric} from './ir';
+import {blankStringLiterals, mapOutsideStringLiterals, referencedEntityNames, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 
 /**
  * Aggregate functions BigQuery accepts inside MEASURE(...) -- the complete
@@ -240,7 +240,9 @@ export function aggregateKey(
  */
 export function decomposeMetric(
     metric: Metric, ctx: CompositionContext): Decomposed {
-  const expression = metric.expression ?? metric.importedExpression;
+  const raw = expressionForDialect(metric, 'BIGQUERY') ?? metric.expression ??
+      metric.importedExpression;
+  const expression = raw === undefined ? undefined : sqlWithoutComments(raw);
   if (expression === undefined || !expression.trim()) {
     return {ok: false, reason: 'it has no expression'};
   }

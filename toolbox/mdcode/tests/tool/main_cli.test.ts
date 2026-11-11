@@ -12,6 +12,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import pkg from '../../package.json';
+import {msg} from './two_phase/harness';
+
 // bun test runs from the package root; fail loudly rather than silently
 // spawning nothing if that ever stops being true.
 const MAIN = path.join(process.cwd(), 'src', 'tool', 'main.ts');
@@ -32,6 +35,7 @@ function run(...args: string[]): {code: number; out: string} {
   const p = Bun.spawnSync({
     cmd: [process.execPath, MAIN, ...args],
     cwd,
+    env: {...process.env, CLOUDSDK_CONFIG: cwd},
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -59,7 +63,7 @@ describe('kcmd: --help and --version', () => {
     const {code, out} = run('--version');
     expect(code).toBe(0);
     expect(usageBlocks(out)).toBe(0);
-    expect(out).toContain('kcmd/');
+    expect(out).toContain(`kcmd/${pkg.version}`);
   });
 
   test('`--help` on a command succeeds and prints that command', () => {
@@ -70,9 +74,9 @@ describe('kcmd: --help and --version', () => {
   });
 
   // cac serves `--version` only when nothing matched. With a command matched it
-  // runs the action, and because every action is async `cli.parse()` returns
-  // while the action is still pending -- so exiting on the flag alone would
-  // kill the command here and report success.
+  // runs the action, and because every action returns a promise `cli.parse()`
+  // returns while the action is still pending -- so exiting on the flag alone
+  // would kill the command here and report success.
   for (const flag of ['--version', '-v']) {
     // Spawns `bun src/tool/main.ts`, which loads the whole CLI before it can
     // fail on the missing manifest. That is well past bun's 5s default.
@@ -133,4 +137,54 @@ describe('kcmd: --help and --version', () => {
     expect(code).toBe(0);
     expect(out).not.toContain('Unknown command');
   });
+});
+
+describe('kcmd import', () => {
+  test('is registered with its flags, and reaches the command', () => {
+    const help = run('import', '--help');
+    expect(help.code).toBe(0);
+    for (const flag of ['--input', '--flavor', '--source-prefix', '--transpile', '--out']) {
+      expect(help.out).toContain(flag);
+    }
+    // The command itself refuses a missing --flavor, so cac passed it the file.
+    const {code, out} = run('import', 'model.yaml');
+    expect(code).toBe(1);
+    expect(out).toContain('--flavor is required');
+  }, 30000);  // Spawning a command takes longer than the default timeout.
+
+  test('exits 0 when the command succeeds', () => {
+    const fixture = path.join(
+        process.cwd(), 'tests', 'libts', 'semantic', 'fixtures',
+        'measure_lowering.yaml');
+    const {code, out} =
+        run('import', fixture, '--flavor', 'ossie', '--out', 'out.yaml');
+    expect(code).toBe(0);
+    expect(out).toContain('wrote out.yaml');
+  }, 30000);
+});
+
+// Each flag push no longer takes is still an option, so push can say what
+// replaces it rather than cac refusing it as unknown.
+describe('kcmd push refuses a retired flag', () => {
+  for (const [args, message] of [
+    [['--transpile'],
+     "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
+         "<file> --input first-party --flavor <ossie|google> --transpile' to " +
+         'translate SQL dialects when importing a model, in the model and each ' +
+         'profile whose tables are all in BigQuery or BigLake.'],
+    [['--profile', 'prod'], msg.retired['--profile']],
+    [['--profile'], msg.retired['--profile']],
+    [['--profile='], msg.retired['--profile']],
+    [['--all-profiles'], msg.retired['--all-profiles']],
+    [['--no-profile'], msg.retired['--no-profile']],
+    [['--emit-expressions'], msg.retired['--emit-expressions']],
+    [['--no-kc'], msg.retired['--no-kc']],
+  ] as const) {
+    test(args.join(' '), () => {
+      const {code, out} = run('push', ...args);
+      expect(code).toBe(1);
+      expect(out).not.toContain('Unknown option');
+      expect(out).toContain(`Error: ${message}`);
+    }, 30000);  // Spawning a command takes longer than the default timeout.
+  }
 });

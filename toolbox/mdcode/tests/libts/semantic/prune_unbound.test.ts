@@ -179,8 +179,7 @@ describe('edge cases', () => {
     const model = loadModels(yaml, {bindingOptional: true}).models[0];
     expect(names(model.entities))
         .toEqual(['Party', 'Customer', 'Order', 'LargeOrder']);
-    expect(validatePushRequirements(
-               [{document: 'shop', model}], {targetOptional: true}))
+    expect(validatePushRequirements([{document: 'shop', model}]))
         .toEqual([]);
   });
 });
@@ -286,37 +285,36 @@ describe('owl import --prune-unbound', () => {
              .toEqual(['Supplier', 'Shipment', 'Department']);
        });
 
-  test('the bare flag reads <model>.profiles/ beside --out', async () => {
+  test('the bare flag reads <model>.profile.<name>.yaml beside --out', async () => {
     const dir = workdir();
-    fs.mkdirSync(path.join(dir, 'model', 'shop.profiles'), {recursive: true});
+    fs.mkdirSync(path.join(dir, 'model'), {recursive: true});
     fs.writeFileSync(
-        path.join(dir, 'model', 'shop.profiles', 'bigquery.yaml'), PROFILE);
+        path.join(dir, 'model', 'shop.profile.bigquery.yaml'),
+        'name: bigquery\nentities:\n' +
+            '  - name: Customer\n    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/customer\n' +
+            '  - name: Order\n    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/orders\n');
     const out = path.join(dir, 'model', 'shop.yaml');
     expect(await owl('import', path.join(dir, 'shop.ttl'), {
       out,
       name: 'shop',
       pruneUnbound: true,
     })).toBe(0);
-    expect(entitiesOf(out)).toContain('Customer');
-    expect(entitiesOf(out)).not.toContain('Shipment');
+    expect(entitiesOf(out))
+        .toEqual(['Party', 'Customer', 'Order', 'LargeOrder']);
   });
 
-  test('the bare flag reads the <model>.profile.<name>.yaml files beside ' +
-           '--out, which hide <model>.profiles/ as in the layout',
+  test('the bare flag unions bound entities across multiple <model>.profile.<name>.yaml files beside --out',
        async () => {
          const dir = workdir();
-         fs.mkdirSync(
-             path.join(dir, 'model', 'shop.profiles'), {recursive: true});
-         // The directory binds Shipment alone; the sibling file is read.
+         fs.mkdirSync(path.join(dir, 'model'), {recursive: true});
          fs.writeFileSync(
-             path.join(dir, 'model', 'shop.profiles', 'bigquery.yaml'),
-             'semantic_model:\n  - name: shop\n    entities:\n' +
-                 '      - name: Shipment\n        source: proj.ds.shipment\n');
+             path.join(dir, 'model', 'shop.profile.crm.yaml'),
+             'name: crm\nentities:\n' +
+                 '  - name: Customer\n    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/customer\n');
          fs.writeFileSync(
-             path.join(dir, 'model', 'shop.profile.bigquery.yaml'),
-             'name: bigquery\nentities:\n' +
-                 '  - name: Customer\n    source: bigquery:proj.ds.customer\n' +
-                 '  - name: Order\n    source: bigquery:proj.ds.orders\n');
+             path.join(dir, 'model', 'shop.profile.oms.yaml'),
+             'name: oms\nentities:\n' +
+                 '  - name: Order\n    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/orders\n');
          const out = path.join(dir, 'model', 'shop.yaml');
          expect(await owl('import', path.join(dir, 'shop.ttl'), {
            out,

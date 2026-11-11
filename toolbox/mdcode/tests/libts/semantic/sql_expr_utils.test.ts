@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {blankStringLiterals, columnReferences, columnsForSource, entitiesReached, escapeRegExp, fieldsReadOn, isColumnName, mapOutsideStringLiterals, measureAggregates, measureEntities, qualifiedColumns, referencedEntityNames, referencedIdentifiers, requalified, rewriteFieldRefs, selfReferenceMessage, singleAggregate, STRING_LITERAL, stripQualifier, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -302,6 +302,14 @@ describe('columnReferences', () => {
   });
 });
 
+describe('columnsForSource', () => {
+  test('reads an ANSI_SQL text in its tables\' dialect, and not at all when no lookup gave it', () => {
+    expect(columnsForSource('UPPER("c")', 'ANSI_SQL', 'POSTGRES')).toEqual([{name: 'c'}]);
+    expect(columnsForSource('UPPER("c")', 'ANSI_SQL', null)).toBeUndefined();
+    expect(columnsForSource('UPPER(c)', 'MYSQL', null)).toEqual([{name: 'c'}]);
+  });
+});
+
 describe('entitiesReached', () => {
   test('returns declared entities referenced in order without duplicates', () => {
     const cols = columnReferences(
@@ -311,79 +319,366 @@ describe('entitiesReached', () => {
   });
 });
 
-describe('referencedEntityNames', () => {
+describe('measureEntities', () => {
   test('matches only the start of a dotted chain, never a struct subfield', () => {
     const entities = ['orders', 'shipping_address', 'customer'];
-    expect(referencedEntityNames('orders.shipping_address.city', entities))
+    expect(measureEntities('orders.shipping_address.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames('`orders`.`shipping_address`.city', entities))
+    expect(measureEntities('`orders`.`shipping_address`.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames('orders.`shipping_address`.city', entities))
+    expect(measureEntities('orders.`shipping_address`.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames("'orders.customer.id'", entities)).toEqual([]);
+    expect(measureEntities("'orders.customer.id'", entities)).toEqual([]);
+  });
+
+  test('reads the entities the SQL parser reads, in the order written', () => {
+    const entities = ['orders', 'customer', 'NET', 'Date'];
+    expect(measureEntities(
+               'SUM(customer.a + orders.b + customer.c)', entities))
+        .toEqual(['customer', 'orders']);
+    // A function namespace, a comment and a string literal of any quoting
+    // read no entity.
+    expect(measureEntities('COUNT(DISTINCT NET.HOST(orders.url))', entities))
+        .toEqual(['orders']);
+    expect(measureEntities('SUM(orders.amount) -- customer.id', entities))
+        .toEqual(['orders']);
+    expect(measureEntities(
+               "SUM(IF(orders.s = '''customer.x''', 1, 0))", entities))
+        .toEqual(['orders']);
+    // A qualifier the parser reserves as a keyword still reads.
+    expect(measureEntities('SUM(Date.days)', entities)).toEqual(['Date']);
+    expect(measureEntities('SUM(orders.amount * Date.factor)', entities))
+        .toEqual(['orders', 'Date']);
+  });
+
+  test('falls back to the anchor only when the SQL reads no entity', () => {
+    expect(measureEntities('COUNT(*)', ['orders'], 'orders'))
+        .toEqual(['orders']);
+    expect(measureEntities('COUNT(*)', ['orders'])).toEqual([]);
+    expect(measureEntities('SUM(customer.id)', ['orders', 'customer'],
+                           'orders'))
+        .toEqual(['customer']);
   });
 });
 
-describe('stripQualifier', () => {
+describe('withoutQualifier', () => {
   test('strips only the leading entity qualifier and preserves a struct field of the same name', () => {
-    expect(stripQualifier('orders.orders.id', 'orders')).toBe('orders.id');
-    expect(stripQualifier('`orders`.`orders`.id', 'orders'))
+    expect(withoutQualifier('orders.orders.id', 'orders')).toBe('orders.id');
+    expect(withoutQualifier('`orders`.`orders`.id', 'orders'))
         .toBe('`orders`.id');
   });
+
+  test('keeps the rest of the text as written', () => {
+    expect(withoutQualifier('IF(orders.a > 0, orders.b, NULL)', 'orders'))
+        .toBe('IF(a > 0, b, NULL)');
+    expect(withoutQualifier("REGEXP_CONTAINS(orders.s, r'^a')", 'orders'))
+        .toBe("REGEXP_CONTAINS(s, r'^a')");
+    expect(withoutQualifier('customer_orders.x + orders.y', 'orders'))
+        .toBe('customer_orders.x + y');
+    expect(withoutQualifier('amount', 'orders')).toBe('amount');
+  });
+
+  test('leaves a string literal, a comment and a function namespace alone', () => {
+    expect(withoutQualifier("CONCAT(orders.a, 'orders.b')", 'orders'))
+        .toBe("CONCAT(a, 'orders.b')");
+    expect(withoutQualifier("orders.a || '''orders.b'''", 'orders'))
+        .toBe("a || '''orders.b'''");
+    expect(withoutQualifier('SUM(orders.amount) -- orders.x', 'orders'))
+        .toBe('SUM(amount) -- orders.x');
+    expect(withoutQualifier('NET.HOST(NET.url)', 'NET')).toBe('NET.HOST(url)');
+  });
+
+  test('reads the qualifier as the dialect quotes it, and one the parser reserves', () => {
+    expect(withoutQualifier('Date.days * 2', 'Date')).toBe('days * 2');
+    expect(withoutQualifier('Order.id', 'Order')).toBe('id');
+    // BigQuery reads a double-quoted name as a string, PostgreSQL as a name.
+    expect(withoutQualifier('"orders".amount', 'orders'))
+        .toBe('"orders".amount');
+    expect(withoutQualifier('"orders".amount', 'orders', 'POSTGRES'))
+        .toBe('amount');
+  });
+
+  test('strips every qualifier of SQL the parser cannot read', () => {
+    expect(withoutQualifier('orders.', 'orders')).toBe('');
+    expect(withoutQualifier('orders.a orders.b', 'orders')).toBe('a b');
+  });
 });
 
-describe('keysCoveredByColumns', () => {
-  test('gives no answer while a key names a field with no column', () => {
-    // The primary key reads field `id`, unbound here, so which keys a join
-    // covers cannot be told, even though it covers the unique key.
-    const customer = {
-      name: 'customer',
-      fields: [{name: 'id'}, {name: 'email', expression: 'email'}],
-    };
-    expect(keysCoveredByColumns(customer, ['email'], ['id'], [['email']]))
-        .toBeUndefined();
-    expect(keysCoveredByColumns(
-               {...customer, fields: [{name: 'email', expression: 'email'}]},
-               ['email'], ['id'], [['email']]))
-        .toEqual(['unique key 1']);
+describe('withSiblingsSpliced', () => {
+  test('puts each sibling\'s SQL in place of its column and its qualifier, and leaves the rest as written', () => {
+    const sql = new Map([['d', 'order_date'], ['n', '(x + 1)']]);
+    expect(withSiblingsSpliced(
+               'EXTRACT(DAYOFWEEK FROM orders.d) + orders.n * orders.m',
+               'orders', sql))
+        .toBe('EXTRACT(DAYOFWEEK FROM order_date) + (x + 1) * m');
+    expect(withSiblingsSpliced('`orders`.`n`.f || "orders.n"', 'orders', sql))
+        .toBe('(x + 1).f || "orders.n"');
   });
 
-  test('reads a key field\'s column without its comment, as the generators do', () => {
-    const orders = {
-      name: 'orders',
-      fields: [{name: 'id', expression: 'orders.order_id -- the key'}],
-    };
-    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], []))
-        .toEqual(['the primary key']);
+  test('reads a qualifier the parser reserves', () => {
+    expect(withSiblingsSpliced('Date.days / 7', 'Date',
+                               new Map([['days', 'd_days']])))
+        .toBe('d_days / 7');
+  });
+});
+
+describe('qualifiedColumns', () => {
+  test('gives the column after each qualifier, unquoted, in the order written', () => {
+    expect(qualifiedColumns(
+               "orders.a + `orders`.`b`.c + other.d + 'orders.e' + orders.a",
+               'orders'))
+        .toEqual(['a', 'b', 'a']);
+    expect(qualifiedColumns('amount', 'orders')).toEqual([]);
   });
 
-  test('reads a key field\'s vendor SQL in its own dialect, as the generators do', () => {
-    // PostgreSQL reads `#` as an operator, so the key's column is the whole
-    // text, which no join column names.
-    const orders = {
-      name: 'orders',
-      fields: [{
-        name: 'id',
-        dialects: [{dialect: 'POSTGRES' as const, expression: 'order_id # 1'}],
-        importedExpression: 'order_id # 1',
-        importedDialect: 'POSTGRES' as const,
-      }],
-    };
-    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], [])).toEqual([]);
-    // A target text is read as BigQuery, even when a PostgreSQL entry holds
-    // the same text.
-    const shared = {
-      name: 'orders',
-      fields: [{
-        name: 'id',
-        expression: 'order_id # pk',
-        dialects: [
-          {dialect: 'POSTGRES' as const, expression: 'order_id # pk'},
-          {dialect: 'BIGQUERY' as const, expression: 'order_id # pk'},
-        ],
-      }],
-    };
-    expect(keysCoveredByColumns(shared, ['order_id'], ['id'], []))
-        .toEqual(['the primary key']);
+  test('reads a qualifier the parser reserves, and the dialect\'s quoting', () => {
+    expect(qualifiedColumns('Date.days / 7', 'Date')).toEqual(['days']);
+    expect(qualifiedColumns('"orders"."a" + 1', 'orders', 'POSTGRES'))
+        .toEqual(['a']);
+  });
+});
+
+describe('selfReferenceMessage', () => {
+  test('names the cycle, and how to read the column of a field that names itself directly', () => {
+    expect(selfReferenceMessage('orders', ['amount']))
+        .toBe(
+            `field 'orders.amount' names itself; a field expression may ` +
+            `name other fields of its entity, but not itself, directly or ` +
+            `through other fields; to read the column of that name, write ` +
+            `it without the qualifier: 'amount'`);
+    expect(selfReferenceMessage('orders', ['a', 'b', 'c'], ' in model \'m\''))
+        .toBe(
+            `field 'orders.a' in model 'm' names itself through ` +
+            `'orders.b', 'orders.c'; a field expression may name other ` +
+            `fields of its entity, but not itself, directly or through other ` +
+            `fields`);
+  });
+
+  test('quotes a reserved name in how to read the column', () => {
+    expect(selfReferenceMessage('Customer', ['order']))
+        .toEndWith("write it without the qualifier: '`order`'");
+  });
+});
+
+describe('unusedName', () => {
+  test('adds underscores until the text does not hold the name in any case', () => {
+    expect(unusedName('SUM(orders.amount)', 'kcmd_entity')).toBe('kcmd_entity');
+    expect(unusedName('SUM(KCMD_ENTITY.a) + kcmd_entity_', 'kcmd_entity'))
+        .toBe('kcmd_entity__');
+  });
+});
+
+describe('requalified', () => {
+  test('renames the qualifier and leaves the rest as written', () => {
+    expect(requalified("Person.a || 'Person.b' || Person.Person.c", 'Person',
+                       'Customer'))
+        .toBe("Customer.a || 'Person.b' || Customer.Person.c");
+    expect(requalified('People.a + Person', 'Person', 'Customer'))
+        .toBe('People.a + Person');
+  });
+
+  test('keeps the qualifier\'s quotes as the dialect reads them', () => {
+    expect(requalified('`Person`.a', 'Person', 'Customer'))
+        .toBe('`Customer`.a');
+    expect(requalified('"Person".a', 'Person', 'Customer'))
+        .toBe('"Person".a');
+    expect(requalified('"Person".a', 'Person', 'Customer', 'POSTGRES'))
+        .toBe('"Customer".a');
+  });
+});
+
+describe('singleAggregate', () => {
+  test('gives the function, the operand and DISTINCT as written', () => {
+    const agg = (text: string) => singleAggregate(text, 'BIGQUERY');
+    expect(agg('COUNT(DISTINCT(orders.id))'))
+        .toEqual({fn: 'COUNT', operand: 'orders.id', distinct: true});
+    expect(agg('count(distinct `orders`.id)'))
+        .toEqual({fn: 'count', operand: '`orders`.id', distinct: true});
+    expect(agg('SUM(ALL o.amount)'))
+        .toEqual({fn: 'SUM', operand: 'o.amount', distinct: false});
+    expect(agg('(SUM((o.amount * o.qty))) -- net'))
+        .toEqual({fn: 'SUM', operand: 'o.amount * o.qty', distinct: false});
+    expect(agg('COUNT(DISTINCT (o.a + o.b))'))
+        .toEqual({fn: 'COUNT', operand: 'o.a + o.b', distinct: true});
+    expect(agg('MAX(SAFE.DIVIDE(o.a, o.b))'))
+        .toEqual({fn: 'MAX', operand: 'SAFE.DIVIDE(o.a, o.b)', distinct: false});
+    expect(agg('COUNT(*)'))
+        .toEqual({fn: 'COUNT', operand: '*', distinct: false});
+    expect(agg('SUM(o.amount) / 2')).toBeUndefined();
+  });
+});
+describe('measureAggregates', () => {
+  const problem = (text: string, dialect = 'BIGQUERY') => {
+    const read = measureAggregates(text, dialect);
+    return {text, problem: 'problem' in read ? read.problem : undefined};
+  };
+
+  test('reads aggregates of the five over one operand, with scalar SQL around them', () => {
+    for (const text of [
+           'SUM(o.amount)', 'avg(o.amount * o.qty)', 'COUNT(DISTINCT o.id)',
+           'SUM(ALL o.amount)', 'COUNT(*)', '(SUM(o.amount))',
+           'SUM(o.amount) -- net', '/* net */ MIN(o.amount)', 'SUM((o.amount))',
+           'SUM(IF(o.a, o.b, 0))', 'SUM(CASE WHEN o.a THEN o.b END)',
+           'MAX(GREATEST(o.a, o.b))', 'SUM(SAFE.DIVIDE(o.a, o.b))',
+           'SUM(o.amount) / COUNT(o.id)', 'SUM(o.amount) + 0',
+           'SUM(o.amount) / 1000', 'COUNT(*) * 2',
+           'SAFE_DIVIDE(SUM(IF(o.s = \'F\', o.a, 0)), SUM(o.a))',
+           'CASE WHEN COUNT(o.id) = 0 THEN NULL ELSE SUM(o.a) / COUNT(o.id) END',
+           'ROUND(AVG(o.a), 2)', '-MAX(o.a)', 'IFNULL(SUM(o.a), 0)',
+           'SUM(ds.f(o.a)) / COUNT(o.id)', 'SUM(`p.ds.f`(o.a))',
+           'SAFE.SAFE_DIVIDE(SUM(o.a), COUNT(o.id))',
+           'safe.safe_divide(SUM(o.a), COUNT(o.id))',
+           'SUM(o.a) + (COUNT(o.b))', 'SUM(o.a) * +(COUNT(o.b))',
+         ]) {
+      expect(problem(text)).toEqual({text, problem: undefined});
+    }
+    expect(problem('MIN(o.amount)', 'POSTGRES').problem).toBeUndefined();
+    expect(problem('MAX(o.amount)', 'ANSI_SQL').problem).toBeUndefined();
+  });
+
+  test('gives each aggregate where it is written, with its operand', () => {
+    const text = 'SAFE_DIVIDE(SUM(IF(o.s = \'😀\', o.a, 0)), count(DISTINCT o.a))';
+    expect(measureAggregates(text, 'BIGQUERY')).toEqual({
+      aggregates: [
+        {start: 12, end: 38, fn: 'SUM', operand: 'IF(o.s = \'😀\', o.a, 0)',
+         distinct: false},
+        {start: 40, end: 59, fn: 'count', operand: 'o.a', distinct: true},
+      ]
+    });
+    expect(measureAggregates('COUNT(*) + 0', 'BIGQUERY')).toEqual({
+      aggregates: [{start: 0, end: 8, fn: 'COUNT', operand: '*', distinct: false}]
+    });
+    // A sign or parentheses before an aggregate are not part of it.
+    for (const text of
+             ['SUM(o.a) * +(COUNT(o.b))', 'SUM(o.a) * ((COUNT(o.b)))']) {
+      expect(measureAggregates(text, 'BIGQUERY')).toEqual({
+        aggregates: [
+          {start: 0, end: 8, fn: 'SUM', operand: 'o.a', distinct: false},
+          {start: 13, end: 23, fn: 'COUNT', operand: 'o.b', distinct: false},
+        ]
+      });
+    }
+  });
+
+  test('says why anything else cannot be a measure', () => {
+    const expected: Array<[string, string]> = [
+      ['o.amount', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+      ['o.amount * 2', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+      ['o.amount - SUM(o.discount)',
+       'it reads field \'amount\' outside an aggregate'],
+      ['CASE WHEN o.flag THEN SUM(o.a) END',
+       'it reads field \'flag\' outside an aggregate'],
+      // A user-defined function named like an aggregate is not one.
+      ['`p.ds.max`(o.amount) + SUM(o.tax)',
+       'it reads field \'amount\' outside an aggregate'],
+      ...['SUM(o.a) + SAFE.SUM(o.b)', 'SUM(o.a) + SAFE.SUM(1)'].map(
+          (text): [string, string] => [
+            text,
+            'it uses SAFE.SUM, which BigQuery does not allow in a measure ' +
+                '(SUM, AVG, COUNT, MIN, MAX)'
+          ]),
+      ...[
+        ['`proj.ds.safe_ratio`(SUM(o.a), COUNT(o.id))', 'proj.ds.safe_ratio'],
+        ['ds.f(SUM(o.a))', 'ds.f'],
+        ['p.ds.f(SUM(o.a), 2)', 'p.ds.f'],
+        ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
+        ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
+        ['SUM(o.a) / ds.f(1)', 'ds.f'],
+        // BigQuery reads `ml` and `net` here as datasets, and `safe` as a
+        // project.
+        ['ml.score(SUM(o.amount))', 'ml.score'],
+        ['net.score(SUM(o.amount))', 'net.score'],
+        ['safe.ds.f(SUM(o.amount))', 'safe.ds.f'],
+      ].map(([text, udf]): [string, string] => [
+        text,
+        `it calls user-defined function '${udf}' outside an aggregate, ` +
+            `which BigQuery cannot read in a measure`
+      ]),
+      ['STDDEV(o.amount)',
+       'it uses STDDEV, which BigQuery does not allow in a measure (SUM, AVG, ' +
+           'COUNT, MIN, MAX)'],
+      ['SUM(o.a) / COUNTIF(o.amount > 0)',
+       'it uses COUNTIF, which BigQuery does not allow in a measure (SUM, ' +
+           'AVG, COUNT, MIN, MAX)'],
+      ['APPROX_COUNT_DISTINCT(o.id)',
+       'it uses APPROX_COUNT_DISTINCT, which BigQuery does not allow in a ' +
+           'measure (SUM, AVG, COUNT, MIN, MAX)'],
+      ['CORR(o.a, o.b)',
+       'it uses CORR, which BigQuery does not allow in a measure (SUM, AVG, ' +
+           'COUNT, MIN, MAX)'],
+      ['SUM(o.amount) OVER ()', 'it uses a window or a subquery'],
+      ['SUM(o.a) / (SELECT 1)', 'it uses a window or a subquery'],
+      ['SUM(MAX(o.amount))', 'it nests an aggregate, a window or a subquery'],
+      ['SUM(SUM(o.amount) OVER ())',
+       'it nests an aggregate, a window or a subquery'],
+      ['SUM((SELECT 1))', 'it nests an aggregate, a window or a subquery'],
+      ['MIN(o.a, o.b)',
+       'it calls MIN with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['COUNT(o.a, o.b)',
+       'it calls COUNT with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['COUNT(DISTINCT o.a, o.b)',
+       'it calls COUNT with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['SUM(((o.a, o.b)))',
+       'it calls SUM with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ...['SUM(*)', 'COUNT(DISTINCT *)', 'COUNT((*))',
+          'SUM(o.amount) FILTER (WHERE o.amount > 0)',
+          'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)']
+          .map((text): [string, string] => [
+            text,
+            `it calls ${text.slice(0, text.indexOf('('))} with something ` +
+                `other than one operand and DISTINCT or ALL`
+          ]),
+      ['MAX(o.amount HAVING MAX o.id)',
+       'it calls MAX with something other than one operand and DISTINCT or ALL'],
+      ['SUM(', 'the SQL parser cannot read it as one expression'],
+      ['  ', 'the SQL parser cannot read it as one expression'],
+      ['SUM(o.amount);', 'the SQL parser cannot read it as one expression'],
+    ];
+    for (const [text, why] of expected) {
+      expect(problem(text)).toEqual({text, problem: why});
+    }
+  });
+});
+
+describe('string literal and token-rewriting utilities', () => {
+  test('blankStringLiterals and mapOutsideStringLiterals preserve string literals', () => {
+    expect(STRING_LITERAL.test("'orders.x'")).toBe(true);
+    expect(escapeRegExp('a.b+c')).toBe('a\\.b\\+c');
+    expect(blankStringLiterals("a = 'xy' AND b = r'z'"))
+        .toBe('a =      AND b = r   ');
+    expect(mapOutsideStringLiterals(
+               "Order.a = 'Order.b'", s => s.replace(/Order\./g, '')))
+        .toBe("a = 'Order.b'");
+  });
+
+  test('referencedEntityNames and stripQualifier delegate to the SQL parser', () => {
+    expect(referencedEntityNames(
+               "SUM(orders.amount) -- customer.id + 'orders.x'",
+               ['orders', 'customer']))
+        .toEqual(['orders']);
+    expect(stripQualifier("CONCAT(orders.a, 'orders.b')", 'orders'))
+        .toBe("CONCAT(a, 'orders.b')");
+  });
+
+  test('rewriteFieldRefs and referencedIdentifiers handle SQL expressions', () => {
+    expect(rewriteFieldRefs(
+               "tcv * (gross - 1) + IF(stage = 'tcv', COALESCE(tcv, 0), raw)",
+               new Map([
+                 ['tcv', 'total_contract_value'],
+                 ['gross', 'gross_amt - disc'],
+                 ['stage', 'stage_cd'],
+                 ['coalesce', 'coalesce_col'],
+               ])))
+        .toBe(
+            'total_contract_value * ((gross_amt - disc) - 1) + ' +
+            "IF(stage_cd = 'tcv', COALESCE(total_contract_value, 0), raw)");
+    expect(referencedIdentifiers("LOWER(a) = 'b c' AND t.d > 1 AND `f g` IS NULL"))
+        .toEqual(['a', 'AND', 't', 'IS', 'NULL', 'f g'].sort((x, y) =>
+            ['a', 'AND', 't', 'f g', 'IS', 'NULL'].indexOf(x) -
+            ['a', 'AND', 't', 'f g', 'IS', 'NULL'].indexOf(y)));
   });
 });

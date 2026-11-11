@@ -31,31 +31,32 @@
 // `ai_context` (instructions / synonyms / examples / custom properties), keys
 // and unique keys, data sources, field datatypes (omitting `Opaque`) / labels /
 // dimension flags, expressions, relationship join columns, and
-// `custom_extensions`. Output format follows `model.version`: GOOGLE_VERSION
-// ('0.2.0.dev0/google' or unset) writes native extension keys, and
-// `serializeModelFiles` adds one `<model>.profile.<name>.yaml` sidecar file per
-// profile, whereas OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie keys,
-// preserves `GOOGLE` blocks verbatim and writes no profile files.
+// `custom_extensions`. Output format follows `model.version` via
+// `FORMAT_VERSION_PLACEMENT`: GOOGLE_VERSION ('0.2.0.dev0/google' or unset)
+// writes native extension keys and one `<model>.profile.<name>.yaml` sidecar
+// file per profile, whereas OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie
+// keys, encodes `profiles`, `deployments`, `extends`, relationship
+// `description`, and metric `authoredEntity` in `GOOGLE` `custom_extensions`
+// blocks, and writes no profile files.
 //
 // An `association` (junction-table) relationship has no open-format syntax (the
 // loader cannot produce one), so only its direct foreign-key view (from/to +
 // columns) is serialized; the junction detail is dropped with a note.
 
 import * as yaml from 'yaml';
+import {stringifyString} from 'yaml/util';
 
-import {googleBlockTargets, unnamedDeployments} from './deployment_target';
+import {formatStep} from './derived_relationships';
+import {glossaryDoc} from './glossary';
+import {hydrationToDoc, isDerivedEntity} from './hydration';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
+import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, OSSIE_VERSION, writtenSource} from './loader';
 import {nameProblem} from './names';
 import {declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE} from './resolve_profiles';
-import {glossaryDoc} from './glossary';
-import {formatStep} from './derived_relationships';
-import {hydrationToDoc, isDerivedEntity} from './hydration';
 
 // The vendor tag for Google-specific extension blocks on the IR (kept in sync
-// with loader.GOOGLE_VENDOR). In the Google flavor, a model-level deployment
-// target list rides in one as a folded shim alongside `model.deployments`.
+// with loader.GOOGLE_VENDOR).
 const GOOGLE_VENDOR = 'GOOGLE';
 
 // The dialect label for the IR's target/canonical `expression` when `dialects`
@@ -85,6 +86,11 @@ export interface SerializeResult {
 export interface SerializeOptions {
   logical?: boolean;
   compactFlow?: boolean;
+  /**
+   * The column at which a long string is folded onto the next line; 0 keeps
+   * every value on one line. Defaults to 80.
+   */
+  lineWidth?: number;
 }
 
 /**
@@ -93,55 +99,87 @@ export interface SerializeOptions {
  * each entry in `model.profiles` follows as
  * `<model.name>.profile.<profile.name>.yaml`, except that a reserved
  * (`default`), invalid, or case-insensitively repeated name is skipped with a
- * warning. Under `OSSIE_VERSION`, no profile files are emitted.
+ * warning. Under `OSSIE_VERSION`, valid profiles are written into the model's
+ * `GOOGLE` `custom_extensions` block and no profile files are emitted.
  */
 export function serializeModelFiles(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeFilesResult {
   const warnings: string[] = [];
+  const version = formatVersionOf(model);
   const document = modelDocument(model, warnings, opts.logical);
   const files: SerializedFile[] = [
     {fileName: `${model.name}.yaml`, content: render(document, opts)},
   ];
 
-  const isGoogleVersion = model.version !== OSSIE_VERSION;
-  if (isGoogleVersion) {
-    // Profile names are unique ignoring case, as the layout reads them; each
-    // lowercased name maps to the spelling serialized first.
-    const seen = new Map<string, string>();
-    for (const profile of model.profiles ?? []) {
-      const lower = profile.name.toLowerCase();
-      if (lower === DEFAULT_PROFILE) {
-        warnings.push(
-            `model '${model.name}': profile '${profile.name}' uses the name ` +
-            `reserved for the model's inline bindings and is not serialized`);
-        continue;
-      }
-      if (nameProblem('profile', profile.name)) {
-        warnings.push(
-            `model '${model.name}': profile '${profile.name}' is not a valid ` +
-            `profile name and is not serialized`);
-        continue;
-      }
-      const first = seen.get(lower);
-      if (first !== undefined) {
-        // Only a case-only repeat needs the ignoring-case rule explained.
-        const repeat = first === profile.name ?
-            `profile '${first}' is listed more than once` :
-            `profiles '${first}' and '${profile.name}' name the same ` +
-                `profile (profile names are unique ignoring case)`;
-        warnings.push(
-            `model '${model.name}': ${repeat}; only '${first}' is serialized`);
-        continue;
-      }
-      seen.set(lower, profile.name);
+  if (FORMAT_VERSION_PLACEMENT[version].model.profiles === 'file') {
+    for (const {name, doc} of profileDocuments(model, warnings)) {
       files.push({
-        fileName: `${model.name}.profile.${profile.name}.yaml`,
-        content: render(profileDocument(profile, warnings), opts),
+        fileName: `${model.name}.profile.${name}.yaml`,
+        content: render(doc, opts),
       });
     }
   }
 
   return {files, warnings: [...new Set(warnings)]};
+}
+
+/**
+ * Returns the format version to serialize `model` as (`model.version`,
+ * defaulting to `GOOGLE_VERSION` when unset).
+ */
+function formatVersionOf(model: SemanticModel): FormatVersion {
+  return model.version === OSSIE_VERSION ? OSSIE_VERSION : GOOGLE_VERSION;
+}
+
+// A profile file's top-level mapping, as `profileDocument` writes it and
+// `profileSpecOf` reads it.
+type ProfileDoc = Record<string, any>;
+
+/**
+ * Validates `model.profiles` and returns the serialized `profileDocument`
+ * mapping for each valid profile.
+ *
+ * Reserved (`default`), invalid, and case-insensitively repeated names are
+ * skipped with a warning, keeping the first spelling, so the output satisfies
+ * the same name rules the profile-file layout and `readBlockProfiles` enforce
+ * on load.
+ */
+function profileDocuments(model: SemanticModel, warnings: string[]):
+    Array<{name: string; doc: ProfileDoc}> {
+  const seen = new Map<string, string>();
+  const out: Array<{name: string; doc: ProfileDoc}> = [];
+  for (const profile of model.profiles ?? []) {
+    const lower = profile.name.toLowerCase();
+    if (lower === DEFAULT_PROFILE) {
+      warnings.push(
+          `model '${model.name}': profile '${profile.name}' uses the name ` +
+          `reserved for the model's inline bindings and is not serialized`);
+      continue;
+    }
+    if (nameProblem('profile', profile.name)) {
+      warnings.push(
+          `model '${model.name}': profile '${profile.name}' is not a valid ` +
+          `profile name and is not serialized`);
+      continue;
+    }
+    const first = seen.get(lower);
+    if (first !== undefined) {
+      // Only a case-only repeat needs the ignoring-case rule explained.
+      const repeat = first === profile.name ?
+          `profile '${first}' is listed more than once` :
+          `profiles '${first}' and '${profile.name}' name the same ` +
+              `profile (profile names are unique ignoring case)`;
+      warnings.push(
+          `model '${model.name}': ${repeat}; only '${first}' is serialized`);
+      continue;
+    }
+    seen.set(lower, profile.name);
+    out.push({
+      name: profile.name,
+      doc: profileDocument(profile, warnings),
+    });
+  }
+  return out;
 }
 
 /**
@@ -159,8 +197,9 @@ export function serializeModelFiles(
  *
  * `logical` marks the model as a purely logical one (no physical binding).
  * Under GOOGLE_VERSION it suppresses the missing-source and missing-expression
- * warnings, which flag a lossy pull of a bound model. OSSIE_VERSION requires
- * both, so they are still given. An OWL import sets it; `pull` does not.
+ * warnings, which a model with no physical binding would otherwise draw.
+ * OSSIE_VERSION requires both, so they are still given. An OWL import sets
+ * it, and so does pull, which loses no binding.
  *
  * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
  * flow style so the output matches the compact convention the semantic-model
@@ -182,10 +221,42 @@ export function serializeModel(
 // `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
 // round-trip across tools.
 function render(doc: Record<string, any>, opts: SerializeOptions): string {
-  return opts.compactFlow ?
-      renderCompact(doc) :
-      yaml.stringify(doc, {aliasDuplicateObjects: false, compat: 'yaml-1.1'});
+  if (opts.compactFlow) return renderCompact(doc);
+  const document = new yaml.Document(doc, {
+    aliasDuplicateObjects: false,
+    compat: 'yaml-1.1',
+    customTags: [ONE_LINE_STRING],
+  });
+  yaml.visit(document, {
+    Pair(_, pair, path) {
+      // An entity's `source`: the pair sits in an item of `entities` or
+      // `datasets`, not in an ai_context member that the author named so.
+      const list = path[path.length - 3];
+      if (yaml.isScalar(pair.key) && pair.key.value === 'source' &&
+          yaml.isScalar(pair.value) && yaml.isPair(list) &&
+          yaml.isScalar(list.key) &&
+          (list.key.value === 'entities' || list.key.value === 'datasets')) {
+        pair.value.format = ONE_LINE;
+      }
+    },
+  });
+  return document.toString({lineWidth: opts.lineWidth ?? 80});
 }
+
+// An entity's `source` is written on one line whatever its length, so a table
+// name that holds a space is never folded onto the next line.
+const ONE_LINE = 'ONE_LINE';
+const ONE_LINE_STRING: yaml.ScalarTag = {
+  tag: 'tag:yaml.org,2002:str',
+  format: ONE_LINE,
+  default: true,
+  identify: value => typeof value === 'string',
+  resolve: value => value,
+  stringify: (item, ctx, onComment, onChompKeep) => stringifyString(
+      item as yaml.Scalar,
+      {...ctx, actualString: true, options: {...ctx.options, lineWidth: 0}},
+      onComment, onChompKeep),
+};
 
 // Renders "leaf" collections in flow style so the output matches the compact
 // convention the semantic-model guides author by hand: a sequence whose items
@@ -244,10 +315,10 @@ function renderCompact(document: Record<string, any>): string {
 export function modelDocument(
     model: SemanticModel, warnings: string[] = [],
     logical = false): Record<string, any> {
-  const isGoogleVersion = model.version !== OSSIE_VERSION;
+  const version = formatVersionOf(model);
   return {
-    version: isGoogleVersion ? GOOGLE_VERSION : OSSIE_VERSION,
-    semantic_model: [modelDoc(model, warnings, logical, isGoogleVersion)],
+    version,
+    semantic_model: [modelDoc(model, warnings, logical, version)],
   };
 }
 
@@ -257,8 +328,7 @@ export function modelDocument(
 // `fields`, `fields_exclude`, `metrics_exclude`, `actions`) are written
 // whenever defined, even when empty, so a ProfileSpec that loadProfileFile read
 // comes back the same from this file.
-function profileDocument(
-    profile: ProfileSpec, warnings: string[]): Record<string, any> {
+function profileDocument(profile: ProfileSpec, warnings: string[]): ProfileDoc {
   return compact({
     name: profile.name,
     entities: nonEmpty(profile.entities.map(
@@ -267,6 +337,12 @@ function profileDocument(
           source: pe.source,
           primary_key: pe.primaryKey,
           unique_keys: pe.uniqueKeys,
+          hydration: pe.hydration === null ?
+              null :
+              (pe.hydration && Object.keys(hydrationToDoc(pe.hydration)).length ?
+                   hydrationToDoc(pe.hydration) :
+                   undefined),
+          mode: pe.mode,
           fields: pe.fields?.map(pf => {
             const where = `profile '${profile.name}': entity '${
                 pe.name}': field '${pf.name}'`;
@@ -310,39 +386,49 @@ function profileDocument(
 
 function modelDoc(
     model: SemanticModel, warnings: string[], logical: boolean,
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   // `datasets` is required (min 1) by the loader. A reconstructed model with no
   // entities (e.g. every entity fetch failed during a pull) would serialize to
   // a document the loader rejects; emit the (empty) array but flag it so the
   // lossy edge is visible rather than surfacing later as an opaque load error.
-  const datasets =
-      (model.entities ??
-       []).map(e => datasetDoc(e, warnings, logical, isGoogleVersion));
+  const datasets = (model.entities ??
+                    []).map(e => datasetDoc(e, warnings, logical, version));
+  const tableKey = isGoogleVersion ? 'entities' : 'datasets';
   if (!datasets.length) {
     warnings.push(
-        `model '${
-            model.name}': no datasets (entities); the document requires ` +
-        `at least one and will not load until an entity is present.`);
+        `model '${model.name}': no ${tableKey}; the document requires at ` +
+        `least one and will not load until ${
+            isGoogleVersion ? 'an entity' : 'a dataset'} is present.`);
   }
-  const tableKey = isGoogleVersion ? 'entities' : 'datasets';
-  // Under GOOGLE_VERSION, deployments come from `model.deployments` (or the
-  // fallback from a GOOGLE `deploymentTargets` block). Under OSSIE_VERSION,
-  // `deployments:` is not a valid key and is omitted.
-  let deployments: Array<{name: string; target: string; profile?: string}>|
+  // Under GOOGLE_VERSION, deployments come from `model.deployments`. Under
+  // OSSIE_VERSION, named deployments and profiles go in a GOOGLE block on the
+  // model.
+  const namedDeployments = (model.deployments ?? []).map(d => compact({
+                                                           name: d.name,
+                                                           target: d.target,
+                                                           profile: d.profile
+                                                         }));
+  const deployments = placement.model.deployments === 'native' ?
+      nonEmpty(namedDeployments) :
       undefined;
-  if (isGoogleVersion) {
-    const explicitDeployments =
-        (model.deployments ?? [])
-            .map(
-                d => compact(
-                    {name: d.name, target: d.target, profile: d.profile}));
-    deployments = nonEmpty(
-        explicitDeployments.length ? explicitDeployments :
-                                     deploymentsFromGoogleExtensions(model));
-  }
+  const blockProfiles = placement.model.profiles === 'block' ?
+      nonEmpty(profileDocuments(model, warnings).map(p => p.doc)) :
+      undefined;
+  const blockDeployments = placement.model.deployments === 'block' ?
+      nonEmpty(namedDeployments) :
+      undefined;
+  const blockPayload = compact({
+    profiles: blockProfiles,
+    deployments: blockDeployments,
+  });
+
   if (!isGoogleVersion) warnGoogleOnlyContent(model, warnings);
   const emittedFields =
-      isGoogleVersion && model.actions?.length ? emitted(model) : null;
+      placement.model.actions === 'native' && model.actions?.length ?
+      emitted(model) :
+      null;
   return compact({
     name: model.name,
     description: model.description,
@@ -351,108 +437,150 @@ function modelDoc(
     [tableKey]: datasets,
     relationships:
         nonEmpty((model.relationships ??
-                  []).map(r => relationshipDoc(r, warnings, isGoogleVersion))),
-    metrics: nonEmpty((model.metrics ??
-                       []).map(m => metricDoc(m, warnings, isGoogleVersion))),
+                  []).map(r => relationshipDoc(r, warnings, version))),
+    metrics: nonEmpty(
+        (model.metrics ?? []).map(m => metricDoc(m, warnings, version))),
     // Hoisted out of the map: `emitted` resolves inheritance, which deep-clones
     // the model, and the answer does not vary by action.
-    actions: isGoogleVersion ?
+    actions: placement.model.actions === 'native' ?
         nonEmpty((model.actions ??
                   []).map(a => actionDoc(a, warnings, emittedFields))) :
         undefined,
-    constraints: isGoogleVersion ?
+    constraints: placement.model.constraints === 'native' ?
         nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))) :
         undefined,
-    glossary: (isGoogleVersion && model.glossary) ?
+    glossary: placement.model.glossary === 'native' && model.glossary ?
         glossaryDoc(model.glossary) :
         undefined,
     custom_extensions: customExtensionsDoc(
         model.customExtensions, `model '${model.name}'`, isGoogleVersion,
-        /* isModel= */ true, warnings),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
-// Warns about each IR construct OSSIE_VERSION has no native key for, so a
-// '0.2.0.dev0' write flags dropped content just as a GOOGLE_VERSION write flags
-// a dropped GOOGLE block.
+// Warns about each IR construct OSSIE_VERSION has no representation for,
+// natively or in a GOOGLE block, so a '0.2.0.dev0' write flags dropped
+// content just as a GOOGLE_VERSION write flags a dropped GOOGLE block.
 function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
+  const placement = FORMAT_VERSION_PLACEMENT[OSSIE_VERSION];
   const drop = (where: string, what: string) => warnings.push(
       `${where}: ${what} has no representation under '${OSSIE_VERSION}' and ` +
       `is not serialized`);
-  // A construct a '0.2.0.dev0' document carries in a GOOGLE block, under the
-  // key the Google flavor uses, which this serializer does not write yet.
-  // TODO(b/573772924): write the payload.
-  const unwritten = (where: string, what: string) => warnings.push(
-      `${where}: ${what} goes in a ${GOOGLE_VENDOR} payload under '${
-          OSSIE_VERSION}', which this serializer does not write yet, and is ` +
-      `not serialized`);
   const where = `model '${model.name}'`;
-  if (model.deployments?.length) unwritten(where, `'deployments'`);
-  if (model.profiles?.length && !keptBlockListsProfiles(model)) {
-    unwritten(where, `'profiles'`);
+  if (placement.model.actions === 'none' && model.actions?.length) {
+    drop(where, `'actions'`);
   }
-  if (model.actions?.length) drop(where, `'actions'`);
-  if (model.constraints?.length) drop(where, `'constraints'`);
-  if (model.glossary) drop(where, `'glossary'`);
+  if (placement.model.constraints === 'none' && model.constraints?.length) {
+    drop(where, `'constraints'`);
+  }
+  if (placement.model.glossary === 'none' && model.glossary) {
+    drop(where, `'glossary'`);
+  }
   for (const e of model.entities ?? []) {
-    if (e.extends?.length) unwritten(`entity '${e.name}'`, `'extends'`);
-    if (e.abstract) drop(`entity '${e.name}'`, `'abstract'`);
+    const ew = `entity '${e.name}'`;
+    if (placement.dataset.abstract === 'none' && e.abstract) {
+      drop(ew, `'abstract'`);
+    }
+    if (placement.dataset.defined === 'none' && e.definition) {
+      drop(ew, `'defined'`);
+    }
+    if (placement.dataset.grain === 'none' && e.grain !== undefined) {
+      drop(ew, `'grain'`);
+    }
+    if (placement.dataset.history === 'none' && e.history) {
+      drop(ew, `'history'`);
+    }
+    if (placement.dataset.members === 'none' && e.members !== undefined) {
+      drop(ew, `'members'`);
+    }
+    if (placement.dataset.hydration === 'none' && e.hydration &&
+        Object.keys(hydrationToDoc(e.hydration)).length) {
+      drop(ew, `'hydration'`);
+    }
+    if (placement.dataset.mode === 'none' && e.mode !== undefined) {
+      drop(ew, `'mode'`);
+    }
+    for (const f of e.fields ?? []) {
+      const fw = `field '${e.name}.${f.name}'`;
+      if (placement.field.unit === 'none' && f.unit !== undefined) {
+        drop(fw, `'unit'`);
+      }
+      if (placement.field.scale === 'none' && f.scale !== undefined) {
+        drop(fw, `'scale'`);
+      }
+    }
   }
   for (const r of model.relationships ?? []) {
-    if (r.description) unwritten(`relationship '${r.name}'`, `'description'`);
-  }
-  for (const m of model.metrics ?? []) {
-    if (m.authoredEntity) unwritten(`metric '${m.name}'`, `'entity'`);
-  }
-}
-
-// Whether a GOOGLE block the model keeps lists its profiles. A '0.2.0.dev0'
-// write emits a kept block as it is.
-function keptBlockListsProfiles(model: SemanticModel): boolean {
-  return (model.customExtensions ?? []).some(e => {
-    if (e.vendorName !== GOOGLE_VENDOR) return false;
-    try {
-      return JSON.parse(e.data)?.profiles !== undefined;
-    } catch {
-      return false;
+    const rw = `relationship '${r.name}'`;
+    if (placement.relationship.extends === 'none' && r.extends?.length) {
+      drop(rw, `'extends'`);
     }
-  });
+    if (placement.relationship.abstract === 'none' && r.abstract) {
+      drop(rw, `'abstract'`);
+    }
+    if (placement.relationship.inverse === 'none' && r.inverse !== undefined) {
+      drop(rw, `'inverse'`);
+    }
+    if (placement.relationship.via === 'none' && r.via?.length) {
+      drop(rw, `'via'`);
+    }
+    if (placement.relationship.filter === 'none' && r.filter !== undefined) {
+      drop(rw, `'filter'`);
+    }
+  }
 }
 
 function datasetDoc(
     entity: Entity, warnings: string[], logical: boolean,
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   // A concrete (non-abstract) entity with no source cannot be reloaded -- the
   // loader requires `source` unless the dataset is abstract -- so surface the
-  if ((!logical || !isGoogleVersion) && !(isGoogleVersion && (entity.abstract || entity.definition || entity.members || isDerivedEntity(entity))) &&
+  // gap at write time instead of emitting a document that fails to load. Under
+  // OSSIE_VERSION `abstract` is omitted, so a dataset without `dataSource`
+  // cannot reload even if `entity.abstract` was set. Suppressed for a logical
+  // model under GOOGLE_VERSION, where a missing source is intended.
+  // OSSIE_VERSION requires a source on every dataset.
+  if ((!logical || !isGoogleVersion) &&
+      !(isGoogleVersion &&
+        (entity.abstract || entity.definition || entity.members !== undefined ||
+         isDerivedEntity(entity))) &&
       !entity.dataSource) {
     warnings.push(
         `entity '${entity.name}' has no source${
             isGoogleVersion ? ' and is not abstract' : ''}; the ` +
         `serialized document will not reload until a source is set`);
   }
+  const parents = nonEmpty(entity.extends);
+  const nativeExtends =
+      placement.dataset.extends === 'native' ? parents : undefined;
+  const nativeAbstract = placement.dataset.abstract === 'native' ?
+      (entity.abstract || undefined) :
+      undefined;
+  const blockPayload = placement.dataset.extends === 'block' ?
+      compact({extends: parents}) :
+      undefined;
   return compact({
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
-    // the key rather than emit `source: ""` (which the loader rejects). Prefer
-    // `authoredSource` when `isAcceptedSource` accepts it so resource URIs and
-    // catalog names survive serialization, and fall back to `dataSource` when
-    // `authoredSource` was a legacy bare name that the load qualified.
-    source: (isAcceptedSource(entity.authoredSource) ? entity.authoredSource :
-                                                       entity.dataSource) ||
-        undefined,
+    // the key rather than emit `source: ""` (which the loader rejects). The
+    // source as written survives serialization.
+    source: writtenSource(entity) || undefined,
     // How the binding reshapes the source (see hydration.ts), and whether the
     // entity is bound through its node view (the default) or directly.
-    hydration: isGoogleVersion && entity.hydration && Object.keys(hydrationToDoc(entity.hydration)).length ?
+    hydration: placement.dataset.hydration === 'native' && entity.hydration &&
+            Object.keys(hydrationToDoc(entity.hydration)).length ?
         hydrationToDoc(entity.hydration) :
         undefined,
-    mode: isGoogleVersion ? entity.mode : undefined,
-    // Supertype entities (entity-level inheritance); GOOGLE_VERSION only.
-    extends: isGoogleVersion ? nonEmpty(entity.extends) : undefined,
+    mode: placement.dataset.mode === 'native' ? entity.mode : undefined,
+    // Supertype entities (entity-level inheritance); native under
+    // GOOGLE_VERSION, or in the dataset's GOOGLE block under OSSIE_VERSION.
+    extends: nativeExtends,
     // Conceptual (table-less) marker; GOOGLE_VERSION only.
-    abstract: isGoogleVersion ? (entity.abstract || undefined) : undefined,
+    abstract: nativeAbstract,
     // Defined (virtual) entity: its membership predicate over the parent.
-    defined: isGoogleVersion && entity.definition ?
+    defined: placement.dataset.defined === 'native' && entity.definition ?
         (entity.definition.description !== undefined ?
              {
                expression: entity.definition.expression,
@@ -463,24 +591,27 @@ function datasetDoc(
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
     // K7 grain / history: native keys of the extended profile.
-    grain: entity.grain,
-    history: entity.history ? compact({
-      versioned: entity.history.versioned,
-      current_flag: entity.history.currentFlag,
-      valid_from: entity.history.validFrom,
-      valid_to: entity.history.validTo,
-    }) :
-                              undefined,
+    grain: placement.dataset.grain === 'native' ? entity.grain : undefined,
+    history: placement.dataset.history === 'native' && entity.history ?
+        compact({
+          versioned: entity.history.versioned,
+          current_flag: entity.history.currentFlag,
+          valid_from: entity.history.validFrom,
+          valid_to: entity.history.validTo,
+        }) :
+        undefined,
     // K3 (proposed): a vocabulary's members; written even when empty (an
     // empty list still marks the dataset a vocabulary).
-    members: entity.members?.map(m => compact({
-      code: m.code,
-      label: m.label,
-      synonyms: nonEmpty(m.synonyms),
-      definition: m.definition,
-      order: m.order,
-      iri: m.iri,
-    })),
+    members: placement.dataset.members === 'native' ?
+        entity.members?.map(m => compact({
+          code: m.code,
+          label: m.label,
+          synonyms: nonEmpty(m.synonyms),
+          definition: m.definition,
+          order: m.order,
+          iri: m.iri,
+        })) :
+        undefined,
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext, isGoogleVersion),
     fields:
@@ -492,14 +623,14 @@ function datasetDoc(
                              isGoogleVersion))),
     custom_extensions: customExtensionsDoc(
         entity.customExtensions, `entity '${entity.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
 // Filters out the IR's `'Opaque'` placeholder so untyped fields and metrics
 // omit the `datatype` key in YAML. `'Opaque'` marks an unknown or unmapped type
-// (e.g. from `kcmd pull` or OWL import); action parameter helpers also use this
-// to tell whether a projected field will emit a concrete datatype on reload.
+// (e.g. from OWL import); action parameter helpers also use this to tell
+// whether a projected field will emit a concrete datatype on reload.
 function datatypeDoc<T extends string>(type: T|undefined): Exclude<T, 'Opaque'>|
     undefined {
   return type === undefined || type === 'Opaque' ? undefined :
@@ -509,6 +640,8 @@ function datatypeDoc<T extends string>(type: T|undefined): Exclude<T, 'Opaque'>|
 function fieldDoc(
     field: Field, warnings: string[], logical: boolean,
     isGoogleVersion: boolean): Record<string, any> {
+  const placement =
+      FORMAT_VERSION_PLACEMENT[isGoogleVersion ? GOOGLE_VERSION : OSSIE_VERSION];
   const expression =
       expressionDoc(field, isGoogleVersion, `field '${field.name}'`, warnings);
   // Under GOOGLE_VERSION a field with no expression reloads unbound. A logical
@@ -528,23 +661,25 @@ function fieldDoc(
     expression,
     datatype: datatypeDoc(field.type),
     // K7 unit / scale: native keys of the extended profile.
-    unit: isGoogleVersion ? field.unit : undefined,
-    scale: isGoogleVersion ? field.scale : undefined,
+    unit: placement.field.unit === 'native' ? field.unit : undefined,
+    scale: placement.field.scale === 'native' ? field.scale : undefined,
     label: field.label,
     dimension: dimensionDoc(field),
     description: field.description,
     ai_context: aiContextDoc(field.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         field.customExtensions, `field '${field.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings, /* isField= */ true),
+        warnings, /* isField= */ true),
   });
 }
 
-function metricDoc(
-    metric: Metric, warnings: string[],
-    isGoogleVersion: boolean): Record<string, any> {
-  // Emit `entity:` only under GOOGLE_VERSION and only from `authoredEntity`. A
-  // derived `metric.entity` is recomputed by the loader from SQL qualifiers.
+function metricDoc(metric: Metric, warnings: string[], version: FormatVersion):
+    Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
+  // Emit `entity` only from `authoredEntity` (natively under GOOGLE_VERSION or
+  // in the metric's GOOGLE block under OSSIE_VERSION). A derived
+  // `metric.entity` is recomputed by the loader from SQL qualifiers.
   const expression = expressionDoc(
       metric, isGoogleVersion, `metric '${metric.name}'`, warnings);
   if (!expression) {
@@ -552,16 +687,20 @@ function metricDoc(
         `metric '${metric.name}': no expression; the loader requires one per ` +
         `metric and the document will not load until it is set.`);
   }
+  const authoredEntity = metric.authoredEntity || undefined;
+  const blockPayload = placement.metric.entity === 'block' ?
+      compact({entity: authoredEntity}) :
+      undefined;
   return compact({
     name: metric.name,
-    entity: isGoogleVersion ? metric.authoredEntity : undefined,
+    entity: placement.metric.entity === 'native' ? authoredEntity : undefined,
     expression,
     datatype: datatypeDoc(metric.type),
     description: metric.description,
     ai_context: aiContextDoc(metric.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         metric.customExtensions, `metric '${metric.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -739,7 +878,9 @@ function executorDoc(ex: Executor): Record<string, any> {
 // is emitted and the junction detail is flagged.
 function relationshipDoc(
     rel: Relationship, warnings: string[],
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   if (rel.association) {
     warnings.push(
         `relationship '${
@@ -754,34 +895,46 @@ function relationshipDoc(
             OSSIE_VERSION}' document requires from_columns and to_columns ` +
         `and will not load until they are set.`);
   }
+  const description = rel.description || undefined;
+  const blockPayload = placement.relationship.description === 'block' ?
+      compact({description}) :
+      undefined;
   return compact({
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
     // Super-relationships (relationship inheritance); omitted when none.
-    extends: nonEmpty(rel.extends),
+    extends: placement.relationship.extends === 'native' ?
+        nonEmpty(rel.extends) :
+        undefined,
     // Conceptual (edge-table-less) marker; omitted when false/absent.
-    abstract: rel.abstract || undefined,
+    abstract: placement.relationship.abstract === 'native' ?
+        (rel.abstract || undefined) :
+        undefined,
     // The edge read backwards (owl:inverseOf); omitted when none.
-    inverse: rel.inverse,
+    inverse:
+        placement.relationship.inverse === 'native' ? rel.inverse : undefined,
     // K2 (proposed): a derived relationship's chain and pair filter.
-    via: rel.via?.length ? rel.via.map(formatStep) : undefined,
-    filter: rel.filter,
+    via: placement.relationship.via === 'native' && rel.via?.length ?
+        rel.via.map(formatStep) :
+        undefined,
+    filter: placement.relationship.filter === 'native' ? rel.filter : undefined,
     from_columns: nonEmpty(rel.source.columns),
     to_columns: nonEmpty(rel.destination.columns),
-    description: isGoogleVersion ? rel.description : undefined,
+    description: placement.relationship.description === 'native' ? description :
+                                                                   undefined,
     ai_context: aiContextDoc(rel.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         rel.customExtensions, `relationship '${rel.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
 // Renders a field or metric `expression` for the target version. The IR comes
 // from two sources:
 //   1. YAML loaded by `loader.ts`, which populates `dialects` and `stringForm`.
-//   2. Models built by `kcmd pull` or OWL import, which leave `dialects` unset
-//      and only populate `expression` (plus optional `importedExpression`).
+//   2. Models built by an OWL import, which leave `dialects` unset and only
+//      populate `expression` (plus optional `importedExpression`).
 function expressionDoc(
     item: {
       expression?: string;
@@ -818,8 +971,8 @@ function expressionDoc(
       };
     }
   }
-  // Path 2 (`kcmd pull` / OWL import / fallback): `dialects` is absent, so
-  // synthesize it from `expression` and `importedExpression`.
+  // Path 2 (OWL import / fallback): `dialects` is absent, so synthesize it
+  // from `expression` and `importedExpression`.
   if (isGoogleVersion && item.stringForm && item.expression !== undefined &&
       item.importedExpression === undefined) {
     return item.expression;
@@ -834,10 +987,9 @@ function expressionDoc(
     });
   }
   if (item.importedExpression !== undefined) {
-    // `importedExpression` holds third-party vendor SQL (e.g. SNOWFLAKE or
-    // DATABRICKS) kept for transpilation and DDL fallback when no canonical
-    // Google SQL expression exists. Only emit `importedDialect` when the loader
-    // accepts it; an unknown or missing label would fail to reload.
+    // `importedExpression` holds third-party vendor SQL, such as SNOWFLAKE or
+    // DATABRICKS, kept for transpilation. Only emit `importedDialect` when the
+    // loader accepts it; an unknown or missing label would fail to reload.
     const label = item.importedDialect;
     if (label === undefined) {
       warnings.push(
@@ -886,47 +1038,68 @@ function aiContextDoc(ai: AiContext|undefined, isGoogleVersion: boolean):
   return isGoogleVersion ? {...base, custom} : {...custom, ...base};
 }
 
-// The deployments a vanilla model lists only as targets in its GOOGLE blocks,
-// named as a pull names them. A block whose data is not valid JSON gives none,
-// and customExtensionsDoc warns that it was dropped. The other blocks still
-// give theirs.
-function deploymentsFromGoogleExtensions(model: SemanticModel):
-    Array<{name: string; target: string}> {
-  const targets = (model.customExtensions ??
-                   []).flatMap(ext => blockTargets(ext, model.name));
-  return unnamedDeployments(targets);
+// The serialized payload of a synthesized `GOOGLE` `custom_extensions` block
+// (the serializer counterpart to `GoogleBlockValues` in `loader.ts`, covering
+// the `'block'`-placed constructs of
+// `FORMAT_VERSION_PLACEMENT[OSSIE_VERSION]`).
+interface GoogleBlockPayload {
+  profiles?: ProfileDoc[];
+  deployments?: Array<Record<string, any>>;
+  extends?: string[];
+  description?: string;
+  entity?: string;
 }
 
-// Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION every
-// extension is written back verbatim (`GOOGLE` blocks included, except on a
-// field, where the loader forbids them). Under GOOGLE_VERSION third-party
-// extensions are written out unchanged without warning, while `GOOGLE` blocks
-// are skipped (silently for the model's `deploymentTargets` block, and with a
-// warning for any other `GOOGLE` block).
+// Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION,
+// third-party extensions are emitted, followed by a synthesized GOOGLE block
+// when `blockPayload` carries any keys. Any raw GOOGLE block on the IR
+// is dropped with a warning so it cannot collide with the synthesized block or
+// write keys the loader rejects. Under GOOGLE_VERSION,
+// third-party extensions are written out unchanged without warning, while
+// `GOOGLE` blocks are skipped with a warning.
 function customExtensionsDoc(
     exts: CustomExtension[]|undefined, where: string, isGoogleVersion: boolean,
-    isModel: boolean, warnings: string[],
-    isField = false): Array<{vendor_name: string; data: string}>|undefined {
-  if (!exts?.length) return undefined;
+    warnings: string[], isField = false, blockPayload?: GoogleBlockPayload):
+    Array<{vendor_name: string; data: string}>|undefined {
+  const payload: GoogleBlockPayload = blockPayload ? {...blockPayload} : {};
+  if (!exts?.length && Object.keys(payload).length === 0) return undefined;
   if (!isGoogleVersion) {
-    const kept = exts.filter(e => !(isField && e.vendorName === GOOGLE_VENDOR));
-    if (kept.length < exts.length) {
-      warnings.push(
-          `${where}: ${
-              exts.length -
-              kept.length} GOOGLE custom_extension(s) have no representation ` +
-          `on a field under '${OSSIE_VERSION}' and are not serialized`);
+    const kept: Array<{vendor_name: string; data: string}> = [];
+    let droppedGoogle = 0;
+    for (const e of exts ?? []) {
+      if (e.vendorName !== GOOGLE_VENDOR) {
+        kept.push({vendor_name: e.vendorName, data: e.data});
+        continue;
+      }
+      droppedGoogle += 1;
     }
-    return nonEmpty(kept.map(e => ({vendor_name: e.vendorName, data: e.data})));
+    if (droppedGoogle > 0) {
+      warnings.push(
+          isField ?
+              `${where}: ${droppedGoogle} GOOGLE custom_extension(s) have no ` +
+                  `representation on a field under '${OSSIE_VERSION}' and ` +
+                  `are not serialized` :
+              `${where}: ${droppedGoogle} GOOGLE custom_extension(s) are not ` +
+                  `serialized under '${OSSIE_VERSION}'; its GOOGLE block is ` +
+                  `written from its own fields`);
+    }
+    if (Object.keys(payload).length > 0) {
+      kept.push({
+        vendor_name: GOOGLE_VENDOR,
+        data: JSON.stringify(payload),
+      });
+    }
+    return nonEmpty(kept);
   }
+  // No GOOGLE_VERSION construct has 'block' placement, so `blockPayload` is
+  // empty here.
   const kept: Array<{vendor_name: string; data: string}> = [];
   let droppedGoogle = 0;
-  for (const ext of exts) {
+  for (const ext of exts ?? []) {
     if (ext.vendorName !== GOOGLE_VENDOR) {
       kept.push({vendor_name: ext.vendorName, data: ext.data});
       continue;
     }
-    if (isModel && blockTargets(ext, '').length > 0) continue;
     droppedGoogle += 1;
   }
   if (droppedGoogle > 0) {
@@ -937,17 +1110,9 @@ function customExtensionsDoc(
   return nonEmpty(kept);
 }
 
-function blockTargets(ext: CustomExtension, modelName: string): string[] {
-  try {
-    return googleBlockTargets([ext], modelName);
-  } catch {
-    return [];
-  }
-}
-
 // Drops undefined-valued keys so the emitted YAML only shows fields the model
 // actually set (matching the emitters' `compact` convention).
-function compact<T extends Record<string, any>>(obj: T): T {
+export function compact<T extends Record<string, any>>(obj: T): T {
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) out[k] = v;
@@ -957,6 +1122,6 @@ function compact<T extends Record<string, any>>(obj: T): T {
 
 // Returns the array, or undefined when empty/absent, so an empty list is
 // omitted rather than rendered as `[]`.
-function nonEmpty<T>(items: T[]|undefined): T[]|undefined {
+export function nonEmpty<T>(items: T[]|undefined): T[]|undefined {
   return items && items.length ? items : undefined;
 }

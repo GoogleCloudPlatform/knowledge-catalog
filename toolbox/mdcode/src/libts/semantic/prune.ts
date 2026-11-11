@@ -25,7 +25,6 @@
 import * as YAML from 'yaml';
 
 import {Constraint, Entity, GlossaryTerm, Relationship, SemanticModel} from './ir';
-import {isProfileFileForm} from './resolve_profiles';
 
 /** What pruneUnbound kept and removed. */
 export interface PruneResult {
@@ -268,7 +267,11 @@ function count(n: number, one: string, many: string): string {
  */
 export function boundEntityNames(text: string, model?: string): string[] {
   const doc = YAML.parse(text) as unknown;
-  if (isProfileFileForm(text)) return sourcedEntities([doc]);
+  if (doc !== null && typeof doc === 'object' && !Array.isArray(doc) &&
+      (doc as {version?: unknown}).version === undefined &&
+      (doc as {semantic_model?: unknown}).semantic_model === undefined) {
+    return sourcedEntities([doc]);
+  }
   const models = (doc as {semantic_model?: unknown})?.semantic_model;
   if (!Array.isArray(models)) {
     throw new Error(
@@ -280,8 +283,9 @@ export function boundEntityNames(text: string, model?: string): string[] {
   return sourcedEntities(named.length ? named : models);
 }
 
-// The names of the entities with a non-empty `source` across `models` (each a
-// model or a profile object), in order and without repeats.
+// The names of the entities with a non-empty `source` (or derived via
+// `hydration.derive_from`) across `models` (each a model or a profile object),
+// in order and without repeats.
 function sourcedEntities(models: unknown[]): string[] {
   const out: string[] = [];
   for (const m of models) {
@@ -291,8 +295,12 @@ function sourcedEntities(models: unknown[]): string[] {
     for (const e of items) {
       const name = (e as {name?: unknown})?.name;
       const source = (e as {source?: unknown})?.source;
-      if (typeof name === 'string' && typeof source === 'string' &&
-          source.trim() !== '' && !out.includes(name)) {
+      const derived =
+          ((e as {hydration?: {derive_from?: unknown}})?.hydration)
+              ?.derive_from !== undefined;
+      if (typeof name === 'string' &&
+          ((typeof source === 'string' && source.trim() !== '') || derived) &&
+          !out.includes(name)) {
         out.push(name);
       }
     }

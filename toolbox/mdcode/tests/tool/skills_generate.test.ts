@@ -16,15 +16,19 @@ import * as path from 'node:path';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {loadSemanticModels} from '../../src/libts/semantic/loader';
+import {applyProfileFile} from '../../src/libts/semantic/resolve_profiles';
 import {readableEntities} from '../../src/libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../../src/libts/semantic/runtime/dialect';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {storeLine} from '../../src/libts/semantic/runtime/store';
-import {skillsGenerate} from '../../src/tool/commands';
+import {validatePushRequirements} from '../../src/libts/semantic/validate';
+import {profiles, skillsGenerate} from '../../src/tool/commands';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-const SPANNER = '//spanner.googleapis.com/projects/acme-ops/instances/prod';
+const SPANNER = 'spanner.googleapis.com/projects/acme-ops/instances/prod';
 
 function modelText(name: string, action: string): string {
   return `version: "0.2.0.dev0/google"
@@ -33,7 +37,7 @@ semantic_model:
     description: Orders and what they are made of.
     deployments:
       - name: prod
-        target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
+        target: ${SPANNER}/databases/commerce/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER}/databases/commerce/tables/Orders
@@ -218,9 +222,9 @@ describe('kcmd skills-generate: two models, one name', () => {
 describe('createSemanticRuntimes: the store a profile uses', () => {
   const SPANNER_DB = `${SPANNER}/databases/commerce`;
   const BQ =
-      '//bigquery.googleapis.com/projects/acme-analytics/datasets/sales';
+      'bigquery.googleapis.com/projects/acme-analytics/datasets/sales';
   const CLUSTER =
-      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+      'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
 
   beforeEach(() => {
     // Nothing here may reach the network; the AlloyDB listing is mocked.
@@ -259,7 +263,7 @@ ${deployments}    entities:
                 `        target: ${BQ}/propertyGraphs/commerce\n` +
                 `        profile: analytical\n` +
                 `      - name: spanner_prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `        profile: operational\n`,
             `${SPANNER_DB}/tables/Orders`));
     writeModel(
@@ -284,60 +288,12 @@ ${deployments}    entities:
         .toContain("declares no deployment without a 'profile'");
   });
 
-  // A legacy wrapper that names no `deployment_target` keeps the model file's
-  // `deployments:` list. It takes the deployment that names it, and otherwise
-  // the ones that name no profile, which is where push deploys it.
-  test('a legacy wrapper with no target takes the deployments push uses',
-       async () => {
-         const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-         fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-         // A deployment may name only a profile the model declares.
-         for (const name of ['prod', 'analytical', 'operational']) {
-           fs.writeFileSync(
-               path.join(eg, 'commerce.profiles', `${name}.yaml`),
-               `semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-`);
-         }
-         const withSpanner = (profileLine: string) => logical(
-             `      - name: bq_prod\n` +
-                 `        target: ${BQ}/propertyGraphs/commerce\n` +
-                 `        profile: analytical\n` +
-                 `      - name: spanner_prod\n` +
-                 `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
-                 profileLine,
-             `${SPANNER_DB}/tables/Orders`);
-
-         writeModel('commerce.yaml', withSpanner(''));
-         const unnamed = await runtimeFor('prod');
-         expect(unnamed.store && storeLine(unnamed.store))
-             .toBe('acme-ops/prod/commerce');
-
-         writeModel('commerce.yaml', withSpanner('        profile: prod\n'));
-         const named = await runtimeFor('prod');
-         expect(named.store && storeLine(named.store))
-             .toBe('acme-ops/prod/commerce');
-
-         writeModel(
-             'commerce.yaml', withSpanner('        profile: operational\n'));
-         const none = await runtimeFor('prod');
-         expect(none.store).toBeUndefined();
-         expect(none.storeError)
-             .toBe(
-                 "legacy binding profile 'prod' names no 'deployment_target', " +
-                 "and every deployment in 'deployments' names another profile, " +
-                 'so there is no database to run it against');
-       });
-
   test('default with one deployment takes it', async () => {
     writeModel(
         'commerce.yaml',
         logical(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+                `        target: ${SPANNER_DB}/graphs/commerce\n`,
             `${SPANNER_DB}/tables/Orders`));
     const runtime = await runtimeFor();
     expect(runtime.store && storeLine(runtime.store))
@@ -351,7 +307,7 @@ ${deployments}    entities:
             `      - name: bq_prod\n` +
                 `        target: ${BQ}/propertyGraphs/commerce\n` +
                 `      - name: spanner_prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+                `        target: ${SPANNER_DB}/graphs/commerce\n`,
             `${SPANNER_DB}/tables/Orders`));
     const runtime = await runtimeFor();
     expect(runtime.store && storeLine(runtime.store))
@@ -363,7 +319,7 @@ ${deployments}    entities:
         'commerce.yaml',
         logical(
             `      - name: spanner_a\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `      - name: alloy_b\n` +
                 `        target: ${CLUSTER}/databases/commerce\n`,
             `${SPANNER_DB}/tables/Orders`));
@@ -425,7 +381,7 @@ ${deployments}    entities:
         'commerce.yaml',
         modelText('commerce', 'IssueCredit')
             .replace(
-                `${SPANNER}/databases/commerce/propertyGraphs/commerce`,
+                `${SPANNER}/databases/commerce/graphs/commerce`,
                 `${CLUSTER}/databases/commerce`)
             .replace(
                 `${SPANNER}/databases/commerce/tables/Orders`,
@@ -444,7 +400,7 @@ ${deployments}    entities:
   test('skills-generate fails when the deployments give no single store',
        async () => {
          const spannerGraph =
-             `${SPANNER}/databases/commerce/propertyGraphs/commerce`;
+             `${SPANNER}/databases/commerce/graphs/commerce`;
          for (const [second, error] of [
                 [
                   'bigquery:graph:acme-analytics.sales.commerce',
@@ -472,12 +428,12 @@ ${deployments}    entities:
          }
        });
 
-  // A vanilla model lists its targets in a GOOGLE block. Push rejects a target
-  // in no accepted form and a block that is not JSON, so no skill is written
-  // that says the model has no store.
+  // A vanilla model lists its deployments in a GOOGLE block. Push rejects a
+  // target in no accepted form and a block that is not JSON, so no skill is
+  // written that says the model has no store.
   test('skills-generate fails when a GOOGLE block lists a target in no accepted form or is not JSON',
        async () => {
-         const typo = `${SPANNER}/database/commerce/propertyGraphs/commerce`;
+         const typo = `${SPANNER}/database/commerce/graphs/commerce`;
          const vanilla = (data: string) => `version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
@@ -492,16 +448,16 @@ semantic_model:
           - name: key
             expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
 `;
-         const listed = (uris: string[]) =>
-             JSON.stringify({deploymentTargets: uris});
-         const notAccepted = `Error: Model 'commerce': the GOOGLE ` +
-             `custom_extension's 'deploymentTargets' lists '${typo}', which ` +
-             'is not a BigQuery graph, a Spanner graph or an AlloyDB database';
+         const listed = (uris: string[]) => JSON.stringify(
+             {deployments: uris.map((target, i) => ({name: `d${i + 1}`, target}))});
+         const notAccepted = (name: string) =>
+             `Error: Model 'commerce': deployment '${name}' targets '${typo}', ` +
+             'which is not a BigQuery graph, a Spanner graph or an AlloyDB database';
          for (const [data, error] of [
-                [listed([typo]), notAccepted],
+                [listed([typo]), notAccepted('d1')],
                 [
-                  listed([`${SPANNER_DB}/propertyGraphs/commerce`, typo]),
-                  notAccepted,
+                  listed([`${SPANNER_DB}/graphs/commerce`, typo]),
+                  notAccepted('d2'),
                 ],
                 [
                   '{not-json',
@@ -527,18 +483,18 @@ semantic_model:
              'commerce.yaml',
              modelText('commerce', 'IssueCredit')
                  .replace(
-                     `${SPANNER}/databases/commerce/propertyGraphs/commerce`,
+                     `${SPANNER}/databases/commerce/graphs/commerce`,
                      `${BQ}/propertyGraphs/commerce`)
                  .replace(
                      `${SPANNER}/databases/commerce/tables/Orders`,
-                     '//bigquery.googleapis.com/projects/acme-analytics/' +
+                     'bigquery.googleapis.com/projects/acme-analytics/' +
                          'datasets/raw/tables/orders'));
          expect(await skillsGenerate({out: 'skills'})).toBe(0);
          const skill = fs.readFileSync(
              path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
          expect(skill).toContain(
              "- Store: none. Model 'commerce' binds 'Order' to " +
-             'acme-analytics.raw.orders');
+             'bigquery.googleapis.com/projects/acme-analytics/datasets/raw/tables/orders');
        });
 
   test('a skill generated from a profile file names that profile\'s store',
@@ -571,7 +527,7 @@ actions:
 
 describe('createSemanticRuntimes: a column binding is read in the store\'s SQL', () => {
   const CLUSTER =
-      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+      'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
   const SPANNER_DB = `${SPANNER}/databases/commerce`;
 
   beforeEach(() => {
@@ -634,10 +590,9 @@ semantic_model:
   });
 
   test('an AlloyDB store reads the text that database runs', async () => {
-    // The BIGQUERY entry is the text the graph generators write. An AlloyDB
+    // The BIGQUERY entry is the text the BigQuery graph writes. An AlloyDB
     // database runs the ALLOYDB entry, or else the ANSI_SQL one. A field with
-    // neither, such as one with only a POSTGRES entry, keeps the text the
-    // generators write.
+    // neither, such as one with only a POSTGRES entry, keeps its binding.
     const model = (amount: string) => hierarchy(
         `${CLUSTER}/databases/commerce`,
         name => `${CLUSTER}/databases/commerce/schemas/public/tables/${name}`,
@@ -662,9 +617,84 @@ semantic_model:
 
   test('GoogleSQL reads `#` as a comment', async () => {
     writeModel('commerce.yaml', hierarchy(
-        `${SPANNER_DB}/propertyGraphs/commerce`,
+        `${SPANNER_DB}/graphs/commerce`,
         name => `${SPANNER_DB}/tables/${name}`, 'flags # a note'));
     expect(await columns())
         .toEqual({person: ['id', 'flags'], customer: ['id', 'flags']});
   });
+});
+
+describe('demo/semantic-model/skill/', () => {
+  const demoDir =
+      path.join(__dirname, '..', '..', 'demo', 'semantic-model', 'skill');
+  const entryGroupDir =
+      path.join(demoDir, 'catalog', 'EntryGroups', 'commerce_demo');
+
+  test(
+      'loads, validates, and runs skills-generate and profiles --print-store',
+      async () => {
+        passGraphChecks();
+        passSourceCheck();
+        spyOn(AlloyDbClient.prototype, 'listInstances').mockResolvedValue({
+          status: 200,
+          result: [{
+            name:
+                'projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance',
+            instanceType: 'PRIMARY',
+            state: 'READY',
+          }],
+        });
+
+        const modelText =
+            fs.readFileSync(path.join(entryGroupDir, 'commerce.yaml'), 'utf8');
+        const loaded = loadSemanticModels(
+            [{name: 'commerce', text: modelText}], {bindingOptional: true});
+        expect(loaded.error).toBeUndefined();
+        expect(loaded.models).toHaveLength(1);
+        const baseModel = loaded.models[0].model;
+        expect(validatePushRequirements([{
+                 document: 'commerce',
+                 model: {
+                   ...baseModel,
+                   deployments: undefined,
+                   customExtensions: undefined,
+                 },
+               }]))
+            .toEqual([]);
+
+        for (const profileName of ['spanner', 'alloydb'] as const) {
+          const profileText = fs.readFileSync(
+              path.join(entryGroupDir, `commerce.profile.${profileName}.yaml`),
+              'utf8');
+          const applied = applyProfileFile(baseModel, profileText, profileName);
+          expect('error' in applied).toBe(false);
+          if ('error' in applied) return;
+          expect(validatePushRequirements([
+            {document: 'commerce', model: applied.model},
+          ])).toEqual([]);
+        }
+
+        const spannerOut = path.join(dir, 'spanner-skills');
+        const alloydbOut = path.join(dir, 'alloydb-skills');
+        process.chdir(demoDir);
+        expect(await skillsGenerate(
+                   {profile: 'spanner', out: spannerOut, force: true}))
+            .toBe(0);
+        expect(await skillsGenerate(
+                   {profile: 'alloydb', out: alloydbOut, force: true}))
+            .toBe(0);
+        expect(fs.readFileSync(
+                   path.join(
+                       spannerOut, 'commerce', 'references', 'issue-credit.md'),
+                   'utf8'))
+            .toBe(fs.readFileSync(
+                path.join(
+                    alloydbOut, 'commerce', 'references', 'issue-credit.md'),
+                'utf8'));
+
+        logs = [];
+        expect(await profiles({profile: 'spanner', printStore: true})).toBe(0);
+        expect(logs.join('\n'))
+            .toContain('my-project/my-instance/semantic_skill_demo');
+      });
 });

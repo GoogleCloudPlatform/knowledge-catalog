@@ -5,7 +5,7 @@
 // BigQuery, and a golden report over the professional-services prototype's
 // real schema (fixtures/bind: the OWL import and its INFORMATION_SCHEMA dump).
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -18,6 +18,10 @@ import {bindEntities, bindSummary, deprecation, nameSimilarity, typeCompatible} 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {ProfileFinding, ProfilePlan, QueryOutcome} from '../../../src/libts/semantic/profile_bigquery';
+import {loadProfileFile, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(loadSqlEngine);
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'bind');
 
@@ -299,13 +303,24 @@ describe('the profile and the run', () => {
       const text = renderProfileYaml(results, meta);
       expect(checkProfile(MODEL, text, 'bigquery', 'sales')).toEqual([]);
       const doc = yaml.parse(text);
-      const names = doc.semantic_model[0].entities.map((e: any) => e.name);
+      expect(doc.name).toBe('bigquery');
+      expect(doc.version).toBeUndefined();
+      expect(doc.semantic_model).toBeUndefined();
+      const names = doc.entities.map((e: any) => e.name);
       expect(names.includes('LegacyDeal')).toBe(acceptReview);
-      const opp = doc.semantic_model[0].entities.find((e: any) => e.name === 'Opportunity');
-      expect(opp.source).toBe('//bigquery.googleapis.com/projects/p/datasets/crm/tables/opportunity');
+      const opp = doc.entities.find((e: any) => e.name === 'Opportunity');
+      expect(opp.source).toBe('bigquery.googleapis.com/projects/p/datasets/crm/tables/opportunity');
+      expect(opp.primary_key).toEqual(['opportunity_id']);
       expect(opp.hydration).toEqual({grain: {latest_by: 'created_at'}});
-      expect(doc.semantic_model[0].entities.find((e: any) => e.name === 'Partner'))
+      const mu = doc.entities.find((e: any) => e.name === 'MarketUnit');
+      expect(mu.primary_key).toEqual(['market_unit']);
+      expect(mu.unique_keys).toEqual([['market_unit_name']]);
+      expect(doc.entities.find((e: any) => e.name === 'Partner'))
           .toEqual({name: 'Partner', hydration: {derive_from: {relationship: 'withPartner'}}});
+      expect(doc.relationships).toEqual([
+        {name: 'inMarketUnit', from_columns: ['market_unit'], to_columns: ['market_unit']},
+        {name: 'withPartner', from_columns: ['partner_name'], to_columns: ['partnerName']},
+      ]);
       expect(renderBindReport(results, models, meta)).toContain('### Opportunity -- auto');
     }
   });
@@ -335,8 +350,11 @@ describe('golden: the professional-services prototype', () => {
     const meta = {profile: 'bigquery', scan: 'kc-demo-349204.ps_*', tablesScanned: tables.length, dropped, acceptReview: false};
     const profile = renderProfileYaml(results, meta);
     expect(checkProfile(modelText, profile, 'bigquery', 'ps_commercial', 'kc-demo-349204')).toEqual([]);
-    expect(checkProfile(modelText, renderProfileYaml(results, {...meta, acceptReview: true}),
-                        'bigquery', 'ps_commercial', 'kc-demo-349204')).toEqual([]);
+    const acceptedProfile = renderProfileYaml(results, {...meta, acceptReview: true});
+    expect(checkProfile(modelText, acceptedProfile, 'bigquery', 'ps_commercial', 'kc-demo-349204')).toEqual([]);
+    const spec = loadProfileFile(acceptedProfile, 'bigquery');
+    expect(validateProfileCompleteness(models[0], spec)).toEqual([]);
+    expect(validateProfileConsistency(models[0], [spec])).toEqual([]);
     const report = renderBindReport(results, models, meta);
     for (const [file, text] of [['bind_report.golden.md', report], ['bigquery.golden.yaml', profile]]) {
       const golden = path.join(FIXTURES, file);

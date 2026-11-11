@@ -317,10 +317,13 @@ export const definedMembershipTests: ContractTestGenerator = {
         continue;
       }
       let keys: string[];
+      let props: string[];
       let expected: string;
       try {
         keys = ctx.binder.keys(e.name);
-        expected = ctx.binder.rows(e.name, keys);
+        const baseEntity = ctx.binder.tables.get(info.base);
+        props = baseEntity ? keyGraphProperties(baseEntity, keys) : keys;
+        expected = ctx.binder.rows(e.name, props);
       } catch (err) {
         skip(unsupportedReason(err));
         continue;
@@ -328,7 +331,7 @@ export const definedMembershipTests: ContractTestGenerator = {
       const prop = membershipPropertyName(e.name);
       const actual = graphTableSql(
           ctx.graph, `(n:${q(info.base)})\n  WHERE n.${q(prop)}`,
-          keys.map(k => `n.${q(k)} AS ${q(k)}`));
+          props.map(k => `n.${q(k)} AS ${q(k)}`));
       out.tests.push({
         subject: e.name,
         description: `the graph property ${info.base}.${prop} holds for ` +
@@ -336,7 +339,7 @@ export const definedMembershipTests: ContractTestGenerator = {
                          info.membership})`,
         comparison: 'sameRows',
         graphQuery: true,
-        sql: sameRowsSql({actual, expected, columns: keys}),
+        sql: sameRowsSql({actual, expected, columns: props}),
         actualSql: actual,
         expectedSql: expected,
       });
@@ -471,8 +474,10 @@ function edgeRowsSql(ctx: ContractContext, m: Relationship, who: string): string
   }
   const S = m.source.entity;
   const T = m.destination.entity;
-  const sk = nodeTable(ctx, S).keys;
-  const tk = nodeTable(ctx, T).keys;
+  const sEnt = nodeTable(ctx, S);
+  const tEnt = nodeTable(ctx, T);
+  const sk = keyGraphProperties(sEnt, sEnt.keys);
+  const tk = keyGraphProperties(tEnt, tEnt.keys);
   return `SELECT ${nodeId(S, sk, 's.')} AS src, ${nodeId(T, tk, 'd.')} AS dst\n` +
       `FROM (\n${indent(ownRows(ctx, S, [...sk, ...F]))}\n) AS s\n` +
       `JOIN (\n${indent(ownRows(ctx, T, [...tk, ...D]))}\n) AS d ON ${
@@ -484,8 +489,10 @@ function edgeRowsSql(ctx: ContractContext, m: Relationship, who: string): string
 function pathRowsSql(
     ctx: ContractContext, label: string, from: string, to: string,
     endpoints: Set<string>): string {
-  const fk = nodeTable(ctx, from).keys;
-  const tk = nodeTable(ctx, to).keys;
+  const fEnt = nodeTable(ctx, from);
+  const tEnt = nodeTable(ctx, to);
+  const fk = keyGraphProperties(fEnt, fEnt.keys);
+  const tk = keyGraphProperties(tEnt, tEnt.keys);
   const src = fk.map(c => `src_${c}`);
   const dst = tk.map(c => `dst_${c}`);
   const path = graphTableSql(
@@ -571,6 +578,21 @@ function ownRows(ctx: ContractContext, name: string, fields: string[]): string {
 function structuralColumn(e: Entity, name: string): string {
   const column = physicalColumnOf(e, name);
   return isSimpleIdentifier(column) ? quoteIfReserved(column) : `(${column})`;
+}
+
+// Maps each key of `e` (which may name a declared field or a physical column)
+// to the exposed graph property name on `e`'s node table.
+function keyGraphProperties(e: Entity, keys: string[]): string[] {
+  return keys.map(k => {
+    const direct = e.fields.find(f => f.name === k);
+    if (direct) return direct.name;
+    const bare = k.trim().replace(/^`(.*)`$/, '$1').toLowerCase();
+    const byCol = e.fields.find(
+        f => physicalColumnOf(e, f.name).replace(/^`(.*)`$/, '$1').toLowerCase() === bare);
+    if (byCol) return byCol.name;
+    throw new Unsupported(
+        `key column '${k}' of '${e.name}' is not exposed as a graph property`);
+  });
 }
 
 // A node's id across node tables: `<node table>:<key>`.

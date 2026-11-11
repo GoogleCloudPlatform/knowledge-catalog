@@ -10,7 +10,7 @@
 // their `rdf:type` triple is first seen in the document, so the generated OSI
 // is stable across runs (and matches its golden).
 
-import {Parser} from 'n3';
+import {Parser, Quad_Object} from 'n3';
 
 import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlMetric, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
@@ -257,16 +257,16 @@ interface Annotations {
   skosDefinition?: string;
   dctermsDescription?: string;
   dcDescription?: string;
-  domains: string[];
+  domains: string[];       // raw named rdfs:domain IRIs; resolved via classRef
   // Blank-node rdfs:domain objects (class expressions), resolved at build
   // time: an owl:unionOf adds each member class to `domains`.
   domainNodes: string[];
-  ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
+  ranges: Quad_Object[];   // rdfs:range terms; mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
   oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
   chainListHeads: string[];        // owl:propertyChainAxiom list heads
-  subClassOf: string[];            // local names (feed native `extends`)
+  subClassOf: string[];            // full IRIs (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
   inverseOf: string[];             // full IRIs (named object properties only)
@@ -532,7 +532,6 @@ export function parseOwl(turtle: string|string[]): OwlModel {
       continue;
     }
     const k = KIND_BY_TYPE[type];
-    if (!k) continue;
     // Only NAMED terms become classes/properties. A blank-node subject typed
     // owl:Class is an anonymous class expression -- the
     // `owl:equivalentClass [ a owl:Class ; owl:intersectionOf (...) ]` form
@@ -543,7 +542,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     // `[ owl:inverseOf p ]` property expression). Such nodes stay reachable
     // through the triples that reference them; they are just not routed to a
     // kind, so they neither become model terms nor count in the import stats.
-    if (q.subject.termType === 'BlankNode') continue;
+    if (!k || q.subject.termType !== 'NamedNode') continue;
     // The importer's own kcmd: vocabulary is not domain content: an ontology
     // declares `kcmd:Metric a owl:Class` so OWL tools accept its metric
     // individuals, and that class must not become an entity.
@@ -656,16 +655,16 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         a.dcDescription = q.object.value;
         break;
       case RDFS_DOMAIN:
-        // A named class is a domain as-is; a blank node is a class
-        // expression (`[ owl:unionOf (A B) ]`), resolved once the blank-node
-        // facts are known (see resolveDomainNode).
+        // A named class IRI is resolved via classRef at build time; a blank
+        // node is a class expression (`[ owl:unionOf (A B) ]`), resolved once
+        // the blank-node facts are known (see resolveDomainNode).
         if (q.object.termType === 'BlankNode')
           a.domainNodes.push(q.object.value);
-        else
-          a.domains.push(localName(q.object.value));
+        else if (q.object.termType === 'NamedNode')
+          a.domains.push(q.object.value);
         break;
       case RDFS_RANGE:
-        a.ranges.push(q.object.value);  // kept as IRI; mapper maps xsd:*
+        a.ranges.push(q.object);  // kept as a term; mapper maps xsd:*
         break;
       case OWL_VERSION_INFO:
         a.versionInfo = q.object.value;
@@ -688,15 +687,13 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         a.chainListHeads.push(q.object.value);
         break;
       case RDFS_SUBCLASS_OF:
-        // Class hierarchy -> the entity's `extends`. Named superclasses only:
-        // a blank-node object (an owl:Restriction and similar axioms) is not a
-        // named class, so it is ignored here (out of scope). The implicit
-        // universal superclasses (owl:Thing / rdfs:Resource) are ignored too --
-        // every class subclasses them, so they carry no inheritance
-        // information.
+        // Class hierarchy -> the entity's `extends`. Named superclasses are
+        // resolved via classRef at build time. The implicit universal
+        // superclasses (owl:Thing / rdfs:Resource) are ignored -- every class
+        // subclasses them, so they carry no inheritance information.
         if (q.object.termType === 'NamedNode' &&
             !TOP_CLASS_IRIS.has(q.object.value))
-          a.subClassOf.push(localName(q.object.value));
+          a.subClassOf.push(q.object.value);
         // A blank-node superclass may be an owl:Restriction -- a property
         // constraint every member satisfies. Recorded here and resolved once
         // the blank-node facts are known (see resolveRestriction); a blank
@@ -830,6 +827,21 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   const datatypeProperties: OwlDatatypeProperty[] = [];
   const objectProperties: OwlObjectProperty[] = [];
 
+  // The class IRI import writes under each local name: the first, as to_ir
+  // skips a later class with the same local name.
+  const classOfName = new Map<string, string>();
+  for (const iri of order) {
+    const name = localName(iri);
+    if (kind.get(iri) === 'class' && !classOfName.has(name)) {
+      classOfName.set(name, iri);
+    }
+  }
+  // How a superclass, domain or range names its class: by local name when
+  // import writes that class as an entity, and by full IRI otherwise. So
+  // foaf:Person never resolves to the entity written for ex:Person.
+  const classRef = (ref: string): string =>
+      classOfName.get(localName(ref)) === ref ? localName(ref) : ref;
+
   // Pass 4: facts about anonymous axiom nodes -- owl:Restriction nodes and the
   // owl:AllDisjointClasses nodes -- which are not typed terms, so pass 3 did not
   // collect them. Only the first value per predicate is kept (each facet of a
@@ -916,9 +928,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   //   - an owl:intersectionOf -> each conjunct: a restriction conjunct becomes
   //     a restriction of the class (C ≡ D ⊓ ∃p.X entails C ⊑ ∃p.X, so every
   //     member satisfies it -- the Protégé "defined class" shape), a NAMED
-  //     conjunct a superclass (C ⊑ D), and a nested intersection is flattened.
-  //     Any other conjunct (a union, a complement, an enumeration) states no
-  //     single rule every member obeys and is dropped, as before.
+  //     conjunct a superclass (C ⊑ D, raw IRI so self-references can be
+  //     filtered by full IRI before classRef), and a nested intersection is
+  //     flattened. Any other conjunct (a union, a complement, an enumeration)
+  //     states no single rule every member obeys and is dropped, as before.
   // Anything else yields nothing (out of scope, dropped as before).
   const expandClassExpression =
       (ref: {via: 'subClassOf'|'equivalentClass'; node: string},
@@ -934,7 +947,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         }
         for (const member of resolveList(head.value)) {
           if (!blankIds.has(member)) {
-            if (!TOP_CLASS_IRIS.has(member)) out.named.push(localName(member));
+            if (!TOP_CLASS_IRIS.has(member)) out.named.push(member);
             continue;
           }
           const inner = expandClassExpression({via: ref.via, node: member}, seen);
@@ -942,7 +955,9 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           out.named.push(...inner.named);
         }
         if (out.named.length) {
-          for (const r of out.restrictions) r.intersectedWith = [...out.named];
+          for (const r of out.restrictions) {
+            r.intersectedWith = out.named.map(localName);
+          }
         }
         return out;
       };
@@ -1269,7 +1284,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
             for (const m of resolveListTerms(union.value)) {
               if (m.termType === 'NamedNode') {
                 if (!TOP_CLASS_IRIS.has(m.value)) {
-                  out.named.push(localName(m.value));
+                  out.named.push(classRef(m.value));
                 }
               } else if (
                   m.termType === 'BlankNode' &&
@@ -1291,7 +1306,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   // then the members of each union domain not already listed.
   const domainsOf = (a: Annotations):
       {domains: string[]; unsupported: string[]} => {
-        const domains = [...a.domains];
+        const domains = a.domains.map(classRef);
         const unsupported: string[] = [];
         for (const node of a.domainNodes) {
           const r = resolveDomainNode(node);
@@ -1299,6 +1314,21 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           unsupported.push(...r.unsupported);
         }
         return {domains, unsupported};
+      };
+  // Every range of an object property: named classes via classRef, plus any
+  // blank-node class expressions as unsupported constructs for the warning.
+  const rangesOf = (a: Annotations):
+      {ranges: string[]; unsupported: string[]} => {
+        const ranges: string[] = [];
+        const unsupported: string[] = [];
+        for (const t of a.ranges) {
+          if (t.termType === 'NamedNode') {
+            ranges.push(classRef(t.value));
+          } else if (t.termType === 'BlankNode') {
+            unsupported.push(describeClassNode(t.value));
+          }
+        }
+        return {ranges, unsupported};
       };
   // K2: one owl:propertyChainAxiom list member as a step -- a named property,
   // or an anonymous `[ owl:inverseOf p ]` (p walked backwards). Any other
@@ -1334,13 +1364,15 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         // Blank-node superclass / equivalent-class expressions: restrictions
         // (bare or inside an intersection) and the named conjuncts of an
         // intersection, which are superclasses too (C ≡ D ⊓ … entails C ⊑ D;
-        // a self-reference adds nothing). Named conjuncts extend `subClassOf`
-        // in document order, after the explicit ones, de-duplicated.
+        // a self-reference by full IRI adds nothing). Named conjuncts extend
+        // `subClassOf` in document order, after the explicit ones,
+        // de-duplicated.
         const expanded = a.restrictionNodes.map(ref => expandClassExpression(ref));
-        const self = localName(iri);
-        const subClassOf = [...a.subClassOf];
-        for (const n of expanded.flatMap(e => e.named)) {
-          if (n !== self && !subClassOf.includes(n)) subClassOf.push(n);
+        const subClassOf = a.subClassOf.filter(s => s !== iri).map(classRef);
+        for (const raw of expanded.flatMap(e => e.named)) {
+          if (raw === iri) continue;
+          const ref = classRef(raw);
+          if (!subClassOf.includes(ref)) subClassOf.push(ref);
         }
         // The full owl:equivalentClass expressions: a bare enumeration of
         // individuals is a vocabulary (its members join `oneOf`); any other is
@@ -1356,13 +1388,13 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         const enumerated =
             equivalents.flatMap(d => d.kind === 'oneOf' ? d.members : []);
         classes.push({
-          localName: localName(iri),
           iri,
+          localName: localName(iri),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
           examples: a.examples,
-          keys: a.keyListHeads.flatMap(resolveList).map(localName),
+          keys: a.keyListHeads.flatMap(resolveList),
           subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
@@ -1381,10 +1413,12 @@ export function parseOwl(turtle: string|string[]): OwlModel {
       }
       case 'datatypeProperty': {
         const {domains, unsupported} = domainsOf(a);
+        const rangeTerm = a.ranges.find(t => t.termType === 'NamedNode');
         datatypeProperties.push({
+          iri,
           localName: localName(iri),
           domains,
-          rangeIri: a.ranges[0],
+          rangeIri: rangeTerm?.value,
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
@@ -1403,13 +1437,14 @@ export function parseOwl(turtle: string|string[]): OwlModel {
       }
       case 'objectProperty': {
         const {domains, unsupported} = domainsOf(a);
+        const {ranges, unsupported: unsupportedRanges} = rangesOf(a);
         objectProperties.push({
+          iri,
           localName: localName(iri),
-          // a.domains are already local names; a.ranges are raw IRIs. Carry all
-          // of each so the mapper can warn about (and drop) the extras rather
-          // than silently keeping only the first.
+          // Carry every domain and range so the mapper can warn about (and
+          // drop) the extras rather than silently keeping only the first.
           domains,
-          ranges: a.ranges.map(localName),
+          ranges,
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
@@ -1435,6 +1470,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           ...commonAnnotations(a),
           ...(a.encodedBy !== undefined ? {encodedBy: a.encodedBy} : {}),
           ...(unsupported.length ? {unsupportedDomains: unsupported} : {}),
+          ...(unsupportedRanges.length ? {unsupportedRanges} : {}),
         });
         break;
       }

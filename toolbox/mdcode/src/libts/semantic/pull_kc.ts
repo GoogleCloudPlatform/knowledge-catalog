@@ -4,13 +4,11 @@
 // `deploy_knowledge_catalog.ts`). Unlike a write, a pull needs no server-side
 // type provisioning -- only that the `semantic-*` entries exist. It enumerates
 // the entry group, keeps the semantic entries, hydrates each one's aspect data
-// (a BASIC list omits aspect data, so each entry is re-fetched with its aspect
-// types -- an entity needs BOTH its `semantic-entity` aspect and the built-in
-// `schema` aspect), and hands the hydrated entries to the pure reader
-// (`kc_converter.modelsFromCatalogResources`). With the first-generation
-// aspects it also returns the file copies a push stored of the model and
-// profile files, the parts of a file stored in parts joined back into the
-// file, for the caller to write instead of the rebuilt model.
+// (a BASIC list omits aspect data, so each entry is re-fetched with the
+// aspect types of its second-generation entry type), and hands the hydrated
+// entries to the pure reader (`kc_converter.modelsFromCatalogResources`). A
+// model an older kcmd pushed with the first-generation types is left out, and
+// a warning names it.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -19,13 +17,13 @@
 // the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
 // logic moves.
 
-import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {catalogContainer, CatalogClient, Entry} from '../gcp/dataplex';
 
-import {SemanticModel} from './ir';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {ACTION_TYPE_ID, AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID, CONSTRAINT_TYPE_ID, customAspectTypeName, EXPRESSIONS_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
+import {FirstGenerationModel, modelsFromCatalogResources, ReadResult} from './kc_converter';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
+import {entryIdOf} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
@@ -35,57 +33,20 @@ export interface KcPullOptions {
   location: string;
   // Id of the source entry group to pull from.
   entryGroup: string;
-  // The annotation aspect types provisioned in the project (see
-  // kc_custom_types.provisionedCustomAspects). Each semantic entry is also
-  // hydrated with the ones its kind can carry; naming a type the project
-  // lacks would fail the lookup, so the caller probes first. Absent = none.
-  customAspects?: readonly string[];
-  // Read the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
-  v2Aspects?: boolean;
-}
-
-export interface KcPullResult {
-  models: SemanticModel[];
-  // The file copies a push stored for the model, one per file and sorted by
-  // file name: a file stored in parts comes back as its parts joined in
-  // order, the file exactly as pushed. Set only with v2Aspects off. Empty
-  // when the catalog holds no copy of the model file, `<model>.yaml`; the
-  // caller then writes the model rebuilt from the aspects.
-  rawFiles?: FileCopy[];
-  warnings: string[];
 }
 
 // Upper bound on in-flight aspect-hydration fetches during a pull.
 const HYDRATE_CONCURRENCY = 8;
 
-// The built-in schema-join entry link type. Relationships publish as links of
-// this type; it is a system type that is referenced (never created), so it
-// always lives in `dataplex-types/global` regardless of where the model's own
-// entries live (see knowledge_catalog.ts). Pull filters :lookupEntryLinks to
-// exactly it, so a group's other links are never fetched or considered.
-const SCHEMA_JOIN_LINK_TYPE =
-    'projects/dataplex-types/locations/global/entryLinkTypes/schema-join';
-
-// Which annotation aspects each semantic entry kind carries (see
-// kc_annotations.ts).
-const ANNOTATIONS_BY_KIND: Record<string, readonly string[]> = {
-  'semantic-model': [AI_CONTEXT_TYPE_ID],
-  'semantic-entity': [AI_CONTEXT_TYPE_ID, EXPRESSIONS_TYPE_ID, BINDING_TYPE_ID],
-  'semantic-metric': [AI_CONTEXT_TYPE_ID, EXPRESSIONS_TYPE_ID],
-};
-
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, a fetch error
-// on any entry or its links, or file copies that are not one finished push's
-// -- throw, so the pull aborts rather than write a partial model.
+// on any entry, or a model entry still labeled as being written -- throw, so
+// the pull aborts rather than write a partial model.
 export async function pullKnowledgeCatalog(
-    cat: CatalogClient, opts: KcPullOptions): Promise<KcPullResult> {
+    cat: CatalogClient, opts: KcPullOptions): Promise<ReadResult> {
   await loadSqlEngine();
   const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
-  const warnings: string[] = [];
-  const provisioned = new Set(opts.customAspects ?? []);
 
   // Enumerate the group (paging is inherently sequential) and pick the semantic
   // entries, then hydrate their aspects concurrently: a BASIC list omits aspect
@@ -94,17 +55,9 @@ export async function pullKnowledgeCatalog(
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
-    // With v2Aspects on, a pull returns no file copies, so it fetches none.
-    if (opts.v2Aspects && isFileCopyEntry(entry)) continue;
     const aspectTypes = semanticAspectTypes(entry.entryType);
-    if (!aspectTypes) continue;  // not part of a semantic model; ignore it.
-    const kind = entry.entryType.slice(entry.entryType.lastIndexOf('/') + 1);
-    for (const id of ANNOTATIONS_BY_KIND[kind] ?? []) {
-      if (provisioned.has(id)) {
-        aspectTypes.push(customAspectTypeName(id, {project: opts.project}));
-      }
-    }
-    targets.push({entry, aspectTypes});
+    if (aspectTypes) targets.push({entry, aspectTypes});
+    // else: not part of a semantic model; ignore it.
   }
 
   // An entry group holds exactly one semantic model. Zero anchors is a clean
@@ -114,7 +67,7 @@ export async function pullKnowledgeCatalog(
   const anchors = targets.filter(
       t => t.entry.entryType?.endsWith('/entryTypes/semantic-model'));
   if (anchors.length > 1) {
-    const ids = anchors.map(a => idOf(a.entry.name)).sort();
+    const ids = anchors.map(a => entryIdOf(a.entry.name)).sort();
     throw new Error(
         `entry group ${destination} holds ${anchors.length} semantic models (${
             ids.join(
@@ -125,245 +78,161 @@ export async function pullKnowledgeCatalog(
   // Hydrate every semantic entry. A failed fetch means part of the model would
   // be silently missing, so abort rather than reconstruct an incomplete model.
   const hydrated = await mapConcurrent(
-      targets, HYDRATE_CONCURRENCY, async ({entry, aspectTypes}) => {
-        const res = await cat.lookupEntry(
-            opts.project, opts.location, entry.name, aspectTypes);
-        if (res.status !== 200 || !res.result) {
-          throw new Error(`failed to fetch entry '${entry.name}' (status ${
-              res.status}); pull aborted`);
-        }
-        return res.result;
-      });
+      targets, HYDRATE_CONCURRENCY,
+      ({entry, aspectTypes}) =>
+          fetchEveryAspect(cat, opts, entry, aspectTypes));
 
-  // Second fetch pass: relationships are schema-join entry links, which the
-  // entry list/lookup does not return. The catalog exposes links only per
-  // referenced entry (:lookupEntryLinks), so fan out over the entity entries
-  // and dedup (linkDedupKey) -- schema-join is undirected, so each link comes
-  // back once from each of its two endpoints. An entity with no relationships
-  // returns an empty list (expected, not warned); a non-200 is a real fetch
-  // error and aborts the pull.
-  const entityEntries = hydrated.filter(
-      e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
-  const linkLists =
-      await mapConcurrent(entityEntries, HYDRATE_CONCURRENCY, async entry => {
-        const res = await cat.lookupEntryLinks(opts.project, opts.location, {
-          entry: entry.name,
-          entryLinkTypes: [SCHEMA_JOIN_LINK_TYPE],
-        });
-        if (res.status !== 200 || !res.result) {
-          throw new Error(
-              `failed to fetch entry links for '${entry.name}' ` +
-              `(status ${res.status}); pull aborted`);
-        }
-        return res.result;
-      });
-
-  const seenLinks = new Set<string>();
-  const entryLinks: EntryLink[] = [];
-  for (const links of linkLists) {
-    for (const link of links) {
-      const key = linkDedupKey(link);
-      if (seenLinks.has(key)) continue;
-      seenLinks.add(key);
-      entryLinks.push(link);
-    }
-  }
-
-  const read = modelsFromCatalogResources(hydrated, entryLinks);
-  if (opts.v2Aspects) {
-    warnings.push(...read.warnings);
-    return {models: read.models, warnings: [...new Set(warnings)]};
-  }
-  // A copy belongs to the group's one model, so with no model there are none.
-  if (!read.models.length) {
-    warnings.push(...read.warnings);
-    return {models: [], rawFiles: [], warnings: [...new Set(warnings)]};
-  }
-
-  // The first-generation aspects cannot hold the whole model, so the caller
-  // writes these copies instead of the model rebuilt from the aspects. That
-  // needs the copy of the model file, `<model>.yaml`, which is where pull
-  // writes the model. Without it the rebuilt model is written, as for a model
-  // pushed before copies were stored.
-  const model = read.models[0].name;
-  // The model's own copies sit under its anchor's `.files.` prefix. A copy
-  // another model left behind is not one of them.
-  const own = `${idOf(anchors[0].entry.name)}.files.`;
-  const before = warnings.length;
-  const copies = readFileCopies(
-      hydrated.filter(e => idOf(e.name).startsWith(own)), warnings);
-  const skipped = warnings.slice(before);
-  // Every copy one push stores carries that push's id and how many files it
-  // stored, a file stored in parts counted once. Copies whose ids differ, or
-  // of which only some carry one, mean the last push stopped partway. So do
-  // the parts of a file that do not number 1 to their part count, and, once
-  // the parts are joined, a number of files other than that count. Writing
-  // them would mix files from two pushes or leave one out.
-  // A push that stores copies also labels the model entry with its push id,
-  // and writes that entry first. A labeled model whose copies are missing or
-  // carry another id means the last push stopped before storing them.
-  // Writing the copies of an earlier push, or rebuilding, would overwrite
-  // the local files. The hydrated entries keep the order of `targets`.
-  const count = copies[0]?.pushFileCount;
-  const anchor = hydrated[targets.indexOf(anchors[0])];
-  const label = anchor.entrySource?.labels?.[PUSH_ID_LABEL];
-  const joined = joinFileCopyParts(copies);
-  const files = joined.files;
-  const unfinished = new Set(copies.map(f => f.pushId)).size > 1 ?
-      'its file copies in the catalog come from different pushes' :
-      joined.problem !== undefined ?
-      joined.problem :
-      count !== undefined && files.length < count ?
-      `the catalog holds ${files.length} of its ${count} file copies` :
-      count !== undefined && files.length > count ?
-      `the catalog holds ${files.length} file copies, but the push stored ` +
-          `${count}` :
-      label !== undefined && !copies.length ?
-      (skipped.length ? 'the catalog holds no readable file copy' :
-                        'the catalog holds none of its file copies') :
-      label !== undefined && copies[0].pushId !== label ?
-      'its model entry and its file copies come from different pushes' :
+  const read = modelsFromCatalogResources(hydrated);
+  // Every push labels the model entry as writing when it writes the model entry
+  // and as finished with its last. The hydrated entries keep the order of
+  // `targets`.
+  const anchor =
+      anchors.length ? hydrated[targets.indexOf(anchors[0])] : undefined;
+  const writingReason =
+      anchor?.entrySource?.labels?.[PUSH_STATE_LABEL] === PUSH_WRITING ?
+      `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
-  if (unfinished) {
-    // A skipped copy is often why the count is off, so its warning goes with
-    // the error.
-    throw new Error(
-        `the last push of model '${model}' did not finish: ${unfinished}, ` +
-        `so pull writes nothing. Push again, then pull.` +
-        skipped.map(w => ` ${w}.`).join(''));
+  if (writingReason) {
+    // A model an older kcmd pushed is not in `read.models`, so the model is
+    // named from its entry, as the reader names it.
+    throw notFinished(
+        anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
+        writingReason);
   }
-  if (files.some(f => f.fileName === `${model}.yaml`)) {
-    // The rebuilt model is not written, so its warnings are left out.
-    return {
-      models: read.models,
-      rawFiles: files,
-      warnings: [...new Set(warnings)],
-    };
+  const warnings = [...read.warnings];
+  for (const m of read.firstGeneration ?? []) {
+    warnings.push(firstGenerationWarning(opts, m));
   }
-  warnings.push(...read.warnings);
-  warnings.push(
-      copies.length ?
-          `the stored copies of model '${model}' hold no '${model}.yaml', so ` +
-              `the model file is rebuilt from the catalog's aspects and may ` +
-              `differ from what was pushed` :
-          'no stored copy of the model file was found, so it is rebuilt from ' +
-              'the catalog\'s aspects and may differ from what was pushed; ' +
-              'push it again to store a copy');
-  return {models: read.models, rawFiles: [], warnings: [...new Set(warnings)]};
+  return {...read, warnings: [...new Set(warnings)]};
+}
+
+// The error for a model whose last push stopped partway, for `reason`.
+function notFinished(model: string, reason: string): Error {
+  return new Error(
+      `the last push of model '${model}' did not finish: ${reason}, so pull ` +
+      `writes nothing. Push again, then pull.`);
 }
 
 
-// True when an entry is a file copy, matched by its entry type's id suffix so
-// the project the custom type lives in need not be known.
-function isFileCopyEntry(entry: Entry): boolean {
-  return entry.entryType?.endsWith(`/entryTypes/${FILE_COPY_TYPE_ID}`) ?? false;
-}
+// The model, entity and metric aspect types an older kcmd's first-generation
+// push wrote, in the order the warning names them.
+const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
 
-// The file copies among the hydrated entries, sorted by file name, each with
-// the push id and copy count it carries, and the part number and part count
-// of a part of a file stored in parts. A copy whose aspect holds no file name
-// or no content is skipped with a warning.
-function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
-  const files: FileCopy[] = [];
-  for (const entry of entries) {
-    if (!isFileCopyEntry(entry)) continue;
-    const aspect = Object.entries(entry.aspects ?? {}).find(
-        ([key, a]) => key.endsWith(`.${FILE_COPY_TYPE_ID}`) ||
-            (a.aspectType ?? '').endsWith(`/aspectTypes/${FILE_COPY_TYPE_ID}`));
-    const data = aspect?.[1].data;
-    if (typeof data?.fileName !== 'string' || data.fileName === '' ||
-        typeof data.content !== 'string') {
-      warnings.push(
-          `file copy '${idOf(entry.name)}' holds no file name or no ` +
-          `content; it is skipped`);
-      continue;
-    }
-    files.push({
-      fileName: data.fileName,
-      content: data.content,
-      ...(typeof data.pushId === 'string' ? {pushId: data.pushId} : {}),
-      ...(typeof data.pushFileCount === 'number' ?
-              {pushFileCount: data.pushFileCount} :
-              {}),
-      ...(typeof data.part === 'number' ? {part: data.part} : {}),
-      ...(typeof data.partCount === 'number' ? {partCount: data.partCount} :
-                                               {}),
-    });
-  }
-  return files.sort(
-      (a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
-}
-
-// One copy per file, from copies sorted by file name: a file stored whole as
-// it is, and a file stored in parts as its parts joined in order, with the
-// push id and file count they carry. The caller compares the files with that
-// count. `problem` says instead why the copies of a file do not make up the
-// file: its parts must number 1 to their part count, each once, with nothing
-// else stored under its name. The parts come from one push, since the caller
-// has checked that every copy does.
-function joinFileCopyParts(copies: readonly FileCopy[]):
-    {files: FileCopy[]; problem?: string} {
-  const byName = new Map<string, FileCopy[]>();
-  for (const copy of copies) {
-    byName.set(copy.fileName, [...(byName.get(copy.fileName) ?? []), copy]);
-  }
-  const files: FileCopy[] = [];
-  for (const [fileName, group] of byName) {
-    const [first] = group;
-    const whole = group.every(
-        c => c.part === undefined && c.partCount === undefined);
-    if (whole && group.length === 1) {
-      files.push(first);
-      continue;
-    }
-    if (whole) {
-      return {
-        files: [],
-        problem: `the catalog holds ${group.length} copies of file ` +
-            `'${fileName}'`,
-      };
-    }
-    const count = first.partCount ?? 0;
-    const numbered = Number.isInteger(count) && count >= 1 &&
-        group.every(
-            c => c.partCount === count && Number.isInteger(c.part) &&
-                c.part! >= 1 && c.part! <= count) &&
-        new Set(group.map(c => c.part)).size === group.length;
-    if (!numbered) {
-      return {
-        files: [],
-        problem: `the parts of file '${fileName}' in the catalog do not run ` +
-            `from 1 to their part count`,
-      };
-    }
-    if (group.length < count) {
-      return {
-        files: [],
-        problem: `the catalog holds ${group.length} of the ${count} parts of ` +
-            `file '${fileName}'`,
-      };
-    }
-    files.push({
-      fileName,
-      content: [...group].sort((a, b) => a.part! - b.part!)
-                   .map(c => c.content)
-                   .join(''),
-      ...(first.pushId !== undefined ? {pushId: first.pushId} : {}),
-      ...(first.pushFileCount !== undefined ?
-              {pushFileCount: first.pushFileCount} :
-              {}),
-    });
-  }
-  return {files};
+// The warning for a model an older kcmd pushed, which pull leaves out. It
+// names the first-generation aspect types found on the model's entries.
+function firstGenerationWarning(
+    opts: KcPullOptions, model: FirstGenerationModel): string {
+  const found = new Set(model.entries.flatMap(
+      e => Object.values(e.aspects ?? {})
+               .map(a => a.aspectType?.split('/aspectTypes/')[1])));
+  const types = FIRST_GEN_ASPECTS.filter(t => found.has(t));
+  return `model '${model.name}' in entry group '${opts.entryGroup}'` +
+      ` was pushed by an older kcmd (first-generation aspects: ${
+          types.join(', ')}). Pull wrote nothing for it; push it again ` +
+      `with the current kcmd`;
 }
 
 
-// The aspect type resource names to hydrate for a semantic entry, derived from
-// its entryType (the aspect types are the parallel resources in the same
-// project/location). Every entry also carries the built-in `guidelines` aspect
-// (ai_context instructions); an entity additionally carries the built-in
-// `schema` aspect that holds its fields, keys, and unique constraints. Returns
-// undefined for entries that are not part of a semantic model.
+// Fetches `entry` with the aspects of `aspectTypes`, at `paths` when given.
+// Throws on a failed fetch.
+async function fetchEntry(
+    cat: CatalogClient, opts: KcPullOptions, entry: Entry,
+    aspectTypes: string[], paths?: string[]): Promise<Entry> {
+  const res = await cat.lookupEntry(
+      opts.project, opts.location, entry.name,
+      {aspects: aspectTypes, paths});
+  if (res.status !== 200 || !res.result) {
+    throw new Error(`failed to fetch entry '${entry.name}' (status ${
+        res.status}); pull aborted`);
+  }
+  return res.result;
+}
+
+// Most aspects Dataplex returns for one entry in one read.
+const MAX_ASPECTS_PER_READ = 100;
+// Most bytes of path and query Dataplex accepts in a GET.
+const MAX_URL_BYTES = 16_384;
+
+// Fetches `entry` with every aspect of `aspectTypes`, one read at a time. A
+// read that returns MAX_ASPECTS_PER_READ is repeated once per type, and a type
+// that returns that many is read again at the entry and at each field.
+async function fetchEveryAspect(
+    cat: CatalogClient, opts: KcPullOptions, entry: Entry,
+    aspectTypes: string[]): Promise<Entry> {
+  const full = (e: Entry) =>
+      Object.keys(e.aspects ?? {}).length >= MAX_ASPECTS_PER_READ;
+  const read = await fetchEntry(cat, opts, entry, aspectTypes);
+  if (!full(read)) return read;
+  const byType: Entry[] = [];
+  for (const t of aspectTypes) {
+    byType.push(await fetchEntry(cat, opts, entry, [t]));
+  }
+  const schema =
+      byType[aspectTypes.findIndex(t => t.endsWith('/aspectTypes/schema'))];
+  const paths = [
+    '',
+    ...Object.values(schema?.aspects ?? {})
+        .flatMap(a => a.data?.fields ?? [])
+        .map(f => `Schema.${f.name}`)
+  ];
+  const byPath: Entry[] = [];
+  for (const t of aspectTypes.filter((_, i) => full(byType[i]))) {
+    for (const batch of pathBatches(opts, entry, t, paths)) {
+      byPath.push(await fetchEntry(cat, opts, entry, [t], batch));
+    }
+  }
+  const reads = [...byType, ...byPath];
+  return {...read, aspects: Object.assign({}, ...reads.map(r => r.aspects))};
+}
+
+// Splits `paths` into batches for reads of `type` on `entry`, each within
+// MAX_URL_BYTES. A batch holds fewer than MAX_ASPECTS_PER_READ paths, and a
+// path holds at most one instance of a type, so no read comes back cut.
+function pathBatches(
+    opts: KcPullOptions, entry: Entry, type: string,
+    paths: string[]): string[][] {
+  // Bytes of `params` in the URL, with the '?' or '&' before them.
+  const bytes = (params: string[][]) =>
+      new URLSearchParams(params).toString().length + 1;
+  const base =
+      `/v1/${catalogContainer(opts.project, opts.location)}:lookupEntry`
+          .length +
+      bytes([['entry', entry.name], ['view', 'CUSTOM'], ['aspectTypes', type]]);
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let size = base;
+  for (const path of paths) {
+    const add = bytes([['paths', path]]);
+    if (batch.length === MAX_ASPECTS_PER_READ - 1 ||
+        size + add > MAX_URL_BYTES) {
+      batches.push(batch);
+      batch = [];
+      size = base;
+    }
+    batch.push(path);
+    size += add;
+  }
+  return [...batches, batch];
+}
+
+
+
+// The aspect types each second-generation entry type is read with.
+const OBJECT_ASPECTS = ['guidelines', 'semantic-extensions', 'overview'];
+const V2_ASPECT_TYPES = new Map([
+  ['semantic-model', ['semantic-model', ...OBJECT_ASPECTS]],
+  [
+    'semantic-entity',
+    ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  [
+    'semantic-metric', ['semantic-metric', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  ['semantic-relationship', ['semantic-relationship', ...OBJECT_ASPECTS]],
+]);
+
+// The aspect types to read for a semantic entry, in its entry type's project
+// and location. Undefined for an entry outside a semantic model.
 function semanticAspectTypes(entryType: string): string[]|undefined {
   const marker = '/entryTypes/';
   const idx = entryType?.indexOf(marker) ?? -1;
@@ -371,16 +240,9 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
   const typeBase = entryType.slice(0, idx);
   const t = entryType.slice(idx + marker.length);
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
+  const v2Types = V2_ASPECT_TYPES.get(t);
+  if (v2Types) return v2Types.map(aspectType);
   switch (t) {
-    case 'semantic-model':
-      return [aspectType('semantic-model'), aspectType('guidelines')];
-    case 'semantic-entity':
-      return [
-        aspectType('semantic-entity'), aspectType('schema'),
-        aspectType('guidelines')
-      ];
-    case 'semantic-metric':
-      return [aspectType('semantic-metric'), aspectType('guidelines')];
     case ACTION_TYPE_ID:
       // An action's entry type is custom (see kc_custom_types.ts), so it
       // lives in the destination project rather than under `dataplex-types`;
@@ -390,9 +252,6 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
     case CONSTRAINT_TYPE_ID:
       // Custom for the same reason, and named through the same `typeBase`.
       return constraintAspectTypes(typeBase);
-    case FILE_COPY_TYPE_ID:
-      // Custom too: one aspect holding the file's name and text.
-      return [aspectType(FILE_COPY_TYPE_ID)];
     default:
       return undefined;
   }

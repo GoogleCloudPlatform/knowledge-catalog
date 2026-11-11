@@ -13,6 +13,8 @@
 //   `retail_sales.entities.store_orders` (V1) or
 //   `retail_sales/entities/store_orders` (V2).
 
+import {createHash} from 'node:crypto';
+
 import {Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
@@ -33,14 +35,13 @@ const RESOURCE_ID_RE = new RegExp(
     `^projects/[^/]+/locations/[^/]+/` +
     `(?:${ENTRY_GROUP_PATH_RE.source}|${TYPE_PATH_RE.source})/(.+)$`);
 
-/** Destination and layout options for constructing Knowledge Catalog names. */
+/** Destination and system-type options for building Knowledge Catalog names. */
 export interface NamerOptions {
   project: string;
   location: string;
   entryGroup: string;
   systemTypeProject?: string;
   systemTypeLocation?: string;
-  v2Aspects?: boolean;
 }
 
 /**
@@ -52,14 +53,12 @@ export class Namer {
   private readonly typeProject: string;
   private readonly typeLocation: string;
   private readonly container: string;
-  private readonly v2Aspects: boolean;
 
   constructor(opts: NamerOptions) {
     this.typeProject = opts.systemTypeProject ?? DEFAULT_TYPE_PROJECT;
     this.typeLocation = opts.systemTypeLocation ?? DEFAULT_TYPE_LOCATION;
     this.container = `projects/${opts.project}/locations/${
         opts.location}/entryGroups/${opts.entryGroup}`;
-    this.v2Aspects = opts.v2Aspects ?? false;
   }
 
   /** Full resource name of a system type. `kind` selects the collection. */
@@ -90,62 +89,39 @@ export class Namer {
    * Bare entry ID for a semantic model, used as the `semantic-model` anchor
    * entry's ID and as the prefix for action and constraint entry IDs.
    *
-   * V1 sanitizes `model.name` with `slug()` because `model.name` may contain
-   * characters (e.g. spaces) that Knowledge Catalog disallows in entry IDs.
-   * V2 returns `model.name` verbatim because V2 model names are restricted to
-   * letters, digits, underscores and hyphens, all of which `slug()` keeps. This
-   * means `slug(model.name)` and `model.name` are equal for valid V2 models.
+   * It is `model.name` verbatim: model names are restricted to letters,
+   * digits, underscores and hyphens, all of which entry IDs allow.
    */
   modelId(model: SemanticModel): string {
-    return this.v2Aspects ? model.name : slug(model.name);
+    return model.name;
   }
 
   /** Bare entry ID for an entity within a semantic model. */
   entityId(model: SemanticModel, entity: Entity): string {
-    return this.v2Aspects ?
-        `${model.name}/entities/${entity.name}` :
-        `${slug(model.name)}.entities.${slug(entity.name)}`;
+    return `${model.name}/entities/${entity.name}`;
   }
 
   /** Bare entry ID for a metric within a semantic model. */
   metricId(model: SemanticModel, metric: Metric): string {
-    return this.v2Aspects ?
-        `${model.name}/metrics/${metric.name}` :
-        `${slug(model.name)}.metrics.${slug(metric.name)}`;
+    return `${model.name}/metrics/${metric.name}`;
   }
 
-  /**
-   * Entry link IDs are more restricted than entry IDs: lowercase letters,
-   * numbers and hyphens only, starting with a letter (see `linkSlug`). Does not
-   * branch on `v2Aspects`.
-   */
-  linkId(model: SemanticModel, rel: Relationship): string {
-    return relationshipLinkId(model.name, rel.name);
-  }
-
-  /**
-   * Bare entry ID for a verbatim model/profile file copy (used while
-   * `KC_V2_ASPECTS` is off), or for one part of a file stored in parts (see
-   * `fileCopySlug`). Dotted under both layouts.
-   */
-  fileEntryId(modelName: string, fileName: string, part?: number): string {
-    return `${slug(modelName)}.files.${fileCopySlug(fileName, part)}`;
+  /** Bare entry ID for a relationship within a semantic model. */
+  relationshipId(model: SemanticModel, rel: Relationship): string {
+    return `${model.name}/relationships/${rel.name}`;
   }
 }
 
 /**
- * The part of a file copy's entry ID after `<model>.files.`: the file name's
- * slug, followed by `.part-<n>` for part `n` of a file stored in parts. A
- * stored file name ends in `.yaml`, so a part's ID never equals the ID of a
- * file stored whole.
+ * ID of a link push writes: `semantic-<kind>-` and the first 32 hex characters
+ * of the SHA-256 of `parts` joined by '/'. It must stay the same across
+ * releases, so that push finds the links it wrote.
  */
-export function fileCopySlug(fileName: string, part?: number): string {
-  return part === undefined ? slug(fileName) : `${slug(fileName)}.part-${part}`;
-}
-
-/** Entry-link ID for a relationship on a model. */
-export function relationshipLinkId(modelName: string, relName: string): string {
-  return linkSlug(`${modelName}-${relName}`);
+export function semanticLinkId(
+    kind: 'link'|'relationship'|'extends', ...parts: string[]): string {
+  const digest =
+      createHash('sha256').update(parts.join('/'), 'utf8').digest('hex');
+  return `semantic-${kind}-${digest.slice(0, 32)}`;
 }
 
 /**
@@ -153,10 +129,15 @@ export function relationshipLinkId(modelName: string, relName: string): string {
  * dotted layout and the second-generation slash layout.
  *
  * The dotted prefixes use `slug(modelName)` to match V1 entries, while the
- * slash prefixes use `modelName` verbatim to match V2 entity and metric
- * entries. Because V2 model names are restricted to letters, digits,
- * underscores and hyphens, all of which `slug()` keeps, `slug(modelName)` and
- * `modelName` are equal for valid V2 models.
+ * slash prefixes use `modelName` verbatim to match V2 entity, metric and
+ * relationship entries. Because V2 model names are restricted to letters,
+ * digits, underscores and hyphens, all of which `slug()` keeps,
+ * `slug(modelName)` and `modelName` are equal for valid V2 models.
+ *
+ * No push writes under `.entities.`, `.metrics.` or `.files.` any more: an
+ * older kcmd wrote its entity and metric entries there, and a copy of each
+ * model and profile file. The prefixes stay so the next push deletes those
+ * entries.
  */
 export function ownedEntryIdPrefixes(modelName: string): string[] {
   const s = slug(modelName);
@@ -168,6 +149,7 @@ export function ownedEntryIdPrefixes(modelName: string): string[] {
     `${s}.files.`,
     `${modelName}/entities/`,
     `${modelName}/metrics/`,
+    `${modelName}/relationships/`,
   ];
 }
 
@@ -194,17 +176,42 @@ export function slug(s: string): string {
   return s.replace(/[^A-Za-z0-9_.-]/g, '_');
 }
 
+// Entry-link IDs follow a stricter grammar than entry IDs:
+// `[a-z]([a-z0-9-]{0,61}[a-z0-9])?` (lowercase letters, digits, hyphens,
+// starting with a letter, ending with a letter or digit, at most 63 chars).
+function linkSlug(s: string): string {
+  const cleaned = s.toLowerCase()
+                      .replace(/[^a-z0-9-]+/g, '-')
+                      .replace(/-+/g, '-')
+                      .replace(/^[^a-z]+/, '')
+                      .slice(0, 63)
+                      .replace(/-+$/, '');
+  return cleaned || 'link';
+}
+
+function fnv(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).padStart(7, '0').slice(0, 7);
+}
+
+/** Entry-link ID prefix of a model's `@bigquery` binding links. */
+export function bindingLinkPrefix(modelName: string): string {
+  return linkSlug(`${modelName}-bind`);
+}
+
 /**
- * Entry link IDs allow only lowercase letters, numbers and hyphens, must start
- * with a letter, must end with a letter or number, and are capped at 63 chars.
+ * Deterministic entry-link ID for an entity's `@bigquery` binding link
+ * (`<model>-bind-<kind>-<entity>`, normalized to Dataplex's 63-char link-ID
+ * grammar, with a stable hash suffix when truncated).
  */
-export function linkSlug(s: string): string {
-  const out = s.toLowerCase()
-                  .replace(/[^a-z0-9-]+/g, '-')
-                  .replace(/-+/g, '-')
-                  .replace(/^[^a-z]+/, '')
-                  .replace(/^-+|-+$/g, '')
-                  .slice(0, 63)
-                  .replace(/-+$/, '');
-  return out || 'link';
+export function bindingLinkId(
+    modelName: string, kind: 'view'|'node', entity: string): string {
+  const full = `${bindingLinkPrefix(modelName)}-${kind}-${entity}`;
+  const id = linkSlug(full);
+  if (id.length < 63) return id;
+  return `${id.slice(0, 54).replace(/-+$/, '')}-${fnv(full)}`;
 }

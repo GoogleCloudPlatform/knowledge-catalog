@@ -18,7 +18,7 @@
 //      concrete one names its parents on its schema-join description, and
 //      pull restores `extends` when the parent itself was published.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {relationshipAncestors, SemanticModel} from '../../../src/libts/semantic/ir';
@@ -27,41 +27,45 @@ import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_ca
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
+beforeAll(() => loadSqlEngine());
+
 const TARGET =
-    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/deals';
+    'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/deals';
 
 // Two concrete counterparty edges (from two different tables) under one
 // abstract `hasCounterparty`, whose endpoint types are an abstract
 // CommercialDocument and the concrete Organization.
 function dealsYaml(opts: {version?: string; extra?: string} = {}): string {
+  const ver = opts.version ?? '0.2.0.dev0/google';
   return `
-version: ${opts.version ?? '0.2.0.dev0/google'}
+version: ${ver}
 semantic_model:
   - name: deals
     deployments:
       - name: default
         target: ${TARGET}
-    datasets:
+    ${ver === '0.2.0.dev0/google' ? 'entities' : 'datasets'}:
       - name: CommercialDocument
         abstract: true
       - name: Opportunity
-        source: bigquery:p.d.opportunity
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/opportunity
         extends: [CommercialDocument]
         primary_key: [opp_id]
         fields:
           - {name: opp_id, expression: opp_id}
           - {name: buyer_id, expression: buyer_id}
       - name: Invoice
-        source: bigquery:p.d.invoice
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/invoice
         extends: [CommercialDocument]
         primary_key: [inv_id]
         fields:
           - {name: inv_id, expression: inv_id}
           - {name: payer_id, expression: payer_id}
       - name: Organization
-        source: bigquery:p.d.org
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/org
         primary_key: [org_id]
         fields:
           - {name: org_id, expression: org_id}
@@ -309,48 +313,62 @@ describe('OSI serialization', () => {
 
 describe('Knowledge Catalog', () => {
   const OPTS = {project: 'dest', location: 'us', entryGroup: 'eg'};
+  const relEntry = (entries: any[], name: string) =>
+      entries.find(e => e.name.endsWith(`/relationships/${name}`))!;
 
-  test('an abstract relationship publishes no link, with a warning', () => {
-    const {entryLinks, warnings} =
+  test('an abstract relationship publishes as a semantic-relationship entry with its Abstract marker and no warning', () => {
+    const {entries, warnings} =
         generateCatalogResources(dealsModel(), OPTS);
-    expect(entryLinks.some(l => l.name!.includes('hascounterparty'))).toBe(false);
-    expect(warnings.some(
-               w => w.includes(`relationship 'hasCounterparty' is abstract`)))
-        .toBe(true);
+    const entry = relEntry(entries, 'hasCounterparty');
+    expect(entry).toBeDefined();
+    expect(entry.entrySource.description).toBe(
+        'The organization on the other side of a document.\n\n' +
+        'Abstract: no edge table of its own.');
+    expect(warnings).toEqual([]);
   });
 
-  test('a sub-relationship names its parents on the join description', () => {
-    const {entryLinks} = generateCatalogResources(dealsModel(), OPTS);
-    const buyer = entryLinks.find(l => l.name!.endsWith('hasbuyer'))!;
-    const join = (Object.values(buyer.aspects!)[0] as any).data.joins[0];
-    expect(join.description).toBe('Who is buying.\n\nSpecializes: hasCounterparty.');
-    const payer = entryLinks.find(l => l.name!.endsWith('haspayer'))!;
-    expect((Object.values(payer.aspects!)[0] as any).data.joins[0].description)
+  test('a sub-relationship names its parents on its entry description', () => {
+    const {entries} = generateCatalogResources(dealsModel(), OPTS);
+    expect(relEntry(entries, 'hasBuyer').entrySource.description)
+        .toBe('Who is buying.\n\nSpecializes: hasCounterparty.');
+    expect(relEntry(entries, 'hasPayer').entrySource.description)
         .toBe('Specializes: hasCounterparty.');
   });
 
   test(
-      'pull strips the line and drops a parent that published no link ' +
-          '(an abstract one), with a warning',
+      'pull restores both abstract super-relationships and extends verbatim, ' +
+          'and drops a missing parent with a warning',
       () => {
         const {entries, entryLinks} =
             generateCatalogResources(dealsModel(), OPTS);
-        const {models, warnings} =
-            modelsFromCatalogResources(entries, entryLinks);
-        const buyer = models[0].relationships.find(r => r.name === 'hasbuyer')!;
+        const full = modelsFromCatalogResources(entries, entryLinks);
+        const counterparty = full.models[0].relationships.find(
+            r => r.name === 'hasCounterparty')!;
+        expect(counterparty.abstract).toBe(true);
+        expect(counterparty.description)
+            .toBe('The organization on the other side of a document.');
+        const buyer = full.models[0].relationships.find(
+            r => r.name === 'hasBuyer')!;
         expect(buyer.description).toBe('Who is buying.');
-        expect(buyer.extends).toBeUndefined();
+        expect(buyer.extends).toEqual(['hasCounterparty']);
+        expect(full.warnings).toEqual([]);
+
+        const withoutParent = entries.filter(
+            e => !e.name.endsWith('/relationships/hasCounterparty'));
+        const {models, warnings} =
+            modelsFromCatalogResources(withoutParent, entryLinks);
+        const prunedBuyer =
+            models[0].relationships.find(r => r.name === 'hasBuyer')!;
+        expect(prunedBuyer.description).toBe('Who is buying.');
+        expect(prunedBuyer.extends).toBeUndefined();
         expect(warnings.some(
                    w => w.includes(`specializes 'hasCounterparty'`) &&
                        w.includes('dropped')))
             .toBe(true);
       });
 
-  test('pull restores extends when the parent itself is published', () => {
+  test('pull restores extends across multi-level sub-relationships', () => {
     const model = dealsModel();
-    // The catalog shows one join per pair of entities, so a second
-    // relationship from Opportunity to Organization would be skipped. The
-    // sub-relationship targets a kind of Organization instead.
     model.entities.push({
       name: 'KeyAccount',
       dataSource: 'p.d.key_account',
@@ -367,9 +385,8 @@ describe('Knowledge Catalog', () => {
     const {entries, entryLinks} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries, entryLinks);
     const keyBuyer =
-        models[0].relationships.find(r => r.name === 'haskeybuyer')!;
-    // The parent is recovered under its (link-slugged) pulled name.
-    expect(keyBuyer.extends).toEqual(['hasbuyer']);
+        models[0].relationships.find(r => r.name === 'hasKeyBuyer')!;
+    expect(keyBuyer.extends).toEqual(['hasBuyer']);
   });
 
   test('splitSpecializes leaves an ordinary description alone', () => {

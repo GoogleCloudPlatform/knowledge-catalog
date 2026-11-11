@@ -32,16 +32,16 @@ function sales(): SemanticModel {
         dataSource: 'p.d.opportunity',
         keys: ['opportunity_id'],
         fields: [
-          {name: 'opportunity_id', expression: 'Opportunity.opportunity_id'},
-          {name: 'client_id', expression: 'Opportunity.client_id'},
-          {name: 'wonAmount', expression: 'Opportunity.won_amount'},
+          {name: 'opportunity_id', expression: 'opportunity_id'},
+          {name: 'client_id', expression: 'client_id'},
+          {name: 'wonAmount', expression: 'won_amount'},
         ],
       },
       {
         name: 'Client',
         dataSource: 'p.d.client',
         keys: ['client_id'],
-        fields: [{name: 'client_id', expression: 'Client.client_id'}],
+        fields: [{name: 'client_id', expression: 'client_id'}],
       },
     ],
     relationships: [{
@@ -124,7 +124,7 @@ describe.each(GENERATORS)('%s: an empty label says NO PROPERTIES', (_, gen) => {
     const edge = block(gen(model), 'sharedWith');
     expect(edge).toContain('NO PROPERTIES');
     // With junction fields the edge lists them instead.
-    assoc.fields = [{name: 'role', expression: 'sharedWith.role'}];
+    assoc.fields = [{name: 'role', expression: 'role'}];
     const withFields = block(gen(model), 'sharedWith');
     expect(withFields).toContain('PROPERTIES(');
     expect(withFields).not.toContain('NO PROPERTIES');
@@ -137,7 +137,7 @@ test('BigQuery: the MEASURE named like a physical column is the only declaration
   // the edge defaulting to ALL COLUMNS, `won_amount` was also declared as an
   // edge property. Now the only `won_amount` declaration is the MEASURE.
   const {ddl} = generatePropertyGraph(sales(), GEN_OPTS);
-  expect(ddl).toMatch(/MEASURE\(SUM\(wonAmount\)\) AS won_amount/);
+  expect(ddl).toMatch(/MEASURE\(SUM\(won_amount_input\)\) AS won_amount__measure/);
   expect(block(ddl, 'hasBuyer')).not.toContain('won_amount');
   expect(ddl).not.toContain('ALL COLUMNS');
 });

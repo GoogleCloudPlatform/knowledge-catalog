@@ -9,19 +9,19 @@ import {ApiContext} from '../../../../src/libts/gcp/context';
 import {resolveModelDeployments} from '../../../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {undeclaredProfileError} from '../../../../src/libts/semantic/runtime/runtime';
+import {undeclaredProfileError} from '../../../../src/libts/semantic/resolve_profiles';
 import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
-const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
-const SPANNER_GRAPH = `${DB}/propertyGraphs/g`;
+const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
+const SPANNER_GRAPH = `${DB}/graphs/g`;
 const CLUSTER =
-    '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
+    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
 
 function model(body: string): SemanticModel {
   return loadModels(
              `version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: m\n${
                  body}`,
-             {bindingOptional: true, allowLegacyBareSource: true})
+             {bindingOptional: true})
       .models[0];
 }
 
@@ -37,29 +37,15 @@ function deployed(entries: string, source = `${DB}/tables/Customer`):
       `          - {name: id, datatype: Integer, expression: id}\n`);
 }
 
-function vanilla(data: string): SemanticModel {
-  return {
-    ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
-    version: '0.2.0.dev0',
-    deployments: undefined,
-    customExtensions: [{vendorName: 'GOOGLE', data}],
-  };
-}
-
 
 describe('deployments and the profiles they name', () => {
   // `profile: default` names the model file's own bindings, so resolveStore
-  // uses it for `default`, and so does a legacy wrapper that falls back to
-  // those bindings.
-  test('a deployment naming default is the model file\'s for a legacy wrapper too',
-       () => {
-         const m = deployed(
-             `      - {name: prod, target: "${SPANNER_GRAPH}", profile: default}\n`);
-         const byDefault = resolveStore(m, 'default');
-         expect('error' in byDefault).toBe(false);
-         const wrapped = resolveStore(m, 'staging', {legacyWrapper: true});
-         expect(wrapped).toEqual(byDefault);
-       });
+  // uses it for `default`.
+  test('a deployment naming default is the model file\'s', () => {
+    const m = deployed(
+        `      - {name: prod, target: "${SPANNER_GRAPH}", profile: default}\n`);
+    expect('error' in resolveStore(m, 'default')).toBe(false);
+  });
 
   // A deployment whose profile no profile file declares would be used by no
   // profile. Push refuses the deployment, and so does the runtime.
@@ -73,34 +59,19 @@ describe('deployments and the profiles they name', () => {
     expect(undeclaredProfileError('m.yaml', m, ['prdo'])).toBeUndefined();
   });
 
-  // The legacy wrapper fallback uses the deployments for `default`, and the
-  // ambiguity message says they are default's.
-  test('the ambiguity message under a legacy wrapper names whose deployments they are',
-       () => {
-         const m = deployed(
-             `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
-             `      - {name: b, target: "${DB}2/propertyGraphs/g"}\n`);
-         const store = resolveStore(m, 'staging', {legacyWrapper: true});
-         expect('error' in store && store.error)
-             .not.toContain("for profile 'staging' (a, b)");
-         expect('error' in store && store.error)
-             .toContain("in 'deployments' for profile 'default' (a, b)");
-       });
+  // The ambiguity message says whose deployments they are.
+  test('the ambiguity message names whose deployments they are', () => {
+    const m = deployed(
+        `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
+        `      - {name: b, target: "${DB}2/graphs/g"}\n`);
+    const store = resolveStore(m, 'default');
+    expect('error' in store && store.error)
+        .toContain("in 'deployments' for profile 'default' (a, b)");
+  });
 });
 
 
 describe('targets', () => {
-  // A non-string entry is a target in no accepted form, to push and to the
-  // runtime.
-  test('a non-string GOOGLE block target fails the store', () => {
-    const store = resolveStore(vanilla(JSON.stringify({deploymentTargets: [42]})));
-    expect(store).toEqual({
-      error: expect.stringContaining('deploymentTargets'),
-      named: true,
-      rejected: true,
-    });
-  });
-
   // Push checks the target of every deployment a model declares, so a target
   // in no accepted form fails the store under every profile.
   test('a target in no accepted form for another profile fails the store',
@@ -116,58 +87,28 @@ describe('targets', () => {
          });
        });
 
-  // So does a GOOGLE block that is not valid JSON, under a profile no
-  // deployment uses.
-  test('a GOOGLE block that is not valid JSON fails the store under every profile',
-       () => {
-         expect(resolveStore(vanilla('{not-json'), 'prod')).toEqual({
-           error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
-           named: true,
-           rejected: true,
-         });
-       });
-
-  // Every push refuses a target listed twice. So does the runtime under every
-  // profile, even beside a Spanner target that alone would give the store.
-  test('a target a GOOGLE block lists twice fails the store under every profile',
-       () => {
-         const graph =
-             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-         const m = vanilla(
-             JSON.stringify({deploymentTargets: [SPANNER_GRAPH, graph, graph]}));
-         for (const profile of ['default', 'prod']) {
-           expect(resolveStore(m, profile)).toEqual({
-             error: `Model 'm' declares duplicate deployment target '${
-                        graph}' in its GOOGLE block's 'deploymentTargets'; ` +
-                 `each deployment must target a distinct resource.`,
-             named: true,
-             rejected: true,
-           });
-         }
-       });
-
-  // The instance-based AlloyDB URI in a `deployments:` list.
-  // resolveModelDeployments rejects it, and resolveStore reads it until the
-  // legacy forms go.
-  test('an instance-based AlloyDB URI in a list: resolveStore reads it, resolveModelDeployments rejects it',
+  // The instance-based AlloyDB URI in a `deployments:` list. resolveStore
+  // refuses it as resolveModelDeployments does.
+  test('an instance-based AlloyDB URI in a list: resolveStore and resolveModelDeployments both reject it',
        () => {
          const m = deployed(
              `      - {name: old, target: "${CLUSTER}/instances/i/databases/d"}\n`,
              `${CLUSTER}/databases/d/schemas/public/tables/customer`);
-         const store = resolveStore(m);
-         expect('error' in store).toBe(false);
-         expect('error' in resolveModelDeployments(m)).toBe(true);
+         const resolved = resolveModelDeployments(m);
+         if (!('error' in resolved)) throw new Error('expected an error');
+         expect(resolveStore(m))
+             .toEqual({error: resolved.error, named: true, rejected: true});
        });
 
-  // A programmatic empty list hides the GOOGLE block, the same way push
-  // reads it, so both see no target.
-  test('an empty deployments list beside a GOOGLE block reads no target', () => {
+  // An empty deployments list names no target.
+  test('an empty deployments list reads no target', () => {
     const m: SemanticModel = {
-      ...vanilla(JSON.stringify({deploymentTargets: [SPANNER_GRAPH]})),
+      ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
       deployments: [],
     };
     const store = resolveStore(m);
-    expect('error' in store && store.error).toContain('declares no deployment target');
+    expect('error' in store && store.error)
+        .toContain('declares no deployment target');
   });
 });
 

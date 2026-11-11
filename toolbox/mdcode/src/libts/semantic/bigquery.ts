@@ -11,23 +11,25 @@
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
-// A metric therefore lands on whichever single table its aggregate columns
-// reference; a metric whose aggregate genuinely spans multiple tables cannot be
+// A metric therefore lands on whichever single table its aggregates' fields
+// belong to; a metric whose aggregates span multiple tables cannot be
 // expressed as one MEASURE and is skipped (reported in `warnings`).
 //
 // A measure can only aggregate an EXPOSED PROPERTY of its node (not a raw
-// column or an inline expression), so each metric is lowered into a derived
-// operand property plus a MEASURE over it (see placeMetric / exposeOperand).
+// column or an inline expression), so each aggregate's operand is lowered into
+// a derived property, and the metric into one MEASURE over those properties
+// (see placeMetric / exposeOperand).
 //
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
 import {lowerDerivedRelationships} from './derived_relationships';
 import {GeneratedView} from './generated_views';
-import {generateGraphDdl, GenerateResult as GraphDdlResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
-import {AiContext, Entity, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {fieldBindingWithoutComments, referencedEntityNames, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
-import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {generateGraphDdl, GenerateResult as GraphDdlResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
+import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
+import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
+import {soleColumn} from './sql_parser';
 import {entityTrailers, unitTrailer} from './units_history';
 import {lowerVocabularies} from './vocabulary';
 
@@ -52,16 +54,6 @@ export interface GenerateResult extends GraphDdlResult {
   // Read by the metric-slice planner (metric_slices.ts).
   measures: Array<{metric: string; nodeTable: string; measure: string}>;
 }
-
-// Aggregate functions BigQuery accepts inside MEASURE(...). This is the
-// COMPLETE allowed set, not a convenience subset: BigQuery rejects any other
-// aggregate in a measure expression with "Aggregate function <name> is not
-// allowed in a measure expression in BigQuery" (verified live — STDDEV,
-// VARIANCE, COUNTIF, APPROX_COUNT_DISTINCT, ANY_VALUE, LOGICAL_AND/OR,
-// BIT_AND/OR/XOR all rejected). A metric using an aggregate outside this set
-// therefore cannot be a MEASURE and is skipped + warned rather than emitted as
-// DDL BigQuery would reject.
-const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 
 /**
  * Generates the BigQuery property-graph DDL for a semantic model.
@@ -95,10 +87,12 @@ function bigQueryEngine(
     graphName: model => qualifyGraph(model, opts),
     placeMetrics: (metrics, input, warnings) =>
         placeMetrics(metrics, input, warnings, measures),
-    elementOptions: (description, ai) =>
-        optionsClause(elementDescription(description, ai), ai?.synonyms),
-    fieldOptions: field =>
-        optionsClause(fieldDescription(field), field.aiContext?.synonyms),
+    elementOptions: (description, ai) => optionsClause(
+        elementDescription(description), ai?.synonyms, aiExtensions(ai)),
+    fieldOptions: field => optionsClause(
+        fieldDescription(field), field.aiContext?.synonyms,
+        aiExtensions(field.aiContext)),
+    dialect: 'BIGQUERY',
     fieldExpression,
     lowerModel: (model, warnings) => {
       const lowered = lowerGeneratedViews(model, opts, warnings);
@@ -106,12 +100,8 @@ function bigQueryEngine(
       return lowered.model;
     },
     entityOptions: entity => optionsClause(
-        composeText([
-          elementDescription(entity.description, entity.aiContext),
-          // K7: `Grain: …` / `History: …` last, as on the catalog entry.
-          ...entityTrailers(entity),
-        ]),
-        entity.aiContext?.synonyms),
+        entityDescription(entity), entity.aiContext?.synonyms,
+        aiExtensions(entity.aiContext)),
     // A node view whose binding sets `hydration.constraints: enforce` applies
     // the model's constraints to the rows it serves (constraint_enforcement.ts).
     constraintWarning: count =>
@@ -138,15 +128,21 @@ function lowerGeneratedViews(
   return {model: derived.model, views: [...vocab.views, ...derived.views]};
 }
 
-// Places each metric on the single entity its aggregate references, lowering
-// it to a MEASURE over an exposed property (see placeMetric), and records each
+// Places each metric on the single entity its aggregates reference, lowering
+// it to a MEASURE over exposed properties (see placeMetric), and records each
 // placed measure in `measures`.
 function placeMetrics(
     metrics: Metric[], input: MetricPlacementInput, warnings: string[],
     measures: GenerateResult['measures']): Map<string, string[]> {
   const loweringByEntity = new Map<string, MeasureLowering>();
+  // Each metric's and field's name in the graph, and each property
+  // exposeOperand adds. BigQuery gives a property name one type across the
+  // graph, so an operand property takes none of them.
+  const graphNames = new Names(
+      [...metrics, ...[...input.entityByName.values()].flatMap(e => e.fields)]
+          .map(({name}) => name));
   for (const metric of metrics) {
-    placeMetric(metric, input, loweringByEntity, warnings, measures);
+    placeMetric(metric, input, graphNames, loweringByEntity, warnings, measures);
   }
   // The operand properties come first: the measures aggregate them.
   const placed = new Map<string, string[]>();
@@ -167,77 +163,138 @@ function placeMetrics(
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
   measures: string[];           // the MEASURE properties placed on the node
-  taken: Set<string>;           // property names already in use on the node
-  fieldNames: Set<string>;      // declared field names (each an exposed property)
-  byLocalExpr: Map<string, string>;  // existing field local-expression -> its
-                                     // property name
-  fieldExprs: Map<string, string>;  // bound field name -> its local expression
-                                    // (the physical column / SQL it reads)
-  operandToName:
-      Map<string, string>;  // operand expression -> the property exposing it
+  taken: Names;  // the property names already in use on the node
+  // The names in the graph no operand property takes, shared by every entity
+  // (see placeMetrics). A metric placed on any node becomes a property, so
+  // this holds every metric's name whatever order they come in.
+  graphNames: Names;
+  // Each column a field reads whole under its own name -> that field. These
+  // are the only fields a measure names (see newLowering).
+  byColumn: NameMap<string>;
+  // The columns the table is known to have: its key columns and those the
+  // fields' SQL reads. A synthesized property name takes none of them, since
+  // a measure that named it would also name the column.
+  columns: Names;
+  operandToName: Map<string, string>;  // an operand's SQL on the node -> the
+                                       // property exposing it
 }
 
-// Builds the lowering state for an entity, seeded with its declared fields so
-// an operand equal to an existing field reuses that property instead of
-// duplicating.
-function newLowering(entity: Entity): MeasureLowering {
-  const taken = new Set<string>();
-  const fieldNames = new Set<string>();
-  const byLocalExpr = new Map<string, string>();
-  const fieldExprs = new Map<string, string>();
+// Property and column names, compared without regard to case as BigQuery
+// compares them, so `AMOUNT` duplicates `amount`.
+class Names {
+  private readonly lowered = new Set<string>();
+  constructor(names: Iterable<string> = []) {
+    for (const name of names) this.add(name);
+  }
+  has(name: string): boolean {
+    return this.lowered.has(name.toLowerCase());
+  }
+  add(name: string): void {
+    this.lowered.add(name.toLowerCase());
+  }
+}
+
+// A map keyed by property or column name, compared as Names compares them.
+class NameMap<V> {
+  private readonly byLowered = new Map<string, V>();
+  get(name: string): V|undefined {
+    return this.byLowered.get(name.toLowerCase());
+  }
+  has(name: string): boolean {
+    return this.byLowered.has(name.toLowerCase());
+  }
+  set(name: string, value: V): void {
+    this.byLowered.set(name.toLowerCase(), value);
+  }
+}
+
+// Builds the lowering state for an entity, seeded with the fields a measure may
+// name, so an operand that reads one's column reuses that property instead of
+// duplicating it. A field the node table leaves out has no property to reuse.
+//
+// A measure names a field only when the field reads the column of its own name
+// whole, as `amount` bound to `amount` does. A measure that named any other
+// field, such as `amount` bound to `amount_usd`, would also name the table's
+// column `amount` if the table has one, and BigQuery rejects the graph: "Name
+// amount is ambiguous because it exists as both a column and a graph property".
+// The model does not say which columns a table has beyond those it names, so
+// the measure aggregates such a field's SQL through a property of its own
+// instead (see exposeOperand).
+function newLowering(
+    entity: Entity, input: MetricPlacementInput,
+    graphNames: Names): MeasureLowering {
+  const taken = new Names();
+  const byColumn = new NameMap<string>();
+  const columns =
+      new Names(nodeKey(entity).map(k => k.replace(/^`(.*)`$/, '$1')));
   for (const f of entity.fields) {
     taken.add(f.name);
-    fieldNames.add(f.name);
-    const expr = fieldExpression(f);
-    if (expr === undefined) continue;
-    const local = stripQualifier(expr, entity.name);
-    fieldExprs.set(f.name, local);
-    if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
+    const read = input.renderedFieldSql(entity, f);
+    if (!('sql' in read)) continue;
+    // The SQL is local to the table, so `a.b` reads the column `a`.
+    const sql = quoteColumnIfReserved(read.sql);
+    for (const c of columnReferences(sql, 'BIGQUERY') ?? []) {
+      columns.add(c.qualifier ?? c.name);
+    }
+    const column = loneColumn(read.sql);
+    if (column?.toLowerCase() === f.name.toLowerCase() &&
+        !byColumn.has(column)) {
+      byColumn.set(column, f.name);
+    }
   }
   return {
     derivedProperties: [],
     measures: [],
     taken,
-    fieldNames,
-    byLocalExpr,
-    fieldExprs,
+    graphNames,
+    byColumn,
+    columns,
     operandToName: new Map()
   };
 }
 
-// Assigns a metric to the node table of the single entity its aggregate
-// references, lowering it to a MEASURE over an exposed property. Records a
-// warning (and skips) when it references zero/multiple entities or is not a
-// single supported aggregate over one operand.
+// The column `sql`, BigQuery SQL local to a table, is when it is one column of
+// that table and nothing else, without its quotes, as in `amount` or
+// `` `order` ``. Undefined otherwise, as for TRUE, FALSE and NULL.
+function loneColumn(sql: string): string|undefined {
+  const column = soleColumn(quoteColumnIfReserved(sql), 'BIGQUERY');
+  return column && column.qualifier === undefined ? column.name : undefined;
+}
+
+// Assigns a metric to the node table of the single entity its aggregates
+// reference, lowering it to a MEASURE over exposed properties. Records a
+// warning (and skips) when it references zero/multiple entities or cannot be
+// a measure (see measureAggregates).
 function placeMetric(
-    metric: Metric, input: MetricPlacementInput,
+    metric: Metric, input: MetricPlacementInput, graphNames: Names,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[],
     measures: GenerateResult['measures']): void {
   const {entityByName, skipped, ancestorsUsed} = input;
-  // The IR keeps at most two expression forms; a measure is emitted from the
-  // target/canonical `expression`, falling back to the imported vendor SQL when
-  // that is all the model carries (a transpile pass may fill `expression`
-  // later).
+  // A measure is emitted from the metric's BigQuery SQL (see
+  // metricExpression). A metric with SQL only for other engines is skipped
+  // with a warning naming the dialects it lacks, rather than emitting that
+  // other engine's SQL into a BigQuery graph.
   const expression = metricExpression(metric);
   if (expression === undefined) {
-    warnings.push(`metric '${
-        metric
-            .name}' has no expression; skipped (nothing to emit as a MEASURE)`);
+    warnings.push(
+        metric.dialects?.length || metric.importedExpression !== undefined ?
+            `metric '${metric.name}' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+                `expression; skipped (nothing to emit as a MEASURE)` :
+            `metric '${metric.name}' has no expression; skipped (nothing ` +
+                `to emit as a MEASURE)`);
     return;
   }
 
-  // The entities whose `<name>.` qualifier the expression uses. String literals
-  // are ignored, so a value like 'orders.x' does not reference `orders`.
-  let referenced = referencedEntityNames(expression, [...entityByName.keys()]);
-
-  // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
-  // expression; fall back to `metric.entity` when the IR provides one (an
-  // authored `entity` in `0.2.0.dev0/google`, an entity inferred from another
-  // dialect entry, or hand-built IR), so it can still be placed rather than
-  // dropped as "references no entity".
-  if (referenced.length === 0 && metric.entity) {
-    referenced = [metric.entity];
-  }
+  // The entities whose qualifier the expression writes before a column, as
+  // the SQL parser reads it (see measureEntities), so neither a value like
+  // 'orders.x' nor a function namespace such as `NET.` in `NET.HOST(...)`
+  // references an entity. A qualifier-free aggregate (e.g. COUNT(*)) names no
+  // entity in its expression; it falls back to `metric.entity` when the IR
+  // provides one (an authored `entity` in `0.2.0.dev0/google`, an entity
+  // inferred from another dialect entry, or hand-built IR), so it can still be
+  // placed rather than dropped as "references no entity".
+  const referenced =
+      measureEntities(expression, [...entityByName.keys()], metric.entity);
 
   if (referenced.length !== 1) {
     const detail = referenced.length === 0 ?
@@ -305,39 +362,58 @@ function placeMetric(
     return;
   }
 
-  const body = stripQualifier(expression, entityName);
-
-  // A graph measure must be one supported aggregate wrapping a single operand;
-  // anything else (a non-aggregate, or a compound of aggregates like a ratio)
-  // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
-  const agg = extractAggregate(body);
-  if (!agg) {
-    warnings.push(
-        `metric '${metric.name}' expression '${
-            body}' is not a single supported aggregate ` +
-        `(${
-            SUPPORTED_AGGREGATES.join(
-                ', ')}) over one operand; skipped (cannot be a single MEASURE)`);
+  // A graph measure applies supported aggregates, each over one operand, and
+  // reads every field inside one of them (see measureAggregates); anything
+  // else cannot be a MEASURE. Flag it, with the reason push gives, rather than
+  // emit DDL BigQuery rejects. The SQL parser finds the aggregates and their
+  // operands with the entity's qualifier renamed to a name it does not
+  // reserve, since it cannot read one it reserves, as in `SUM(Date.days)`.
+  const stand = unusedName(expression, 'kcmd_entity');
+  const written = requalified(expression, entityName, stand);
+  const shape = measureAggregates(written, 'BIGQUERY');
+  if ('problem' in shape) {
+    warnings.push(`metric '${metric.name}' expression '${
+        withoutQualifier(expression, entityName)}' cannot be a measure: ${
+        shape.problem}; skipped`);
     return;
   }
 
-  const lowering = loweringByEntity.get(entityName) ?? newLowering(entity);
+  const lowering = loweringByEntity.get(entityName) ??
+      newLowering(entity, input, graphNames);
   loweringByEntity.set(entityName, lowering);
 
-  // Resolve the aggregate's operand to an exposed property. COUNT(*) has no
-  // operand column, so it counts the (non-null) key property instead.
-  let operandExpr = agg.operand;
-  if (operandExpr === '*') {
-    // The entity is already known to have a key (checked above), so only the
-    // aggregate itself can disqualify a `*` operand: BigQuery lowers `COUNT(*)`
-    // to a count over the key, but no other aggregate has a `*` form.
-    if (agg.fn.toUpperCase() !== 'COUNT') {
+  // Resolve each aggregate's operand to an exposed property. It is read as
+  // written, qualifiers kept, so readOperand can tell the entity's fields from
+  // its columns. COUNT(*) has no operand column, so it counts the first column
+  // of the node's primary key instead (nodeKey). measureAggregates gives a `*`
+  // operand for COUNT(*) alone. Every operand is read before any is exposed,
+  // so a metric skipped here leaves no property behind.
+  const reads: Array<Exclude<OperandRead, {skip: string}>> = [];
+  for (const agg of shape.aggregates) {
+    const operand = requalified(agg.operand, stand, entityName);
+    let read: OperandRead;
+    if (operand === '*') {
+      // A key names a column, never a field, so a field of the same name does
+      // not stand in for it. A simple name is quoted, if reserved, where it is
+      // exposed (exposeOperand).
+      const key = nodeKey(entity)[0];
+      read = {
+        sql: isSimpleIdentifier(key) ? key : physicalColumn(key),
+        column: key.replace(/^`(.*)`$/, '$1')
+      };
+    } else {
+      // A field the node table leaves out declares no property, so neither a
+      // measure over it nor a property derived from SQL that names it can
+      // read it.
+      read = readOperand(entity, operand, input);
+    }
+    if ('skip' in read) {
       warnings.push(
-          `metric '${metric.name}': '${agg.fn}(*)' is not supported; skipped ` +
-          `(only COUNT(*) over a keyed node can be lowered)`);
+          `metric '${metric.name}' ${read.skip}; skipped (nothing to emit as ` +
+          `a MEASURE)`);
       return;
     }
-    operandExpr = entity.keys[0];
+    reads.push(read);
   }
 
   // The measure is itself exposed as a node property named `metric.name`, so it
@@ -355,9 +431,10 @@ function placeMetric(
     return;
   }
   lowering.taken.add(metric.name);
-  const measureName = measureNameFor(metric.name, lowering, entity);
+  const measureName = measureNameFor(metric.name, lowering);
   if (measureName !== metric.name) {
     lowering.taken.add(measureName);
+    lowering.graphNames.add(measureName);
     warnings.push(
         `metric '${metric.name}' is the measure '${measureName}' on ` +
         `'${entityName}' (a measure named like a column of its node table ` +
@@ -365,16 +442,21 @@ function placeMetric(
         `AGG(${entityName}_${measureName})`);
   }
 
-  const propName = exposeOperand(lowering, operandExpr, metric.name);
-  const aggregate =
-      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
+  // The measure is the expression as written with each aggregate rewritten
+  // over its operand's property. measureAggregates leaves no field, and so no
+  // qualifier, outside the aggregates.
+  const body = replacedAggregates(
+      written, shape.aggregates,
+      (agg, i) => `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${
+          quoteIfReserved(exposeOperand(lowering, reads[i], metric.name))})`);
 
   const opts = optionsClause(
-      elementDescription(metric.description, metric.aiContext),
-      metric.aiContext?.synonyms);
-  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(measureName)}`;
+      elementDescription(metric.description), metric.aiContext?.synonyms,
+      aiExtensions(metric.aiContext));
+  const measure = `MEASURE(${body}) AS ${quoteIfReserved(measureName)}`;
   lowering.measures.push(opts ? `${measure} ${opts}` : measure);
-  measures.push({metric: metric.name, nodeTable: entityName, measure: measureName});
+  measures.push(
+      {metric: metric.name, nodeTable: entityName, measure: measureName});
 }
 
 // The name a metric's MEASURE takes on its node table: the metric's own name,
@@ -388,190 +470,119 @@ function placeMetric(
 // its field's column (won_amount = SUM(wonAmount), read from column
 // won_amount) is common, so it is renamed rather than dropped; the metric
 // keeps its name everywhere else.
-function measureNameFor(
-    name: string, lowering: MeasureLowering, entity: Entity): string {
-  const columns = new Set<string>();
-  for (const expr of lowering.fieldExprs.values()) {
-    const bare = expr.trim().replace(/^`(.*)`$/, '$1');
-    if (isSimpleIdentifier(bare)) columns.add(bare.toLowerCase());
-  }
-  for (const key of entity.keys ?? []) columns.add(key.toLowerCase());
-  if (!columns.has(name.toLowerCase())) return name;
-  return uniqueName(`${name}__measure`, lowering.taken);
+function measureNameFor(name: string, lowering: MeasureLowering): string {
+  if (!lowering.columns.has(name)) return name;
+  return uniqueName(
+      `${name}__measure`,
+      n => !lowering.taken.has(n) && !lowering.graphNames.has(n) &&
+          !lowering.columns.has(n));
 }
 
-// Ensures `operandExpr` is exposed as a node property and returns its property
-// name. Reuses an existing field (or a previously derived property) with the
-// same expression; a bare column is exposed under its own name; any other
-// expression gets a synthesized, unique name derived from the metric.
+// What a metric's aggregate operand reads on `entity`'s node table: `sql`,
+// local to the table, with each field it names as `<entity>.<field>` read
+// through that field's own SQL (see MetricPlacementInput.localSql). When the
+// operand is a field of `entity`, written as `<entity>.<field>` or bare, `sql`
+// is that field's SQL. `column` is the column's name without quotes when the
+// SQL is one column of the table: a column no field names, written as
+// `<entity>.<column>` or bare, or the column a field reads whole.
+//
+// `skip` is set instead when the operand reads a field the node table leaves
+// out, and says which.
+type OperandRead = {sql: string; column?: string}|{skip: string};
+function readOperand(
+    entity: Entity, operand: string,
+    input: MetricPlacementInput): OperandRead {
+  // Checked before any column: a field is read through its own SQL, which may
+  // name another column, while a column of the same name may hold something
+  // else. The SQL parser reads the entity's qualifier renamed, as placeMetric
+  // does, since it cannot read one it reserves, as in `Date.days`.
+  const stand = unusedName(operand, 'kcmd_entity');
+  const column =
+      soleColumn(requalified(operand, entity.name, stand), 'BIGQUERY');
+  const own = column !== undefined &&
+      (column.qualifier === undefined ||
+       column.qualifier.toLowerCase() === stand);
+  const field =
+      own ? entity.fields.find(f => f.name === column.name) : undefined;
+  if (field) {
+    const read = input.renderedFieldSql(entity, field);
+    return 'sql' in read ? {sql: read.sql, column: loneColumn(read.sql)} :
+                           {skip: `aggregates ${read.reads}`};
+  }
+  const read = input.localSql(entity, operand);
+  return 'sql' in read ?
+      {sql: read.sql, column: own ? column.name : undefined} :
+      {skip: `reads ${read.reads}`};
+}
+
+// Ensures the operand `read` is exposed as a node property and returns its
+// property name. A column that a field reads whole under its own name is that
+// field's property (see newLowering). Other SQL reuses a property derived for
+// an earlier operand with the same SQL. A column is exposed under its own name
+// when no field, metric or other property in the graph has that name. Any
+// other SQL gets a synthesized, unique name derived from the metric, which no
+// column the table is known to have takes either.
+//
+// The SQL is a field's own SQL when the operand names a field, never the
+// field's name: `amount_usd AS amount` gives `SUM(amount_usd)`, since
+// `SUM(amount)` names the column `amount` too if the table has one. An alias
+// is illegal inside a property expression, so the operand property cannot
+// read the field either: `amount AS ..._input` names the column `amount`, or
+// BigQuery rejects it with "Unrecognized name".
 function exposeOperand(
-    lowering: MeasureLowering, operandExpr: string,
+    lowering: MeasureLowering, read: Exclude<OperandRead, {skip: string}>,
     metricName: string): string {
-  const existing = lowering.byLocalExpr.get(operandExpr) ??
-      lowering.operandToName.get(operandExpr);
+  const {sql, column} = read;
+  const existing =
+      (column === undefined ? undefined : lowering.byColumn.get(column)) ??
+      lowering.operandToName.get(sql);
   if (existing) return existing;
 
-  // An operand that names a declared field is already an exposed property, so a
-  // MEASURE may aggregate it directly by name -- even when a profile bound that
-  // field to a differently named physical column (the property is
-  // `<column> AS <field>`, and a MEASURE may reference a sibling alias).
-  // Synthesizing an input property here would emit `<field> AS ..._input`, and
-  // an alias is illegal inside a property expression -- BigQuery rejects it with
-  // "Unrecognized name". (A raw column that is not a field still falls through
-  // to be exposed under its own name, which BigQuery requires.)
-  if (lowering.fieldNames.has(operandExpr)) return operandExpr;
-
-  // A COMPOUND operand (`totalContractValue * probabilityOfWin`) becomes a
-  // synthesized `<expr> AS <metric>_input` property, and the same rule bites:
-  // a property expression is evaluated against the element table's COLUMNS,
-  // so a field name in it -- a sibling alias when a profile bound the field to
-  // a differently named column -- is "Unrecognized name" (verified live).
-  // Rewrite each identifier that names a bound field into that field's own
-  // expression first (see rewriteFieldRefs). Dedupe on the rewritten form: it
-  // is what the node table actually evaluates.
-  const physical = rewriteFieldRefs(operandExpr, lowering.fieldExprs);
-  const reused = lowering.byLocalExpr.get(physical) ??
-      lowering.operandToName.get(physical);
-  if (reused) return reused;
-
+  const isFree = (name: string) =>
+      !lowering.taken.has(name) && !lowering.graphNames.has(name);
   let name: string;
-  if (isSimpleIdentifier(physical) && !lowering.taken.has(physical)) {
-    // A bare column not already declared: expose it under its own name.
-    name = physical;
+  if (column !== undefined && isSimpleIdentifier(sql) && isFree(sql)) {
+    // A column not already declared: expose it under its own name.
+    name = sql;
     lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
-    name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${quoteIfReserved(physical)} AS ${name}`);
+    name = uniqueName(
+        `${metricName}_input`,
+        n => isFree(n) && !lowering.columns.has(n));
+    // Only a column is quoted: a keyword such as TRUE stays a keyword.
+    lowering.derivedProperties.push(
+        `${column !== undefined ? quoteIfReserved(sql) : sql} AS ${name}`);
   }
   lowering.taken.add(name);
-  lowering.operandToName.set(operandExpr, name);
-  lowering.operandToName.set(physical, name);
+  lowering.graphNames.add(name);
+  lowering.operandToName.set(sql, name);
   return name;
 }
 
-// rewriteFieldRefs (bound field names -> their physical expressions) lives in
-// sql_expr_utils, shared with defined-entity lowering (defined_entities.ts).
-
-// Extracts the function name and operand from a single-aggregate expression, or
-// returns null when the body is not exactly one supported aggregate wrapping
-// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, a call with no
-// operand, or a multi-argument call). `COUNT(DISTINCT x)` is recognized,
-// yielding operand `x` with distinct.
-function extractAggregate(body: string):
-    {fn: string; operand: string; distinct: boolean}|null {
-  const s = body.trim();
-  const head = s.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
-  if (!head) return null;
-  const fn = head[1];
-  if (!SUPPORTED_AGGREGATES.includes(fn.toUpperCase())) return null;
-
-  // Find the operand bounded by the aggregate's outer parentheses, tracking
-  // string literals and backtick-quoted identifiers and nesting so inner
-  // parens/quotes/backticks don't end it early.
-  let depth = 0, inStr = false, inTick = false, start = -1, end = -1;
-  for (let i = head[0].length - 1; i < s.length; i++) {
-    const c = s[i];
-    if (inStr) {
-      if (c === '\'') inStr = false;
-      continue;
-    }
-    if (inTick) {
-      if (c === '`') inTick = false;
-      continue;
-    }
-    if (c === '\'') {
-      inStr = true;
-      continue;
-    }
-    if (c === '`') {
-      inTick = true;
-      continue;
-    }
-    if (c === '(') {
-      if (depth === 0) start = i + 1;
-      depth++;
-    } else if (c === ')') {
-      if (--depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (start < 0 || end < 0) return null;
-  if (s.slice(end + 1).trim() !== '')
-    return null;  // trailing ops => not a single aggregate
-
-  let operand = s.slice(start, end).trim();
-  let distinct = false;
-  const dm = operand.match(/^DISTINCT(?:\s+(.*))?$/is);
-  if (dm) {
-    distinct = true;
-    operand = (dm[1] ?? '').trim();
-  }
-
-  if (operand === '') return null;  // no operand, as in SUM() or SUM(DISTINCT)
-  if (operand !== '*' && hasTopLevelComma(operand))
-    return null;  // multi-arg aggregate
-  return {fn, operand, distinct};
-}
-
-// True if `expr` contains a comma outside any nested parentheses, string
-// literal, or backtick-quoted identifier (i.e. it is really several arguments,
-// not one operand). A backtick-quoted column like `` `weird,name` `` must not
-// be mistaken for a multi-argument aggregate.
-function hasTopLevelComma(expr: string): boolean {
-  let depth = 0, inStr = false, inTick = false;
-  for (const c of expr) {
-    if (inStr) {
-      if (c === '\'') inStr = false;
-      continue;
-    }
-    if (inTick) {
-      if (c === '`') inTick = false;
-      continue;
-    }
-    if (c === '\'')
-      inStr = true;
-    else if (c === '`')
-      inTick = true;
-    else if (c === '(')
-      depth++;
-    else if (c === ')')
-      depth--;
-    else if (c === ',' && depth === 0)
-      return true;
-  }
-  return false;
-}
-
-
-// Returns `base` if free, else the first `base_2`, `base_3`, ... not in
-// `taken`.
-function uniqueName(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) return base;
+// Returns `base` if free, else the first of `base_2`, `base_3`, ... that is.
+function uniqueName(base: string, isFree: (name: string) => boolean): string {
+  if (isFree(base)) return base;
   for (let i = 2;; i++) {
     const candidate = `${base}_${i}`;
-    if (!taken.has(candidate)) return candidate;
+    if (isFree(candidate)) return candidate;
   }
 }
 
 
-// The target/canonical expression, falling back to the imported vendor SQL when
-// that is all the IR carries (see the Field/Metric expression-fidelity
-// contract), with its comments removed. fieldBindingWithoutComments reads
-// imported vendor SQL in its own dialect, so it keeps an operator BigQuery
-// would read as a comment, such as PostgreSQL's `#`. The DDL puts ` AS <name>`
-// and a comma after the expression on the same line, and a line comment left
-// in would swallow them. A metric's SQL is read the same way.
+// The SQL BigQuery runs for a field or metric: its `BIGQUERY` dialect entry,
+// else its `ANSI_SQL` one (see expressionForDialect), read as BigQuery with its
+// comments removed. Another engine's vendor SQL is never returned. The DDL puts
+// ` AS <name>` and a comma after the expression on the same line, and a line
+// comment left in would swallow them.
 function fieldExpression(f: Field): string|undefined {
-  // Reads the canonical accessor, fieldBinding, so the shared generator's
-  // notion of "bound" matches availability pruning's (an unbound field yields
-  // undefined; a field awaiting transpilation stays bound via its imported
-  // expression).
-  return fieldBindingWithoutComments(f);
+  return bigQuerySql(f);
 }
 function metricExpression(m: Metric): string|undefined {
-  return fieldBindingWithoutComments(m);
+  return bigQuerySql(m);
+}
+function bigQuerySql(item: Field|Metric): string|undefined {
+  const text = expressionForDialect(item, 'BIGQUERY');
+  return text === undefined ? undefined : sqlWithoutComments(text);
 }
 
 
@@ -634,40 +645,52 @@ function graphLocation(model: SemanticModel, opts: GenerateOptions):
 }
 
 
-// Composes the folded `description` text for a graph element from its base
-// description and the AI-first annotations that have no dedicated BigQuery
-// option: instructions and examples. Synonyms are NOT folded in here --
-// BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
-// array, so they are emitted as their own option (see optionsClause and the
-// call sites).
-function elementDescription(description?: string, ai?: AiContext): string|
-    undefined {
+// Trims a graph element's base description, returning undefined when blank.
+// BigQuery's PropertyGraph{Label,Property}Options carry dedicated `synonyms`
+// and `extensions` options, so `synonyms`, `instructions` and `examples` are
+// emitted there rather than folded into `description` (see optionsClause and
+// aiExtensions).
+export function elementDescription(description?: string): string|undefined {
+  return composeText([description]);
+}
+
+// An entity additionally carries its grain and history trailers (`Grain: …` /
+// `History: …`) after its description, matching the catalog entry.
+function entityDescription(entity: Entity): string|undefined {
   return composeText([
-    description,
-    ai?.instructions,
-    examplesLine(ai?.examples),
+    entity.description,
+    ...entityTrailers(entity),
   ]);
 }
 
 // A field additionally carries a human `label` and a temporal-dimension role,
-// which lead the composed text (matching the authored order) ahead of its
-// description and instructions/examples. Synonyms are emitted structurally, as
-// for elementDescription.
-function fieldDescription(field: Field): string|undefined {
+// which lead the composed text ahead of its description, and a `Unit: …`
+// trailer last. Synonyms, instructions and examples are emitted in `synonyms`
+// and `extensions`, as for elementDescription.
+export function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
     field.description,
-    field.aiContext?.instructions,
-    examplesLine(field.aiContext?.examples),
-    // K7: `Unit: USD (x1000).` last, as on the catalog entry.
     unitTrailer(field),
   ]);
 }
 
-function examplesLine(examples?: string[]): string|undefined {
-  return examples && examples.length ? `Examples: ${examples.join('; ')}` :
-                                       undefined;
+// The `(key, value)` pairs for BigQuery's `extensions` option from an
+// element's AI context: trimmed `instructions` and JSON-serialized `examples`.
+// Whitespace-only instructions, an empty `examples` list and custom
+// `ai_context` members emit nothing. Each `examples` item is kept verbatim so
+// `JSON.parse` of the extension matches the list Knowledge Catalog stores in
+// its `overview` aspect.
+export function aiExtensions(ai?: AiContext): Array<[string, string]> {
+  if (!ai) return [];
+  const out: Array<[string, string]> = [];
+  const instructions = ai.instructions?.trim();
+  if (instructions) out.push(['instructions', instructions]);
+  if (ai.examples && ai.examples.length) {
+    out.push(['examples', JSON.stringify(ai.examples)]);
+  }
+  return out;
 }
 
 // Joins the non-empty parts into one description, separated by blank lines so
@@ -678,20 +701,26 @@ function composeText(parts: (string|undefined)[]): string|undefined {
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
-// Renders the trailing `OPTIONS(...)` clause for a graph element -- a folded
-// `description` string and/or a structured `synonyms` array -- or undefined
-// when there is nothing to emit. Both map to BigQuery's
+// Renders the trailing `OPTIONS(...)` clause for a graph element from its
+// `description`, `synonyms` and `(key, value)` `extensions` pairs, or returns
+// undefined when all three are empty. All three map to BigQuery's
 // PropertyGraph{Label,Property}Options (`description` singular, `synonyms`
-// repeated), honored on element-table labels (DEFAULT LABEL, before PROPERTIES)
-// and on derived properties and measures (after the alias). Statement-level
-// graph OPTIONS is intentionally not emitted: it parses but BigQuery silently
-// drops it (verified live; create_property_graph_options is off for BigQuery).
-function optionsClause(description?: string, synonyms?: string[]): string|
-    undefined {
+// repeated, `extensions` repeated `(STRING, STRING)` pairs), honored on
+// element-table labels (DEFAULT LABEL, before PROPERTIES) and on derived
+// properties and measures (after the alias). Statement-level graph OPTIONS is
+// not emitted: it parses, but BigQuery silently drops it.
+function optionsClause(
+    description?: string, synonyms?: string[],
+    extensions?: ReadonlyArray<readonly [string, string]>): string|undefined {
   const parts: string[] = [];
   if (description) parts.push(`description=${quote(description)}`);
   if (synonyms && synonyms.length) {
     parts.push(`synonyms=[${synonyms.map(quote).join(', ')}]`);
+  }
+  if (extensions && extensions.length) {
+    const pairs =
+        extensions.map(([k, v]) => `(${quote(k)}, ${quote(v)})`).join(', ');
+    parts.push(`extensions=[${pairs}]`);
   }
   return parts.length ? `OPTIONS(${parts.join(', ')})` : undefined;
 }

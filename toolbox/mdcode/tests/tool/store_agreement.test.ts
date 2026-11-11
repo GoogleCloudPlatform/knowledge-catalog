@@ -4,26 +4,30 @@
 // `kcmd profiles --print-store` and `kcmd skills-generate` over it. On
 // deployments and profile files, no runtime command accepts a model push
 // rejects, and none rejects a model push accepts, apart from a few cases. The
-// docs describe a deployment that names a profile, `default` included, a
-// profile file that no deployment uses, an AlloyDB target and several
-// targets. Push also accepts a Spanner model that binds a table outside its
-// database today. The runtime refuses it on purpose: a write would land in
-// the target database's table of that name, so --print-store gives no store
-// and skills-generate fails for a model with actions.
+// docs describe a profile file that no deployment uses. Push refuses a Spanner
+// deployment that names no profile in a model with metrics, which the runtime
+// accepts. The `kcmd profiles` report gives the errors a plain push gives, and
+// it and the runtime accept `--profile`, which push no longer takes, so push
+// always runs plain. Push refuses a deployment that binds a table outside the
+// database it deploys to. The runtime checks the tables against the one store
+// it picks, so it accepts a model whose other deployment binds such a table.
+// skills-generate also accepts a model whose picked deployment binds one,
+// unless the model has actions and that deployment is Spanner or AlloyDB.
 //
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
 // relationship with no join columns, a key that is not a column, or a broken
-// expression, action or constraint still gets a store and a skill. Like push,
-// the runtime loads every profile file except a legacy wrapper of a profile
-// it does not read. It does not run push's checks that every named profile
-// applies to the model and is complete. So a model whose profile file or
-// GOOGLE block profile those checks refuse still gets a store and a skill
-// under the default profile. The runtime also skips the
-// checks of push's Knowledge Catalog leg: one model per entry group, and with
-// KC_V2_ASPECTS off the checks on the copies of the model and profile files,
-// such as whether each is valid UTF-8. Two models that deploy to one graph
-// each get a skill.
+// expression, action or constraint still gets a store and a skill. So does a
+// model whose deployment breaks the rules of its engine, or whose model file
+// binds a field with no text in the dialect of its entity's source. Like push,
+// the runtime loads every profile file. skills-generate does not run push's
+// checks that every named profile applies to the model, is complete and has
+// valid keys and join columns. So a model whose profile file or GOOGLE block
+// profile those checks refuse still gets a skill under the default profile.
+// --print-store runs those checks and refuses it. The runtime skips the
+// checks of push's Knowledge Catalog leg, such as one model per entry group,
+// and push's check that each model and profile file is valid UTF-8. Two
+// models that deploy to one graph each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -31,25 +35,36 @@ import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:te
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
-import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
+
+import {msg} from './two_phase/harness';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
 const SPANNER_DB =
-    '//spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
+    'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
 const BQ = (dataset: string) =>
-    `//bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
+    `bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
+// Profile prod, which binds Order to its Spanner table with its own key.
+const PROD_PROFILE = `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+    primary_key: [OrderId]
+    fields: [{ name: key, expression: OrderId }]
+`;
 
 let dir = '';
 let cwd = '';
 let logs: string[] = [];
-let savedV2Aspects: string|undefined;
 
 function eg(): string {
   return path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
@@ -68,12 +83,14 @@ function writeScope(files: Record<string, string>): void {
 
 type Outcome = {code: number|string; out: string};
 
-// Runs the four commands over the scope, under `profile` when given.
+// Runs the four commands over the scope. The three runtime commands run under
+// `profile` when given. Push takes no --profile, since each deployment names
+// its own, so it always runs plain.
 async function runAll(profile?: string): Promise<Record<string, Outcome>> {
   const p = profile ? {profile} : {};
   const out = path.join(dir, 'skills-out');
   const commands: Array<[string, () => Promise<number>]> = [
-    ['push', () => push({validateOnly: true, ...p})],
+    ['push', () => push({validateOnly: true})],
     ['report', () => profiles({...p})],
     ['printStore', () => profiles({printStore: true, ...p})],
     ['skills', () => skillsGenerate({out, ...p})],
@@ -102,8 +119,6 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-store-agreement-'));
   process.chdir(dir);
   logs = [];
-  savedV2Aspects = process.env.KC_V2_ASPECTS;
-  delete process.env.KC_V2_ASPECTS;
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   for (const channel of ['log', 'warn', 'error'] as const) {
     spyOn(console, channel).mockImplementation((...a: unknown[]) => {
@@ -113,31 +128,21 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
-  // Push's live checks and its Knowledge Catalog leg. Their local checks run
-  // before them, in prepareModels.
+  // Push's live checks, and the custom entry and aspect types its Knowledge
+  // Catalog preflight looks up. Their local checks run before them, in
+  // checkBeforeWrites.
   spyOn(CatalogClient.prototype, 'getEntryType')
       .mockResolvedValue({status: 200, result: {}} as any);
   spyOn(CatalogClient.prototype, 'getAspectType')
       .mockResolvedValue({status: 200, result: {}} as any);
   spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
   spyOn(validateMod, 'validateBigQueryActionStatements').mockResolvedValue([]);
+  passGraphChecks();
+  passSourceCheck();
   spyOn(validateMod, 'validateSpannerActionStatements').mockResolvedValue([]);
-  spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue({
-    success: true,
-    warnings: [],
-    plan: [],
-    created: 0,
-    updated: 0,
-    deleted: 0,
-  } as any);
 });
 
 afterEach(() => {
-  if (savedV2Aspects === undefined) {
-    delete process.env.KC_V2_ASPECTS;
-  } else {
-    process.env.KC_V2_ASPECTS = savedV2Aspects;
-  }
   process.chdir(cwd);
   if (dir) fs.rmSync(dir, {recursive: true, force: true});
   dir = '';
@@ -153,7 +158,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -202,7 +207,7 @@ semantic_model:
        async () => {
          writeScope({
            'commerce.yaml': bigQueryModel(
-               '//biglake.googleapis.com/projects/acme/catalogs/lake/' +
+               'biglake.googleapis.com/projects/acme/catalogs/lake/' +
                'namespaces/sales/tables/orders'),
          });
          const r = await runAll();
@@ -243,9 +248,8 @@ semantic_model:
 });
 
 
-// A deployment whose `profile` names no profile the model declares. Push
-// refuses any deployment that names a profile, and the runtime refuses one
-// that names an undeclared profile.
+// A deployment whose `profile` names no profile the model declares. Push and
+// the runtime refuse it.
 describe('a deployment that names an undeclared profile', () => {
   test('push rejects it, so skills-generate does too', async () => {
     writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -253,7 +257,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prdo
     entities:
       - name: Order
@@ -277,7 +281,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prdo
     entities:
       - name: Order
@@ -292,89 +296,17 @@ entities:
     source: ${SPANNER_DB}/tables/Orders
 `,
          });
-         const r = await runAll('prod');
+         const r = await runAll();
          expect(r.push.code).toBe(1);
+         expect(r.push.out).toContain("names unknown binding profile 'prdo'");
          expect(r.skills.code).toBe(1);
        });
 });
 
 
-// A vanilla model's GOOGLE block lists something that is not a string. Push
-// and the runtime both read it as a target in no accepted form.
-describe('a vanilla GOOGLE block whose deploymentTargets holds a non-string',
-         () => {
-           test('push rejects it, so skills-generate does too', async () => {
-             writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": [42]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-             const r = await runAll();
-             expect(codes(r))
-                 .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-           });
-
-           test('beside a padded valid target, push rejects it, so skills-generate does too',
-                async () => {
-                  writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["  ${SPANNER_DB}/propertyGraphs/commerce  ", 42]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-                  const r = await runAll();
-                  expect(codes(r)).toEqual(
-                      {push: 1, report: 1, printStore: 1, skills: 1});
-                });
-         });
-
-
-// A vanilla model's GOOGLE block lists only blank targets. They name nothing,
-// so push publishes to Knowledge Catalog only and the runtime finds no store.
-describe('a vanilla GOOGLE block whose deploymentTargets are all blank', () => {
-  test('push accepts it, so skills-generate does too', async () => {
-    writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["  ", ""]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-    const r = await runAll();
-    expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
-    expect(r.printStore.out).toContain('declares no deployment target');
-    expect(r.skills.out).not.toContain('Error:');
-  });
-});
-
-
-// A vanilla model's GOOGLE block lists a BigQuery target twice beside a
-// Spanner target. The Spanner target alone would give a store, and every push
-// refuses the repeat.
+// A vanilla model's GOOGLE block deploys a BigQuery target twice beside a
+// Spanner target. The Spanner target alone would give a store, and the loader
+// refuses the repeat for every command.
 describe('a vanilla GOOGLE block that lists a target twice', () => {
   test('beside a Spanner target, push rejects it, so skills-generate does too',
        async () => {
@@ -384,7 +316,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${graph}"]}'
+        data: '{"deployments": [{"name": "sp", "target": "${SPANNER_DB}/graphs/commerce"}, {"name": "a", "target": "${graph}"}, {"name": "b", "target": "${graph}"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -395,24 +327,23 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.printStore.out)
-             .toContain(`declares duplicate deployment target '${graph}'`);
-         expect(r.skills.out)
-             .toContain(`declares duplicate deployment target '${graph}'`);
+         const repeat = `deployments 'a' and 'b' target the same resource '${graph}'`;
+         expect(r.printStore.out).toContain(repeat);
+         expect(r.skills.out).toContain(repeat);
        });
 
-  // A resource name and its URI name the same target, so listing the graph
-  // once each way is a repeat too.
-  test('once as its URI and once as its resource name, every command refuses',
+  // A target written as a resource URI is refused, beside its resource name
+  // too, and every command names the resource name to write.
+  test('a target written as a resource URI, every command refuses',
        async () => {
-         const graph = `${BQ('graphs')}/propertyGraphs/commerce`;
-         const name = graph.slice(2);
+         const name = `${BQ('graphs')}/propertyGraphs/commerce`;
+         const graph = `//${name}`;
          writeScope({'commerce.yaml': `version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${name}"]}'
+        data: '{"deployments": [{"name": "sp", "target": "${SPANNER_DB}/graphs/commerce"}, {"name": "uri", "target": "${graph}"}, {"name": "bq", "target": "${name}"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -423,44 +354,11 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.printStore.out)
-             .toContain(`declares duplicate deployment target '${name}'`);
-         expect(r.skills.out)
-             .toContain(`declares duplicate deployment target '${name}'`);
+         const fix = `targets '${graph}', which is a resource URI; write its ` +
+             `GCP resource name, without the leading '//': '${name}'.`;
+         expect(r.printStore.out).toContain(fix);
+         expect(r.skills.out).toContain(fix);
        });
-});
-
-
-// A legacy wrapper that sets `deployment_target` to an empty string. Push
-// reads no graph target and publishes to Knowledge Catalog only, and the
-// loader makes no deployment of it.
-describe('a legacy wrapper with an empty deployment_target', () => {
-  test('push accepts it, so skills-generate does too', async () => {
-    writeScope({
-      'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-      'commerce.profiles/prod.yaml': `semantic_model:
-  - name: commerce
-    deployment_target: ""
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/OrdersProd
-`,
-    });
-    const r = await runAll('prod');
-    expect(r.push.code).toBe(0);
-    expect(r.report.code).toBe(0);
-    expect(r.skills.out).not.toContain('Error:');
-    expect(r.skills.code).toBe(0);
-  });
 });
 
 
@@ -474,7 +372,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         extends: [Missing]
@@ -535,7 +433,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
 ${entities}`});
       const r = await runAll();
@@ -550,7 +448,7 @@ ${entities}`});
 
 // The differences the docs describe, and cases where every command agrees.
 describe('documented divergences', () => {
-  test('a deployment that names a declared profile: push refuses, the runtime uses it',
+  test('a Spanner deployment that names no profile, in a model with metrics: push and the report refuse, the runtime accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -558,34 +456,33 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
-        profile: prod
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
         primary_key: [key]
         fields:
           - { name: key, expression: OrderId }
-`,
-           'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
+    metrics:
+      - name: orders
+        entity: Order
+        expression: COUNT(Order.key)
 `,
          });
-         const r = await runAll('prod');
+         const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
-         expect(r.printStore.out).toBe('acme-ops/prod/commerce');
+         expect(r.push.out).toContain(msg.spannerMetrics('prod'));
+         expect(r.report.out).toContain(msg.spannerMetrics('prod'));
        });
 
-  test('Spanner beside BigQuery: push refuses two, the runtime takes Spanner',
+  test('Spanner beside BigQuery: push refuses BigQuery over a Spanner table, the runtime takes Spanner',
        async () => {
          writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
       - name: sp
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: bq
         target: ${BQ('graphs')}/propertyGraphs/commerce
     entities:
@@ -597,6 +494,10 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.push.out).toContain(
+             "deployment 'bq' targets a BigQuery graph, but the model file " +
+             "binds entity 'Order'");
+         expect(r.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
   test('a vanilla GOOGLE block with two Spanner targets: every command refuses',
@@ -606,7 +507,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/a", "${SPANNER_DB}2/propertyGraphs/b"]}'
+        data: '{"deployments": [{"name": "a", "target": "${SPANNER_DB}/graphs/a"}, {"name": "b", "target": "${SPANNER_DB}2/graphs/b"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -617,32 +518,7 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.skills.out).toContain(
-             "in its GOOGLE block's 'deploymentTargets'");
-       });
-
-  test('a vanilla GOOGLE block with no target: none of the four says deployments',
-       async () => {
-         writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": []}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-         const r = await runAll();
-         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
-         expect(r.printStore.out).toContain(
-             "declares no deployment target in its GOOGLE block's " +
-             "'deploymentTargets'");
-         expect(r.printStore.out).not.toContain("Declare one deployment");
+         expect(r.skills.out).toContain("in its GOOGLE block's 'deployments'");
        });
 
   test('a duplicate target: the loader refuses it for every command', async () => {
@@ -651,9 +527,9 @@ semantic_model:
   - name: commerce
     deployments:
       - name: a
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: b
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prod
     entities:
       - name: Order
@@ -673,7 +549,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: a
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: b
         target: ${SPANNER_DB}/propertyGraph/typo
     entities:
@@ -696,7 +572,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: dev
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: prod
         target: ${prodTarget}
         profile: prod
@@ -724,16 +600,6 @@ entities:
          expect(r.skills.out).toContain("deployment 'prod' targets");
        });
 
-  // Push refuses a deployment that names a profile, whatever its target. The
-  // runtime uses dev, as the docs say.
-  test('a valid deployment for another declared profile: push refuses, the runtime uses dev',
-       async () => {
-         writeScope(devAndProd(`${SPANNER_DB}2/propertyGraphs/commerce`));
-         const r = await runAll();
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
-         expect(r.printStore.out).toBe('acme-ops/prod/commerce');
-       });
-
   test('a malformed deployment for default under a profile file: every command refuses',
        async () => {
          writeScope({
@@ -758,49 +624,14 @@ entities:
          });
          const r = await runAll('prod');
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.printStore.out).toContain("deployment 'dev' targets");
-         expect(r.skills.out).toContain("deployment 'dev' targets");
-       });
-
-  test('a legacy profile named default in any letter case: every command refuses',
-       async () => {
-         const reserved = "a binding profile may not be named 'default'";
-         for (const file of ['Default.yaml', 'default.yaml']) {
-           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
-           writeScope({
-             'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployments:
-      - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-             [`commerce.profiles/${file}`]: `semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-`,
-           });
-           for (const profile of [undefined, 'Default']) {
-             const r = await runAll(profile);
-             expect(codes(r))
-                 .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-             expect(r.printStore.out).toContain(reserved);
-             expect(r.skills.out).toContain(reserved);
-           }
+         for (const name of ['push', 'report', 'printStore', 'skills']) {
+           expect(r[name].out).toContain("deployment 'dev' targets");
          }
        });
 
-  // Push and the report read every model's profile files first. A file whose
-  // `name:` does not match its file name throws there, and the CLI prints the
-  // error and exits 1.
+  // The report throws on a profile file whose `name:` does not match its file
+  // name, and the CLI prints the error and exits 1. Push prints the same error
+  // and exits 1.
   test('a profile file whose name does not match its file name: every command refuses',
        async () => {
          writeScope({
@@ -809,7 +640,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -827,20 +658,21 @@ entities:
              "name 'prd', which does not match filename suffix 'prod'.";
          const r = await runAll();
          expect(codes(r)).toEqual({
-           push: `threw: ${mismatch}`,
+           push: 1,
            report: `threw: ${mismatch}`,
            printStore: 1,
            skills: 1,
          });
+         expect(r.push.out).toBe(`Error: ${mismatch}`);
          expect(r.printStore.out).toBe(`Error: ${mismatch}`);
          expect(r.skills.out).toBe(`Error: ${mismatch}`);
        });
 
   // Push checks every profile file, whichever profile it deploys, so under the
   // default profile it refuses a profile file that names an entity the model
-  // lacks. The report refuses it too. The runtime applies only the profile it
-  // is given, so --print-store and skills-generate accept the file.
-  test('a profile file that does not apply: push refuses it under default, the runtime accepts it',
+  // lacks. The report and --print-store refuse it too. skills-generate applies
+  // only the profile it is given, so it accepts the file.
+  test('a profile file that does not apply: push and --print-store refuse it under default, skills-generate accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -848,7 +680,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -863,26 +695,41 @@ entities:
 `,
          });
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
          expect(r.push.out).toContain(
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
+         expect(r.printStore.out).toBe(r.push.out);
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
        });
 
-  // Push and the runtime load every profile file except a legacy wrapper,
-  // whichever profile they read. A file in <model>.profiles/ takes its
-  // profile name from its file name, and loading it checks the `name:`
-  // inside it.
-  test('a file in <model>.profiles/ whose name does not match its file name: every command refuses',
+  // --print-store judges a profile file's text in the dialect push reads for
+  // its tables: POSTGRES on a PostgreSQL-dialect Spanner database, and the
+  // dialect a third-party table's entry names. It refuses, as push does, an
+  // entry that gives no dialect or names no table. A database a script has
+  // not created yet still gets its store.
+  test('a profile file on a PostgreSQL-dialect Spanner database or a third-party table: --print-store agrees with push',
        async () => {
-         writeScope({
-           'commerce.yaml': `version: "0.2.0.dev0/google"
+         const PG = SPANNER_DB.replace('/commerce', '/pg');
+         const ENTRY = 'projects/test-project/locations/us/entryGroups/sf/entries/o';
+         spyOn(SpannerClient.prototype, 'getDatabase').mockImplementation(
+             (async (_p: string, _i: string, db: string) => ({status: 200, result: {
+               databaseDialect: db === 'pg' ? 'POSTGRESQL' : 'GOOGLE_STANDARD_SQL'}})) as any);
+         for (const [source, dialect, fqn, code] of [
+                  [ENTRY, 'DATABRICKS', 'snowflake:a.db.public.o', 1],
+                  [ENTRY, 'SNOWFLAKE', undefined, 1],
+                  [ENTRY, 'SNOWFLAKE', 'snowflake:a.db', 1],
+                  [`${PG}/tables/orders`, 'POSTGRES', undefined, 0]] as const) {
+           spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue(
+               {status: 200, result: {fullyQualifiedName: fqn}} as any);
+           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+           writeScope({
+             'commerce.yaml': `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -890,22 +737,21 @@ semantic_model:
         fields:
           - { name: key, expression: OrderId }
 `,
-           'commerce.profiles/prod.yaml': `name: prd
+             'commerce.profile.other.yaml': `name: other
 entities:
   - name: Order
-    source: ${SPANNER_DB}/tables/Orders
+    source: ${source}
+    primary_key: [o_id]
+    fields: [{ name: key, expression: {dialects: [{dialect: ${dialect}, expression: o_id}]} }]
 `,
-         });
-         const mismatch = "[commerce.profiles/prod.yaml] profile 'prod' " +
-             "declares name 'prd', which does not match its file's profile " +
-             "name 'prod'";
-         for (const r of [await runAll(), await runAll('prod')]) {
-           expect(codes(r))
-               .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-           expect(r.push.out).toContain(`Error: ${mismatch}`);
-           expect(r.printStore.out).toBe(`Error: ${mismatch}`);
-           expect(r.skills.out).toContain(`Error: ${mismatch}`);
+           });
+           const r = await runAll();
+           expect([r.push.code, r.printStore.code]).toEqual([code, code]);
+           if (code) expect(r.printStore.out).toBe(r.push.out);
          }
+         spyOn(SpannerClient.prototype, 'getDatabase')
+             .mockResolvedValue({status: 404, message: 'not found'} as any);
+         expect(await profiles({printStore: true})).toBe(0);
        });
 
   test('a profile file that sets a key a profile may not set: every command refuses',
@@ -916,7 +762,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -951,7 +797,7 @@ semantic_model:
     bogus_model_key: 1
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -969,14 +815,14 @@ semantic_model:
          }
        });
 
-  test('a profile file that is not valid UTF-8: push refuses its copy, the runtime reads it',
+  test('a profile file that is not valid UTF-8: push refuses it, the runtime reads it',
        async () => {
          writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -989,23 +835,24 @@ semantic_model:
              Buffer.concat([
                Buffer.from('name: prod\n# '),
                Buffer.from([0xff]),
-               Buffer.from(
-                   `\nentities:\n  - name: Order\n    source: ${
-                       SPANNER_DB}/tables/Orders\n`),
+               Buffer.from(PROD_PROFILE.replace('name: prod', '')),
              ]));
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
-         expect(r.push.out).toContain('is not valid UTF-8');
+         expect(r.push.out)
+             .toContain(
+                 'File \'commerce.profile.prod.yaml\' is not valid UTF-8; ' +
+                 'save it as UTF-8.');
        });
 
-  test('a deployment that names profile default: push refuses, the runtime uses it',
+  test('a deployment that names profile default: push and the runtime use it',
        async () => {
          writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: default
     entities:
       - name: Order
@@ -1015,11 +862,11 @@ semantic_model:
           - { name: key, expression: OrderId }
 `});
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 0, skills: 0});
          expect(r.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
-  test('a profile file no deployment uses: push refuses, skills-generate writes a skill with no store',
+  test('a profile file no deployment uses: push accepts it, --print-store under it gives no store, skills-generate accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -1027,7 +874,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -1035,15 +882,10 @@ semantic_model:
         fields:
           - { name: key, expression: OrderId }
 `,
-           'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
+           'commerce.profile.prod.yaml': PROD_PROFILE,
          });
          const r = await runAll('prod');
-         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
-         expect(r.push.out).toContain("binding profile 'prod' is a named profile");
+         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
        });
 
   test('a logical model with no deployments: push and skills-generate accept it',
@@ -1072,7 +914,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prod
     entities:
       - name: Order
@@ -1081,18 +923,14 @@ semantic_model:
         fields:
           - { name: key, expression: OrderId }
 `,
-      'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
+      'commerce.profile.prod.yaml': PROD_PROFILE,
     });
     const r = await runAll('prod');
     expect(r.printStore.out).toBe('acme-ops/prod/commerce');
     expect(r.report.out).not.toContain(
         'target: (none; a profile file names no deployment target)');
     expect(r.report.out).toContain(
-        `target: ${SPANNER_DB}/propertyGraphs/commerce`);
+        `target: ${SPANNER_DB}/graphs/commerce`);
   });
 });
 
@@ -1104,7 +942,7 @@ describe('--print-store and skills-generate --name over several models', () => {
     const list = spyOn(AlloyDbClient.prototype, 'listInstances')
                      .mockResolvedValue({status: 200, result: []});
     const cluster =
-        '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main';
+        'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main';
     const alloy = (name: string) => `version: "0.2.0.dev0/google"
 semantic_model:
   - name: ${name}
@@ -1143,11 +981,8 @@ semantic_model:
 describe('a vanilla model with GOOGLE blocks agrees with the Google flavor', () => {
   type Deployment = {name: string; target: string; profile?: string};
 
-  const prodProfile = `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`;
+  // Profile prod, bound to the database deployment prod deploys to.
+  const prodProfile = PROD_PROFILE.replace(SPANNER_DB, `${SPANNER_DB}2`);
 
   function googleScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
@@ -1171,13 +1006,11 @@ ${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
     };
   }
 
+  // The model's block is named `google`, which kcmd reads as a GOOGLE block.
   function vanillaScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
     const model = JSON.stringify({
-      profiles: [{
-        name: 'prod',
-        entities: [{name: 'Order', source: `${SPANNER_DB}/tables/Orders`}],
-      }],
+      profiles: [yaml.parse(prodProfile)],
       deployments,
     });
     const dataset = extendsList ?
@@ -1191,7 +1024,7 @@ ${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
 semantic_model:
   - name: commerce
     custom_extensions:
-      - vendor_name: GOOGLE
+      - vendor_name: google
         data: '${model}'
     datasets:
       - name: Order
@@ -1216,39 +1049,42 @@ ${dataset}        fields:
     return {google, vanilla};
   }
 
-  const dev = {name: 'dev', target: `${SPANNER_DB}/propertyGraphs/commerce`};
+  const dev = {name: 'dev', target: `${SPANNER_DB}/graphs/commerce`};
   const prod = (target: string) => ({name: 'prod', target, profile: 'prod'});
 
-  // The runtime checks that each deployment's profile is declared. A vanilla
-  // model declares prod in its GOOGLE block.
-  test('a deployment for a declared profile, under default: the runtime uses dev',
+  // Push accepts dev with the model file's bindings and prod with profile
+  // prod, and the runtime uses dev. A vanilla model declares prod in its
+  // GOOGLE block.
+  test('a deployment for a declared profile, under default: push accepts both, the runtime uses dev',
        async () => {
          const {google, vanilla} = await bothFlavors(
-             [dev, prod(`${SPANNER_DB}2/propertyGraphs/commerce`)]);
+             [dev, prod(`${SPANNER_DB}2/graphs/commerce`)]);
          expect(codes(google))
-             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+             .toEqual({push: 0, report: 0, printStore: 0, skills: 0});
          expect(codes(vanilla)).toEqual(codes(google));
          // The vanilla expression form adds a dialect warning on its own line.
          expect(vanilla.printStore.out.split('\n').pop())
              .toBe(google.printStore.out);
+         expect(google.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
-  test('a deployment for a declared profile, under it: the runtime uses it',
+  test('a deployment for a declared profile, under it: push accepts it, the runtime uses it',
        async () => {
          const {google, vanilla} = await bothFlavors(
-             [prod(`${SPANNER_DB}/propertyGraphs/commerce`)], 'prod');
+             [prod(`${SPANNER_DB}2/graphs/commerce`)], 'prod');
          expect(codes(google))
-             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+             .toEqual({push: 0, report: 0, printStore: 0, skills: 0});
+         expect(google.printStore.out).toBe('acme-ops/prod/commerce2');
          expect(codes(vanilla)).toEqual(codes(google));
          expect(vanilla.printStore.out.split('\n').pop())
-             .toBe('acme-ops/prod/commerce');
+             .toBe('acme-ops/prod/commerce2');
        });
 
   test('a deployment for an undeclared profile: every runtime command refuses',
        async () => {
          const {google, vanilla} = await bothFlavors([
            dev,
-           {name: 'prod', target: `${SPANNER_DB}2/propertyGraphs/commerce`,
+           {name: 'prod', target: `${SPANNER_DB}2/graphs/commerce`,
             profile: 'prdo'},
          ]);
          expect(codes(google))

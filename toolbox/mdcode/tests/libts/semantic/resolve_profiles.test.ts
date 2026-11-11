@@ -1,21 +1,21 @@
 // Behavior specification for the binding-profile passes
-// (src/libts/semantic/resolve_profiles.ts): mergeProfile overlays a profile's
-// physical bindings onto a logical model by name and enforces the binding-only
-// contract; pruneUnavailable drops what a binding cannot answer and reports it.
-// Builders are minimal literals in the readable authoring form (mergeProfile) or
-// the IR (pruneUnavailable), mirroring resolve_inheritance.test.ts.
+// (src/libts/semantic/resolve_profiles.ts): applyProfile and applyProfileFile
+// overlay a profile's physical bindings onto a loaded logical model by name and
+// enforce the binding-only contract; pruneUnavailable drops what a binding
+// cannot answer and reports it.
 
 import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 import * as yaml from 'yaml';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {Field, isFieldBound, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, isFieldBound, ProfileEntityBinding, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as loader from '../../../src/libts/semantic/loader';
 import {fromDocument, loadModels, loadSemanticModels, SemanticModelError} from '../../../src/libts/semantic/loader';
+import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import * as inheritance from '../../../src/libts/semantic/resolve_inheritance';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
+import {applyProfile, applyProfileFile, CompletenessOptions, loadProfileFile, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import * as sqlUtils from '../../../src/libts/semantic/sql_expr_utils';
-import {applyProfile, applyProfileExclusions, applyProfileFile, CompletenessOptions, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
@@ -24,80 +24,8 @@ beforeAll(async () => {
   await loadSqlEngine();
 });
 
-
-// Every profile file a test here merges is also applied with applyProfile,
-// which must build the same model or fail with the same error, wherever the
-// model file loads on its own. The one exception is a profile that states one
-// of a relationship's join column lists without the other. The merge takes
-// the other list from the model file, and applyProfile rejects it as the
-// completeness check does.
-function checkAgainstApply(
-    logical: unknown, profile: unknown, name: string,
-    merged: {doc?: unknown; error?: string; excluded: ProfileExclusion[]}) {
-  if (!profile || typeof profile !== 'object' || Array.isArray(profile) ||
-      (profile as any).semantic_model !== undefined) {
-    return;
-  }
-  // The merge reads no version; a load needs one, and these documents are in
-  // the Google flavor.
-  const versioned = (doc: unknown) =>
-      ({version: '0.2.0.dev0/google', ...structuredClone(doc as object)});
-  let model: SemanticModel|undefined;
-  try {
-    model = fromDocument(versioned(logical), {bindingOptional: true}).models[0];
-  } catch {
-    return;
-  }
-  if (!model) return;
-  const applied =
-      applyProfileFile(model, yaml.stringify(profile, YAML_OPTIONS), name);
-  if (merged.error) {
-    expect(applied).toEqual({error: merged.error});
-    return;
-  }
-  const relationships = (profile as any).relationships;
-  if (Array.isArray(relationships) &&
-      relationships.some(
-          r => (r?.from_columns === undefined) !==
-              (r?.to_columns === undefined))) {
-    expect('error' in applied && applied.error)
-        .toContain('has no join columns in this profile');
-    return;
-  }
-  let mergedModel: SemanticModel;
-  try {
-    mergedModel =
-        fromDocument(versioned(merged.doc), {bindingOptional: true}).models[0];
-  } catch {
-    expect('error' in applied).toBe(true);
-    return;
-  }
-  if ('error' in applied) throw new Error(applied.error);
-  expect(applied.model)
-      .toEqual(applyProfileExclusions(mergedModel, merged.excluded));
-}
-const mergeProfile = (logical: unknown, profile: unknown, name: string) => {
-  const merged = mergeProfileImpl(logical, profile, name);
-  checkAgainstApply(logical, profile, name, merged);
-  return merged;
-};
-const mergeProfileOntoDoc =
-    (logicalText: string, profileText: string, name: string) => {
-      const merged = mergeProfileOntoDocImpl(logicalText, profileText, name);
-      checkAgainstApply(
-          yaml.parse(logicalText, YAML_OPTIONS),
-          yaml.parse(profileText, YAML_OPTIONS), name,
-          'error' in merged ?
-              {error: merged.error, excluded: []} :
-              {doc: yaml.parse(merged.text, YAML_OPTIONS),
-               excluded: merged.excluded});
-      return merged;
-    };
-
-const GRAPH =
-    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
 const TBL = (t: string) =>
-    `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
 function logicalDoc(): any {
   return {
@@ -136,38 +64,6 @@ function logicalDoc(): any {
   };
 }
 
-// The analytical binding: BigQuery sources, lifetimeValue bound, availableCredit
-// explicitly unbound.
-function analyticalDoc(): any {
-  return {
-    semantic_model: [{
-      name: 'commerce',
-      deployment_target: GRAPH,
-      entities: [
-        {
-          name: 'Customer',
-          source: TBL('customer'),
-          fields: [
-            {name: 'key', expression: 'c_custkey'},
-            {name: 'name', expression: 'c_name'},
-            {name: 'lifetimeValue', expression: 'c_ltv'},
-            {name: 'availableCredit'},
-          ],
-        },
-        {
-          name: 'Order',
-          source: TBL('orders'),
-          fields: [
-            {name: 'key', expression: 'o_orderkey'},
-            {name: 'customerKey', expression: 'o_custkey'},
-            {name: 'orderDate', expression: 'o_orderdate'},
-          ],
-        },
-      ],
-    }],
-  };
-}
-
 const modelOf = (doc: any) => doc.semantic_model[0];
 const entityOf = (doc: any, name: string) =>
     (modelOf(doc).entities ?? modelOf(doc).datasets)
@@ -175,118 +71,14 @@ const entityOf = (doc: any, name: string) =>
 const fieldOf = (doc: any, entity: string, field: string) =>
     entityOf(doc, entity).fields.find((f: any) => f.name === field);
 
+const loadLogical = (doc: any): SemanticModel =>
+    fromDocument({version: '0.2.0.dev0/google', ...structuredClone(doc)}, {
+      bindingOptional: true
+    }).models[0];
 
-describe('mergeProfile overlays physical bindings by name', () => {
-  test('applies source and expression, preserving logical facets', () => {
-    const {doc, error} = mergeProfile(logicalDoc(), analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(entityOf(doc, 'Customer').source).toBe(TBL('customer'));
-    const key = fieldOf(doc, 'Customer', 'key');
-    expect(key.expression).toBe('c_custkey');
-    expect(key.label).toBe('Customer ID');  // logical facet preserved
-    expect(modelOf(doc).deployment_target).toBe(GRAPH);
-  });
-
-  test('drops model deployments when a legacy profile sets deployment_target, and keeps them when it does not', () => {
-    const deployments = [{
-      name: 'prod',
-      target: '//spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/commerce',
-    }];
-    const logical = logicalDoc();
-    modelOf(logical).deployments = deployments;
-    const {doc, error} = mergeProfile(logical, analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(modelOf(doc).deployment_target).toBe(GRAPH);
-    expect(modelOf(doc).deployments).toBeUndefined();
-
-    const noTargetProfile = analyticalDoc();
-    delete modelOf(noTargetProfile).deployment_target;
-    const kept = mergeProfile(logical, noTargetProfile, 'analytical');
-    expect(kept.error).toBeUndefined();
-    expect(modelOf(kept.doc).deployment_target).toBeUndefined();
-    expect(modelOf(kept.doc).deployments).toEqual(deployments);
-  });
-
-  test('a field the profile does not bind has no column', () => {
-    // availableCredit is present in the profile but carries no expression, so
-    // the merge leaves it unbound (a field is unbound exactly when it has no
-    // expression -- there is no separate flag).
-    const {doc} = mergeProfile(logicalDoc(), analyticalDoc(), 'analytical');
-    const credit = fieldOf(doc, 'Customer', 'availableCredit');
-    expect(credit.expression).toBeUndefined();
-  });
-
-  test('a field the profile omits is carried through as unbound', () => {
-    const profile = analyticalDoc();
-    // Drop availableCredit entirely from the profile (silent omission).
-    entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer')
-            .fields.filter((f: any) => f.name !== 'availableCredit');
-    const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
-        .toBeUndefined();
-  });
-
-  test('selecting a profile keeps an inline binding it does not mention', () => {
-    // A profile is an overlay: a field it does not rebind keeps the binding
-    // the model file gave it.
-    const logical = logicalDoc();
-    fieldOf(logical, 'Customer', 'name').expression = 'inline_name';
-    const profile = analyticalDoc();
-    entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer')
-            .fields.filter((f: any) => f.name !== 'name');
-    const {doc, error} = mergeProfile(logical, profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('inline_name');
-  });
-
-  test('the inputs are never mutated', () => {
-    const logical = logicalDoc();
-    const profile = analyticalDoc();
-    const before = JSON.stringify(logical);
-    mergeProfile(logical, profile, 'analytical');
-    expect(JSON.stringify(logical)).toBe(before);
-  });
-
-  test('a profile that sets a declaration facet is rejected', () => {
-    const profile = analyticalDoc();
-    fieldOf(profile, 'Customer', 'name').label = 'Renamed';  // logical facet
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/sets 'label'/);
-  });
-
-  test('a profile that defines a metric is rejected', () => {
-    const profile = analyticalDoc();
-    modelOf(profile).metrics = [{name: 'x', expression: 'COUNT(Order.key)'}];
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/sets 'metrics'/);
-  });
-
-  test('a profile naming an unknown entity is rejected', () => {
-    const profile = analyticalDoc();
-    entityOf(profile, 'Order').name = 'Nope';
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/entity 'Nope' is not in the logical model/);
-  });
-
-  test('a profile naming an unknown field is rejected', () => {
-    const profile = analyticalDoc();
-    entityOf(profile, 'Customer').fields.push({name: 'ghost', expression: 'g'});
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/field 'Customer.ghost' is not in the logical model/);
-  });
-
-  test('a profile expression may be a computation, not only a column', () => {
-    const profile = analyticalDoc();
-    fieldOf(profile, 'Customer', 'lifetimeValue').expression = 'c_a + c_b';
-    const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
-        .toBe('c_a + c_b');
-  });
-});
+const applyProfileObj = (logical: any, profile: any, name: string) =>
+    applyProfileFile(
+        loadLogical(logical), yaml.stringify(profile, YAML_OPTIONS), name);
 
 
 // An action's executor is its only physical facet: the same operation is
@@ -315,30 +107,53 @@ function logicalWithAction(defaultExecutor?: any): any {
   return doc;
 }
 
-function profileWithAction(action: any): any {
-  const p = analyticalDoc();
-  modelOf(p).actions = [action];
-  return p;
+function profileWithAction(action: any, name = 'analytical'): any {
+  return {
+    name,
+    entities: [
+      {
+        name: 'Customer',
+        source: TBL('customer'),
+        fields: [
+          {name: 'key', expression: 'c_custkey'},
+          {name: 'name', expression: 'c_name'},
+          {name: 'lifetimeValue', expression: 'c_ltv'},
+        ],
+      },
+      {
+        name: 'Order',
+        source: TBL('orders'),
+        fields: [
+          {name: 'key', expression: 'o_orderkey'},
+          {name: 'customerKey', expression: 'o_custkey'},
+          {name: 'orderDate', expression: 'o_orderdate'},
+        ],
+      },
+    ],
+    ...(action ? {actions: [action]} : {}),
+  };
 }
 
-const actionOf = (doc: any, name: string) =>
-    (modelOf(doc).actions ?? []).find((a: any) => a.name === name);
+const actionOfModel = (m: SemanticModel, name: string) =>
+    (m.actions ?? []).find(a => a.name === name)!;
 
 
 describe('an executor is a binding a profile supplies', () => {
   test('a profile binds an action the logical model leaves open', () => {
-    const {doc, error} = mergeProfile(
-        logicalWithAction(), profileWithAction({
-          name: 'IssueCredit',
-          executor: SQL_EXEC,
-        }),
+    const res = applyProfileObj(
+        logicalWithAction(),
+        profileWithAction({name: 'IssueCredit', executor: SQL_EXEC}),
         'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'sql',
+      ...SQL_EXEC,
+    });
     // The declaration is untouched: a profile moves the write, never its
     // meaning.
-    expect(actionOf(doc, 'IssueCredit').description).toBe('Credit an order');
-    expect(actionOf(doc, 'IssueCredit').affects).toEqual([
+    expect(actionOfModel(res.model, 'IssueCredit').description)
+        .toBe('Credit an order');
+    expect(actionOfModel(res.model, 'IssueCredit').affects).toEqual([
       {concept: 'Order', operation: 'modify'},
     ]);
   });
@@ -347,92 +162,75 @@ describe('an executor is a binding a profile supplies', () => {
     // The point of binding the executor rather than declaring it: the model
     // names whoever owns the write, and the store that holds the rows performs
     // it as DML instead. Same action, same blast radius, different mechanism.
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', executor: SQL_EXEC}),
         'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'sql',
+      ...SQL_EXEC,
+    });
   });
 
   test('an action the profile does not mention keeps the model default', () => {
     // Unlike a field's column, an executor is inherited on silence. A column
     // inherited into a renamed schema binds to the wrong data quietly; an
     // executor names a whole mechanism, so a wrong one fails at the first call.
-    const {doc, error} = mergeProfile(
-        logicalWithAction(MCP_EXEC), analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
+    const res = applyProfileObj(
+        logicalWithAction(MCP_EXEC), profileWithAction(undefined),
+        'analytical');
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'mcp',
+      ...MCP_EXEC,
+    });
   });
 
   test('`executor: null` withdraws an inherited executor', () => {
     // A read-only environment has to be able to say "by no means at all",
     // because silence already means "keep the default".
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
-        profileWithAction({name: 'IssueCredit', executor: null}),
+        profileWithAction({name: 'IssueCredit', executor: null}, 'readonly'),
         'readonly');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toBeUndefined();
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toBeUndefined();
     // Withdrawn, not deleted: the action is still declared.
-    expect(actionOf(doc, 'IssueCredit').name).toBe('IssueCredit');
+    expect(actionOfModel(res.model, 'IssueCredit').name).toBe('IssueCredit');
   });
 
   test(
       'a profile naming an action the model does not declare is an error',
       () => {
-        const {error} = mergeProfile(
+        const res = applyProfileObj(
             logicalWithAction(),
             profileWithAction({name: 'Nonesuch', executor: SQL_EXEC}),
             'analytical');
-        expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
+        expect('error' in res && res.error)
+            .toMatch(/action 'Nonesuch' is not in the logical model/);
       });
 
   test('a model with profiles may not declare a `sql` executor', () => {
     // A statement is written in one store's table and column names and its
-    // dialect, so there is no model-level spelling of it. Left in the model it
-    // would also outlive the columns it reads: the merge has just cleared this
-    // model's inline field bindings for the profile to re-supply.
-    const {error} = mergeProfile(
+    // dialect, so there is no model-level spelling of it.
+    const res = applyProfileObj(
         logicalWithAction(SQL_EXEC),
         profileWithAction({name: 'IssueCredit', executor: MCP_EXEC}),
         'analytical');
-    expect(error).toMatch(/action 'IssueCredit'/);
-    expect(error).toMatch(/declares a 'sql' executor/);
+    expect('error' in res && res.error).toMatch(/action 'IssueCredit'/);
+    expect('error' in res && res.error).toMatch(/declares a 'sql' executor/);
   });
-
-  test(
-      'a model the profile does not name keeps its inline `sql` executor',
-      () => {
-        // The ban follows the same scope as the inline-binding strip: a model
-        // the profile never touches keeps its own columns, so its statements
-        // still match them.
-        const logical = logicalWithAction(MCP_EXEC);
-        const untouched = structuredClone(modelOf(logical));
-        untouched.name = 'ops';
-        untouched.actions = [{
-          name: 'CloseOrder',
-          parameters: [{name: 'order', type: 'Order'}],
-          executor: SQL_EXEC,
-        }];
-        logical.semantic_model.push(untouched);
-
-        const {doc, error} = mergeProfile(
-            logical, profileWithAction({name: 'IssueCredit'}), 'analytical');
-        expect(error).toBeUndefined();
-        const ops =
-            (doc as any).semantic_model.find((m: any) => m.name === 'ops');
-        expect(ops.actions[0].executor).toEqual(SQL_EXEC);
-      });
 
   test('a profile setting a logical facet on an action is rejected', () => {
     // What gates the action and what it changes are the model's to state. A
     // profile that could move a guard could turn a check off per environment.
-    const {error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', guards: ['SomeRule']}),
         'analytical');
-    expect(error).toMatch(/action 'IssueCredit' sets 'guards'/);
+    expect('error' in res && res.error)
+        .toMatch(/action 'IssueCredit' sets 'guards'/);
   });
 });
 
@@ -472,6 +270,46 @@ function irModel(): SemanticModel {
     ],
   };
 }
+
+const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+// A field whose expression is `expression`, by default the field's name.
+const column = (name: string, expression = name) => ({name, expression});
+const ID = column('id');
+// A profile binding of `name` to `source` that states key `key`, restates
+// field `key` and binds `more`.
+const keyed = (key: string) => (name: string, source: string, ...more: Field[]) =>
+    ({name, source, primaryKey: [key], fields: [column(key), ...more]});
+const keyedById = keyed('id');
+// irModel's Customer fields that read a column, as a named profile restates them.
+const CUSTOMER_COLUMNS = [column('key', 'c_custkey'), column('name', 'c_name')];
+// A named profile for irModel, whose Customer.lifetimeValue the model file
+// leaves unbound. It states each entity's key and restates its column fields.
+function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
+  return {
+    name: 'prod',
+    entities: [
+      {name: 'Customer', source: BQ('customer'), primaryKey: ['c_custkey'],
+       fields: [...CUSTOMER_COLUMNS, column('lifetimeValue', 'ltv')]},
+      {name: 'Order', source: BQ('orders'), primaryKey: ['o_orderkey'],
+       fields: [column('key', 'o_orderkey'), column('customerKey', 'o_custkey')]},
+    ],
+    relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
+    ...over,
+  };
+}
+// profile's Customer binding with lifetimeValue excluded.
+const CUSTOMER_WITHOUT_LTV =
+    {...profile().entities[0], fields: CUSTOMER_COLUMNS, fieldsExclude: ['lifetimeValue']};
+// Profile prod's error for Customer stating none of `keys`.
+const noKeys = (keys: string) =>
+    `profile 'prod': entity 'Customer' has no ${keys} in this profile; the ` +
+    "model file's keys are columns of its own table, so state this profile's keys";
+// Profile prod's error for `field`, written 'Entity.field', reading `column`
+// through its model file expression, or through the one it inherits from `owner`.
+const readsColumn = (field: string, column: string, owner?: string) =>
+    `profile 'prod': field '${field}' reads column '${column}' through ${
+        owner ? `the expression it inherits from '${owner}'` : 'its model file expression'
+    }; bind it in 'fields' for this profile, or leave it out in 'fields_exclude'`;
 
 const fieldNames = (m: SemanticModel, entity: string) =>
     m.entities.find(e => e.name === entity)!.fields.map(f => f.name);
@@ -531,7 +369,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
       ]);
       expect(metricNames(model)).toEqual(['gross']);
       expect(report.droppedMetrics).toEqual([
-        {name: 'total_tax', reason: 'field Order.tax is unavailable'},
+        {name: 'total_tax', reason: 'field Order.tax is unavailable', field: 'Order.tax'},
       ]);
     }
   });
@@ -650,7 +488,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const {model, report} = pruneUnavailable(m, 'default');
     expect(metricNames(model)).toEqual([]);
     expect(report.droppedMetrics).toEqual(
-        [{name: 'holidays', reason: 'field Date.is_holiday is unbound'}]);
+        [{name: 'holidays', reason: 'field Date.is_holiday is unbound', field: 'Date.is_holiday'}]);
   });
 
   test('a metric is dropped when its readable text joins unconnected entities', () => {
@@ -709,20 +547,8 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
       const {model, report} = pruneUnavailable(m, 'operational');
       expect(metricNames(model)).toEqual(['order_count']);
       expect(report.droppedMetrics).toContainEqual(
-          {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
+          {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound', field: 'Customer.lifetimeValue'});
     }
-  });
-
-  test('a metric is pruned on the text the generators emit', () => {
-    const m = irModel();
-    const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
-    metric.expression = undefined;
-    metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
-    metric.importedDialect = 'SNOWFLAKE';
-    const {model, report} = pruneUnavailable(m, 'operational');
-    expect(metricNames(model)).toEqual(['order_count']);
-    expect(report.droppedMetrics).toContainEqual(
-        {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
   });
 
   test("a metric is judged by the text its sources' dialect evaluates", () => {
@@ -737,6 +563,15 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const {model, report} = pruneUnavailable(m, 'operational');
     expect(metricNames(model)).toContain('avg_lifetime_value');
     expect(report.droppedMetrics.map(d => d.name)).not.toContain('avg_lifetime_value');
+    // With only its Snowflake text, pruning reads nothing, so the metric is
+    // kept although that text reads the unbound lifetimeValue.
+    metric.dialects =
+        [{dialect: 'SNOWFLAKE', expression: 'AVG(Customer.lifetimeValue)'}];
+    metric.importedExpression = 'AVG(Customer.lifetimeValue)';
+    metric.importedDialect = 'SNOWFLAKE';
+    const vendorOnly = pruneUnavailable(m, 'operational');
+    expect(metricNames(vendorOnly.model)).toContain('avg_lifetime_value');
+    expect(vendorOnly.report.droppedMetrics).toEqual([]);
   });
 
   test('a metric whose SQL cannot be read is kept, with a warning', () => {
@@ -962,17 +797,15 @@ describe('an action a binding cannot perform is unavailable', () => {
 // its own fields plus `extends`.
 function hierarchyDoc(): any {
   return {
-    version: '0.2.0.dev0/google',
     semantic_model: [{
       name: 'docs',
       entities: [
         {
-          name: 'Record', abstract: true, primary_key: ['docId'],
+          name: 'Record', abstract: true,
           fields: [{name: 'docId', label: 'Document ID'}],
         },
         {
           name: 'Doc', abstract: true, extends: ['Record'],
-          primary_key: ['docId'],
           fields: [{name: 'title', description: 'Human title.'}],
         },
         {
@@ -986,25 +819,26 @@ function hierarchyDoc(): any {
 
 function hierarchyProfile(fields: any[]): any {
   return {
-    semantic_model: [{
-      name: 'docs',
-      entities: [{name: 'Opportunity', source: TBL('opportunity'), fields}],
+    name: 'bq',
+    entities: [{
+      name: 'Opportunity', source: TBL('opportunity'),
+      primary_key: ['opp_id'], fields,
     }],
   };
 }
 
-// The merged document loaded and resolved for inheritance: the field
-// `entity.field` as the graph legs read it.
-function resolvedField(doc: unknown, entity: string, field: string) {
-  const {model} = resolveInheritance(fromDocument(doc).models[0]);
-  return (model.entities ?? [])
+// The profile-bound model resolved for inheritance: the field `entity.field`
+// as the graph legs read it.
+function resolvedModelField(model: SemanticModel, entity: string, field: string) {
+  const {model: resolved} = resolveInheritance(model);
+  return (resolved.entities ?? [])
       .find(e => e.name === entity)
       ?.fields.find(f => f.name === field);
 }
 
 describe('a profile binds an inherited field on the subtype', () => {
   test('binds a field declared on a (transitive) supertype', () => {
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         hierarchyDoc(),
         hierarchyProfile([
           {name: 'docId', expression: 'opp_id'},    // from Record (2 levels)
@@ -1012,22 +846,21 @@ describe('a profile binds an inherited field on the subtype', () => {
           {name: 'amount', expression: 'amt'},      // own
         ]),
         'bq');
-    expect(error).toBeUndefined();
-    // Redeclared on the subtype with only the binding.
-    expect(fieldOf(doc, 'Opportunity', 'docId'))
-        .toEqual({name: 'docId', expression: 'opp_id'});
-    expect(fieldOf(doc, 'Opportunity', 'title'))
-        .toEqual({name: 'title', expression: 'opp_name'});
+    if ('error' in res) throw new Error(res.error);
+    const opp = res.model.entities.find(e => e.name === 'Opportunity')!;
+    expect(opp.fields.find(f => f.name === 'docId')?.expression).toBe('opp_id');
+    expect(opp.fields.find(f => f.name === 'title')?.expression).toBe('opp_name');
     // The supertypes themselves are untouched and stay unbound.
-    expect(entityOf(doc, 'Doc').fields).toEqual([
+    expect(res.model.entities.find(e => e.name === 'Doc')!.fields).toEqual([
       {name: 'title', description: 'Human title.'},
     ]);
-    expect(fieldOf(doc, 'Record', 'docId').expression).toBeUndefined();
+    expect(res.model.entities.find(e => e.name === 'Record')!.fields[0].expression)
+        .toBeUndefined();
     // Resolved, the subtype's field is the supertype's definition read from
     // the subtype's column.
-    expect(resolvedField(doc, 'Opportunity', 'docId'))
+    expect(resolvedModelField(res.model, 'Opportunity', 'docId'))
         .toMatchObject({label: 'Document ID', expression: 'opp_id'});
-    expect(resolvedField(doc, 'Opportunity', 'title'))
+    expect(resolvedModelField(res.model, 'Opportunity', 'title'))
         .toMatchObject({description: 'Human title.', expression: 'opp_name'});
   });
 
@@ -1035,57 +868,52 @@ describe('a profile binds an inherited field on the subtype', () => {
     const logical = hierarchyDoc();
     // Doc redeclares Record's docId with its own label: Doc is nearer.
     entityOf(logical, 'Doc').fields.push({name: 'docId', label: 'Doc key'});
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         logical, hierarchyProfile([{name: 'docId', expression: 'opp_id'}]),
         'bq');
-    expect(error).toBeUndefined();
-    expect(resolvedField(doc, 'Opportunity', 'docId')?.label).toBe('Doc key');
+    if ('error' in res) throw new Error(res.error);
+    expect(resolvedModelField(res.model, 'Opportunity', 'docId')?.label)
+        .toBe('Doc key');
   });
 
   test('an inherited field left unbound is not redeclared', () => {
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         hierarchyDoc(), hierarchyProfile([{name: 'amount', expression: 'a'}]),
         'bq');
-    expect(error).toBeUndefined();
-    expect(entityOf(doc, 'Opportunity').fields.map((f: any) => f.name))
+    if ('error' in res) throw new Error(res.error);
+    expect(res.model.entities.find(e => e.name === 'Opportunity')!.fields.map(f => f.name))
         .toEqual(['amount']);
   });
 
   test('a field neither declared nor inherited is still rejected', () => {
-    const {error} = mergeProfile(
+    const res = applyProfileObj(
         hierarchyDoc(), hierarchyProfile([{name: 'ghost', expression: 'g'}]),
         'bq');
-    expect(error).toMatch(/field 'Opportunity.ghost' is not in the logical model/);
+    expect('error' in res && res.error)
+        .toMatch(/field 'Opportunity.ghost' is not in the logical model/);
   });
 
   test('an inherited field binding takes any field expression', () => {
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         hierarchyDoc(),
         hierarchyProfile([{name: 'docId', expression: 'CONCAT(a, b)'}]), 'bq');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Opportunity', 'docId'))
-        .toEqual({name: 'docId', expression: 'CONCAT(a, b)'});
-  });
-
-  test('a cycle in extends does not hang the lookup', () => {
-    const logical = hierarchyDoc();
-    entityOf(logical, 'Record').extends = ['Opportunity'];
-    const {error} = mergeProfile(
-        logical, hierarchyProfile([{name: 'ghost', expression: 'g'}]), 'bq');
-    expect(error).toMatch(/not in the logical model/);
+    if ('error' in res) throw new Error(res.error);
+    expect(res.model.entities.find(e => e.name === 'Opportunity')!.fields.find(
+               f => f.name === 'docId')?.expression)
+        .toBe('CONCAT(a, b)');
   });
 
   test('the inputs are never mutated', () => {
     const logical = hierarchyDoc();
-    const profile = hierarchyProfile([{name: 'docId', expression: 'opp_id'}]);
+    const prof = hierarchyProfile([{name: 'docId', expression: 'opp_id'}]);
     const before = JSON.stringify(logical);
-    mergeProfile(logical, profile, 'bq');
+    applyProfileObj(logical, prof, 'bq');
     expect(JSON.stringify(logical)).toBe(before);
   });
 
   test('the graph reads the subtype column for the node and supertype labels',
        () => {
-         const {doc, error} = mergeProfile(
+         const res = applyProfileObj(
              hierarchyDoc(),
              hierarchyProfile([
                {name: 'docId', expression: 'opp_id'},
@@ -1093,9 +921,8 @@ describe('a profile binds an inherited field on the subtype', () => {
                {name: 'amount', expression: 'amt'},
              ]),
              'bq');
-         expect(error).toBeUndefined();
-         const {models} = fromDocument(doc);
-         const {ddl, warnings} = generatePropertyGraph(models[0]);
+         if ('error' in res) throw new Error(res.error);
+         const {ddl, warnings} = generatePropertyGraph(res.model);
          expect(warnings.join('\n')).not.toMatch(/has no column/);
          expect(ddl).toMatch(/KEY\(opp_id\)/);
          // The abstract supertypes' shared labels carry the bound properties,
@@ -1107,14 +934,12 @@ describe('a profile binds an inherited field on the subtype', () => {
        });
 });
 
-// Hydration rides the legacy `semantic_model:` wrapper, the form `kcmd bind`
-// writes: a profile owns an entity's `hydration` and `mode`, and a derived
-// entity (hydration.derive_from) takes its rows from the relationship rather
-// than a table.
-describe('a legacy profile carries hydration', () => {
+// A `<model>.profile.<name>.yaml` profile owns an entity's `hydration` and
+// `mode`, and a derived entity (`hydration.derive_from`) takes its rows from
+// the relationship rather than a table.
+describe('a profile file carries hydration and mode', () => {
   function partnersDoc(): any {
     return {
-      version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'partners',
         entities: [
@@ -1125,7 +950,7 @@ describe('a legacy profile carries hydration', () => {
           {
             name: 'Partner', primary_key: ['partnerName'],
             source: TBL('partner'),
-            fields: [{name: 'partnerName'}],
+            fields: [{name: 'partnerName', expression: 'partner_name'}],
           },
         ],
         relationships: [{
@@ -1136,68 +961,64 @@ describe('a legacy profile carries hydration', () => {
     };
   }
 
-  test('merges hydration and mode, and a derived entity drops its source', () => {
-    const {doc, error} = mergeProfile(
+  test('applies hydration and mode, and a derived entity drops its source', () => {
+    const res = applyProfileObj(
         partnersDoc(), {
-          version: '0.2.0.dev0/google',
-          semantic_model: [{
-            name: 'partners',
-            entities: [
-              {
-                name: 'Alliance', source: TBL('alliance'),
-                fields: [
-                  {name: 'allianceId', expression: 'alliance_id'},
-                  {name: 'partnerName', expression: 'partner_name'},
-                ],
-              },
-              {
-                name: 'Partner',
-                hydration: {derive_from: {relationship: 'allianceWith'}},
-                mode: 'view',
-              },
-            ],
+          name: 'bq',
+          entities: [
+            {
+              name: 'Alliance', source: TBL('alliance'),
+              primary_key: ['alliance_id'],
+              fields: [
+                {name: 'allianceId', expression: 'alliance_id'},
+                {name: 'partnerName', expression: 'partner_name'},
+              ],
+            },
+            {
+              name: 'Partner',
+              hydration: {derive_from: {relationship: 'allianceWith'}},
+              mode: 'view',
+            },
+          ],
+          relationships: [{
+            name: 'allianceWith',
+            from_columns: ['partner_name'],
+            to_columns: ['partner_name'],
           }],
         },
         'bq');
-    expect(error).toBeUndefined();
-    const partner = entityOf(doc, 'Partner');
-    expect(partner.hydration)
-        .toEqual({derive_from: {relationship: 'allianceWith'}});
+    if ('error' in res) throw new Error(res.error);
+    const partner = res.model.entities.find(e => e.name === 'Partner')!;
+    expect(partner.hydration).toEqual({deriveFrom: {relationship: 'allianceWith'}});
     expect(partner.mode).toBe('view');
-    expect(partner.source).toBeUndefined();
+    expect(partner.dataSource).toBe('');
+    expect(partner.authoredSource).toBeUndefined();
   });
 
   test('null withdraws the model file\'s hydration', () => {
     const logical = partnersDoc();
     entityOf(logical, 'Partner').hydration =
         {derive_from: {relationship: 'allianceWith'}};
-    const {doc, error} = mergeProfile(
+    delete entityOf(logical, 'Partner').source;
+    const res = applyProfileObj(
         logical, {
-          semantic_model: [{
-            name: 'partners',
-            entities: [{name: 'Partner', hydration: null}],
-          }],
-        },
-        'bq');
-    expect(error).toBeUndefined();
-    expect(entityOf(doc, 'Partner').hydration).toBeUndefined();
-  });
-
-  test('a profile file cannot set hydration', () => {
-    const {error} = mergeProfile(
-        partnersDoc(), {
           name: 'bq',
           entities: [{
             name: 'Partner',
-            hydration: {derive_from: {relationship: 'allianceWith'}},
+            source: TBL('partner'),
+            primary_key: ['partner_name'],
+            hydration: null,
           }],
         },
         'bq');
-    expect(error).toMatch(/sets 'hydration', which a profile may not set/);
+    if ('error' in res) throw new Error(res.error);
+    const partner = res.model.entities.find(e => e.name === 'Partner')!;
+    expect(partner.hydration).toBeUndefined();
+    expect(partner.authoredSource).toBe(TBL('partner'));
   });
 });
 
-describe('mergeProfile reads a profile file', () => {
+describe('applyProfileFile reads a profile file', () => {
   // A profile file in the sibling-file form: a top-level profile object.
   function prodProfile(): any {
     return {
@@ -1226,49 +1047,65 @@ describe('mergeProfile reads a profile file', () => {
     return doc;
   }
 
-  test('rebinds what it names and leaves the rest as the model file has it', () => {
-    const {doc, error, excluded} =
-        mergeProfile(inlineBound(), prodProfile(), 'prod');
-    expect(error).toBeUndefined();
-    const customer = entityOf(doc, 'Customer');
-    expect(customer.source).toBe(TBL('customer_prod'));
-    expect(customer.primary_key).toEqual(['c_id']);
-    expect(customer.unique_keys).toEqual([['c_email']]);
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('full_name');
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
-        .toBe('inline_ltv');
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
-        .toBeUndefined();
-    const rel = modelOf(doc).relationships[0];
-    expect(rel.from_columns).toEqual(['cust_id']);
-    expect(rel.to_columns).toEqual(['c_id']);
-    // An excluded metric stays in the document, so a catalog push still
-    // publishes it, and the merge returns the exclusion for pruning.
-    expect(modelOf(doc).metrics.map((m: any) => m.name))
-        .toContain('avg_lifetime_value');
-    expect(excluded.filter(x => 'metric' in x))
-        .toEqual([{model: modelOf(doc).name, metric: 'avg_lifetime_value'}]);
-  });
+  test(
+      'rebinds what it names and leaves the rest as the model file has it',
+      () => {
+        const res = applyProfileObj(inlineBound(), prodProfile(), 'prod');
+        if ('error' in res) throw new Error(res.error);
+        const customer = res.model.entities.find(e => e.name === 'Customer')!;
+        expect(customer.authoredSource).toBe(TBL('customer_prod'));
+        expect(customer.keys).toEqual(['c_id']);
+        expect(customer.uniqueKeys).toEqual([['c_email']]);
+        expect(customer.fields.find(f => f.name === 'name')!.expression)
+            .toBe('full_name');
+        expect(
+            customer.fields.find(f => f.name === 'lifetimeValue')!.expression)
+            .toBe('inline_ltv');
+        expect(
+            customer.fields.find(f => f.name === 'availableCredit')!.expression)
+            .toBeUndefined();
+        expect(customer.excludedFields).toEqual(['availableCredit']);
+        const rel = res.model.relationships![0];
+        expect(rel.source.columns).toEqual(['cust_id']);
+        expect(rel.destination.columns).toEqual(['c_id']);
+        // An excluded metric stays on the model, so a catalog push still
+        // publishes it, and the profile marks it excluded for pruning.
+        expect(res.model.metrics!.map(m => m.name))
+            .toContain('avg_lifetime_value');
+        expect(res.model.excludedMetrics).toEqual(['avg_lifetime_value']);
+      });
 
-  test('a profile that rebinds one of three bound fields leaves the other two', () => {
-    const {doc, error} = mergeProfile(inlineBound(), {
-      name: 'prod',
-      entities: [{name: 'Customer', fields: [{name: 'name', expression: 'full_name'}]}],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('full_name');
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression).toBe('inline_ltv');
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression).toBe('inline_credit');
-  });
+  test(
+      'a profile that rebinds one of three bound fields leaves the other two',
+      () => {
+        const res = applyProfileObj(
+            inlineBound(), {
+              name: 'prod',
+              entities: [{
+                name: 'Customer',
+                fields: [{name: 'name', expression: 'full_name'}]
+              }],
+            },
+            'prod');
+        if ('error' in res) throw new Error(res.error);
+        const customer = res.model.entities.find(e => e.name === 'Customer')!;
+        expect(customer.fields.find(f => f.name === 'name')!.expression)
+            .toBe('full_name');
+        expect(
+            customer.fields.find(f => f.name === 'lifetimeValue')!.expression)
+            .toBe('inline_ltv');
+        expect(
+            customer.fields.find(f => f.name === 'availableCredit')!.expression)
+            .toBe('inline_credit');
+      });
 
   test('metrics_exclude "*" excludes every metric and keeps each in the document', () => {
     const profile = {...prodProfile(), metrics_exclude: '*'};
-    const {doc, error, excluded} = mergeProfile(inlineBound(), profile, 'prod');
-    expect(error).toBeUndefined();
-    const names = modelOf(doc).metrics.map((m: any) => m.name);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    if ('error' in res) throw new Error(res.error);
+    const names = res.model.metrics!.map(m => m.name);
     expect(names.length).toBeGreaterThan(0);
-    expect(excluded.flatMap(x => 'metric' in x ? [x.metric] : []))
-        .toEqual(names);
+    expect(res.model.excludedMetrics).toEqual(names);
   });
 
   test('a field expression may use the dialects form', () => {
@@ -1277,37 +1114,46 @@ describe('mergeProfile reads a profile file', () => {
       name: 'name',
       expression: {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]},
     }];
-    const {doc, error} = mergeProfile(inlineBound(), profile, 'prod');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toEqual(
-        {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]});
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    if ('error' in res) throw new Error(res.error);
+    const name =
+        res.model.entities.find(e => e.name === 'Customer')!.fields.find(
+            f => f.name === 'name')!;
+    expect(name.dialects).toEqual([
+      {dialect: 'BIGQUERY', expression: 'full_name'}
+    ]);
   });
 
   test('a field in both fields and fields_exclude is an error', () => {
     const profile = prodProfile();
     profile.entities[0].fields_exclude = ['name'];
-    expect(mergeProfile(inlineBound(), profile, 'prod').error)
-        .toMatch(/'Customer': field 'name' is in both 'fields' and 'fields_exclude'/);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    expect('error' in res && res.error)
+        .toMatch(
+            /'Customer': field 'name' is in both 'fields' and 'fields_exclude'/);
   });
 
   test('an unknown name in fields_exclude, relationships or metrics_exclude is an error', () => {
     const a = prodProfile();
     a.entities[0].fields_exclude = ['ghost'];
-    expect(mergeProfile(inlineBound(), a, 'prod').error)
+    const resA = applyProfileObj(inlineBound(), a, 'prod');
+    expect('error' in resA && resA.error)
         .toMatch(/field 'Customer.ghost' in 'fields_exclude'/);
     const b = prodProfile();
     b.relationships = [{name: 'Ghost', from_columns: ['a'], to_columns: ['b']}];
-    expect(mergeProfile(inlineBound(), b, 'prod').error)
+    const resB = applyProfileObj(inlineBound(), b, 'prod');
+    expect('error' in resB && resB.error)
         .toMatch(/relationship 'Ghost' is not in the logical model/);
     const c = {...prodProfile(), metrics_exclude: ['ghost']};
-    expect(mergeProfile(inlineBound(), c, 'prod').error)
+    const resC = applyProfileObj(inlineBound(), c, 'prod');
+    expect('error' in resC && resC.error)
         .toMatch(/metric 'ghost' in 'metrics_exclude'/);
   });
 
   test('"*" inside a metrics_exclude list is an error', () => {
     const profile = {...prodProfile(), metrics_exclude: ['*']};
-    expect(mergeProfile(inlineBound(), profile, 'prod').error)
-        .toMatch(/"\*" on its own/);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    expect('error' in res && res.error).toMatch(/"\*" on its own/);
   });
 
   test('a logical declaration in a profile file is rejected', () => {
@@ -1320,7 +1166,8 @@ describe('mergeProfile reads a profile file', () => {
     ]) {
       const profile = prodProfile();
       set(profile);
-      expect(mergeProfile(inlineBound(), profile, 'prod').error)
+      const res = applyProfileObj(inlineBound(), profile, 'prod');
+      expect('error' in res && res.error)
           .toMatch(/which a profile may not set/);
     }
   });
@@ -1328,8 +1175,16 @@ describe('mergeProfile reads a profile file', () => {
   test('a profile file against a document with two models is an error', () => {
     const logical = inlineBound();
     logical.semantic_model.push({name: 'other', entities: []});
-    expect(mergeProfile(logical, prodProfile(), 'prod').error)
-        .toMatch(/binds one model/);
+    const res = profileForDocument(
+        {
+          name: 'sales.yaml',
+          text: yaml.stringify(
+              {version: '0.2.0.dev0/google', ...logical}, YAML_OPTIONS),
+        },
+        [{name: 'prod', text: yaml.stringify(prodProfile(), YAML_OPTIONS)}],
+        'prod');
+    expect(res.kind === 'error' && res.error)
+        .toMatch(/a document declares one model/);
   });
 });
 
@@ -1338,7 +1193,7 @@ describe('loadProfileFile', () => {
   const TEXT = `name: prod
 entities:
   - name: orders
-    source: //bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders
+    source: bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders
     primary_key: [o_id]
     unique_keys: [[o_ref]]
     fields:
@@ -1364,7 +1219,7 @@ actions:
     expect(p.name).toBe('prod');
     const orders = p.entities[0];
     expect(orders.source).toBe(
-        '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders');
+        'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders');
     expect(orders.primaryKey).toEqual(['o_id']);
     expect(orders.uniqueKeys).toEqual([['o_ref']]);
     expect(orders.fields![0]).toEqual({
@@ -1396,7 +1251,7 @@ actions:
         .toBe('*');
   });
 
-  test('a logical key, "*" in a list, a wrong name and the old wrapper are rejected', () => {
+  test('a logical key, "*" in a list, a wrong name, datasets and the old wrapper are rejected', () => {
     for (const key of ['description', 'datatype']) {
       expect(() => loadProfileFile(
                  `name: prod\nentities:\n  - {name: orders, ${key}: x}\n`, 'prod'))
@@ -1405,6 +1260,9 @@ actions:
     expect(() => loadProfileFile('name: prod\nmetrics_exclude: ["*"]\n', 'prod'))
         .toThrow(/on its own/);
     expect(() => loadProfileFile('name: staging\n', 'prod')).toThrow(/does not match/);
+    expect(() => loadProfileFile('name: prod\ndatasets: []\n', 'prod'))
+        .toThrow("profile 'prod' lists its bindings under 'datasets'; a " +
+                 "profile lists them under 'entities'");
     expect(() => loadProfileFile('semantic_model: []\n', 'prod'))
         .toThrow(/not a profile file/);
   });
@@ -1412,20 +1270,6 @@ actions:
 
 
 describe('validateProfileCompleteness', () => {
-  // A logical model whose Customer.lifetimeValue is unbound in the model file.
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
-    return {
-      name: 'prod',
-      entities: [
-        {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
-        {name: 'Order', source: BQ('orders')},
-      ],
-      relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
-      ...over,
-    };
-  }
-
   test('a complete profile passes', () => {
     expect(validateProfileCompleteness(irModel(), profile())).toEqual([]);
   });
@@ -1453,32 +1297,16 @@ describe('validateProfileCompleteness', () => {
     expect(errors.join('\n')).toContain("entity 'Order' has no source");
   });
 
-  test('leaves out, when applied, the rules push checks on the applied model', () => {
-    const p = profile({
-      entities: [
-        {...profile().entities[0], primaryKey: ['LOWER(c_custkey)'],
-         fields: [{name: 'lifetimeValue', expression: 'Order.total'}]},
-        {name: 'Order'},
-      ],
-    });
-    const errors = validateProfileCompleteness(irModel(), p).join('\n');
-    expect(errors).toContain("key column 'LOWER(c_custkey)' is not a physical");
-    expect(errors).toContain("field 'Customer.lifetimeValue' reads entity 'Order'");
-    expect(validateProfileCompleteness(irModel(), p, [], {applied: true})).toEqual([
-      "profile 'prod': entity 'Order' has no source in this profile",
-    ]);
-  });
-
   test('BigQuery datasets are one database; two Spanner databases are not', () => {
     const twoDatasets = profile({
       entities: [
-        {...profile().entities[0], source: '//bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'},
-        {name: 'Order', source: 'bigquery:p.curated.orders'},
+        {...profile().entities[0], source: 'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'},
+        {...profile().entities[1], source: 'bigquery.googleapis.com/projects/p/datasets/curated/tables/orders'},
       ],
     });
     expect(validateProfileCompleteness(irModel(), twoDatasets)).toEqual([]);
     const SP = (db: string, t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
     const twoSpanner = profile({
       entities: [
         {...profile().entities[0], source: SP('a', 'Customer')},
@@ -1497,18 +1325,6 @@ describe('validateProfileCompleteness', () => {
         .toContain('more than one database');
   });
 
-  test('a restated key of another width is rejected; leaving it out inherits', () => {
-    const wide = profile({
-      entities: [{...profile().entities[0], primaryKey: ['a', 'b']}, profile().entities[1]],
-    });
-    expect(validateProfileCompleteness(irModel(), wide).join('\n'))
-        .toContain("restates its primary key with 2 column(s)");
-    const same = profile({
-      entities: [{...profile().entities[0], primaryKey: ['c_id']}, profile().entities[1]],
-    });
-    expect(validateProfileCompleteness(irModel(), same)).toEqual([]);
-  });
-
   test('a relationship with no, uneven or non-column join columns is reported', () => {
     expect(validateProfileCompleteness(irModel(), profile({
       relationships: [{name: 'PlacedBy', fromColumns: [], toColumns: []}],
@@ -1521,12 +1337,18 @@ describe('validateProfileCompleteness', () => {
     })).join('\n')).toContain('is not a physical column name');
   });
 
-  test('a field the model file leaves unbound must be bound or excluded', () => {
-    const errors = validateProfileCompleteness(irModel(), profile({
+  // The model file states Customer's key, leaves lifetimeValue unbound, and
+  // binds key and name to columns of its own table.
+  test('a binding with only a source misses its key, the unbound field and the column fields', () => {
+    expect(validateProfileCompleteness(irModel(), profile({
       entities: [{name: 'Customer', source: BQ('customer')}, profile().entities[1]],
-    }));
-    expect(errors.join('\n')).toContain(
-        "field 'Customer.lifetimeValue' has no binding in the model file");
+    }))).toEqual([
+      noKeys('primary_key'),
+      "profile 'prod': field 'Customer.lifetimeValue' has no binding in the " +
+          "model file; bind it in 'fields' or leave it out in 'fields_exclude'",
+      readsColumn('Customer.key', 'c_custkey'),
+      readsColumn('Customer.name', 'c_name'),
+    ]);
   });
 
   test('a field depending on an excluded one must be excluded or rebound, transitively', () => {
@@ -1534,41 +1356,34 @@ describe('validateProfileCompleteness', () => {
     const customer = m.entities[0];
     customer.fields.push({name: 'doubled', expression: 'Customer.name * 2'});
     customer.fields.push({name: 'quadrupled', expression: 'Customer.doubled * 2'});
-    const errors = validateProfileCompleteness(m, profile({
-      entities: [{...profile().entities[0], fieldsExclude: ['name']}, profile().entities[1]],
+    const excludingName = (...more: Field[]) => profile({
+      entities: [{
+        ...profile().entities[0], fieldsExclude: ['name'],
+        fields: [CUSTOMER_COLUMNS[0], column('lifetimeValue', 'ltv'), ...more],
+      }, profile().entities[1]],
       metricsExclude: '*',
-    }));
+    });
+    const errors = validateProfileCompleteness(m, excludingName());
     expect(errors.join('\n')).toContain(
         "field 'Customer.doubled' depends on 'Customer.name'");
     expect(errors.join('\n')).toContain(
         "field 'Customer.quadrupled' depends on 'Customer.name'");
-    const rebound = validateProfileCompleteness(m, profile({
-      entities: [{
-        ...profile().entities[0], fieldsExclude: ['name'],
-        fields: [
-          {name: 'lifetimeValue', expression: 'ltv'},
-          {name: 'doubled', expression: 'raw_doubled'},
-        ],
-      }, profile().entities[1]],
-      metricsExclude: '*',
-    }));
-    expect(rebound).toEqual([]);
+    // quadrupled reads only fields, so the profile need not restate it.
+    expect(validateProfileCompleteness(
+               m, excludingName(column('doubled', 'raw_doubled'))))
+        .toEqual([]);
   });
 
   test('a metric reaching an excluded field is named with the field', () => {
-    const errors = validateProfileCompleteness(irModel(), profile({
-      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
-                 profile().entities[1]],
-    }));
+    const entities = [CUSTOMER_WITHOUT_LTV, profile().entities[1]];
+    const errors = validateProfileCompleteness(irModel(), profile({entities}));
     expect(errors).toEqual([
       "profile 'prod': metric 'avg_lifetime_value' reaches " +
       "'Customer.lifetimeValue', which this profile excludes; add " +
       "'avg_lifetime_value' to 'metrics_exclude'",
     ]);
     expect(validateProfileCompleteness(irModel(), profile({
-      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
-                 profile().entities[1]],
-      metricsExclude: ['avg_lifetime_value'],
+      entities, metricsExclude: ['avg_lifetime_value'],
     }))).toEqual([]);
   });
 
@@ -1608,7 +1423,7 @@ describe('validateProfileCompleteness', () => {
 
   test('with sources in two databases, the dependency rules read every text', () => {
     const SPANNER = (t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
     const named = (orders: string) => profile({
       entities: [
         {
@@ -1676,8 +1491,8 @@ describe('validateProfileCompleteness', () => {
     const warnings: string[] = [];
     const errors = validateProfileCompleteness(irModel(), profile({
       entities: [
-        {name: 'Customer', source: BQ('customer'),
-         fields: [{name: 'lifetimeValue', expression: 'SUM(ltv'}]},
+        {...profile().entities[0],
+         fields: [...CUSTOMER_COLUMNS, {name: 'lifetimeValue', expression: 'SUM(ltv'}]},
         profile().entities[1],
       ],
     }), warnings);
@@ -1694,8 +1509,7 @@ describe('validateProfileCompleteness', () => {
         'AVG(Customer.lifetimeValue';
     const warnings: string[] = [];
     const errors = validateProfileCompleteness(m, profile({
-      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
-                 profile().entities[1]],
+      entities: [CUSTOMER_WITHOUT_LTV, profile().entities[1]],
     }), warnings);
     expect(errors).toEqual([]);
     expect(warnings).toEqual([
@@ -1707,9 +1521,11 @@ describe('validateProfileCompleteness', () => {
   test('with ownSqlOnly, warns about the model file SQL the caller does not read as this profile does', () => {
     // BigQuery reads a hex literal and PostgreSQL does not.
     const AL = (t: string) =>
-        `//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
+        `alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
     const m = irModel();
     m.entities[0].fields.push({name: 'code', expression: 'Customer.name + 0x1F'});
+    // Neither dialect reads this text, so the caller warns about it itself.
+    m.entities[0].fields.push({name: 'broken', expression: 'LOWER(Customer.name'});
     const pg = profile({
       name: 'pg',
       entities: [
@@ -1730,15 +1546,6 @@ describe('validateProfileCompleteness', () => {
     expect(warned({dialect: sourcesDialect(m)})).toEqual([unread]);
     // The caller reads it as PostgreSQL too, and warns about it itself.
     expect(warned({dialect: 'ALLOYDB'})).toEqual([]);
-    // The caller applies a profile that rebinds the field, so it never reads
-    // the model file's text.
-    expect(warned({dialect: 'ALLOYDB', rebound: ['Customer.code']}))
-        .toEqual([unread]);
-    // A rebound field counts only by its exact entity and field names.
-    expect(warned({
-      dialect: 'ALLOYDB',
-      rebound: ['Customer.cod', 'Customer.code2', 'Order.code'],
-    })).toEqual([]);
   });
 });
 
@@ -1747,17 +1554,16 @@ describe('validateProfileConsistency', () => {
   const p = (name: string, extra: Partial<ProfileSpec> = {}): ProfileSpec =>
       ({name, entities: [], relationships: [], ...extra});
 
-  test('with no key in the model file, profiles must agree on one shape or none', () => {
+  test('profiles may state keys of different shapes for one entity', () => {
     const m = irModel();
     m.entities[1].keys = [];
-    const disagree = validateProfileConsistency(m, [
-      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
-      p('b'),
-    ]);
-    expect(disagree.join('\n')).toContain("entity 'Order' has no key in the model file");
+    // d states an empty primary key, so its join is checked against the model
+    // file's key, the column `key`, which its to_columns cover.
     expect(validateProfileConsistency(m, [
-      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
-      p('b', {entities: [{name: 'Order', primaryKey: ['oid']}]}),
+      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}), p('b'),
+      p('c', {entities: [{name: 'Order', uniqueKeys: [['tenant', 'oid']]}]}),
+      p('d', {entities: [{name: 'Customer', primaryKey: []}],
+              relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['key']}]}),
     ])).toEqual([]);
   });
 
@@ -1782,16 +1588,7 @@ describe('validateProfileConsistency', () => {
 
 
 describe('profile completeness: sources, keys, relationships and inheritance', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  const base = (over: Partial<ProfileSpec> = {}): ProfileSpec => ({
-    name: 'prod',
-    entities: [
-      {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
-      {name: 'Order', source: BQ('orders')},
-    ],
-    relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
-    ...over,
-  });
+  const base = profile;
 
   test('a field listed with no expression does not count as bound', () => {
     const errors = validateProfileCompleteness(irModel(), base({
@@ -1809,36 +1606,39 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
                                   base().entities[1]]});
     expect(validateProfileCompleteness(irModel(), bare).join('\n'))
         .toContain("bare table name 'acme.prod.customer' is not a valid source");
+    // kcmd import completes a model file's bare names, not a profile's.
+    expect(validateProfileCompleteness(irModel(), bare).join('\n'))
+        .not.toContain('kcmd import');
     const unknown = base({entities: [{...base().entities[0], source: '//trino.example.com/x'},
                                      base().entities[1]]});
     expect(validateProfileCompleteness(irModel(), unknown).join('\n'))
         .toContain("source '//trino.example.com/x' is not a valid table reference");
   });
 
-  test('Spanner catalog names and AlloyDB sources classify by database', () => {
-    const one = base({entities: [
-      {...base().entities[0], source: 'spanner:p.regional-us.i.db.Customer'},
-      {name: 'Order', source: '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders'},
+  test('Spanner and AlloyDB sources classify by database', () => {
+    const sp = (project: string, db: string, t: string) =>
+        `spanner.googleapis.com/projects/${project}/instances/i/databases/${db}/tables/${t}`;
+    const alloy = (path: string) =>
+        `alloydb.googleapis.com/projects/p/locations/us/clusters/c/${path}`;
+    const bound = (customer: string, order: string) => base({entities: [
+      {...base().entities[0], source: customer}, {...base().entities[1], source: order},
     ]});
-    expect(validateProfileCompleteness(irModel(), one)).toEqual([]);
-    const two = base({entities: [
-      {...base().entities[0], source: 'spanner:`google.com:p`.regional-us.i.db.Customer'},
-      {name: 'Order', source: 'spanner:`google.com:p`.regional-us.i.db2.Orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), two).join('\n'))
+    expect(validateProfileCompleteness(
+               irModel(), bound(sp('p', 'db', 'Customer'), sp('p', 'db', 'Orders'))))
+        .toEqual([]);
+    expect(validateProfileCompleteness(
+               irModel(), bound(sp('google.com:p', 'db', 'Customer'),
+                                sp('google.com:p', 'db2', 'Orders'))).join('\n'))
         .toContain('more than one database');
-    const alloy = base({entities: [
-      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
-      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), alloy)).toEqual([]);
-    // A database belongs to its cluster, so the instance-based URI names no
+    const customer = alloy('databases/db/schemas/public/tables/customer');
+    expect(validateProfileCompleteness(
+               irModel(), bound(customer, alloy('databases/db/schemas/public/tables/orders'))))
+        .toEqual([]);
+    // A database belongs to its cluster, so the instance-based name names no
     // real table.
-    const instanceUri = base({entities: [
-      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
-      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/instances/i/databases/db/tables/orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), instanceUri).join('\n'))
+    expect(validateProfileCompleteness(
+               irModel(), bound(customer, alloy('instances/i/databases/db/tables/orders')))
+               .join('\n'))
         .toContain('uses the legacy instance-based AlloyDB URI');
   });
 
@@ -1870,38 +1670,22 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
     expect(() => validateProfileCompleteness(m, base())).not.toThrow();
   });
 
-  test('a unique-key shape mismatch is rejected', () => {
+  test('where the model file states keys, a profile states its own, of any shape', () => {
     const m = irModel();
     m.entities[0].uniqueKeys = [['email']];
-    const errors = validateProfileCompleteness(m, base({
-      entities: [{...base().entities[0], uniqueKeys: [['a', 'b']]}, base().entities[1]],
-    }));
-    expect(errors.join('\n')).toContain('restates its unique keys as [2]');
-  });
-
-  test('an empty unique key counts as none', () => {
-    const m = irModel();
-    // Order states no key in the model file, so a profile may give it one.
-    m.entities[1].keys = [];
-    m.entities[1].uniqueKeys = [[]];
-    expect(validateProfileCompleteness(m, base({
-      entities: [base().entities[0], {...base().entities[1], uniqueKeys: [['o_id']]}],
-    }))).toEqual([]);
-    m.entities[0].uniqueKeys = [['email'], []];
-    expect(validateProfileCompleteness(m, base({
-      entities: [{...base().entities[0], uniqueKeys: [[], ['e']]}, base().entities[1]],
-    }))).toEqual([]);
-    expect(validateProfileCompleteness(m, base({
-      entities: [{...base().entities[0], uniqueKeys: [['a', 'b'], []]}, base().entities[1]],
-    }))).toEqual([
-      "profile 'prod': entity 'Customer' restates its unique keys as [2]; the " +
-          "model file's are [1]",
-    ]);
-    // A profile that states only an empty unique key restates none.
-    delete m.entities[0].uniqueKeys;
-    expect(validateProfileCompleteness(m, base({
-      entities: [{...base().entities[0], uniqueKeys: [[]]}, base().entities[1]],
-    }))).toEqual([]);
+    const customer = (keys: Partial<ProfileEntityBinding>) =>
+        validateProfileCompleteness(m, base({
+          entities: [{...base().entities[0], ...keys}, base().entities[1]],
+        }));
+    expect(customer({primaryKey: ['a', 'b'], uniqueKeys: [['c', 'd'], ['e']]}))
+        .toEqual([]);
+    expect(customer({})).toEqual([noKeys('unique_keys')]);
+    expect(customer({primaryKey: [], uniqueKeys: []}))
+        .toEqual([noKeys('primary_key or unique_keys')]);
+    expect(customer({uniqueKeys: [[]]})).toEqual([noKeys('unique_keys')]);
+    // An empty unique key counts as none.
+    m.entities[0].uniqueKeys = [[]];
+    expect(customer({})).toEqual([]);
   });
 
   test('association relationships are not checked for join columns', () => {
@@ -1915,9 +1699,7 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
 
   test('metrics_exclude "*" suppresses a metric reaching an excluded field', () => {
     const profile = base({
-      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
-                 base().entities[1]],
-      metricsExclude: '*',
+      entities: [CUSTOMER_WITHOUT_LTV, base().entities[1]], metricsExclude: '*',
     });
     expect(validateProfileCompleteness(irModel(), profile)).toEqual([]);
   });
@@ -1932,7 +1714,7 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
     }
   });
 
-  test('cardinality: a model file with no join columns is left out; the k-th unique key counts', () => {
+  test('cardinality: a model file with no join columns is left out; a join on a unique key counts', () => {
     const m = irModel();
     m.relationships[0].destination.columns = [];
     m.relationships[0].source.columns = [];
@@ -1946,7 +1728,7 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
     const errors = validateProfileConsistency(m2, [
       {name: 'a', entities: [], relationships: [{name: 'PlacedBy', fromColumns: ['x'], toColumns: ['email']}]},
     ]);
-    expect(errors.join('\n')).toContain("profile 'a': unique key 1");
+    expect(errors).toEqual([]);
   });
 
   test('loadProfileFile reads actions, rejects bad shapes, and matches dialects exactly', () => {
@@ -1982,8 +1764,10 @@ entities:
         .toThrow(/in both 'fields' and 'fields_exclude'/);
   });
 
-  test('the merge binds an inherited field by redeclaring it with only a binding', () => {
-    const logical = {
+  test(
+      'applying a profile binds an inherited field by redeclaring it with only a binding',
+      () => {
+        const logical = {
       semantic_model: [{
         name: 'm',
         entities: [
@@ -1992,32 +1776,43 @@ entities:
         ],
       }],
     };
-    const {doc, error} = mergeProfile(logical, {
-      name: 'prod',
-      entities: [{name: 'Person', fields: [{name: 'label', expression: 'display_name'}]}],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    const person = (doc as any).semantic_model[0].entities[1];
-    expect(person.fields).toEqual([{name: 'id'}, {name: 'label', expression: 'display_name'}]);
-    const excluded = mergeProfile(logical, {
-      name: 'prod', entities: [{name: 'Person', fields_exclude: ['label']}],
-    }, 'prod');
-    expect(excluded.error).toBeUndefined();
-  });
+        const res = applyProfileObj(
+            logical, {
+              name: 'prod',
+              entities: [{
+                name: 'Person',
+                fields: [{name: 'label', expression: 'display_name'}]
+              }],
+            },
+            'prod');
+        if ('error' in res) throw new Error(res.error);
+        const person = res.model.entities[1];
+        expect(person.fields.map(f => [f.name, f.expression])).toEqual([
+          ['id', undefined],
+          ['label', 'display_name'],
+        ]);
+        const excluded = applyProfileObj(
+            logical, {
+              name: 'prod',
+              entities: [{name: 'Person', fields_exclude: ['label']}],
+            },
+            'prod');
+        expect('error' in excluded).toBe(false);
+      });
 });
 
 
 describe('profile overlay edges', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const logical = () => ({
     semantic_model: [{
       name: 'm',
       entities: [
-        {name: 'customer', source: 'p.d.customer', primary_key: ['id'],
+        {name: 'customer', source: BQ('customer'), primary_key: ['id'],
          fields: [{name: 'id', expression: 'id'}, {name: 'email', expression: 'email'}]},
-        {name: 'vip', extends: ['customer'], source: 'p.d.vip', primary_key: ['id'],
+        {name: 'vip', extends: ['customer'], source: BQ('vip'), primary_key: ['id'],
          fields: [{name: 'perk', expression: 'perk'}]},
-        {name: 'orders', source: 'p.d.orders', primary_key: ['o_id'],
+        {name: 'orders', source: BQ('orders'), primary_key: ['o_id'],
          fields: [{name: 'o_id', expression: 'o_id'}]},
       ],
       relationships: [{name: 'placed_by', from: 'orders', to: 'vip',
@@ -2025,49 +1820,27 @@ describe('profile overlay edges', () => {
     }],
   });
 
-  test('the legacy wrapper takes the new entity and relationship keys', () => {
-    const {doc, error} = mergeProfile(logical(), {
-      semantic_model: [{
-        name: 'm', version: '0.2.0.dev0/google', deployment_target: 'x',
-        entities: [{name: 'orders', source: 'p.d.orders2', primary_key: ['oid'],
-                    unique_keys: [['ref']]}],
-        relationships: [{name: 'placed_by', from_columns: ['c'], to_columns: ['vid']}],
-      }],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    const m = (doc as any).semantic_model[0];
-    expect(m.deployment_target).toBe('x');
-    expect(m.entities[2].primary_key).toEqual(['oid']);
-    expect(m.entities[2].unique_keys).toEqual([['ref']]);
-    expect(m.relationships[0].from_columns).toEqual(['c']);
-    expect(m.relationships[0].to_columns).toEqual(['vid']);
-    const withMetrics = logical() as any;
-    withMetrics.semantic_model[0].metrics = [{name: 'n', expression: 'COUNT(orders.o_id)'}];
-    const excluded = mergeProfile(withMetrics, {
-      semantic_model: [{name: 'm', metrics_exclude: '*'}],
-    }, 'prod');
-    expect(excluded.error).toBeUndefined();
-    expect((excluded.doc as any).semantic_model[0].metrics.length).toBe(1);
-    expect(excluded.excluded).toEqual([{model: 'm', metric: 'n'}]);
-  });
-
   test('deployment_target at the top of a profile file is rejected', () => {
-    expect(mergeProfile(logical(), {name: 'prod', deployment_target: 'x'}, 'prod').error)
-        .toMatch(/sets 'deployment_target', which a profile may not set/);
     expect(() => loadProfileFile('name: prod\ndeployment_target: x\n', 'prod'))
         .toThrow(/which a profile may not set/);
   });
 
-  test('a subtype may exclude a field a concrete ancestor binds; the ancestor keeps it', () => {
-    const merged = mergeProfile(logical(), {
-      name: 'prod', entities: [{name: 'vip', fields_exclude: ['email']}],
-    }, 'prod');
-    expect(merged.error).toBeUndefined();
-    expect(merged.excluded).toEqual([{model: 'm', entity: 'vip', field: 'email'}]);
-    // The ancestor's binding stays in the document, for the ancestor.
-    const customer = (merged.doc as any).semantic_model[0].entities[0];
-    expect(customer.fields.find((f: any) => f.name === 'email').expression).toBe('email');
-    const model: SemanticModel = {
+  test(
+      'a subtype may exclude a field a concrete ancestor binds; the ancestor keeps it',
+      () => {
+        const applied = applyProfileObj(
+            logical(), {
+              name: 'prod',
+              entities: [{name: 'vip', fields_exclude: ['email']}],
+            },
+            'prod');
+        if ('error' in applied) throw new Error(applied.error);
+        expect(applied.model.entities[1].excludedFields).toEqual(['email']);
+        // The ancestor's binding stays on the ancestor.
+        const customer = applied.model.entities[0];
+        expect(customer.fields.find(f => f.name === 'email')!.expression)
+            .toBe('email');
+        const model: SemanticModel = {
       name: 'm',
       entities: [
         {name: 'customer', dataSource: 'p.d.customer', keys: ['id'],
@@ -2076,36 +1849,15 @@ describe('profile overlay edges', () => {
       ],
       relationships: [],
     } as any;
-    expect(validateProfileCompleteness(model, {
-      name: 'prod',
-      entities: [{name: 'customer', source: BQ('customer')},
-                 {name: 'vip', source: BQ('vip'), fieldsExclude: ['email']}],
-      relationships: [],
-    })).toEqual([]);
-  });
-
-  test('a YAML-only tag in a custom ai_context member survives the merge as text', () => {
-    const logicalText = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - name: orders
-        ai_context:
-          custom:
-            reviewed: !!timestamp 2025-01-01
-        fields: [{name: id, datatype: Integer}]
-`;
-    const merged = mergeProfileOntoDoc(logicalText, `name: prod
-entities:
-  - name: orders
-    source: ${BQ('orders')}
-    fields: [{name: id, expression: id}]
-`, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    const {models} = loadModels(merged.text, {bindingOptional: true});
-    expect(models[0].entities[0].aiContext)
-        .toEqual({additionalProperties: {reviewed: '2025-01-01'}});
-  });
+        expect(validateProfileCompleteness(model, {
+          name: 'prod',
+          entities: [
+            keyedById('customer', BQ('customer'), column('email')),
+            {...keyedById('vip', BQ('vip')), fieldsExclude: ['email']}
+          ],
+          relationships: [],
+        })).toEqual([]);
+      });
 
   test('a dialect list with no BIGQUERY or ANSI_SQL entry still binds the field', () => {
     const p = loadProfileFile(`name: prod
@@ -2126,55 +1878,65 @@ entities:
     expect(() => loadProfileFile(
                'name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: {dialects: []}}\n',
                'prod'))
-        .toThrow("field 'a': 'expression': dialects: Too small");
+        .toThrow(
+            "field 'a': 'dialects' of 'expression' is an empty list; it " +
+            'takes at least one entry');
   });
 });
 
 
-describe('profile merge: exclusions, duplicates and catalog names', () => {
+describe('profile application: exclusions, duplicates and catalog names', () => {
   // vip extends customer; both have their own table.
   const logical = (emailInline: boolean) => ({
     semantic_model: [{
       name: 'm',
       entities: [
-        {name: 'customer', source: 'p.d.customer', primary_key: ['id'],
+        {name: 'customer', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customer', primary_key: ['id'],
          fields: [{name: 'id', expression: 'id'},
                   emailInline ? {name: 'email', expression: 'email'} : {name: 'email'}]},
-        {name: 'vip', extends: ['customer'], source: 'p.d.vip', primary_key: ['id'], fields: []},
+        {name: 'vip', extends: ['customer'], source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/vip', primary_key: ['id'], fields: []},
       ],
     }],
   });
-  const ir = (emailInline: boolean): SemanticModel => ({
-    name: 'm',
-    entities: [
-      {name: 'customer', dataSource: 'p.d.customer', keys: ['id'],
-       fields: [{name: 'id', expression: 'id'},
-                emailInline ? {name: 'email', expression: 'email'} : {name: 'email'}]},
-      {name: 'vip', extends: ['customer'], dataSource: 'p.d.vip', keys: ['id'], fields: []},
-    ],
-    relationships: [],
-  } as any);
 
   test('an exclusion applies to the entity that names it, whatever the entry order', () => {
     const both = [{name: 'customer', fields_exclude: ['email']},
                   {name: 'vip', fields_exclude: ['email']}];
     for (const order of [(x: any[]) => x, (x: any[]) => [...x].reverse()]) {
-      const r = mergeProfile(logical(true), {name: 'prod', entities: order(both)}, 'prod');
-      expect(r.error).toBeUndefined();
-      expect(r.excluded.map(x => 'entity' in x ? x.entity : '').sort())
+      const r = applyProfileObj(
+          logical(true), {name: 'prod', entities: order(both)}, 'prod');
+      if ('error' in r) throw new Error(r.error);
+      expect(r.model.entities.filter(e => e.excludedFields?.includes('email'))
+                 .map(e => e.name)
+                 .sort())
           .toEqual(['customer', 'vip']);
     }
     // vip excluding a field customer binds only in the profile is allowed too.
-    expect(mergeProfile(logical(false), {name: 'prod', entities: [
-      {name: 'vip', fields_exclude: ['email']},
-      {name: 'customer', fields: [{name: 'email', expression: 'mail'}]},
-    ]}, 'prod').error).toBeUndefined();
+    expect(
+        'error' in applyProfileObj(
+            logical(false), {
+              name: 'prod',
+              entities: [
+                {name: 'vip', fields_exclude: ['email']},
+                {
+                  name: 'customer',
+                  fields: [{name: 'email', expression: 'mail'}]
+                },
+              ]
+            },
+            'prod'))
+        .toBe(false);
   });
 
   test('an entity or relationship listed twice is rejected', () => {
-    expect(mergeProfile(logical(true), {
-      name: 'prod', entities: [{name: 'vip'}, {name: 'vip'}],
-    }, 'prod').error).toContain("'entities' lists 'vip' twice");
+    const dup = applyProfileObj(
+        logical(true), {
+          name: 'prod',
+          entities: [{name: 'vip'}, {name: 'vip'}],
+        },
+        'prod');
+    expect('error' in dup && dup.error)
+        .toContain('\'entities\' lists \'vip\' twice');
     expect(() => loadProfileFile(
                'name: prod\nrelationships:\n  - {name: r, from_columns: [a], to_columns: [b]}\n' +
                    '  - {name: r, from_columns: [c], to_columns: [d]}\n',
@@ -2190,24 +1952,11 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
                'prod'))
         .toThrow("has no 'name'");
   });
-
-  test('a backtick-quoted catalog name is the same database as its URI', () => {
-    const model = ir(true);
-    model.entities[1].extends = undefined;
-    const SP = '//spanner.googleapis.com/projects/google.com:p/instances/i/databases/db/tables/';
-    const errors = validateProfileCompleteness(model, {
-      name: 'prod',
-      entities: [{name: 'customer', source: 'spanner:`google.com:p`.regional-us.i.db.Customer'},
-                 {name: 'vip', source: `${SP}Vip`}],
-      relationships: [],
-    });
-    expect(errors.join('\n')).not.toContain('more than one database');
-  });
 });
 
 
 describe('completeness sees the model as the profile does', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   // vip extends customer; both have their own table.
   const model = (emailInline: boolean): SemanticModel => ({
     name: 'm',
@@ -2220,18 +1969,30 @@ describe('completeness sees the model as the profile does', () => {
     relationships: [],
     metrics: [{name: 'vip_emails', expression: 'COUNT(vip.email)', entity: 'vip'}],
   } as any);
-  const spec = (entities: any[]): ProfileSpec => ({name: 'prod', entities, relationships: []});
+  // Each entity states its key and restates id and email, unless a test gives
+  // its own fields.
+  const spec = (entities: any[]): ProfileSpec => ({
+    name: 'prod', relationships: [],
+    entities: entities.map(e => ({
+      primaryKey: ['id'], fields: [ID, column('email')], ...e,
+    })),
+  });
+  // The errors of a profile that binds customer to `a` and vip to `b`.
+  const errorsFor = (a: string, b = BQ('vip'), opts?: CompletenessOptions) =>
+      validateProfileCompleteness(model(true), spec([
+        {name: 'customer', source: a}, {name: 'vip', source: b},
+      ]), [], opts).join('\n');
 
   test('an exclusion on an ancestor leaves its descendants\' field in place', () => {
     // customer excludes email; vip still reads email from its own table.
     expect(validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: BQ('c'), fieldsExclude: ['email']},
+      {name: 'customer', source: BQ('c'), fields: [ID], fieldsExclude: ['email']},
       {name: 'vip', source: BQ('v')},
     ]))).toEqual([]);
     // Excluding it on vip itself does reach vip's metric.
     expect(validateProfileCompleteness(model(true), spec([
       {name: 'customer', source: BQ('c')},
-      {name: 'vip', source: BQ('v'), fieldsExclude: ['email']},
+      {name: 'vip', source: BQ('v'), fields: [ID], fieldsExclude: ['email']},
     ]))).toEqual([
       "profile 'prod': metric 'vip_emails' reaches 'vip.email', which this profile " +
           "excludes; add 'vip_emails' to 'metrics_exclude'",
@@ -2240,8 +2001,8 @@ describe('completeness sees the model as the profile does', () => {
 
   test('a field an ancestor binds only in the profile is bound on its descendants', () => {
     expect(validateProfileCompleteness(model(false), spec([
-      {name: 'customer', source: BQ('c'), fields: [{name: 'email', expression: 'mail'}]},
-      {name: 'vip', source: BQ('v')},
+      {name: 'customer', source: BQ('c'), fields: [ID, {name: 'email', expression: 'customer.id'}]},
+      {name: 'vip', source: BQ('v'), fields: [ID]},
     ]))).toEqual([]);
   });
 
@@ -2255,60 +2016,113 @@ describe('completeness sees the model as the profile does', () => {
   });
 
   test('only the accepted source forms are accepted', () => {
-    const errorsFor = (source: string) => validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source}, {name: 'vip', source: BQ('v')},
-    ])).join('\n');
     for (const bad of [
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
            'oracle:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
-           '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+           'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
            'bigquery:graph:p.d.g', 'bigquery:propertygraph:p.d.g',
            'spanner:graph:p.c.i.db.g',
          ]) {
       // The loader's source reader judges a profile's sources too.
       expect(errorsFor(bad)).toMatch(/is not a valid (source|table reference)/);
     }
-    expect(errorsFor('bigquery:p.raw.customer')).toEqual('');
+    expect(errorsFor(BQ('customer'))).toEqual('');
+    // A profile's rebinding is held to the old-form rules a model file's
+    // source is.
+    expect(errorsFor(`//${BQ('customer')}`)).toContain(
+        `source '//${BQ('customer')}' is a resource URI; write its GCP ` +
+        `resource name, without the leading '//': '${BQ('customer')}'.`);
+    expect(errorsFor('bigquery:p.d.customer')).toContain(
+        `source 'bigquery:p.d.customer' is a Knowledge Catalog name; write ` +
+        `the table's GCP resource name: '${BQ('customer')}'.`);
   });
 
-  // A Cloud SQL catalog name gives its instance as project, location and
-  // instance.
-  test('Cloud SQL sources classify by instance and database', () => {
-    const errorsFor = (a: string, b: string) => validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: a}, {name: 'vip', source: b},
-    ])).join('\n');
-    // One Cloud SQL for MySQL instance is one database, whatever its schemas.
-    expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c', 'cloudsql_mysql:acme.us.inst.crm.v'))
+  // A Cloud SQL table written as its resource name. A MySQL table has no
+  // schema, and its database is its instance; a PostgreSQL or SQL Server table
+  // has a schema, and its database is the one it names.
+  test('Cloud SQL resource names classify by instance and database', () => {
+    const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
+    // MySQL: one instance is one database, whatever its databases.
+    expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
         .toEqual('');
-    // One Cloud SQL for PostgreSQL database is one; two on one instance are two.
-    expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
-                     'cloudsql_postgresql:acme.us.inst.db1.sales.v'))
-        .toEqual('');
-    expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
-                     'cloudsql_postgresql:acme.us.inst.db2.public.v'))
+    expect(errorsFor(`${inst}/databases/sales/tables/c`,
+                     'cloudsql.googleapis.com/projects/acme/locations/us/instances/other/databases/sales/tables/v'))
         .toContain('more than one database');
-    // A Cloud SQL for MySQL name has exactly five segments.
-    expect(errorsFor('cloudsql_mysql:acme.us.sales.c', 'cloudsql_mysql:acme.us.sales.v'))
-        .toContain("source 'cloudsql_mysql:acme.us.sales.c' is not a valid table reference");
+    // With a schema: one database is one; two on one instance are two when
+    // the lookup names another engine than SQL Server, whose instance one
+    // query reaches whole. With no lookup they may be one.
+    expect(errorsFor(`${inst}/databases/db1/schemas/public/tables/c`,
+                     `${inst}/databases/db1/schemas/sales/tables/v`))
+        .toEqual('');
+    const twoDatabases = [
+      `${inst}/databases/db1/schemas/public/tables/c`,
+      `${inst}/databases/db2/schemas/public/tables/v`,
+    ] as const;
+    const lookedUp = (dialect: string) =>
+        ({sourceDialects: new Map(twoDatabases.map(s => [s, dialect]))});
+    expect(errorsFor(...twoDatabases)).toEqual('');
+    expect(errorsFor(...twoDatabases, lookedUp('POSTGRES')))
+        .toContain('more than one database');
+    expect(errorsFor(...twoDatabases, lookedUp('SQLSERVER'))).toEqual('');
+    // Malformed: no location, no table, or a table under the instance.
+    for (const bad of [
+           'cloudsql.googleapis.com/projects/acme/instances/inst/databases/db/tables/c',
+           `${inst}/databases/db/schemas/public`,
+           `${inst}/tables/c`,
+         ]) {
+      expect(errorsFor(bad, `${inst}/databases/db/tables/v`))
+          .toContain(`source '${bad}' is not a valid table reference`);
+    }
   });
 
-  // A profile's rebinding is read as the model file's source is, so a
-  // third-party table is rejected there too, and counts as no database.
-  test('a profile that binds a third-party source is rejected', () => {
-    const errors = validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: 'snowflake:acct.db.public.c'},
-      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
-    ])).join('\n');
+  // The dialect of a Cloud SQL table written as its resource name is the one
+  // its catalog entry's type names, not one the source text implies. With no
+  // entry read, it is unknown (null), even for a MySQL-shaped name; the
+  // catalog name still implies its dialect from its prefix.
+  test('a Cloud SQL resource name implies no dialect', () => {
+    const dialectOf = (source: string) => sourcesDialect({entities: [
+      {name: 'orders', dataSource: source, authoredSource: source, keys: [], fields: []},
+    ]} as any);
+    expect(dialectOf(
+        'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/tables/orders'))
+        .toBeNull();
+    expect(dialectOf(
+        'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/schemas/s/tables/orders'))
+        .toBeNull();
+  });
+
+  // A profile's rebinding is read as the model file's source is, so a catalog
+  // name under a third-party prefix is rejected and counts as no database. A
+  // third-party table's database is the one its entry names, or its system's.
+  test('a profile that binds a third-party table', () => {
+    const entry = (g: string, t: string) => `projects/acme/locations/us/entryGroups/${g}/entries/${t}`;
+    const [sf, sf2, dbx] = [entry('sf', 'c'), entry('sf', 'v'), entry('dbx', 'v')];
+    const sourceDialects =
+        new Map([[sf, 'SNOWFLAKE'], [sf2, 'SNOWFLAKE'], [dbx, 'DATABRICKS']]);
+    // sf and sf2 in the Snowflake accounts `a` and `b`.
+    const accounts = (a: string, b: string) => ({
+      sourceDialects,
+      sourceDatabases: new Map([[sf, `snowflake/${a}`], [sf2, `snowflake/${b}`]]),
+    });
+    const errors = errorsFor('snowflake:acct.db.public.c');
     expect(errors).toContain(
-        "source 'snowflake:acct.db.public.c' is a third-party table; the " +
-        "preview supports Google Cloud tables only");
+        "source 'snowflake:acct.db.public.c' is a Knowledge Catalog name");
     expect(errors).not.toContain('more than one database');
+    for (const [vip, opts] of [
+      [BQ('vip'), {sourceDialects}], [dbx, {sourceDialects}], [sf2, accounts('a', 'b')],
+    ] as const) {
+      expect(errorsFor(sf, vip, opts)).toContain(
+          "binds entities in more than one database ('customer', 'vip')");
+    }
+    expect(errorsFor(sf, sf2, {sourceDialects})).toEqual('');
+    expect(errorsFor(sf, sf2, accounts('a', 'a'))).toEqual('');
+    expect(errorsFor(sf, sf2, {sourceDialects, sourceDatabases: new Map([[sf, 'snowflake/a']])})).toEqual('');
   });
 
-  // A source the loader's reader rejects is reported, and names no
-  // database. So its entity's fields are not held to the dialect of the
-  // profile's other sources, which its table may not have. The other
-  // entities' fields still are.
+  // A source the loader's reader rejects is reported, and its entity keeps
+  // the model file's table. So its entity's fields are not held to the
+  // dialect of the profile's other sources, which its table may not have.
+  // The other entities' fields still are.
   test('a profile source the reader rejects leaves its entity\'s fields out of the dialect rule', () => {
     const m = model(true);
     // email as a load gives it: a SNOWFLAKE text, kept in its list too.
@@ -2318,20 +2132,32 @@ describe('completeness sees the model as the profile does', () => {
       importedDialect: 'SNOWFLAKE',
       dialects: [{dialect: 'SNOWFLAKE', expression: 'email'}],
     };
+    // Tables in one Cloud SQL for MySQL instance, as the lookup reads them.
+    const mysql = (t: string) =>
+        `cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/sales/tables/${t}`;
+    const sourceDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
     const errorsFor = (customer: string) => validateProfileCompleteness(m, spec([
-      {name: 'customer', source: customer},
-      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
-    ])).join('\n');
-    for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
+      {name: 'customer', source: customer, fields: [ID]},
+      {name: 'vip', source: mysql('v'), fields: [ID]},
+    ]), [], {sourceDialects}).join('\n');
+    for (const rejected of [
+           'snowflake:acct.db.public.c', 'acme.sales.c', '', `//${mysql('c')}`,
+         ]) {
       const errors = errorsFor(rejected);
-      expect({rejected, errors})
-          .toEqual({rejected, errors: expect.not.stringContaining("'customer.email'")});
+      expect({rejected, errors}).toEqual({
+        rejected,
+        errors: expect.not.stringContaining("'customer.email' has no expression"),
+      });
       // vip inherits email, and its own table is in the MySQL instance.
       expect(errors).toContain(
           "field 'vip.email' has no expression for MYSQL or ANSI_SQL");
     }
+    // A source with a leading '//' names a table, and the reader still
+    // rejects it as a resource URI.
+    expect(errorsFor(`//${mysql('c')}`)).toContain(
+        `source '//${mysql('c')}' is a resource URI`);
     // A source in the same instance gives the profile its dialect.
-    expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c')).toContain(
+    expect(errorsFor(mysql('c'))).toContain(
         "field 'customer.email' has no expression for MYSQL or ANSI_SQL");
   });
 
@@ -2347,21 +2173,21 @@ describe('completeness sees the model as the profile does', () => {
   });
 
   test('a BigLake table shares BigQuery\'s database', () => {
-    expect(validateProfileCompleteness(model(true), spec([
-      {name: 'customer',
-       source: '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'},
-      {name: 'vip', source: BQ('v')},
-    ]))).toEqual([]);
+    for (const parent of ['namespaces/n', 'databases/d']) {
+      expect(validateProfileCompleteness(model(true), spec([
+        {name: 'customer',
+         source: `biglake.googleapis.com/projects/p/catalogs/c/${parent}/tables/t`},
+        {name: 'vip', source: BQ('v')},
+      ]))).toEqual([]);
+    }
   });
 });
 
 
 describe('profile rules', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
-  // Every binding that states the join columns gives the same cardinality
-  // answer, the model file's included.
-  test('cardinality compares the model file\'s binding when it states join columns', () => {
+  test('cardinality: bindings may join on different keys', () => {
     // The model file joins on customer's primary key; prod restates both keys
     // and joins on its unique key instead.
     const model = (inlineJoin: boolean): SemanticModel => ({
@@ -2383,8 +2209,7 @@ describe('profile rules', () => {
                   uniqueKeys: [['c_email']]}],
       relationships: [{name: 'placed_by', fromColumns: ['o_mail'], toColumns: ['c_email']}],
     };
-    expect(validateProfileConsistency(model(true), [prod]).join('\n'))
-        .toContain("relationship 'placed_by' covers different keys under different bindings");
+    expect(validateProfileConsistency(model(true), [prod])).toEqual([]);
     expect(validateProfileConsistency(model(false), [prod])).toEqual([]);
   });
 
@@ -2401,6 +2226,26 @@ describe('profile rules', () => {
     }).join('\n');
     expect(errors).toContain("field 'Customer.lifetimeValue' reads entity 'Order'");
     expect(errors).toContain("reads 'Customer.lifetimeValu', which is not a field of 'Customer'");
+  });
+
+  // Every profile file is checked, whether or not a deployment applies it.
+  test('a profile field expression may not name its own field', () => {
+    const errors = validateProfileCompleteness(irModel(), {
+      name: 'prod',
+      entities: [
+        {name: 'Customer', source: BQ('customer'),
+         fields: [{name: 'lifetimeValue', expression: 'Customer.lifetimeValue * 2'}]},
+        {name: 'Order', source: BQ('orders')},
+      ],
+      relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
+    });
+    const named = errors.filter(e => e.includes('names itself'));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toEndWith(
+        ": field 'Customer.lifetimeValue' names itself; a field expression " +
+        'may name other fields of its entity, but not itself, directly or ' +
+        'through other fields; to read the column of that name, write it ' +
+        "without the qualifier: 'lifetimeValue'");
   });
 
   // Only the allowlisted dialects, each once.
@@ -2425,10 +2270,14 @@ describe('profile rules', () => {
         `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: ${expression}}\n`;
     expect(() => loadProfileFile(
                file('{dialects: [{dialect: BIGQUERY, expression: x}], note: y}'), 'prod'))
-        .toThrow("field 'a': 'expression': Unrecognized key: \"note\"");
+        .toThrow(
+            "field 'a': unknown key 'note' in 'expression'; it takes " +
+            "'dialects'");
     expect(() => loadProfileFile(
                file('{dialects: [{dialect: BIGQUERY, expression: x, note: y}]}'), 'prod'))
-        .toThrow("field 'a': 'expression': dialects.0: Unrecognized key: \"note\"");
+        .toThrow(
+            "field 'a': unknown key 'note' in entry 1 of 'dialects' of " +
+            "'expression'; it takes 'dialect' and 'expression'");
   });
 
   // A blank expression, one that is only a comment and one that is only its
@@ -2463,18 +2312,18 @@ semantic_model:
   - name: shop
     entities:
       - name: base
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/base
         primary_key: [id]
         fields:
           - {name: id, expression: id}
           - {name: notes, expression: notes}
       - name: orders
         extends: [base]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
     deployments:
       - name: default
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
 `);
     const profile = (expression: string) =>
         `name: prod\nentities:\n  - name: base\n    fields:\n      - {name: notes, expression: ${expression}}\n`;
@@ -2493,24 +2342,28 @@ semantic_model:
   - name: shop
     entities:
       - name: base
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/base
         primary_key: [id]
         fields:
           - {name: id, expression: id}
-          - {name: notes, expression: notes}
+          - {name: notes}
       - name: orders
         extends: [base]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
 `);
     const profile = (expression: string) => loadProfileFile(`name: prod
 entities:
   - name: base
-    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/base
+    source: bigquery.googleapis.com/projects/p/datasets/prod/tables/base
+    primary_key: [id]
     fields:
+      - {name: id, expression: id}
       - {name: notes, expression: ${expression}}
   - name: orders
-    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/orders
+    source: bigquery.googleapis.com/projects/p/datasets/prod/tables/orders
+    primary_key: [id]
+    fields: [{name: id, expression: id}]
 `, 'prod');
     expect(validateProfileCompleteness(models[0], profile('"base.orders."')))
         .toEqual([
@@ -2518,7 +2371,8 @@ entities:
           "'orders', 'expression' is only the qualifier 'orders.'; write the " +
           "field's SQL",
         ]);
-    expect(validateProfileCompleteness(models[0], profile('notes_col')))
+    // orders inherits a binding that reads only fields.
+    expect(validateProfileCompleteness(models[0], profile('UPPER(base.id)')))
         .toEqual([]);
     // A binding the reader rejects is reported once, where the profile writes
     // it, also when a profile built in memory gives it with no dialect list.
@@ -2530,8 +2384,8 @@ entities:
         name: 'prod',
         relationships: [],
         entities: [
-          {name: 'base', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/base', fields: [notes]},
-          {name: 'orders', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders'},
+          keyedById('base', 'bigquery.googleapis.com/projects/p/datasets/prod/tables/base', notes),
+          keyedById('orders', 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders'),
         ],
       })).toEqual([expect.stringMatching(
           /^profile 'prod': entity 'base': field 'notes': .* is only a comment; write the field's SQL$/)]);
@@ -2542,7 +2396,7 @@ entities:
   // inherited check reads only the fields the entity takes from an ancestor.
   test('the inherited check of the profile checks reads only what an entity inherits, and completeness lists every field', () => {
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     // A model built in memory skips the loader, so `own` holds no SQL.
     const base: SemanticModel = {
       name: 'shop',
@@ -2581,11 +2435,16 @@ entities:
 entities:
   - name: base
     source: ${BQ('base')}
+    primary_key: [id]
     fields:
+      - {name: id, expression: id}
       - {name: label, expression: "base.orders."}
       - {name: tag, expression: "base.orders."}
+      - {name: memo, expression: memo}
   - name: orders
     source: ${BQ('orders')}
+    primary_key: [id]
+    fields: [{name: id, expression: id}]
 `, 'prod');
     const inherited = (field: string) =>
         `profile 'prod': entity 'orders' inherits field '${field}': read on ` +
@@ -2603,7 +2462,8 @@ entities:
   // text.
   test('push reads an inherited imported text outside the dialect list', () => {
     // Each imported text holds SQL on `base` and is only the qualifier
-    // `orders.` on `orders`.
+    // `orders.` on `orders`. Each target text reads only a field, so `orders`
+    // may inherit it.
     const shop: SemanticModel = {
       name: 'shop',
       relationships: [],
@@ -2617,19 +2477,19 @@ entities:
             {name: 'id', expression: 'id'},
             {
               name: 'loose',
-              expression: 'loose',
+              expression: 'base.id',
               importedExpression: 'base.orders.',
             },
             {
               name: 'marked',
-              expression: 'marked',
+              expression: 'base.id',
               importedExpression: 'base.orders.',
               importedDialect: 'BIGQUERY',
             },
             {
               name: 'listed',
-              dialects: [{dialect: 'BIGQUERY', expression: 'listed'}],
-              expression: 'listed',
+              dialects: [{dialect: 'BIGQUERY', expression: 'base.id'}],
+              expression: 'base.id',
               importedExpression: 'base.orders.',
               importedDialect: 'POSTGRES',
             },
@@ -2658,7 +2518,7 @@ entities:
         `field's SQL`;
     const fields = ['loose', 'marked', 'listed', 'todo'];
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: shop}], {targetOptional: true}))
+               [{document: 'shop.yaml', model: shop}]))
         .toEqual([
           "field 'base.todo' in model 'shop' (shop.yaml): 'expression' is " +
               "only a comment; write the field's SQL, or remove 'expression' " +
@@ -2696,7 +2556,7 @@ entities:
       dialects: [{dialect: 'SPANNER' as const, expression: 'base.orders.'}],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile: ProfileSpec = {
       name: 'prod',
       relationships: [],
@@ -2715,8 +2575,7 @@ entities:
     loaded.entities[0].fields[1] =
         {...note, stringForm: false, expression: 'base.orders.'};
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: loaded}],
-               {targetOptional: true}))
+               [{document: 'shop.yaml', model: loaded}]))
         .toEqual([`model 'shop' (shop.yaml): ${problem}.`]);
   });
 
@@ -2725,7 +2584,7 @@ entities:
   // text, which BigQuery would read as the qualifier `orders.` and a comment.
   test('the profile checks read an inherited field in its own dialects under any load dialect', () => {
     const PG = (t: string) =>
-        `cloudsql_postgresql:p.us-central1.inst.db.public.${t}`;
+        `cloudsql.googleapis.com/projects/p/locations/us-central1/instances/inst/databases/db/schemas/public/tables/${t}`;
     const pts = `
             expression:
               dialects:
@@ -2757,13 +2616,9 @@ entities:
   - name: orders
     source: "${PG('orders')}"
 `;
-    const load = (text: string) =>
-        loadSemanticModels(
-            [{name: 'shop.yaml', text}],
-            {dialect: 'POSTGRES', bindingOptional: true});
-    const merged = mergeProfileOntoDocImpl(modelText(false), profileText, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    expect(load(merged.text).error).toBeUndefined();
+    const load = (text: string) => loadSemanticModels(
+        [{name: 'shop.yaml', text}],
+        {dialect: 'POSTGRES', bindingOptional: true});
     const applied = applyProfileFile(
         load(modelText(false)).models[0].model, profileText, 'prod',
         {load: {dialect: 'POSTGRES'}});
@@ -2774,10 +2629,7 @@ entities:
     const sources: ProfileSpec = {
       name: 'prod',
       relationships: [],
-      entities: [
-        {name: 'base', source: PG('base')},
-        {name: 'orders', source: PG('orders')},
-      ],
+      entities: [keyedById('base', PG('base')), keyedById('orders', PG('orders'))],
     };
     expect(() => applyProfile(bound.models[0].model, sources)).not.toThrow();
     expect(validateProfileCompleteness(bound.models[0].model, sources))
@@ -2791,7 +2643,7 @@ semantic_model:
   - name: shop
     entities:
       - name: orders
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - {name: id, expression: id}
@@ -2804,14 +2656,9 @@ semantic_model:
                models[0], {
                  name: 'prod',
                  relationships: [],
-                 entities: [{
-                   name: 'orders',
-                   source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
-                   fields: [
-                     {name: 'notes', expression: '-- todo'},
-                     {name: 'memo', expression: 'orders.'},
-                   ],
-                 }],
+                 entities: [keyedById(
+                     'orders', 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+                     column('notes', '-- todo'), column('memo', 'orders.'))],
                },
                warnings))
         .toEqual([
@@ -2856,7 +2703,7 @@ semantic_model:
           relationships: [],
           entities: [{
             name: 'orders',
-            source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+            source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
             fieldsExclude: ['u'],
           }],
         },
@@ -2865,40 +2712,14 @@ semantic_model:
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.
-  test('the merge rejects an entry for an abstract entity', () => {
+  test('applying a profile rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [
       {name: 'party', abstract: true, fields: [{name: 'name'}]},
     ]}]};
-    expect(mergeProfile(logical, {name: 'prod', entities: [{name: 'party'}]}, 'prod').error)
-        .toContain("entity 'party' is abstract, so a profile cannot bind it");
-  });
-
-  test('the legacy wrapper carries only version and semantic_model, with named entries', () => {
-    const logical = {semantic_model: [{name: 'm', entities: [{name: 'o', fields: []}]}]};
-    expect(mergeProfile(logical, {semantic_model: [], name: 'prod'}, 'prod').error)
-        .toContain("carries only 'version' and 'semantic_model', not 'name'");
-    expect(mergeProfile(logical, {semantic_model: ['m']}, 'prod').error)
-        .toContain("every entry in 'semantic_model' is a mapping with a 'name'");
-  });
-
-  test('a YAML alias in the model file does not carry one entity\'s binding to another', () => {
-    const logicalText = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - {name: orders, source: ${BQ('orders')}, primary_key: [id], fields: [&idf {name: id, expression: id}]}
-      - {name: refunds, source: ${BQ('refunds')}, primary_key: [id], fields: [*idf]}
-`;
-    const merged = mergeProfileOntoDoc(logicalText, `name: prod
-entities:
-  - {name: orders, source: ${BQ('orders')}, fields: [{name: id, expression: order_id}]}
-  - {name: refunds, source: ${BQ('refunds')}}
-relationships: []
-`, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    const {models} = loadModels(merged.text);
-    expect(models[0].entities.find(e => e.name === 'refunds')!.fields[0].expression).toBe('id');
-    expect(models[0].entities.find(e => e.name === 'orders')!.fields[0].expression).toBe('order_id');
+    const res = applyProfileObj(
+        logical, {name: 'prod', entities: [{name: 'party'}]}, 'prod');
+    expect('error' in res && res.error)
+        .toContain('entity \'party\' is abstract, so a profile cannot bind it');
   });
 
   test('an inheritance error the profile itself creates is reported', () => {
@@ -2937,77 +2758,76 @@ relationships: []
     ],
     relationships: [],
   }) as any;
+  // A profile's binding of one of the entities below: its key and its column
+  // field, both named after the entity, and `more` fields.
+  const ownBinding = (name: string, ...more: Field[]) =>
+      keyed(name.toLowerCase())(name, BQ(name.toLowerCase()), ...more);
   const bindsXOnB = (more: object[] = []): ProfileSpec => ({
     name: 'prod',
-    entities: [{name: 'B', source: BQ('b'), fields: [{name: 'x', expression: 'b_x'}]},
-               {name: 'D', source: BQ('d')}, ...more] as any,
+    entities: [ownBinding('B', column('x', 'b_x')), ownBinding('D', column('x', 'd_x')),
+               ...more] as any,
     relationships: [],
   });
   const conflict = expect.stringContaining(
       "profile 'prod': entity 'E' inherits field 'x' from 'B' and from 'D'");
 
-  // Push reports the inheritance error itself for the profile it applies.
+  // Among them, what each field the profile binds reads.
   test('and its other rules still run', () => {
-    const noSource = "profile 'prod': entity 'E' has no source in this profile";
-    expect(validateProfileCompleteness(diamond(), bindsXOnB()))
-        .toEqual([conflict, noSource]);
-    expect(validateProfileCompleteness(
-               diamond(), bindsXOnB(), [], {applied: true}))
-        .toEqual([noSource]);
+    expect(validateProfileCompleteness(diamond(), bindsXOnB())).toEqual([
+      conflict, "profile 'prod': entity 'E' has no source in this profile",
+    ]);
+    const model = diamond([
+      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'f'}]},
+    ]);
+    const spec = bindsXOnB([
+      {...ownBinding('E'), fields: [{name: 'e', expression: 'F.f'}]}, ownBinding('F'),
+    ]);
+    expect(validateProfileCompleteness(model, spec)).toEqual([
+      conflict,
+      "profile 'prod': field 'E.e' reads entity 'F'; a field expression " +
+          'reads only its own entity',
+    ]);
   });
 
   // On a broken hierarchy each entity is resolved with only its own
   // ancestors, so an entity outside the conflict keeps its inherited fields.
-  // R restates the bound b with only its name, and V leaves x unbound.
+  // R restates the bound b with only its name, so it reads B's bindings of b
+  // and x, and V leaves x unbound.
   test('and reads the inherited fields of each entity outside the conflict', () => {
     const model = diamond([
       {name: 'R', extends: ['B'], dataSource: '', keys: ['r'],
        fields: [{name: 'r', expression: 'r'}, {name: 'b'}]},
       {name: 'V', extends: ['A'], dataSource: '', keys: ['v'], fields: [{name: 'v', expression: 'v'}]},
     ]);
-    const spec = bindsXOnB([
-      {name: 'E', source: BQ('e')}, {name: 'R', source: BQ('r')},
-      {name: 'V', source: BQ('v')},
-    ]);
+    const spec = bindsXOnB([ownBinding('E'), ownBinding('R'), ownBinding('V')]);
     expect(validateProfileCompleteness(model, spec)).toEqual([
       conflict,
       "profile 'prod': field 'V.x' has no binding in the model file; bind it " +
           "in 'fields' or leave it out in 'fields_exclude'",
+      readsColumn('R.b', 'b', 'B'),
+      readsColumn('R.x', 'b_x', 'B'),
     ]);
   });
 
-  // Push's own check of the SQL it reads stands down on a broken hierarchy, so
-  // this check gives the warning for the profile push applies too.
-  test('and warns about SQL it cannot read for the profile push applies', () => {
+  test('and warns about SQL it cannot read', () => {
     const model = diamond([
       {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'LOWER(f'}]},
     ]);
-    const spec =
-        bindsXOnB([{name: 'E', source: BQ('e')}, {name: 'F', source: BQ('f')}]);
+    const spec = bindsXOnB(
+        [ownBinding('E'), {name: 'F', source: BQ('f'), primaryKey: ['f']}]);
     const warnings: string[] = [];
-    expect(validateProfileCompleteness(model, spec, warnings, {applied: true}))
-        .toEqual([]);
+    expect(validateProfileCompleteness(model, spec, warnings))
+        .toEqual([conflict]);
     expect(warnings).toEqual([
       "profile 'prod': kcmd could not read the SQL of field 'F.f', so the " +
           'fields it reads were not checked',
     ]);
-  });
-
-  // Push's own check of what a field reads stands down on a broken hierarchy
-  // too, so this check reads the fields of the profile push applies.
-  test('and reads what the fields of the profile push applies read', () => {
-    const model = diamond([
-      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'f'}]},
-    ]);
-    const spec = bindsXOnB([
-      {name: 'E', source: BQ('e'), fields: [{name: 'e', expression: 'F.f'}]},
-      {name: 'F', source: BQ('f')},
-    ]);
-    expect(validateProfileCompleteness(model, spec, [], {applied: true}))
-        .toEqual([
-          "profile 'prod': field 'E.e' reads entity 'F'; a field expression " +
-              'reads only its own entity',
-        ]);
+    // Push warns about the model file's SQL in its own check of the model
+    // file, so this check leaves that warning out.
+    const leftOut: string[] = [];
+    validateProfileCompleteness(
+        model, spec, leftOut, {ownSqlOnly: {dialect: 'BIGQUERY'}});
+    expect(leftOut).toEqual([]);
   });
 
   // E inherits x from both A and B, so the model file's hierarchy does not
@@ -3027,28 +2847,24 @@ relationships: []
   const bindsAll = (eFields?: object[]): ProfileSpec => ({
     name: 'prod',
     entities: [
-      {name: 'A', source: BQ('a')}, {name: 'B', source: BQ('b')},
-      {name: 'E', source: BQ('e'), ...(eFields ? {fields: eFields} : {})},
+      ownBinding('A', column('x', 'ax')), ownBinding('B', column('x', 'bx')),
+      {...ownBinding('E'), ...(eFields ? {fields: eFields} : {})},
     ],
     relationships: [],
   }) as any;
 
   test('does not call a field unknown on an entity whose own ancestors do not resolve', () => {
     const spec = bindsAll([{name: 'e', expression: 'UPPER(E.a)'}]);
-    for (const applied of [false, true]) {
-      expect(validateProfileCompleteness(unknownAncestry([]), spec, [], {applied}))
-          .toEqual([]);
-    }
+    expect(validateProfileCompleteness(unknownAncestry([]), spec)).toEqual([]);
   });
 
   // Restating an inherited field by its name alone is not a binding, and push
-  // reports that line once the hierarchy resolves.
+  // reports that line once the hierarchy resolves. E.a still reads A's
+  // binding, which reads a column.
   test('does not call unbound a restated inherited field on such an entity', () => {
-    for (const applied of [false, true]) {
-      expect(validateProfileCompleteness(
-                 unknownAncestry([{name: 'a'}]), bindsAll(), [], {applied}))
-          .toEqual([]);
-    }
+    expect(validateProfileCompleteness(
+               unknownAncestry([{name: 'a'}]), bindsAll()))
+        .toEqual([]);
   });
 
   // A binding is a per-table fact, so an exclusion applies to the entity that
@@ -3063,7 +2879,11 @@ relationships: []
       ],
       relationships: [],
     } as any;
-    const marked = applyProfileExclusions(model, [{model: 'm', entity: 'customer', field: 'email'}]);
+    const marked = applyProfile(model, {
+      name: 'p',
+      entities: [{name: 'customer', fieldsExclude: ['email']}],
+      relationships: [],
+    });
     const resolved = resolveInheritance(marked).model.entities!;
     expect(resolved.find(e => e.name === 'customer')!.fields.map(f => f.name)).toEqual(['id']);
     const vipEmail = resolved.find(e => e.name === 'vip')!.fields.find(f => f.name === 'email')!;
@@ -3107,10 +2927,11 @@ relationships: []
       ],
       relationships: [],
     } as any;
+    // net reads only fields, so the profile need not restate it.
     const errors = validateProfileCompleteness(model, {
       name: 'prod',
-      entities: [{name: 'customer', source: BQ('c')},
-                 {name: 'vip', source: BQ('v'), fieldsExclude: ['discount']}],
+      entities: [keyedById('customer', BQ('c'), column('gross'), column('discount')),
+                 {...keyedById('vip', BQ('v'), column('gross')), fieldsExclude: ['discount']}],
       relationships: [],
     });
     expect(errors).toEqual([
@@ -3137,17 +2958,20 @@ relationships: []
       ],
       relationships: [],
     } as any);
+    // The profile restates each field that reads a column. Each binding of b
+    // reads only fields, so leaf may inherit it.
     const prod: ProfileSpec = {
       name: 'prod',
       entities: [
-        {name: 'root', source: BQ('r')}, {name: 'mid', source: BQ('m')},
-        {name: 'leaf', source: BQ('l'), fieldsExclude: ['a']},
+        keyed('r_id')('root', BQ('r'), column('a', 'col_a')),
+        keyed('m_id')('mid', BQ('m'), column('r_id'), column('a', 'col_a')),
+        {...keyed('l_id')('leaf', BQ('l'), column('r_id'), column('m_id')), fieldsExclude: ['a']},
       ],
       relationships: [],
     };
 
     test('and reports a dependency only that binding has', () => {
-      expect(validateProfileCompleteness(model('col_b', 'mid.a + 1'), prod))
+      expect(validateProfileCompleteness(model('root.r_id + 1', 'mid.a + 1'), prod))
           .toEqual([
             "profile 'prod': field 'leaf.b' depends on 'leaf.a', which this " +
                 "profile excludes; exclude 'leaf.b' too, or rebind it",
@@ -3155,7 +2979,7 @@ relationships: []
     });
 
     test('and does not report one only a nearer ancestor\'s binding has', () => {
-      expect(validateProfileCompleteness(model('root.a + 1', 'col_b'), prod))
+      expect(validateProfileCompleteness(model('root.a + 1', 'mid.r_id + 1'), prod))
           .toEqual([]);
     });
 
@@ -3210,9 +3034,13 @@ relationships: []
 
 
 describe('profile completeness: dialects and struct paths', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const SP_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SP = (t: string) => `${SP_DB}/tables/${t}`;
+  // The IR keeps a Spanner table as its resource URI.
+  const SP_DATA = (t: string) => `//${SP(t)}`;
+  // The dialect push reads for database db.
+  const READ = {sourceDialects: new Map([[SP_DB, 'SPANNER']])};
   const shop = (amount: object): SemanticModel => ({
     name: 'shop',
     entities: [{
@@ -3221,25 +3049,75 @@ describe('profile completeness: dialects and struct paths', () => {
     }],
     relationships: [], metrics: [],
   } as any);
+  // amount reads only a field, so a profile need not restate it.
   const bqOnly = () => shop({
-    expression: 'SAFE_CAST(amt AS NUMERIC)',
-    dialects: [{dialect: 'BIGQUERY', expression: 'SAFE_CAST(amt AS NUMERIC)'}],
+    expression: 'SAFE_CAST(orders.id AS NUMERIC)',
+    dialects: [{dialect: 'BIGQUERY', expression: 'SAFE_CAST(orders.id AS NUMERIC)'}],
   });
   const atSource = (source: string): ProfileSpec =>
-      ({name: 'p', entities: [{name: 'orders', source}], relationships: []});
+      ({name: 'p', entities: [keyedById('orders', source)], relationships: []});
+
+  // A Cloud SQL table written as its resource name takes the dialect its
+  // catalog entry's type names, which a command looks up before it loads.
+  // Without a lookup the source implies no dialect, so every text counts.
+  test('a Cloud SQL resource name takes the dialect its catalog entry gave, and none without one', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/ms/' +
+        'databases/shop/schemas/sales/tables/orders';
+    const sqlServer = {sourceDialects: new Map([[CS, 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: sqlServer.sourceDialects})
+               .join('\n'))
+        .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
+    // The dialects are per table: another table's does not count.
+    const other = {sourceDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: other.sourceDialects})).toEqual([]);
+  });
+
+  test('the loader and a profile record the looked-up dialect on the entity', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/my/' +
+        'databases/shop/tables/orders';
+    const doc = (source: string) => ({
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'shop',
+        entities: [{name: 'orders', source, primary_key: ['id'], fields: [{name: 'id', expression: 'id'}]}],
+      }],
+    });
+    const opts = {sourceDialects: new Map([[CS, 'MYSQL']])};
+    const [model] = fromDocument(doc(CS), opts).models;
+    expect(model.entities[0].sourceDialect).toBe('MYSQL');
+    expect(sourcesDialect(model)).toBe('MYSQL');
+    // Without the lookup, nothing is recorded and the dialect is unknown.
+    const [unread] = fromDocument(doc(CS)).models;
+    expect(unread.entities[0].sourceDialect).toBeUndefined();
+    expect(sourcesDialect(unread)).toBeNull();
+    // A profile that rebinds the entity elsewhere drops the recorded dialect.
+    const rebound = applyProfile(model, {
+      name: 'bq', entities: [{name: 'orders', source: BQ('orders')}], relationships: [],
+    }, {load: opts});
+    expect(rebound.entities[0].sourceDialect).toBeUndefined();
+    expect(sourcesDialect(rebound)).toBe('BIGQUERY');
+    // The recorded dialect is never written back into a model file.
+    expect(serializeModel(model).yaml).not.toContain('MYSQL');
+    expect(serializeModel(model).yaml).not.toContain('sourceDialect');
+  });
 
   // Every bound field has a text its profile's database can run.
   test('a bound field needs an expression for the profile\'s dialect or ANSI_SQL', () => {
-    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders'))).join('\n'))
+    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')), [], READ).join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
     expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod')))).toEqual([]);
-    const ansi = shop({expression: 'amt', dialects: [{dialect: 'ANSI_SQL', expression: 'amt'}]});
-    expect(validateProfileCompleteness(ansi, atSource(SP('Orders')))).toEqual([]);
+    const ansi = shop(
+        {expression: 'orders.id', dialects: [{dialect: 'ANSI_SQL', expression: 'orders.id'}]});
+    expect(validateProfileCompleteness(ansi, atSource(SP('Orders')), [], READ)).toEqual([]);
+    // Without a lookup, a Spanner table is not judged.
+    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')))).toEqual([]);
   });
 
   test('a field the profile rebinds needs a text for the profile\'s dialect too', () => {
     const rebound = (source: string, expression: string) => loadProfileFile(
-        `name: p\nentities:\n  - name: orders\n    source: ${source}\n    fields:\n` +
+        `name: p\nentities:\n  - name: orders\n    source: ${source}\n` +
+            `    primary_key: [id]\n    fields:\n      - {name: id, expression: id}\n` +
             `      - name: amount\n        expression: ${expression}\n`,
         'p');
     expect(validateProfileCompleteness(
@@ -3251,9 +3129,9 @@ describe('profile completeness: dialects and struct paths', () => {
     expect(validateProfileCompleteness(bqOnly(), rebound(SP('Orders'), 'Amount'))).toEqual([]);
   });
 
-  // The one-database rule reads a source as the loader's reader does, trimmed,
-  // and an empty source is reported once.
-  test('a padded source is read trimmed, and an empty one reported once', () => {
+  // A source with whitespace around it, and an empty source, are each
+  // reported once, and not again by the one-database rule.
+  test('a padded source and an empty one are each reported once', () => {
     const model: SemanticModel = {
       name: 'shop',
       entities: [
@@ -3266,11 +3144,12 @@ describe('profile completeness: dialects and struct paths', () => {
     } as any;
     const spec = (source: string): ProfileSpec => ({
       name: 'p',
-      entities: [{name: 'orders', source}, {name: 'items', source: BQ('items')}],
+      entities: [keyedById('orders', source), keyedById('items', BQ('items'))],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model, spec(` ${SP('Orders')} `)).join('\n'))
-        .toContain('more than one database');
+    expect(validateProfileCompleteness(model, spec(` ${SP('Orders')} `))).toEqual([
+      `profile 'p': entity 'orders': source ' ${SP('Orders')} ' begins or ends with ` +
+      'whitespace; remove it.']);
     const empty = validateProfileCompleteness(model, spec(''));
     expect(empty.filter(e => e.includes("'orders'") || e.includes("source ''")))
         .toHaveLength(1);
@@ -3309,7 +3188,7 @@ semantic_model:
   test('a binding with no dialect list is judged by the text for its engine', () => {
     const model: SemanticModel = {
       name: 'shop',
-      entities: [{name: 'orders', dataSource: SP('Orders'), keys: ['id'],
+      entities: [{name: 'orders', dataSource: SP_DATA('Orders'), keys: ['id'],
                   fields: [{name: 'id', expression: 'id'},
                            {name: 'a', expression: 'a'},
                            {name: 'b', expression: 'b'},
@@ -3324,31 +3203,29 @@ semantic_model:
                   importedExpression: 'orders.a', importedDialect: 'SPANNER'}],
       }],
       relationships: [],
-    }).join('\n');
+    }, [], READ).join('\n');
     expect(excluding('a')).toContain("field 'orders.x' depends on 'orders.a'");
     expect(excluding('b')).not.toContain("field 'orders.x'");
   });
 
-  // A source written as a GCP resource name, the URI without the leading
-  // `//`, names the same database, so it implies the same dialect and counts
-  // as the same database for the one-database rule.
-  test('a source written as a resource name implies the same dialect and database', () => {
-    const name = (uri: string) => uri.slice(2);
-    expect(sourcesDialect({entities: [
-      {name: 'orders', dataSource: SP('Orders'), authoredSource: name(SP('Orders')),
-       keys: [], fields: []},
-    ]} as any)).toBe('SPANNER');
-    expect(validateProfileCompleteness(bqOnly(), atSource(name(SP('Orders')))).join('\n'))
-        .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
-    expect(validateProfileCompleteness(bqOnly(), atSource(name(BQ('orders_prod')))))
+  // A source written as a GCP resource name counts as its database for the
+  // one-database rule. A Spanner table takes the dialect its database's lookup
+  // gave, and has none without one.
+  test('a source written as a resource name implies its dialect and database', () => {
+    const orders = {name: 'orders', dataSource: SP_DATA('Orders'),
+                    authoredSource: SP('Orders'), keys: [], fields: []};
+    expect(sourcesDialect({entities: [orders]} as any)).toBeNull();
+    expect(sourcesDialect({entities: [{...orders, sourceDialect: 'POSTGRES'}]} as any))
+        .toBe('POSTGRES');
+    expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod'))))
         .toEqual([]);
 
     const model: SemanticModel = {
       name: 'shop',
       entities: [
-        {name: 'orders', dataSource: SP('Orders'), keys: ['id'],
+        {name: 'orders', dataSource: SP_DATA('Orders'), keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
-        {name: 'items', dataSource: SP('Items'), keys: ['id'],
+        {name: 'items', dataSource: SP_DATA('Items'), keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
       ],
       relationships: [], metrics: [],
@@ -3358,16 +3235,16 @@ semantic_model:
       entities: [{name: 'orders', source: orders}, {name: 'items', source: items}],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model, spec(name(SP('Orders')), SP('Items'))).join('\n'))
+    expect(validateProfileCompleteness(model, spec(SP('Orders'), SP('Items'))).join('\n'))
         .not.toContain('more than one database');
     expect(validateProfileCompleteness(
-               model, spec(name(SP('Orders')), name(BQ('items')))).join('\n'))
+               model, spec(SP('Orders'), BQ('items'))).join('\n'))
         .toContain('more than one database');
   });
 
   // A profile's rebinding is read as the model file's source is: a GCP
   // resource name keeps the form written in `authoredSource`, which push
-  // stores and pull returns, and gets the URI's `dataSource`.
+  // stores and pull returns, and gets the IR's `dataSource`.
   test('a profile rebinds a source written as a resource name', () => {
     const doc = {name: 'shop.yaml', text: `version: "0.2.0.dev0/google"
 semantic_model:
@@ -3378,8 +3255,8 @@ semantic_model:
         fields:
           - {name: id, expression: id}
 `};
-    for (const uri of [SP('Orders'), BQ('orders')]) {
-      const name = uri.slice(2);
+    for (const [name, dataSource] of [
+           [SP('Orders'), SP_DATA('Orders')], [BQ('orders'), 'p.d.orders']]) {
       const rebound = (source: string) => {
         const res = profileForDocument(
             doc, [{name: 'p', text: `name: p\nentities:\n  - name: orders\n    source: "${source}"\n`}],
@@ -3388,19 +3265,19 @@ semantic_model:
         return res.model.entities![0];
       };
       expect(rebound(name).authoredSource).toBe(name);
-      expect(rebound(name).dataSource).toBe(rebound(uri).dataSource);
+      expect(rebound(name).dataSource).toBe(dataSource);
     }
   });
 
   // Two databases of one system imply that system's dialect.
   test('sources in two Spanner databases read the SPANNER text', () => {
     const SP2 = (db: string, t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
     const model: SemanticModel = {
       name: 'shop',
       entities: [
-        {name: 'orders', dataSource: SP2('db1', 'Orders'),
-         authoredSource: SP2('db1', 'Orders'), keys: ['id'],
+        {name: 'orders', dataSource: `//${SP2('db1', 'Orders')}`,
+         authoredSource: SP2('db1', 'Orders'), sourceDialect: 'SPANNER', keys: ['id'],
          fields: [
            {name: 'id', expression: 'id'},
            {name: 'gross', expression: 'g'},
@@ -3409,8 +3286,8 @@ semantic_model:
             dialects: [{dialect: 'SPANNER', expression: 'orders.gross'},
                        {dialect: 'POSTGRES', expression: 'orders.gross - orders.tax'}]},
          ]},
-        {name: 'items', dataSource: SP2('db2', 'Items'),
-         authoredSource: SP2('db2', 'Items'), keys: ['id'],
+        {name: 'items', dataSource: `//${SP2('db2', 'Items')}`,
+         authoredSource: SP2('db2', 'Items'), sourceDialect: 'SPANNER', keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
       ],
       relationships: [], metrics: [],
@@ -3435,19 +3312,19 @@ semantic_model:
     const errors = validateProfileCompleteness(model, {
       name: 'p', entities: [{name: 'customer', source: SP('Customer')}],
       relationships: [],
-    }).join('\n');
+    }, [], READ).join('\n');
     expect(errors).toContain("entity 'orders' has no source in this profile");
     expect(errors).toContain(
         "field 'customer.id' has no expression for SPANNER or ANSI_SQL");
   });
 
-  // A legacy bare name names BigQuery however many parts it is written with,
-  // so pruning reads the BIGQUERY text.
-  test('a legacy bare source of one part reads the BIGQUERY text', () => {
+  // A three-part dotted `dataSource` names BigQuery, so pruning reads the
+  // BIGQUERY text.
+  test('a three-part dataSource reads the BIGQUERY text', () => {
     const model: SemanticModel = {
       name: 'shop',
       entities: [{
-        name: 'orders', dataSource: 'acme.sales.orders', authoredSource: 'orders',
+        name: 'orders', dataSource: 'acme.sales.orders',
         keys: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
@@ -3556,20 +3433,22 @@ semantic_model:
         .toThrow("profile 'p': entity 'orders': bare table name 'prod.orders'");
   });
 
-  // Pruning also reads the text the graph generators emit. Under a Spanner
-  // profile an emitted ANSI_SQL text is read as Spanner SQL, so a hex literal,
+  // Pruning reads only the SPANNER text when a field has one. Under a Spanner
+  // profile an ANSI_SQL text is read as Spanner SQL, so a hex literal,
   // which generic SQL cannot read, still reads the field.
-  test('pruning reads an emitted ANSI_SQL text in the profile\'s dialect', () => {
+  test('pruning reads an ANSI_SQL text in the profile\'s dialect', () => {
     const hex = 'IF(orders.code = 0x1F, 1, 0)';
     const model: SemanticModel = {
       name: 'shop',
       entities: [{
-        name: 'orders', dataSource: SP('Orders'), authoredSource: SP('Orders'),
-        keys: ['id'],
+        name: 'orders', dataSource: SP_DATA('Orders'), authoredSource: SP('Orders'),
+        sourceDialect: 'SPANNER', keys: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
           {name: 'code'},
           {name: 'flag', expression: hex,
+           dialects: [{dialect: 'ANSI_SQL', expression: hex}]},
+          {name: 'kept', expression: hex,
            dialects: [{dialect: 'SPANNER', expression: 'orders.id'},
                       {dialect: 'ANSI_SQL', expression: hex}]},
         ],
@@ -3600,10 +3479,10 @@ semantic_model:
     } as any);
     const excludingTax = (source: string): ProfileSpec => ({
       name: 'p',
-      entities: [{name: 'orders', source, fieldsExclude: ['tax']}],
+      entities: [{...keyedById('orders', source, column('amount', 'amt')), fieldsExclude: ['tax']}],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model(), excludingTax(SP('Orders'))))
+    expect(validateProfileCompleteness(model(), excludingTax(SP('Orders')), [], READ))
         .toEqual([]);
     expect(validateProfileCompleteness(model(), excludingTax(BQ('orders_prod')))
                .join('\n'))
@@ -3626,11 +3505,11 @@ semantic_model:
             expression: ${amount}
 `).models[0];
     expect(validateProfileCompleteness(
-               loaded('{dialects: [{dialect: BIGQUERY, expression: amt}]}'),
-               atSource(SP('Orders')))
+               loaded('{dialects: [{dialect: BIGQUERY, expression: orders.id}]}'),
+               atSource(SP('Orders')), [], READ)
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
-    expect(validateProfileCompleteness(loaded('amt'), atSource(SP('Orders'))))
+    expect(validateProfileCompleteness(loaded('orders.id'), atSource(SP('Orders')), [], READ))
         .toEqual([]);
   });
 
@@ -3649,9 +3528,8 @@ semantic_model:
     expect(validateProfileCompleteness(model, {
       name: 'p',
       entities: [
-        {name: 'orders', source: BQ('o'),
-         fields: [{name: 'cust', expression: 'details.customer.id'}]},
-        {name: 'customer', source: BQ('c')},
+        keyedById('orders', BQ('o'), column('cust', 'details.customer.id')),
+        keyedById('customer', BQ('c')),
       ],
       relationships: [],
     })).toEqual([]);
@@ -3683,16 +3561,25 @@ semantic_model:
   test('pruning drops a metric the profile excludes, and names it excluded', () => {
     const model = shop({expression: 'amount'});
     model.metrics = [{name: 'revenue', expression: 'SUM(orders.amount)'}] as any;
-    const marked = applyProfileExclusions(model, [{model: 'shop', metric: 'revenue'}]);
+    const marked = applyProfile(model, {
+      name: 'ops',
+      entities: [],
+      relationships: [],
+      metricsExclude: ['revenue'],
+    });
     expect(marked.excludedMetrics).toEqual(['revenue']);
     expect(model.excludedMetrics).toBeUndefined();
     const {model: pruned, report} = pruneUnavailable(marked, 'ops');
     expect(pruned.metrics).toEqual([]);
     expect(report.droppedMetrics).toEqual([{name: 'revenue', reason: 'excluded'}]);
+    // An excluded metric names no field, even when the field it reads is unbound.
+    const unbound = {...marked, entities: shop({}).entities};
+    expect(pruneUnavailable(unbound, 'ops').report.droppedMetrics)
+        .toEqual([{name: 'revenue', reason: 'excluded'}]);
   });
 
   // Actions are out of preview scope and gain no new checks.
-  test('a profile file may list an action twice, as the merge always allowed', () => {
+  test('a profile file may list an action twice', () => {
     expect(loadProfileFile('name: p\nactions:\n  - {name: Cancel}\n  - {name: Cancel}\n', 'p')
                .actions!.length)
         .toBe(2);
@@ -3709,27 +3596,32 @@ describe('excluding a field a subtype redeclares', () => {
       semantic_model: [{
         name: 'm',
         entities: [
-          {name: 'customer', source: 'p.d.c', primary_key: ['id'],
+          {name: 'customer', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c', primary_key: ['id'],
            fields: [{name: 'id', expression: 'id'}, {name: 'name', expression: 'cust_name'}]},
-          {name: 'vip', extends: ['customer'], source: 'p.d.v', primary_key: ['id'],
+          {name: 'vip', extends: ['customer'], source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/v', primary_key: ['id'],
            fields: [{name: 'name', expression: 'vip_name'}]},
         ],
       }],
     };
-    const {doc, error, excluded} = mergeProfile(
-        logical, {name: 'p', entities: [{name: 'vip', fields_exclude: ['name']}]}, 'p');
-    expect(error).toBeUndefined();
-    const vip = (doc as any).semantic_model[0].entities[1];
+    const [base] = fromDocument(logical, {bindingOptional: true}).models;
+    const applied = applyProfileFile(
+        base,
+        yaml.stringify(
+            {name: 'p', entities: [{name: 'vip', fields_exclude: ['name']}]},
+            YAML_OPTIONS),
+        'p');
+    if ('error' in applied) throw new Error(applied.error);
+    const vip = applied.model.entities[1];
     expect(vip.fields).toEqual([]);
-    expect(excluded).toEqual([{model: 'm', entity: 'vip', field: 'name'}]);
+    expect(vip.excludedFields).toEqual(['name']);
   });
 });
 
 
-// A relationship's to_columns must cover a key of its target, a superset
-// counts, and every binding covers the same keys.
+// A relationship's to_columns must cover a key of its target in every binding,
+// and a superset counts.
 describe('a relationship joins on a key of its target', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const model = (customer: object, to: string[]) => ({
     name: 'm',
     entities: [
@@ -3760,21 +3652,22 @@ describe('a relationship joins on a key of its target', () => {
                    "primary or unique key of 'customer'");
   });
 
-  test('covering more keys in one binding than another is a different cardinality', () => {
-    const errors = validateProfileConsistency(
-        model({keys: ['id'], uniqueKeys: [['email']]}, ['id']), [prod(['id', 'email'])]);
-    expect(errors.join('\n')).toContain(
-        "relationship 'placed_by' covers different keys under different bindings " +
-        "(the model file: the primary key; profile 'prod': the primary key and unique key 1)");
+  // The primary key [tenant_id, id] contains the unique key [id]. The model
+  // file joins on the unique key and prod on both keys.
+  test('covering more keys in one binding than another is accepted', () => {
+    expect(validateProfileConsistency(
+               model({keys: ['tenant_id', 'id'], uniqueKeys: [['id']]}, ['id']),
+               [prod(['tenant_id', 'id'])]))
+        .toEqual([]);
   });
 });
 
 
-// A key or join column may name a field or its column, and both name the same
-// column, as the graph generators read them.
-describe('keys and join columns compare as the columns they name', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  test('a key named by field covers a join named by column, in every binding', () => {
+// A key or join column is a physical column, so it is compared as written and
+// never read through a field of the same name, as the graph generators emit it.
+describe('keys and join columns compare as written', () => {
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  test('a key named like a field does not cover a join on the field\'s column', () => {
     const model = {
       name: 'm',
       entities: [
@@ -3789,14 +3682,30 @@ describe('keys and join columns compare as the columns they name', () => {
       }],
     } as any;
     // prod binds the key field to another column and joins on that column,
-    // without restating the primary key.
+    // without restating the primary key, which stays the column `key`.
     const prod: ProfileSpec = {
       name: 'prod',
       entities: [{name: 'customer', source: BQ('c2'),
                   fields: [{name: 'key', expression: 'c_custkey'}]}],
       relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['c_custkey']}],
     };
-    expect(validateProfileConsistency(model, [prod])).toEqual([]);
+    const errors = validateProfileConsistency(model, [prod]).join('\n');
+    expect(errors).toContain(
+        "the model file joins on to_columns [\"c_key\"], which cover no " +
+        "primary or unique key of 'customer'");
+    expect(errors).toContain(
+        "profile 'prod' joins on to_columns [\"c_custkey\"], which cover no " +
+        "primary or unique key of 'customer'");
+    // Joining on the key's own column passes in both bindings.
+    const onKey = {
+      ...model,
+      relationships: [{...model.relationships[0],
+                       destination: {entity: 'customer', columns: ['key']}}],
+    };
+    expect(validateProfileConsistency(onKey, [{
+      ...prod,
+      relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['key']}],
+    }])).toEqual([]);
   });
 
   test('a relationship through a junction table is not checked', () => {
@@ -3818,7 +3727,7 @@ describe('keys and join columns compare as the columns they name', () => {
 
 
 describe('a profile applied to a model document', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
   const DOC = {name: 'sales', text: `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -3853,25 +3762,45 @@ entities:
 `;
 
   // A profile held in memory takes the same path as the same profile in a
-  // file, so it gets the same model, warnings and missing sources.
+  // file, so it gets the same model and warnings.
   test('a profile held in memory and its file give the same result', () => {
     const fromFile = profileForDocument(DOC, [{name: 'prod', text: FILE}], 'prod');
     const fromSpec = profileForDocument(
         DOC, [{name: 'prod', spec: loadProfileFile(FILE, 'prod')}], 'prod');
     expect(fromSpec).toEqual(fromFile);
     if (fromFile.kind !== 'file') throw new Error(JSON.stringify(fromFile));
-    // The model file as it loads on its own comes back too.
-    expect(fromFile.base.entities.find(e => e.name === 'orders')!.dataSource)
-        .toBe('acme.raw.orders');
-    // An abstract entity needs no source; `items` has none in either file.
-    expect(fromFile.sourceless).toEqual(['items']);
-    // A profile's empty primary key warns, as the model file's would.
-    expect(fromFile.warnings)
-        .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");
+  });
+
+  // A profile file that binds a Cloud SQL table written as its resource name
+  // records the dialect the command looked up, on the model it gives.
+  test('a profile file applied to its document records a looked-up Cloud SQL dialect', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/pg/' +
+        'databases/shop/schemas/sales/tables/orders';
+    const file = FILE.replace(`"${BQ('orders_prod')}"`, `"${CS}"`);
+    const res = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod', {
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
+    });
+    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
+    expect(res.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBe('POSTGRES');
+    // A model file's own Cloud SQL source keeps its dialect under a profile
+    // that does not rebind it.
+    const withCs = {name: 'sales', text: DOC.text.replace(`"${BQ('orders')}"`, `"${CS}"`)};
+    expect(withCs.text).toContain(CS);
+    const kept = profileForDocument(withCs, [{name: 'prod', text: 'name: prod\n'}], 'prod', {
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
+    });
+    if (kept.kind !== 'file') throw new Error(JSON.stringify(kept));
+    expect(kept.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBe('POSTGRES');
+    const unread = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod');
+    if (unread.kind !== 'file') throw new Error(JSON.stringify(unread));
+    expect(unread.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBeUndefined();
   });
 
   // A model with a `sql` executor reports that first, before reading a
-  // profile file that does not even parse, as the merge does.
+  // profile file that does not even parse.
   test('a sql executor in the model is reported before a broken profile file', () => {
     const withSql = {name: 'sales', text: DOC.text + `    actions:
       - name: Close
@@ -3910,7 +3839,7 @@ entities:
 // what the callers report to the author. Anything else is a bug and surfaces
 // as itself.
 describe('a document mistake versus a bug', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const model = (): SemanticModel => ({
     name: 'shop',
     entities: [{name: 'orders', dataSource: BQ('orders'), keys: ['id'],
@@ -3939,10 +3868,6 @@ describe('a document mistake versus a bug', () => {
     const spy = spyOn(loader, 'parseFieldExpression').mockImplementation(boom);
     try {
       expect(() => applyProfileFile(model(), FILE, 'p')).toThrow(TypeError);
-      expect(() => mergeProfileImpl(
-                 {semantic_model: [{name: 'shop', datasets: []}]},
-                 yaml.parse(FILE), 'p'))
-          .toThrow(TypeError);
     } finally {
       spy.mockRestore();
     }
@@ -3988,13 +3913,13 @@ semantic_model:
 
 describe('what applying a profile keeps and replaces', () => {
   const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
   const model = (): SemanticModel => ({
     name: 'shop',
     entities: [
       {name: 'party', abstract: true, dataSource: '', keys: [],
        fields: [{name: 'pid'}]},
-      {name: 'orders', dataSource: SP('Orders'), authoredSource: SP('Orders'),
+      {name: 'orders', dataSource: `//${SP('Orders')}`, authoredSource: SP('Orders'),
        keys: ['id'],
        fields: [
          {name: 'id', expression: 'id'},
@@ -4006,7 +3931,7 @@ describe('what applying a profile keeps and replaces', () => {
           dialects: [{dialect: 'BIGQUERY', expression: 'orders.tax'},
                      {dialect: 'SPANNER', expression: 'orders.id'}]},
        ]},
-      {name: 'customer', dataSource: SP('Customer'), authoredSource: SP('Customer'),
+      {name: 'customer', dataSource: `//${SP('Customer')}`, authoredSource: SP('Customer'),
        keys: ['id'], fields: [{name: 'id', expression: 'id'}]},
     ],
     relationships: [{name: 'placed_by',
@@ -4057,9 +3982,9 @@ describe('what applying a profile keeps and replaces', () => {
 // The options b/568184633 uses: the warnings the profile's values give, and
 // the dialect a profile's texts are picked for.
 describe('applyProfile options', () => {
-  const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const SP_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SP = (t: string) => `${SP_DB}/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const base = (): SemanticModel => ({
     name: 'shop',
     entities: [{name: 'orders', dataSource: BQ('orders'), authoredSource: BQ('orders'),
@@ -4075,27 +4000,47 @@ describe('applyProfile options', () => {
     }]}],
   });
 
-  test('warnings name what the profile\'s own values give, in the load dialect', () => {
-    // The empty key warns. The load's dialect picked each field's text, so it
-    // judges the Spanner-only text, whatever system the sources are in.
+  test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
+    // A Spanner table runs the Spanner-only text, and a BigQuery table needs
+    // it translated. Both read a double-quoted ANSI_SQL token as text.
+    const quoted = base();
+    quoted.metrics!.push(
+        {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
     const onSpanner: string[] = [];
-    applyProfile(base(), rebind(SP('Orders')), {warnings: onSpanner});
-    expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
-    expect(onSpanner.join('\n')).toContain(
+    applyProfile(quoted, rebind(SP('Orders')), {
+      warnings: onSpanner, load: {sourceDialects: new Map([[SP_DB, 'SPANNER']])},
+    });
+    expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
+    expect(onSpanner).toContain(
+        `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
+        `if you meant a field, give it a 'SPANNER' expression that names it ` +
+        `as '<entity>.<field>'`);
+    const onBigQuery: string[] = [];
+    applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
+    expect(onBigQuery.join('\n')).toContain(
         "field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect");
-    const loadedForSpanner: string[] = [];
-    applyProfile(
-        base(), rebind(SP('Orders')),
-        {warnings: loadedForSpanner, load: {dialect: 'SPANNER'}});
-    expect(loadedForSpanner.join('\n')).not.toContain("field 'orders.amount'");
     // A warning the model gave already is the model's, not the profile's.
     const withOwn = base();
     withOwn.entities[0].fields.push(
         {name: 'legacy', dialects: [{dialect: 'SPANNER', expression: 'x'}]} as any);
     const own: string[] = [];
-    applyProfile(withOwn, rebind(SP('Orders')), {warnings: own});
+    applyProfile(withOwn, rebind(BQ('orders2')), {warnings: own});
     expect(own.join('\n')).toContain("field 'orders.amount'");
     expect(own.join('\n')).not.toContain("field 'orders.legacy'");
+  });
+
+  test('a metric the profile excludes gives no warning under it', () => {
+    const model = base();
+    model.entities[0].dataSource = model.entities[0].authoredSource = SP('orders');
+    model.metrics.push({name: 'm', entity: 'orders',
+                        dialects: [{dialect: 'SPANNER', expression: 'SUM(orders.id)'}]});
+    const warned = (metricsExclude?: string[]) => {
+      const out: string[] = [];
+      applyProfile(model, {...rebind(BQ('orders2')), metricsExclude}, {warnings: out});
+      return out.filter(w => w.startsWith("metric 'm'"));
+    };
+    expect(warned()).toHaveLength(1);
+    expect(warned(['m'])).toEqual([]);
   });
 
   test('the load dialect picks each field\'s text', () => {
@@ -4111,7 +4056,7 @@ describe('applyProfile options', () => {
   // A BigLake source is part of BigQuery, which only its authored form says.
   test('a BigLake source gives the BigQuery dialect', () => {
     const lake =
-        '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders';
+        'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders';
     const model = base();
     model.entities[0].authoredSource = lake;
     model.entities[0].dataSource = 'p.c.n.orders';
@@ -4126,7 +4071,7 @@ describe('applyProfile options', () => {
 });
 
 
-describe('applyProfile builds the model the YAML merge builds', () => {
+describe('applyProfile and applyProfileFile', () => {
   const SHOP = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
@@ -4137,7 +4082,7 @@ semantic_model:
           - {name: party_name, datatype: String}
       - name: customer
         extends: [party]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer"
         primary_key: [c_id]
         unique_keys: [[c_email]]
         fields:
@@ -4145,7 +4090,7 @@ semantic_model:
           - {name: email, expression: c_email}
           - {name: party_name, expression: c_name}
       - name: account
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/account"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/account"
         primary_key: [a_id]
         fields:
           - {name: a_id, expression: a_id}
@@ -4153,7 +4098,7 @@ semantic_model:
           - {name: note}
       - name: premium
         extends: [account]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/premium"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/premium"
         primary_key: [p_id]
         fields:
           - {name: tier, expression: p_tier}
@@ -4181,35 +4126,13 @@ semantic_model:
         executor:
           rest: {endpoint: https://x/close, method: POST}
 `;
-  const LOAD = {defaultProject: 'acme'};
-
-  // The model each path builds, or its error.
-  const viaMerge = (model: string, profile: string) => {
-    const merged = mergeProfileOntoDoc(model, profile, 'prod');
-    if ('error' in merged) return {error: merged.error};
-    try {
-      const {models} =
-          loadModels(merged.text, {...LOAD, bindingOptional: true});
-      return {model: applyProfileExclusions(models[0], merged.excluded)};
-    } catch (err: any) {
-      return {error: String(err?.message ?? err)};
-    }
-  };
   const viaApply = (model: string, profile: string) => {
-    const {models} = loadModels(model, {...LOAD, bindingOptional: true});
+    const {models} = loadModels(model, {bindingOptional: true});
     return applyProfileFile(models[0], profile, 'prod');
-  };
-  // The model alone; the warnings have their own test.
-  const comparable = (r: {model: SemanticModel}|{error: string}) =>
-      'error' in r ? r : {model: r.model};
-  const same = (profile: string, model = SHOP) => {
-    const applied = viaApply(model, profile);
-    expect(comparable(applied)).toEqual(comparable(viaMerge(model, profile)));
-    return applied;
   };
 
   test('an empty unique_keys list clears the model file\'s', () => {
-    const applied = same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
     unique_keys: []
@@ -4220,20 +4143,29 @@ entities:
   });
 
   test('sources and keys', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer"
     primary_key: [cust_id]
     unique_keys: [[cust_email], [cust_phone]]
   - name: account
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
     unique_keys: []
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const customer = applied.model.entities.find(e => e.name === 'customer')!;
+    expect(customer.authoredSource)
+        .toBe(
+            'bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer');
+    expect(customer.keys).toEqual(['cust_id']);
+    expect(customer.uniqueKeys).toEqual([['cust_email'], ['cust_phone']]);
+    const account = applied.model.entities.find(e => e.name === 'account')!;
+    expect(account.uniqueKeys).toBeUndefined();
   });
 
   test('field bindings, dialect lists and an inherited field', () => {
-    const applied = same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
     fields:
@@ -4264,10 +4196,14 @@ entities:
       {dialect: 'BIGQUERY', expression: 'e_bq'},
       {dialect: 'SPANNER', expression: 'e_sp'},
     ]);
+    const balance =
+        applied.model.entities.find(e => e.name === 'premium')!.fields.find(
+            f => f.name === 'balance')!;
+    expect(balance.expression).toBe('p_balance');
   });
 
   test('exclusions, on an entity with descendants and on leaves', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: account
     fields_exclude: [note, balance]
@@ -4277,6 +4213,14 @@ entities:
     fields_exclude: [party_name]
 metrics_exclude: [customers]
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const field = (e: string, f: string) =>
+        applied.model.entities.find(x => x.name === e)!.fields.find(
+            x => x.name === f)!;
+    // premium extends account, so account's excluded field keeps its binding.
+    expect(field('account', 'balance').expression).toBe('a_balance');
+    expect(field('premium', 'tier').expression).toBeUndefined();
+    expect(applied.model.excludedMetrics).toEqual(['customers']);
   });
 
   test('an entity that names itself in extends has no descendant', () => {
@@ -4284,16 +4228,20 @@ metrics_exclude: [customers]
         '    relationships:',
         `      - name: loop
         extends: [loop]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/loop"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/loop"
         primary_key: [l_id]
         fields:
           - {name: f, expression: c_f}
     relationships:`);
-    same('name: prod\nentities: [{name: loop, fields_exclude: [f]}]\n', loop);
+    const applied = viaApply(
+        loop, 'name: prod\nentities: [{name: loop, fields_exclude: [f]}]\n');
+    if ('error' in applied) throw new Error(applied.error);
+    expect(applied.model.entities.find(e => e.name === 'loop')!.fields)
+        .toEqual([{name: 'f'}]);
   });
 
   test('join columns, every metric excluded, and executors', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 relationships:
   - {name: holds, from_columns: [prem_cust], to_columns: [cust_id]}
 metrics_exclude: "*"
@@ -4304,30 +4252,72 @@ actions:
   - name: Close
     executor: null
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const holds = applied.model.relationships.find(r => r.name === 'holds')!;
+    expect(holds.source.columns).toEqual(['prem_cust']);
+    expect(holds.destination.columns).toEqual(['cust_id']);
+    expect(applied.model.excludedMetrics).toEqual([
+      'total_balance',
+      'customers',
+    ]);
+    const action = (name: string) =>
+        applied.model.actions!.find(a => a.name === name)!;
+    expect(action('Notify').executor).toEqual({
+      kind: 'rest',
+      rest: {endpoint: 'https://y/notify', method: 'POST'},
+    });
+    expect(action('Close').executor).toBeUndefined();
   });
 
-  test('the same errors, with the same messages', () => {
-    const profiles = [
-      'name: prod\nentities: [{name: nope}]\n',
-      'name: prod\nentities: [{name: party, source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
-      'name: prod\nentities: [{name: account, fields: [{name: nope, expression: x}]}]\n',
-      'name: prod\nentities: [{name: account, fields_exclude: [nope]}]\n',
-      'name: prod\nrelationships: [{name: nope, from_columns: [a], to_columns: [b]}]\n',
-      'name: prod\nmetrics_exclude: [nope]\n',
-      'name: prod\nactions: [{name: Nope, executor: null}]\n',
-      'name: prod\nversion: "0.2.0.dev0/google"\n',
+  test('rejects invalid profile entries and model sql executors', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'name: prod\nentities: [{name: nope}]\n',
+        'profile \'prod\': entity \'nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nentities: [{name: party, source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
+        'profile \'prod\': entity \'party\' is abstract, so a profile cannot bind it',
+      ],
+      [
+        'name: prod\nentities: [{name: account, fields: [{name: nope, expression: x}]}]\n',
+        'profile \'prod\': field \'account.nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nentities: [{name: account, fields_exclude: [nope]}]\n',
+        'profile \'prod\': field \'account.nope\' in \'fields_exclude\' is not in the logical model',
+      ],
+      [
+        'name: prod\nrelationships: [{name: nope, from_columns: [a], to_columns: [b]}]\n',
+        'profile \'prod\': relationship \'nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nmetrics_exclude: [nope]\n',
+        'profile \'prod\': metric \'nope\' in \'metrics_exclude\' is not in the logical model',
+      ],
+      [
+        'name: prod\nactions: [{name: Nope, executor: null}]\n',
+        'profile \'prod\': action \'Nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nversion: "0.2.0.dev0/google"\n',
+        'profile \'prod\' sets \'version\'; a profile file takes its version from the model file beside it, so remove the line',
+      ],
     ];
-    for (const profile of profiles) {
-      const applied = viaApply(SHOP, profile);
-      expect('error' in applied).toBe(true);
-      expect(applied).toEqual(viaMerge(SHOP, profile) as any);
+    for (const [profile, error] of cases) {
+      expect(viaApply(SHOP, profile)).toEqual({error});
     }
     const sqlModel = SHOP.replace(
         'rest: {endpoint: https://x/close, method: POST}',
         'sql: {statements: ["DELETE FROM account WHERE a_id = 1"]}');
-    const applied = viaApply(sqlModel, 'name: prod\n');
-    expect('error' in applied).toBe(true);
-    expect(applied).toEqual(viaMerge(sqlModel, 'name: prod\n') as any);
+    expect(viaApply(sqlModel, 'name: prod\n')).toEqual({
+      error:
+          'profile \'prod\': action \'Close\' in model \'shop\' declares a ' +
+          '\'sql\' executor. A statement names one database\'s own tables and ' +
+          'columns, so it belongs in the profile that binds them, not in the ' +
+          'model. Move the executor into each profile that performs this ' +
+          'write as DML.',
+    });
   });
 
   describe("the completeness check and pruning read the profile's own dialect", () => {
@@ -4336,7 +4326,7 @@ semantic_model:
   - name: sales
     entities:
       - name: orders
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
         primary_key: [order_id]
         fields:
           - {name: order_id, expression: o_id}
@@ -4347,12 +4337,15 @@ semantic_model:
           - {name: flag}
 `;
     const SPANNER = (t: string) =>
-        `//spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${t}`;
+        `spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${t}`;
     const profileOf = (source: string, net: string, rest = '') => `name: prod
 entities:
   - name: orders
     source: "${source}"
+    primary_key: [o_id]
     fields:
+      - {name: order_id, expression: o_id}
+      - {name: gross, expression: o_gross}
       - name: net
         expression:
           dialects:
@@ -4368,7 +4361,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
 
     test('a BigQuery profile reads the BIGQUERY text', () => {
       const {errors, applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: BIGQUERY, expression: "orders.gross"}\n' +
           '            - {dialect: ANSI_SQL, expression: "orders.gross - orders.tax"}\n'));
       expect(errors).toEqual([]);
@@ -4395,32 +4388,29 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
       expect(errors).toEqual([]);
     });
 
-    test('pruning also reads the text the generators emit', () => {
-      // The generators emit `expression`, here the BIGQUERY text, whatever the
-      // engine. Pruning reads it too, so the Spanner DDL never reads `tax`.
+    test('pruning reads only the text the profile\'s dialect selects', () => {
+      // The Spanner graph reads only the SPANNER text, so `net` stays.
       const {applied} = check(profileOf(
           SPANNER('orders'),
           '            - {dialect: SPANNER, expression: "orders.gross"}\n' +
           '            - {dialect: BIGQUERY, expression: "orders.gross - orders.tax"}\n'));
-      expect(pruneUnavailable(applied, 'prod').report.droppedFields).toEqual(
-          [{name: 'orders.net', reason: 'reads orders.tax, which is unavailable'}]);
-      // A field with no text for the profile's dialect is judged by the
-      // vendor text the BigQuery generator would emit.
+      expect(pruneUnavailable(applied, 'prod').report.droppedFields).toEqual([]);
+      // No graph emits a field's vendor text, so pruning does not read it.
       const vendor = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: SNOWFLAKE, expression: "orders.gross - orders.tax"}\n'));
       expect(pruneUnavailable(vendor.applied, 'prod').report.droppedFields)
-          .toEqual([{name: 'orders.net', reason: 'reads orders.tax, which is unavailable'}]);
+          .toEqual([]);
     });
 
     test('with sources in two databases, every text counts', () => {
       const {applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: BIGQUERY, expression: "orders.gross"}\n' +
           '            - {dialect: ANSI_SQL, expression: "orders.gross - orders.tax"}\n'));
       const twoDatabases = structuredClone(applied);
       twoDatabases.entities.push({
-        name: 'customers', dataSource: SPANNER('customers'), keys: ['id'],
+        name: 'customers', dataSource: `//${SPANNER('customers')}`, keys: ['id'],
         fields: [{name: 'id', expression: 'id'}],
       });
       const {report} = pruneUnavailable(twoDatabases, 'prod');
@@ -4430,7 +4420,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
     test("an ANSI_SQL text is read as the profile's own SQL", () => {
       // The generic parser cannot read a hex literal; the BigQuery one can.
       const {applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: ANSI_SQL, expression: "orders.gross"}\n',
           `      - name: flag
         expression:
@@ -4445,11 +4435,11 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
   });
 
   test('a profile held in memory applies as the same profile in a file', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const fromFile = applyProfileFile(base, `name: prod
 entities:
   - name: account
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
     fields:
       - {name: note, expression: a_note}
     fields_exclude: [balance]
@@ -4459,7 +4449,7 @@ entities:
       name: 'prod',
       entities: [{
         name: 'account',
-        source: '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account',
+        source: 'bigquery.googleapis.com/projects/acme/datasets/prod/tables/account',
         fields: [{
           name: 'note',
           expression: 'a_note',
@@ -4474,7 +4464,7 @@ entities:
   });
 
   test('a binding held in memory with no dialect list applies as given', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const applied = applyProfile(base, {
       name: 'prod',
       entities: [{name: 'account', fields: [{name: 'note', expression: 'n'}]}],
@@ -4486,7 +4476,7 @@ entities:
   });
 
   test('a profile held in memory gets the checks a profile file gets', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const spec = (over: Partial<ProfileSpec>): ProfileSpec =>
         ({name: 'prod', entities: [], relationships: [], ...over});
     expect(() => applyProfile(base, spec({
@@ -4534,9 +4524,8 @@ entities:
              }],
            })))
         .toThrow(
-            "profile 'prod': entity 'account': field 'note': 'expression': " +
-            "dialects.1.dialect: Duplicate dialect 'BIGQUERY' in expression " +
-            'dialects.');
+            "profile 'prod': entity 'account': field 'note': Duplicate " +
+            "dialect 'BIGQUERY' in expression dialects.");
     expect(() => applyProfile(base, spec({metricsExclude: ['*']})))
         .toThrow(`profile 'prod': 'metrics_exclude' takes "*" on its own, ` +
                  'not inside a list');
@@ -4648,7 +4637,7 @@ entities:
       ],
     });
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4668,10 +4657,10 @@ entities:
                shop(false),
                profile({dialects: [{dialect: 'NOPE' as any, expression: 'n'}]}))))
         .toEqual([
-          "profile 'prod': entity 'base': field 'note': 'expression': " +
-              "dialects.0.dialect: Unknown dialect 'NOPE' in expression " +
-              'dialects. Expected one of ANSI_SQL, BIGQUERY, SPANNER, MYSQL, ' +
-              'POSTGRES, ALLOYDB, SQLSERVER, SNOWFLAKE, DATABRICKS.',
+          "profile 'prod': entity 'base': field 'note': Unknown dialect " +
+              "'NOPE' in expression dialects. Expected one of ANSI_SQL, " +
+              'BIGQUERY, SPANNER, MYSQL, POSTGRES, ALLOYDB, SQLSERVER, ' +
+              'SNOWFLAKE, DATABRICKS.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.
@@ -4707,7 +4696,7 @@ entities:
       ],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = loadProfileFile(`name: prod
 entities:
   - name: base
@@ -4750,7 +4739,7 @@ entities:
       ],
     });
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4772,8 +4761,7 @@ entities:
         `'orders', ${own} and the POSTGRES entry of 'expression' is only the ` +
         "qualifier 'orders.'; write the field's SQL";
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: shop(note)}],
-               {targetOptional: true}))
+               [{document: 'shop.yaml', model: shop(note)}]))
         .toEqual([
           `field 'base.note' in model 'shop' (shop.yaml): ${own}; write ` +
               "the field's SQL, or remove 'expression' to leave the field " +
@@ -4813,7 +4801,7 @@ entities:
       ],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4830,9 +4818,8 @@ entities:
         {dialect: 'BIGQUERY', expression: 'base.orders.'},
       ],
     })))).toEqual([
-      "profile 'prod': entity 'base': field 'note': 'expression': " +
-          "dialects.1.dialect: Duplicate dialect 'BIGQUERY' in expression " +
-          'dialects.',
+      "profile 'prod': entity 'base': field 'note': Duplicate dialect " +
+          "'BIGQUERY' in expression dialects.",
     ]);
     // A binding with a dialect list applies only the texts in the list.
     expect(note(validateProfileCompleteness(shop, profile({
@@ -4845,7 +4832,7 @@ entities:
   });
 
   test('a profile held in memory fails first where a profile file would', () => {
-    const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
+    const base = loadModels(SHOP, {bindingOptional: true}).models[0];
     const firstError = (spec: ProfileSpec, file: string) => {
       let inMemory = '';
       try {
@@ -4909,12 +4896,6 @@ relationships:
 relationships:
   - {name: holds, from_columns: [a, b], to_columns: [c_id]}
 `);
-    // The load's message, naming the profile, which the merged load does not.
-    const merged = viaMerge(SHOP, `name: prod
-relationships:
-  - {name: holds, from_columns: [a, b], to_columns: [c_id]}
-`) as {error: string};
-    expect(lengths).toEqual({error: `profile 'prod': ${merged.error}`});
     expect(lengths).toEqual({
       error: "profile 'prod': relationship 'holds': from_columns (2) and " +
           'to_columns (1) have different lengths; the join keys are mismatched',
@@ -4934,58 +4915,49 @@ actions:
       rest: {endpoint: e, method: POST}
 `);
     expect(twoKinds).toEqual({
-      error: "profile 'prod': action 'Notify' 'executor': executor requires " +
-          'exactly one kind, but 2 given (mcp, rest)',
+      error: "profile 'prod': action 'Notify': executor requires exactly " +
+          'one kind, but 2 given (mcp, rest)',
     });
     const noTool = viaApply(SHOP, `name: prod
 actions:
   - {name: Notify, executor: {mcp: {server: s}}}
 `);
-    if (!('error' in noTool)) throw new Error('expected an error');
-    expect(noTool.error)
-        .toStartWith("profile 'prod': action 'Notify' 'executor': mcp.tool: ");
-    expect('error' in viaMerge(SHOP, `name: prod
-actions:
-  - {name: Notify, executor: {mcp: {server: s}}}
-`)).toBe(true);
+    expect(noTool).toEqual({
+      error: "profile 'prod': action 'Notify': 'tool' of 'mcp' of " +
+          "'executor' is missing; it takes a string",
+    });
   });
 
   // A named profile states both join column lists itself, so one side alone
   // gets the completeness check's error, whatever join columns the model file
-  // has. The merge, which the commands use only for a legacy wrapper, takes
-  // the other list from the model file, and the load then checks the join.
+  // has.
   test('one side of a join gets the completeness error', () => {
-    const cases: Array<[string, string, string|undefined]> = [
+    const cases: Array<[string, string]> = [
       // refers has no join columns in the model file.
-      ['refers', 'from_columns: [p_cust]', 'must be given together'],
+      ['refers', 'from_columns: [p_cust]'],
       // holds joins [p_cust] to [c_id] in the model file.
-      ['holds', 'from_columns: [a, b]',
-       'from_columns (2) and to_columns (1) have different lengths'],
-      ['holds', 'to_columns: [c_email]', undefined],
+      ['holds', 'from_columns: [a, b]'],
+      ['holds', 'to_columns: [c_email]'],
     ];
-    for (const [name, columns, mergeError] of cases) {
+    for (const [name, columns] of cases) {
       const profile = `name: prod\nrelationships:\n  - {name: ${name}, ${
           columns}}\n`;
       expect({columns, ...viaApply(SHOP, profile)}).toEqual({
         columns,
         error: `profile 'prod': relationship '${name}' has no join columns ` +
-            "in this profile; a named profile states both 'from_columns' " +
-            "and 'to_columns' itself",
+            'in this profile; a named profile states both \'from_columns\' ' +
+            'and \'to_columns\' itself',
       });
-      const merged = viaMerge(SHOP, profile);
-      expect({columns, merged: 'error' in merged ? merged.error : 'loads'})
-          .toEqual({columns, merged: mergeError ?
-                        expect.stringContaining(mergeError) : 'loads'});
     }
   });
 
-  test('the warnings match the ones a load of the merged document gives', () => {
+  test('warnings reflect the applied profile', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     entities:
       - name: orders
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
         fields:
           - name: o_id
             expression:
@@ -5000,16 +4972,9 @@ semantic_model:
               dialects:
                 - {dialect: ANSI_SQL, expression: o_tax}
 `;
-    const fromMerge = (profile: string) => {
-      const merged = mergeProfileOntoDocImpl(model, profile, 'prod');
-      if ('error' in merged) throw new Error(merged.error);
-      return loadSemanticModels([{name: 'sales', text: merged.text}],
-                                {...LOAD, bindingOptional: true})
-          .warnings;
-    };
     const fromApply = (profile: string) => {
       const loaded = loadSemanticModels(
-          [{name: 'sales', text: model}], {...LOAD, bindingOptional: true});
+          [{name: 'sales', text: model}], {bindingOptional: true});
       const applied = applyProfileFile(
           loaded.models[0].model, profile, 'prod',
           {from: {document: 'sales', warnings: loaded.warnings}});
@@ -5017,7 +4982,7 @@ semantic_model:
       return applied.warnings;
     };
     // Keys in the profile, and every field the model file warns about
-    // rebound: the merged document gives no warning at all.
+    // rebound: the applied profile gives no warning at all.
     const replacesAll = `name: prod
 entities:
   - name: orders
@@ -5027,7 +4992,6 @@ entities:
       - {name: total, expression: t}
       - {name: tax, expression: x}
 `;
-    expect(fromApply(replacesAll)).toEqual(fromMerge(replacesAll));
     expect(fromApply(replacesAll)).toEqual([]);
     // One ANSI_SQL field left as the model file binds it keeps the note, and
     // a profile text with no BIGQUERY or ANSI_SQL entry warns, prefixed.
@@ -5042,8 +5006,15 @@ entities:
           dialects:
             - {dialect: SPANNER, expression: t}
 `;
-    expect(new Set(fromApply(keepsOne))).toEqual(new Set(fromMerge(keepsOne)));
-    expect(fromApply(keepsOne).length).toBe(2);
+    expect(fromApply(keepsOne)).toEqual([
+      '[sales] field \'orders.total\': no \'BIGQUERY\' or \'ANSI_SQL\' ' +
+          'dialect; keeping the \'SPANNER\' expression as imported_expression ' +
+          '(needs transpilation to \'BIGQUERY\')',
+      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
+          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
+          'for BIGQUERY-specific SQL)',
+    ]);
     // A field the profile excludes takes its warning with it.
     const excludes = `name: prod
 entities:
@@ -5054,7 +5025,6 @@ entities:
       - {name: tax, expression: x}
     fields_exclude: [o_id]
 `;
-    expect(fromApply(excludes)).toEqual(fromMerge(excludes));
     expect(fromApply(excludes).join('\n')).not.toContain("field 'orders.o_id'");
     // The warnings come in the order a load gives them: the entities', then
     // each metric's, here one naming no entity, then the actions'.
@@ -5067,18 +5037,24 @@ entities:
           - {name: reason}
 `;
     const loadedUnanchored = loadSemanticModels(
-        [{name: 'sales', text: unanchored}], {...LOAD, bindingOptional: true});
+        [{name: 'sales', text: unanchored}], {bindingOptional: true});
     const keyless = 'name: prod\nentities:\n  - name: orders\n    fields:\n      - {name: o_id, expression: id}\n';
     const ordered = applyProfileFile(
         loadedUnanchored.models[0].model, keyless, 'prod',
         {from: {document: 'sales', warnings: loadedUnanchored.warnings}});
     if ('error' in ordered) throw new Error(ordered.error);
-    const mergedOrder = loadSemanticModels(
-        [{name: 'sales',
-          text: (mergeProfileOntoDocImpl(unanchored, keyless, 'prod') as {text: string}).text}],
-        {...LOAD, bindingOptional: true}).warnings;
-    expect(ordered.warnings).toEqual(mergedOrder);
-    expect(ordered.warnings.at(-1)).toContain("parameter 'reason' states no 'type'");
+    expect(ordered.warnings).toEqual([
+      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
+          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
+          'for BIGQUERY-specific SQL)',
+      '[sales] metric \'n\': expression references no known entity; it may ' +
+          'not be placeable downstream',
+      '[sales] action \'Close\': parameter \'reason\' states no \'type\' and ' +
+          'projects no field. A parameter with no field behind it declares ' +
+          'its own scalar type (String/Integer/Decimal/Float/Boolean/Date/' +
+          'Time/DateTime/DateTimeTz/Opaque).',
+    ]);
     // A metric that takes its ANSI_SQL text keeps the note, though the
     // profile rebinds every field that did.
     const withMetric = model + `    metrics:
@@ -5089,7 +5065,7 @@ entities:
             - {dialect: ANSI_SQL, expression: SUM(orders.tax)}
 `;
     const loaded = loadSemanticModels(
-        [{name: 'sales', text: withMetric}], {...LOAD, bindingOptional: true});
+        [{name: 'sales', text: withMetric}], {bindingOptional: true});
     const metricNote = applyProfileFile(
         loaded.models[0].model, replacesAll, 'prod',
         {from: {document: 'sales', warnings: loaded.warnings}});
@@ -5100,7 +5076,7 @@ entities:
 
 
 describe('profile application: errors, warnings and order', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
   const HIERARCHY = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -5128,8 +5104,8 @@ semantic_model:
             - {dialect: SPANNER, expression: SUM(orders.amount)}
 `;
   const DOC = {name: 'sales', text: HIERARCHY};
-  const loadDoc = () => loadSemanticModels(
-      [DOC], {defaultProject: 'acme', bindingOptional: true}).models[0].model;
+  const loadDoc = () =>
+      loadSemanticModels([DOC], {bindingOptional: true}).models[0].model;
 
   // Only a broken hierarchy falls back to the declared fields; any other
   // error is a bug and surfaces.
@@ -5143,8 +5119,6 @@ semantic_model:
     try {
       expect(() => pruneUnavailable(m, 'default')).toThrow('boom');
       expect(() => validateProfileCompleteness(m, prod)).toThrow('boom');
-      expect(() => validateProfileConsistency(m, [prod, {...prod, name: 'p2'}]))
-          .toThrow('boom');
     } finally {
       spy.mockRestore();
     }
@@ -5163,18 +5137,6 @@ semantic_model:
     }
   });
 
-  // A concrete entity with no key warns; an abstract one, which is never a
-  // node, does not.
-  test('only a concrete entity with no key gives the missing-key warning', () => {
-    const res = profileForDocument(
-        DOC, [{name: 'prod', text: `name: prod\nentities:\n  - name: orders\n    source: "${BQ('o2')}"\n`}],
-        'prod');
-    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
-    const keyWarnings = res.warnings.filter(w => w.includes('no primary_key'));
-    expect(keyWarnings.some(w => w.includes("'orders'"))).toBe(true);
-    expect(keyWarnings.some(w => w.includes("'party'"))).toBe(false);
-  });
-
   // The warnings after a profile come in the order a load gives them: a
   // metric that names no entity before a later metric's dialect warning.
   test('warnings after a profile keep the load order across metrics', () => {
@@ -5188,11 +5150,11 @@ semantic_model:
     expect(dialect).toBeGreaterThan(noEntity);
   });
 
-  // Push, `kcmd profiles` and the runtime judge the applied model in the
-  // load's dialect, which picked the text the model holds: under a Spanner
-  // profile, a SPANNER-only metric warns as the model file's load does.
-  test('the callers judge warnings in the load dialect', () => {
-    const SP = (t: string) => `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  // Push, `kcmd profiles` and the runtime judge the applied model on the
+  // profile's tables: a SPANNER-only metric warns on the model file's
+  // BigQuery tables, and not under a profile that binds Spanner tables.
+  test('the callers judge warnings on the profile\'s tables', () => {
+    const SP = (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
     const res = profileForDocument(DOC, [{name: 'sp', text: `name: sp
 entities:
   - name: customer
@@ -5201,10 +5163,10 @@ entities:
     source: "${SP('orders')}"
 `}], 'sp');
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
-    const loaded = loadSemanticModels([DOC], {defaultProject: 'acme', bindingOptional: true});
+    const loaded = loadSemanticModels([DOC], {bindingOptional: true});
     const own = loaded.warnings.filter(w => w.includes("metric 'spanner_total'"));
     expect(own.length).toBe(1);
-    expect(res.warnings.filter(w => w.includes("metric 'spanner_total'"))).toEqual(own);
+    expect(res.warnings.filter(w => w.includes("metric 'spanner_total'"))).toEqual([]);
   });
 
   // With two sources the readers reject, the error names the first.
@@ -5287,11 +5249,10 @@ semantic_model:
     const res = profileForDocument(doc, [{name: 'prod', text: prod}], 'prod');
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
     expect(res.model.metrics?.[0].entity).toBeUndefined();
-    expect(res.warnings).toContain(
-        "[sales.yaml] metric 'total': expression could not be parsed; entity " +
-        "inference was skipped (set 'entity' on the metric, or " +
-        "backtick-quote a reserved qualifier, such as `Date`.amount)");
-    // The YAML merge of the same profile builds the same model.
-    mergeProfileOntoDoc(doc.text, prod, 'prod');
+    expect(res.warnings)
+        .toContain(
+            '[sales.yaml] metric \'total\': expression could not be parsed; entity ' +
+            'inference was skipped (set \'entity\' on the metric, or ' +
+            'backtick-quote a reserved qualifier, such as `Date`.amount)');
   });
 });

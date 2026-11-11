@@ -58,8 +58,8 @@ import * as context from '../gcp/context';
 
 import {membershipFieldRefs, resolveDefinedEntities} from './defined_entities';
 import {aliased, sqlString} from './generated_views';
-import {DataType, Entity, SemanticModel} from './ir';
-import {rewriteFieldRefs} from './sql_expr_utils';
+import {DataType, Entity, expressionForDialect, fieldBinding, SemanticModel} from './ir';
+import {isColumnName, rewriteFieldRefs, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {quoteIfReserved} from './sql_identifiers';
 import {CheckKind, ConstraintSpec, FieldSpec, fieldViolation, isFieldSpec, parseConstraintSpec, planBigQueryValidation, runBigQueryValidation, runQuery, Unsupported} from './validate_bigquery';
 
@@ -177,7 +177,7 @@ export function planEnforcement(
     }
     const reject = c.onViolation === 'reject';
     const effect: EnforcementEffect = !reject ? 'flag' :
-        spec.kind === 'required' || resolved.keys.includes(spec.field) ?
+        spec.kind === 'required' || isEntityKeyField(resolved, spec.field) ?
                                                 'exclude' :
                                                 'withhold';
     plan.rules.push({
@@ -193,6 +193,20 @@ export function planEnforcement(
     }
   }
   return plan;
+}
+
+// Whether `fieldName` is (or binds directly to) a primary-key column of `entity`.
+function isEntityKeyField(entity: Entity, fieldName: string): boolean {
+  if (entity.keys.includes(fieldName)) return true;
+  const f = entity.fields.find(x => x.name === fieldName);
+  if (!f) return false;
+  const raw = expressionForDialect(f, 'BIGQUERY') ?? fieldBinding(f);
+  if (raw === undefined) return false;
+  const local = stripQualifier(sqlWithoutComments(raw), entity.name).trim();
+  if (!isColumnName(local)) return false;
+  const bare = local.replace(/^`(.*)`$/, '$1').toLowerCase();
+  return entity.keys.some(
+      k => k.replace(/^`(.*)`$/, '$1').toLowerCase() === bare);
 }
 
 // The fields of `entity` a membership predicate reads.

@@ -28,9 +28,9 @@
 // those names into the base's physical bindings, so a field bound to
 // `sales_stage` turns `salesStage = '5_won'` into `sales_stage = '5_won'`.
 
-import {Entity, fieldBinding, SemanticModel} from './ir';
+import {Entity, expressionForDialect, Field, fieldBinding, SemanticModel, SqlDialect} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {referencedEntityNames, referencedIdentifiers, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
+import {referencedEntityNames, referencedIdentifiers, rewriteFieldRefs, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isReservedKeyword, isSimpleIdentifier} from './sql_identifiers';
 
 /** Whether `e` is a defined (virtual) entity. */
@@ -344,7 +344,8 @@ export function validateDefinedEntities(
  * a defined entity are dropped (warned): MEASURE has no row filter.
  */
 export function lowerDefinedEntities(
-    model: SemanticModel, warnings: string[]): SemanticModel {
+    model: SemanticModel, warnings: string[],
+    dialect?: SqlDialect): SemanticModel {
   const entities = model.entities ?? [];
   if (!entities.some(isDefinedEntity)) return model;
 
@@ -434,7 +435,8 @@ export function lowerDefinedEntities(
     const description = membershipDescription(d, info);
 
     if (!base.abstract) {
-      const expr = membershipExpression(info.membership, refs, resolvedBase);
+      const expr =
+          membershipExpression(info.membership, refs, resolvedBase, dialect);
       if (typeof expr !== 'string') {
         warnings.push(`${label} is skipped: its definition reads ${
             expr.missing.map(m => `'${m}'`)
@@ -454,7 +456,8 @@ export function lowerDefinedEntities(
       if (e.abstract) continue;
       const resolved = resolvedByName.get(e.name);
       if (!resolved || !(resolved.extends ?? []).includes(info.base)) continue;
-      const expr = membershipExpression(info.membership, refs, resolved);
+      const expr =
+          membershipExpression(info.membership, refs, resolved, dialect);
       if (typeof expr !== 'string') {
         warnings.push(`${label}: '${e.name}' does not bind ${
             expr.missing.map(m => `'${m}'`)
@@ -471,15 +474,22 @@ export function lowerDefinedEntities(
   return clone;
 }
 
+function fieldSqlForDialect(f: Field, dialect?: SqlDialect): string|undefined {
+  const raw = dialect ?
+      expressionForDialect(f, dialect) :
+      (expressionForDialect(f, 'BIGQUERY') ?? fieldBinding(f));
+  return raw === undefined ? undefined : sqlWithoutComments(raw);
+}
+
 // The membership predicate over `entity`'s physical bindings, made two-valued
 // (a NULL comparison is "not a member"), or the referenced names it does not
 // bind.
 function membershipExpression(
-    membership: string, refs: string[], entity: Entity): string|
-    {missing: string[]} {
+    membership: string, refs: string[], entity: Entity,
+    dialect?: SqlDialect): string|{missing: string[]} {
   const bindings = new Map<string, string>();
   for (const f of entity.fields) {
-    const b = fieldBinding(f);
+    const b = fieldSqlForDialect(f, dialect);
     if (b !== undefined) bindings.set(f.name, stripQualifier(b, entity.name));
   }
   const missing = refs.filter(r => !bindings.has(r));

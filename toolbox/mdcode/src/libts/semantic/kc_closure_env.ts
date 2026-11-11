@@ -1,26 +1,18 @@
 // Resolves what a Knowledge Catalog push needs from the environment to close
-// the loop with BigQuery (K1 / K3): which annotation aspect types the
-// destination project has, and where the `@bigquery` entries of the model's
+// the loop with BigQuery (K3): where the `@bigquery` entries of the model's
 // physical assets live (a dataset's location, a project's number).
 //
 // Kept apart from knowledge_catalog.ts (pure) and deploy_knowledge_catalog.ts
 // (writes) so the CLI calls one function per concern and the library defaults
-// stay network-free: a caller that passes neither option gets the pre-K1 push.
+// stay network-free.
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {ResourceManagerClient} from '../gcp/crm';
-import {CatalogClient} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
-import {provisionedCustomAspects} from './kc_custom_types';
-import {BigQueryEntryLocator, physicalBindings} from './knowledge_catalog';
-
-/** Probes the destination for the annotation aspect types `kcmd init` made. */
-export async function probeAnnotationAspects(
-    ctx: ApiContext, dest: {project: string}): Promise<string[]> {
-  return provisionedCustomAspects(new CatalogClient(ctx), dest);
-}
+import {BigQueryEntryLocator} from './kc_annotations';
+import {physicalBindings} from './knowledge_catalog';
 
 /**
  * Locates the datasets (and project numbers) of every physical asset the

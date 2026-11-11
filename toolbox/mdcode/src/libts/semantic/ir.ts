@@ -49,10 +49,8 @@ export interface CustomExtension {
  * (edges), with model-level metrics defined over them.
  *
  * The IR is primarily semantics. The loader reads a model's named
- * `deployments:` list onto `deployments`. In the Google flavor it also folds
- * their target URIs into a model-level GOOGLE `custom_extensions` block for the
- * consumers that read it. A vanilla model lists its deployments in its GOOGLE
- * block, which the loader reads and does not fold.
+ * `deployments:` list onto `deployments` (from `deployments:` in the Google
+ * flavor or from the model-level GOOGLE `custom_extensions` block in vanilla).
  */
 export interface SemanticModel {
   name: string;
@@ -77,8 +75,7 @@ export interface SemanticModel {
   // absent on models authored before constraints existed, so consumers read it
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), including a
-  // vanilla model's GOOGLE block that holds `deploymentTargets`.
+  // Vendor extension blocks carried verbatim (round-trip fidelity).
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
   // Named profiles. A Google-flavor model's come from its
@@ -165,6 +162,11 @@ export interface Entity {
   // target's addressing scheme.
   dataSource: string;
   authoredSource?: string;  // the source string as typed
+  // The dialect a lookup gave for this entity's source: a Cloud SQL or
+  // third-party table's from its Knowledge Catalog entry, a Spanner table's
+  // from its database. Set only when the load was given those dialects
+  // (LoadOptions.sourceDialects).
+  sourceDialect?: string;
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
@@ -367,9 +369,10 @@ export interface DialectExpression {
  * list). It also populates `expression` (the target-dialect text, or else the
  * `ANSI_SQL` one) and `importedExpression` (the first other vendor entry, with
  * its `importedDialect`) via `pickDialect`. A bound field sets at least one of
- * `expression` or `importedExpression`. When only `importedExpression` is
- * present, `expression` awaits a transpile pass (see ./transpile) that fills it
- * from the imported form.
+ * `expression`, `importedExpression` or a non-empty `dialects` (the loader sets
+ * one of the first two whenever it writes the third). When only
+ * `importedExpression` is present, `expression` awaits a transpile pass (see
+ * ./transpile) that fills it from the imported form.
  */
 export interface Field {
   name: string;
@@ -380,11 +383,11 @@ export interface Field {
   stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // A field with NO physical column under the current binding is UNBOUND:
   // structurally absent, not null. There is no explicit flag -- a field is
-  // unbound exactly when it carries no `expression` (and no
-  // `importedExpression`); see fieldBinding. A metric, relationship, or action
-  // that reads an unbound field is unavailable here rather than reading a null
-  // (see the binding-profiles guide). This is the field-level analogue of an
-  // entity's `abstract` (a whole class with no table).
+  // unbound exactly when it carries no `expression`, no `importedExpression`
+  // and no non-empty `dialects`; see isFieldBound. A metric, relationship, or
+  // action that reads an unbound field is unavailable here rather than reading
+  // a null (see the binding-profiles guide). This is the field-level analogue
+  // of an entity's `abstract` (a whole class with no table).
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
 
   label?: string;                  // human display label (distinct from name/description)
@@ -477,12 +480,13 @@ export function isTimeDimension(field: Field): boolean {
   return field.type !== undefined && TEMPORAL_TYPES.has(field.type);
 }
 
-// The physical column (or SQL) a field binds to under the current binding, or
-// undefined when the field is unbound (structurally absent -- no column). A
-// field's target/canonical `expression` wins; a field awaiting transpilation
-// falls back to its imported vendor expression, which still names a real
-// column, so it is bound rather than unbound. A field with neither is unbound
-// (no column at all). `isFieldBound` asks the same question as a yes or no.
+// The physical column (or SQL) a field binds to when no engine is named, or
+// undefined when it carries neither expression. A field's target/canonical
+// `expression` wins; a field awaiting transpilation falls back to its imported
+// vendor expression, which still names a real column. Undefined here is not
+// the same as unbound: a field bound only through a `dialects` list has no
+// text here yet counts as bound (see isFieldBound). The graph generators ask
+// for their own engine's text through `expressionForDialect` instead.
 export function fieldBinding(
     field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
@@ -511,36 +515,55 @@ void everyFieldKeyListed;
 
 /**
  * Whether a field is bound to a column under the current binding: it carries an
- * expression or an imported vendor expression. A dialect list, `stringForm` and
- * `importedDialect` describe a binding and are not one on their own. Pruning,
- * the graph generators, inheritance and push validation all use this test.
+ * expression, an imported vendor expression, or a non-empty dialect list.
+ * `stringForm` and `importedDialect` describe a binding and are not one on
+ * their own. Inheritance, profile pruning and push validation use this test.
+ * A graph generator asks a narrower question, whether the field has SQL for its
+ * engine (see expressionForDialect), so a bound field can still be left out of
+ * one engine's graph.
  */
 export function isFieldBound(
-    field: Pick<Field, 'expression'|'importedExpression'>): boolean {
-  return fieldBinding(field) !== undefined;
+    field: Pick<Field, 'expression'|'importedExpression'|'dialects'>): boolean {
+  return fieldBinding(field) !== undefined || (field.dialects?.length ?? 0) > 0;
 }
 
 /**
- * The keys a relationship's `to_columns` cover, as "the primary key" and
- * "unique key k" (from 1), in that order. A key is covered when every one of
- * its columns is among `to_columns`, so a superset of a key covers it, since
- * each row still matches at most one target row. An empty result means the
- * join reaches no key. Column names compare as BigQuery compares them: ignoring
- * case, and without the backticks that only quote a name.
+ * Whether a relationship's `to_columns` cover the primary key or a unique key.
+ * A key is covered when every one of its columns is among `to_columns`, so a
+ * superset of a key covers it, since each row still matches at most one target
+ * row. Column names compare as BigQuery compares them: ignoring case, and
+ * without the backticks that only quote a name.
  */
-export function keysCoveredBy(
+export function coversKey(
     toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
-    string[] {
-  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
+    boolean {
   const has = new Set(toColumns.map(columnKey));
-  const covers = (key: string[]) =>
-      key.length > 0 && key.every(c => has.has(columnKey(c)));
-  const out: string[] = [];
-  if (covers(primaryKey)) out.push('the primary key');
-  uniqueKeys.forEach((key, i) => {
-    if (covers(key)) out.push(`unique key ${i + 1}`);
-  });
-  return out;
+  return [primaryKey, ...uniqueKeys].some(
+      key => key.length > 0 && key.every(c => has.has(columnKey(c))));
+}
+
+export const keysCoveredBy = coversKey;
+
+/**
+ * Whether a relationship's `to_columns` name exactly the columns of
+ * `primaryKey`, in any order and each once. BigQuery treats a graph edge as
+ * ambiguous when querying measures unless it joins on its destination node's
+ * `primary_key` columns alone: a unique key, or a superset of the primary key,
+ * covers a key (see coversKey) without matching it. Column names compare as in
+ * coversKey.
+ */
+export function matchesKey(
+    toColumns: string[], primaryKey: string[]): boolean {
+  const to = new Set(toColumns.map(columnKey));
+  const key = new Set(primaryKey.map(columnKey));
+  return key.size > 0 && to.size === toColumns.length &&
+      to.size === key.size && [...key].every(c => to.has(c));
+}
+
+// A key or join column as BigQuery compares it: ignoring case, and without the
+// backticks that only quote a name.
+function columnKey(column: string): string {
+  return column.replace(/^`(.*)`$/, '$1').toLowerCase();
 }
 
 /**
@@ -710,8 +733,8 @@ export interface RelationshipEnd {
  * produces -- a junction edge is backed by its OWN table (`dataSource`) with
  * its OWN key (`keys`) and may carry edge `fields` (properties of the
  * association itself, e.g. an enrollment's grade). Each side names the columns
- * ON THE JUNCTION TABLE that reference the corresponding endpoint entity's
- * declared `keys`. The open format has no association-table syntax yet, so this
+ * ON THE JUNCTION TABLE that reference the key of the endpoint entity's node
+ * (see nodeKey). The open format has no association-table syntax yet, so this
  * is produced by hand-built IR (or a future format extension), not the loader.
  */
 export interface Association {
@@ -1134,7 +1157,7 @@ export interface Constraint {
 
 export interface DeploymentSpec {
   name: string;      // unique among the model's deployments
-  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // A GCP resource name, as written. Three kinds are
   // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
   // `deployment_target.ts` already parses all three. Keep this opaque.
   target: string;
@@ -1146,6 +1169,8 @@ export interface ProfileEntityBinding {
   source?: string;          // as the profile wrote it
   primaryKey?: string[];    // physical column names
   uniqueKeys?: string[][];
+  hydration?: EntityHydration|null;
+  mode?: EntityBindingMode|null;
   fields?: Array<Pick<
       Field,
       'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|

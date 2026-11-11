@@ -63,7 +63,7 @@ All flags are optional:
 | Flag | Default | What it does |
 | :--- | :--- | :--- |
 | `--out <dir>` | `skills` | Parent directory where `<skill-name>/` is written (`<out>/<skill-name>/SKILL.md` and `<out>/<skill-name>/references/*.md`). |
-| `--profile <name>` | `default_profile` from `catalog.yaml` | Binding profile from `<model>.profiles/<name>.yaml` used to resolve the physical store, table/column mappings, and action executors. |
+| `--profile <name>` | The model's inline bindings | Binding profile from `<model>.profile.<name>.yaml` used to resolve the physical store, table/column mappings, and action executors. |
 | `--name <name>` | Derived from `model.name` | Override the generated skill name (and directory name `<out>/<name>`). Must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits, and single hyphens between words, starting and ending with a letter or a digit, max 64 characters). |
 | `--force` | `false` | Overwrite an existing `<out>/<skill-name>/` directory and remove any stale `.md` files in `<out>/<skill-name>/references/` left over from renamed or deleted actions. Without `--force`, an existing target directory is refused with `Error: <dir> already exists. Pass --force to rewrite it.` |
 
@@ -358,7 +358,7 @@ creates, modifies, or deletes:
 ## Switching binding profiles (`--profile`)
 
 When a model has multiple binding profiles (such as
-`commerce.profiles/spanner.yaml` and `commerce.profiles/alloydb.yaml` in
+`commerce.profile.spanner.yaml` and `commerce.profile.alloydb.yaml` in
 `demo/semantic-model/skill`), running `kcmd skills-generate` under each profile
 leaves every `references/<action>.md` page **byte-identical**:
 
@@ -369,6 +369,12 @@ kcmd skills-generate --profile alloydb --out /tmp/alloydb-skills --force
 diff /tmp/spanner-skills/commerce/references/issue-credit.md \
      /tmp/alloydb-skills/commerce/references/issue-credit.md
 ```
+
+The `alloydb` profile names its database by cluster, so `kcmd skills-generate
+--profile alloydb` looks up the cluster's primary instance through the AlloyDB
+API. Point `commerce.profile.alloydb.yaml` and the `alloydb` deployment in
+`commerce.yaml` at a cluster you can read before you run it. The output below
+shows the placeholder names, with `my-instance` as the primary instance.
 
 `diff` exits with `0` and no output. Only `SKILL.md` changes, in
 `Finding a record` and `Running an action`:

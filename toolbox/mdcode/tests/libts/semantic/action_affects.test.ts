@@ -29,7 +29,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
 };
 
 const MCP_EXECUTOR = {
@@ -48,7 +48,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
           datasets: [
             {
               name: 'orders',
-              source: 'p.d.o',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/o',
               primary_key: ['id'],
               fields: [
                 {
@@ -65,7 +65,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
             },
             {
               name: 'customer',
-              source: 'p.d.c',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
               primary_key: ['cid'],
               fields: [{
                 name: 'cid',
@@ -88,8 +88,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
             ...(affects ? {affects} : {}),
           }],
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 
@@ -236,15 +235,10 @@ describe('the loader rejects an entry that states no single fact', () => {
 
 
 describe('validatePushRequirements checks every affected concept', () => {
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({
-      deploymentTargets:
-          ['//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
-    }),
-  };
+  const target =
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
-  // One entity, one plain foreign-key edge, and one many-to-many edge with a
+  // Two entities, one plain foreign-key edge, and one many-to-many edge with a
   // property of its own -- the three things an entry can name.
   function loaded(affects: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -254,17 +248,17 @@ describe('validatePushRequirements checks every affected concept', () => {
         dataSource: 'p.d.o',
         keys: ['id'],
         fields: [{name: 'id'}, {name: 'total'}],
-      }],
+      }, {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []}],
       relationships: [
         {
           name: 'orders_to_customer',
           source: {entity: 'orders', columns: ['id']},
-          destination: {entity: 'orders', columns: ['id']},
+          destination: {entity: 'customer', columns: ['id']},
         },
         {
           name: 'OrderedAs',
           source: {entity: 'orders', columns: ['id']},
-          destination: {entity: 'orders', columns: ['id']},
+          destination: {entity: 'customer', columns: ['id']},
           association: {
             dataSource: 'p.d.lineitem',
             keys: ['lid'],
@@ -281,7 +275,7 @@ describe('validatePushRequirements checks every affected concept', () => {
         parameters: [],
         affects,
       }],
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -382,7 +376,7 @@ describe('validatePushRequirements checks every affected concept', () => {
     model.relationships!.push({
       name: 'dual',
       source: {entity: 'orders', columns: ['id']},
-      destination: {entity: 'orders', columns: ['id']},
+      destination: {entity: 'dual', columns: ['id']},
     });
     expect(validatePushRequirements([{document, model}])).toEqual([]);
   });
@@ -461,13 +455,8 @@ describe('validatePushRequirements checks every affected concept', () => {
 
 
 describe('publishing says when a blast radius outruns the push', () => {
-  // An action is published whole while entities are not: an abstract one has no
-  // table to publish, and a binding profile drops any concept it cannot bind.
-  // `affects` is left untouched by both, so the catalog can end up recording a
-  // change to a concept it holds no entry for. That is the right entry to
-  // publish -- the action does change it -- but it is a divergence, and pulling
-  // the model back and pushing it unpruned fails hard on the same name. So it
-  // is reported where it is created.
+  // Abstract entities and relationships publish as first-class V2 entries, so
+  // `affects` naming either draws no warning.
   function published(affects: any[]) {
     const model: SemanticModel = {
       name: 'm',
@@ -478,8 +467,6 @@ describe('publishing says when a blast radius outruns the push', () => {
           keys: ['id'],
           fields: [{name: 'id'}],
         },
-        // No physical table, so no dataSource or keys: published as a
-        // table-less abstract entry.
         {
           name: 'Party',
           abstract: true,
@@ -505,26 +492,20 @@ describe('publishing says when a blast radius outruns the push', () => {
   }
 
   test('a concept this push publishes draws no warning', () => {
-    // Including a relationship, which is never in publishedEntities and would
-    // warn on every well-formed model if that were the only set consulted.
     const w = published([{concept: 'orders'}, {concept: 'orders_to_customer'}]);
     expect(w.filter(x => x.includes('affects'))).toEqual([]);
   });
 
   test('an abstract concept has an entry, so it draws no warning', () => {
-    // Abstract entities publish as table-less semantic-entity entries, so the
-    // catalog holds an entry for the concept the action changes.
     const w = published([{concept: 'Party', operation: 'modify'}]);
     expect(w.filter(x => x.includes(`affects 'Party'`))).toEqual([]);
   });
 });
-
-
 describe('affects survives every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text, {allowLegacyBareSource: true}).models[0];
+    return loadModels(text).models[0];
   })();
 
   const EXPECTED = [
@@ -543,8 +524,7 @@ describe('affects survives every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(
-        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].affects)
+    expect(loadModels(yaml).models[0].actions![0].affects)
         .toEqual(EXPECTED as any);
   });
 
@@ -553,9 +533,7 @@ describe('affects survives every round trip', () => {
     // record with nothing but a concept comes back as a bare name. Reloading
     // and re-emitting therefore has to change nothing more.
     const once = serializeModel(model).yaml;
-    const twice =
-        serializeModel(loadModels(once, {allowLegacyBareSource: true}).models[0])
-            .yaml;
+    const twice = serializeModel(loadModels(once).models[0]).yaml;
     expect(twice).toBe(once);
   });
 
@@ -573,14 +551,15 @@ describe('affects survives every round trip', () => {
 
   test('a pull that recovers no relationships still round-trips the edge', () =>
        {
-         // Relationships reach the catalog as `schema-join` entry LINKS, and a
-         // pull that did not fetch them recovers none -- which is also the
-         // permanent state of a many-to-many edge, since those are never
-         // published. The entry on the edge still comes back untouched and in
-         // silence, because nothing about it was ever resolved against the
-         // model. That is what dropping the derived kind bought.
+         // A pull that misses the relationship entries recovers no
+         // relationship -- which is also the permanent state of a
+         // many-to-many edge, since those are never published. The entry on
+         // the edge still comes back untouched and in silence, because
+         // nothing about it was ever resolved against the model. That is what
+         // dropping the derived kind bought.
          const {entries} = generateCatalogResources(model, OPTS);
-         const {models, warnings} = modelsFromCatalogResources(entries);
+         const {models, warnings} = modelsFromCatalogResources(entries.filter(
+             e => !e.entryType.endsWith('/semantic-relationship')));
          expect(models[0].relationships).toEqual([]);
          expect(models[0].actions![0].affects).toEqual(EXPECTED as any);
          expect(warnings.some(w => w.includes('orders_to_customer')))

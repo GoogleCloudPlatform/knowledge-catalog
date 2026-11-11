@@ -57,20 +57,15 @@ function model(): SemanticModel {
     }],
     relationships: [],
     metrics: [],
-    customExtensions: [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({
-        deploymentTargets:
-            ['//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'],
-      }),
+    deployments: [{
+      name: 'bq',
+      target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
     }],
   };
 }
 
 const errorsOf = (m: SemanticModel) =>
-    validatePushRequirements([{document: 'doc.yaml', model: m} as any], {
-      targetOptional: true,
-    });
+    validatePushRequirements([{document: 'doc.yaml', model: m} as any]);
 
 describe('loader', () => {
   const doc = (ds: any, fields: any[] = [], version = '0.2.0.dev0/google') => ({
@@ -79,7 +74,7 @@ describe('loader', () => {
       name: 'm',
       datasets: [{
         name: 'Opportunity',
-        source: 'bigquery:p.d.opp',
+        source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/opp',
         primary_key: ['id'],
         fields: [
           {name: 'id', expression: 'id', datatype: 'String'},
@@ -283,7 +278,10 @@ describe('OSI round-trip', () => {
     // Each source as a load records it, in an accepted form, so the
     // serialized document reloads.
     for (const e of m.entities) {
-      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+      if (e.dataSource) {
+        e.authoredSource =
+            'bigquery.googleapis.com/projects/p/datasets/d/tables/opportunity_versions';
+      }
     }
     const {yaml} = serializeModel(m);
     expect(yaml).toContain('grain:');

@@ -11,6 +11,7 @@
 // DDL generator to learn a table name would be describing a layering that is
 // not real.
 
+import {sourceTableOf} from './loader';
 import {quoteIdentifier} from './sql_identifiers';
 
 
@@ -23,16 +24,11 @@ import {quoteIdentifier} from './sql_identifiers';
 export type QuoteFn = (identifier: string) => string;
 
 
-// Maps the IR's `dataSource` to the BARE table name a statement references. A
-// property graph names input tables within its own database, so only the final
-// segment of a qualified `project.dataset.table` (or any dotted source) is
-// meaningful; the leading qualifiers name where a BigQuery copy lives and have
-// no bearing on the operational table. A resource-name URI
-// (`//spanner.googleapis.com/.../tables/<t>`, or any other `scheme://.../<t>`)
-// names its table by the final PATH segment for the same reason — the leading
-// path locates the store, not the table. A verbatim query (contains whitespace)
-// cannot back a graph element table, so it is passed through parenthesized with
-// a warning.
+// The table `dataSource` names within its own database: its final dotted or
+// path segment, except that a Spanner table keeps its schema (`ops.stations`),
+// each part quoted. The table's own name may hold a space when the source
+// names where the table is too. A query, which holds any other whitespace, is
+// returned in parentheses with a warning.
 export function boundTable(
     dataSource: string, warnings: string[], context: string,
     quote: QuoteFn): string {
@@ -42,20 +38,23 @@ export function boundTable(
         `${context}: empty data source; the table reference will be invalid`);
     return quote('');
   }
-  if (/\s/.test(trimmed)) {
+  // Reduce a URI to its final path segment. A Spanner source keeps every
+  // dotted part of it, and any other source keeps the last.
+  const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
+  const parts = splitDotted(source);
+  const where = trimmed.slice(0, trimmed.lastIndexOf(parts[parts.length - 1]));
+  if (/[^\S ]/.test(trimmed) ||
+      (trimmed.includes(' ') && (!where || /\s/.test(where)))) {
     warnings.push(
         `${context}: data source '${
             trimmed}' looks like a query, not a table reference; ` +
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  // A BigQuery resource URI is rewritten to `project.dataset.table` upstream in
-  // the loader, but a Spanner-native (or other `scheme://`) URI is kept
-  // verbatim there, so reduce it to its final path segment here before the
-  // dotted reduction below.
-  const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
-  const last = splitDotted(source).map(unquote).pop() ?? source;
-  return quote(last);
+  const names = parts.map(unquote);
+  const kept =
+      sourceTableOf(trimmed)?.system === 'spanner' ? names : names.slice(-1);
+  return kept.map(quote).join('.');
 }
 
 
@@ -67,9 +66,12 @@ export function spannerTable(
 }
 
 
-// A Google Cloud resource name (`//host/...`) or any `scheme://...` URI, as
-// opposed to a bare or dotted table reference. Mirrors the loader's source
-// parsing so the two agree on what counts as a URI.
+// A resource URI (`//host/...`) or any `scheme://...` URI, as opposed to a bare
+// or dotted table reference. The loader gives the IR a BigQuery or BigLake
+// table as its dotted name, a Spanner, AlloyDB or Cloud SQL table as its
+// resource URI, with the leading `//`, and a third-party table as its entry
+// name (see `parseSource` and `sourceToDataSource`). It rejects any `scheme://`
+// source, so only a hand-built IR reaches that arm.
 function isResourceUri(source: string): boolean {
   return source.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(source);
 }

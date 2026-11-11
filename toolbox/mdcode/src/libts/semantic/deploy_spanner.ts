@@ -2,10 +2,10 @@
 //
 // This is the Spanner leg of `kcmd push` for the semantic-model scope, a
 // sibling to deploy_bigquery: it consumes models already parsed into the
-// semantic IR (see loadSemanticModels, shared across legs so a multi-destination
-// push parses each document once), lowers each to `CREATE OR REPLACE PROPERTY
-// GRAPH` DDL (generator: ./spanner), and applies that DDL to the Spanner
-// database named by the model's GOOGLE deployment target.
+// semantic IR (see loadSemanticModels, shared across legs so a
+// multi-destination push parses each document once), lowers each to `CREATE OR
+// REPLACE PROPERTY GRAPH` DDL (generator: ./spanner), and applies that DDL to
+// the Spanner database named by the model's deployment target.
 //
 // Spanner DDL is asynchronous: updateDatabaseDdl returns a long-running
 // operation which this leg polls to completion, unlike the BigQuery leg's
@@ -19,7 +19,7 @@
 import * as context from '../gcp/context';
 import {Operation, SpannerClient} from '../gcp/spanner';
 
-import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {SPANNER_GRAPH_FORM, spannerGraphTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 import {generateSpannerPropertyGraph} from './spanner';
 
@@ -130,25 +130,18 @@ export async function deploySpanner(
 
   for (const {document, model} of models) {
     modelsSeen++;
-    let targets: SpannerGraphTarget[];
-    let malformed: string[];
-    try {
-      ({targets, malformed} = spannerGraphTargets(model));
-    } catch (err: any) {
-      return fail(`Model '${model.name}' (${document}): ${err.message || err}`);
-    }
+    const {targets, malformed} = spannerGraphTargets(model);
     if (!targets.length) {
       // A malformed-but-present target must not be reported as "none declared".
       if (malformed.length) {
         return fail(
             `Model '${model.name}' (${document}) declares Spanner Graph ` +
-            `deploymentTarget(s) that could not be parsed: ` +
-            `${malformed.join(', ')}. Expected //spanner.googleapis.com/` +
-            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
+            `deployment target(s) that could not be parsed: ` +
+            `${malformed.join(', ')}. Expected ${SPANNER_GRAPH_FORM}.`);
       }
       return fail(
           `Model '${model.name}' (${document}) declares no Spanner Graph ` +
-          `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
+          `deployment target; nothing to deploy.`);
     }
     for (const bad of malformed) {
       warnings.push(

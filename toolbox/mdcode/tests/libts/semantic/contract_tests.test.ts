@@ -26,16 +26,13 @@ import {ApiContext} from '../../../src/libts/gcp/context';
 import {CONTRACT_TEST_GENERATORS, ContractPlan, contractResult, ContractResult, ContractTest, ContractTestGenerator, ENTERPRISE_RESERVATION, formatContractResults, planContractTests, q, QueryOutcome, renderContractSql, runContractTests,} from '../../../src/libts/semantic/contract_tests';
 import {Constraint, Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
-import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {contractTest} from '../../../src/tool/commands';
 
-function target(graph: string): {vendorName: string; data: string} {
+function target(graph: string) {
   return {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({
-      deploymentTargets:
-          [`//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${graph}`],
-    }),
+    name: 'default',
+    target: `bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${graph}`,
   };
 }
 
@@ -121,7 +118,7 @@ function fixture(withGraph = true): SemanticModel {
         judgment: 'Every order is reviewed by a person.',
       } as Constraint,
     ],
-    ...(withGraph ? {customExtensions: [target('g')]} : {}),
+    ...(withGraph ? {deployments: [target('g')]} : {}),
   };
 }
 
@@ -406,7 +403,7 @@ function orgFixture(): SemanticModel {
       },
     ],
     metrics: [],
-    customExtensions: [target('g')],
+    deployments: [target('g')],
   };
 }
 
@@ -789,20 +786,21 @@ const CODELAB_MODEL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
+    deployments:
+      - name: analytical
+        profile: analytical
+        target: bigquery.googleapis.com/projects/codelab-project/datasets/codelab_ds/propertyGraphs/sales
     entities:
       - name: orders
-        primary_key: [order_id]
         fields:
           - { name: order_id,    datatype: Integer }
           - { name: customer_id, datatype: Integer }
           - { name: net_amount,  datatype: Decimal }
       - name: customer
-        primary_key: [customer_id]
         fields:
           - { name: customer_id, datatype: Integer }
           - { name: name,        datatype: String }
       - name: lineitem
-        primary_key: [line_id]
         fields:
           - { name: line_id,  datatype: Integer }
           - { name: order_id, datatype: Integer }
@@ -810,13 +808,9 @@ semantic_model:
       - name: placed_by
         from: orders
         to: customer
-        from_columns: [customer_id]
-        to_columns: [customer_id]
       - name: part_of
         from: lineitem
         to: orders
-        from_columns: [order_id]
-        to_columns: [order_id]
     metrics:
       - name: revenue
         datatype: Decimal
@@ -824,45 +818,45 @@ semantic_model:
           dialects: [{ dialect: BIGQUERY, expression: SUM(orders.net_amount) }]
 `;
 
-const CODELAB_PROFILE = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/codelab-project/datasets/codelab_ds/propertyGraphs/sales
-    entities:
-      - name: orders
-        source: codelab-project.codelab_ds.orders
-        fields:
-          - { name: order_id,    expression: o_orderkey }
-          - { name: customer_id, expression: o_custkey }
-          - { name: net_amount,  expression: net_amount }
-      - name: customer
-        source: codelab-project.codelab_ds.customer
-        fields:
-          - { name: customer_id, expression: c_custkey }
-          - { name: name,        expression: c_name }
-      - name: lineitem
-        source: codelab-project.codelab_ds.lineitem
-        fields:
-          - { name: line_id,  expression: l_linekey }
-          - { name: order_id, expression: l_orderkey }
+const CODELAB_PROFILE = `name: analytical
+entities:
+  - name: orders
+    source: bigquery.googleapis.com/projects/codelab-project/datasets/codelab_ds/tables/orders
+    primary_key: [o_orderkey]
+    fields:
+      - { name: order_id,    expression: o_orderkey }
+      - { name: customer_id, expression: o_custkey }
+      - { name: net_amount,  expression: net_amount }
+  - name: customer
+    source: bigquery.googleapis.com/projects/codelab-project/datasets/codelab_ds/tables/customer
+    primary_key: [c_custkey]
+    fields:
+      - { name: customer_id, expression: c_custkey }
+      - { name: name,        expression: c_name }
+  - name: lineitem
+    source: bigquery.googleapis.com/projects/codelab-project/datasets/codelab_ds/tables/lineitem
+    primary_key: [l_linekey]
+    fields:
+      - { name: line_id,  expression: l_linekey }
+      - { name: order_id, expression: l_orderkey }
+relationships:
+  - name: placed_by
+    from_columns: [o_custkey]
+    to_columns: [c_custkey]
+  - name: part_of
+    from_columns: [l_orderkey]
+    to_columns: [o_orderkey]
 `;
 
 describe('contract tests: the TPC-H codelab model (generation only)', () => {
   test('generates its validation-query tests; it has nothing for K1 or paths', () => {
-    const merged = mergeProfileOntoDoc(CODELAB_MODEL, CODELAB_PROFILE, 'analytical');
-    if ('error' in merged) throw new Error(merged.error);
-    // Loaded as push loads a `semantic_model:` wrapper profile: the codelab's
-    // names its graph with `deployment_target` and its tables by bare name.
     const loaded = loadSemanticModels(
-        [{
-          name: 'sales',
-          text: merged.text,
-          allowLegacyBareSource: true,
-          excluded: merged.excluded,
-        }],
-        {bindingOptional: true});
+        [{name: 'sales', text: CODELAB_MODEL}], {bindingOptional: true});
     expect(loaded.error).toBeUndefined();
-    const plan = planContractTests(loaded.models[0].model);
+    const applied =
+        applyProfileFile(loaded.models[0].model, CODELAB_PROFILE, 'analytical');
+    expect(applied.error).toBeUndefined();
+    const plan = planContractTests(applied.model!);
     expect(plan.graph).toBe('codelab-project.codelab_ds.sales');
     expect(plan.tests.map(t => t.id)).toEqual([
       'validation-query:orders_primary_key',
@@ -885,9 +879,12 @@ describe('kcmd test (CLI seam)', () => {
   const MODEL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
+    deployments:
+      - name: bigquery
+        profile: bigquery
+        target: bigquery.googleapis.com/projects/test-project/datasets/shop/propertyGraphs/shop_graph
     entities:
       - name: Order
-        primary_key: [orderId]
         fields:
           - { name: orderId, datatype: String }
           - { name: amount,  datatype: Decimal }
@@ -895,7 +892,6 @@ semantic_model:
         extends: [Order]
         defined: "amount >= 1000"
       - name: Department
-        primary_key: [departmentId]
         fields:
           - { name: departmentId, datatype: String }
           - { name: parentId,     datatype: String }
@@ -903,36 +899,37 @@ semantic_model:
       - name: partOf
         from: Department
         to: Department
-        from_columns: [parentId]
-        to_columns: [departmentId]
         ai_context:
           instructions: partOf is transitive; only direct edges are stored.
 `;
-  const PROFILE = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: shop
-    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/shop/propertyGraphs/shop_graph
-    entities:
-      - name: Order
-        source: test-project.shop.orders
-        fields:
-          - { name: orderId, expression: order_id }
-          - { name: amount,  expression: amount_usd }
-      - name: Department
-        source: test-project.shop.departments
-        fields:
-          - { name: departmentId, expression: dept_id }
-          - { name: parentId,     expression: parent_dept_id }
+  const PROFILE = `name: bigquery
+entities:
+  - name: Order
+    source: bigquery.googleapis.com/projects/test-project/datasets/shop/tables/orders
+    primary_key: [order_id]
+    fields:
+      - { name: orderId, expression: order_id }
+      - { name: amount,  expression: amount_usd }
+  - name: Department
+    source: bigquery.googleapis.com/projects/test-project/datasets/shop/tables/departments
+    primary_key: [dept_id]
+    fields:
+      - { name: departmentId, expression: dept_id }
+      - { name: parentId,     expression: parent_dept_id }
+relationships:
+  - name: partOf
+    from_columns: [parent_dept_id]
+    to_columns: [dept_id]
 `;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-contract-'));
     fs.writeFileSync(path.join(dir, 'catalog.yaml'),
-                     'scope: semantic-model.test-project.us.shop_eg\ndefault_profile: bigquery\n');
+                     'scope: semantic-model.test-project.us.shop_eg\n');
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'shop_eg');
-    fs.mkdirSync(path.join(eg, 'shop.profiles'), {recursive: true});
+    fs.mkdirSync(eg, {recursive: true});
     fs.writeFileSync(path.join(eg, 'shop.yaml'), MODEL);
-    fs.writeFileSync(path.join(eg, 'shop.profiles', 'bigquery.yaml'), PROFILE);
+    fs.writeFileSync(path.join(eg, 'shop.profile.bigquery.yaml'), PROFILE);
     logs = [];
     spyOn(ApiContext, 'default').mockReturnValue(CTX);
     for (const channel of ['log', 'warn', 'error'] as const) {
@@ -949,7 +946,7 @@ semantic_model:
   });
 
   test('--sql-only writes the tests and the manifest, and runs nothing', async () => {
-    expect(await contractTest({target: 'bigquery', sqlOnly: true, cwd: dir, out: 'ct'}))
+    expect(await contractTest({target: 'bigquery', profile: 'bigquery', sqlOnly: true, cwd: dir, out: 'ct'}))
         .toBe(0);
     const sql = fs.readFileSync(path.join(dir, 'ct', 'shop.contract.sql'), 'utf8');
     const manifest = JSON.parse(

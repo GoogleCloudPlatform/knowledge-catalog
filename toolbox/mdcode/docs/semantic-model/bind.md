@@ -19,18 +19,18 @@ report beside it. When it is unsure it says so and stops, rather than guess.
 ```bash
 kcmd bind --profile bigquery --scan my-project.ps_*            # draft, then review
 kcmd bind --profile bigquery --scan my-project.ps_* --accept-review
-kcmd push --profile bigquery                                   # deploy the result
+kcmd push --deployment bigquery                                # deploy the result
 ```
 
 ## What it writes
 
 | File | Contents |
 |---|---|
-| `<model>.profiles/<profile>.yaml` | The binding profile, in the `<model>.profiles/` layout that `kcmd push` deploys a graph for and that carries `hydration` (a profile file, `<model>.profile.<name>.yaml`, may not set `hydration` or `mode`): a `semantic_model` document with the profile's `deployment_target` and, for each bound entity, its `source` (the table's resource name, `//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`), its field `expression`s, and its `hydration`. Entities that need review are written as comments. |
+| `<model>.profile.<profile>.yaml` | The sibling binding profile beside `<model>.yaml`: `name: <profile>` and, for each bound entity, its `source` (the table's resource name, `bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`, with no leading `//`), physical `primary_key` / `unique_keys`, field `expression`s, `fields_exclude`, and `hydration`; plus physical join columns under `relationships` and any `metrics_exclude`. Entities that need review are written as comments. When `--deployment-target` is resolved, `bind` also upserts the matching entry into `deployments:` in `<model>.yaml`. |
 | `bind_report.md` | Every decision and the reason for it: the chosen table and the score breakdown, the field-to-column matches and the rule behind each, the rejected candidates, the hydration proposals with their evidence, and the tables left out of the scan. |
 | `bind_scan.json` | The scan itself (tables, columns, types), so a rerun can skip BigQuery with `--scan-file`. |
 
-The report and the scan land in the profile's directory, or in `--out`.
+The report and the scan land in the model's directory, or in `--out`.
 
 Rerunning `bind` rewrites the profile. Change the model, the scan or the flags
 rather than editing the draft; once you accept a profile, it is an ordinary
@@ -140,13 +140,10 @@ dataset matching `--exclude`. Views are left out unless you pass
 
 `--from-catalog` binds the model as pulled from Knowledge Catalog, the governed
 definition, instead of the local documents. Like `kcmd pull`, it reads the
-annotation aspects `kcmd init --semantic-model` provisioned, so the model it
-binds is the one pushed: metric expressions, verbatim relationship names and
-abstract relationships included, and the profile matches binding the local
-document. In a project without those aspect types the model is read from the
-built-in aspects and description trailers alone, with the losses listed in
-[What pull recovers](fidelity.md#what-pull-recovers). `--model <file>` binds
-one document and writes its profile beside it.
+second-generation semantic entries and aspects (`sql-expressions`, `schema`,
+`guidelines`, `overview`, and description trailers), so the model it binds is
+the one pushed (see [What pull recovers](fidelity.md#what-pull-recovers)).
+`--model <file>` binds one document and writes its profile beside it.
 
 ## Flags
 
@@ -163,7 +160,7 @@ one document and writes its profile beside it.
 | `--exclude <glob>` | leave matching datasets out; repeatable |
 | `--include-views` | consider views as well as base tables |
 | `--kc-search` | add the Knowledge Catalog search signal |
-| `--deployment-target <uri>` | the target the profile declares; defaults to the existing profile's, else the model's |
+| `--deployment-target <uri>` | the deployment target recorded under `deployments:` in `<model>.yaml` for this profile; defaults to the profile's existing target |
 | `--location <location>` | BigQuery location of the scanned datasets (default `US`) |
 | `--project <project>` | the project query jobs run and bill in |
 | `--label <key:value>` | label every query job; repeatable |

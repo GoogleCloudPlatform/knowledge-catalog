@@ -42,12 +42,23 @@
 
 import {generatePropertyGraph} from './bigquery';
 import {lowerDefinedEntities, resolveDefinedEntities} from './defined_entities';
-import {Entity, fieldBinding, inverseEdgeNames, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
+import {Entity, expressionForDialect, Field, fieldBinding, inverseEdgeNames, matchesKey, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregateCalls, MetricDecomposition, simpleMetricIndex} from './metric_composition';
 import {resolveInheritance} from './resolve_inheritance';
-import {escapeRegExp, mapOutsideStringLiterals, referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {escapeRegExp, isColumnName, mapOutsideStringLiterals, referencedEntityNames, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 import {isVocabulary} from './vocabulary';
+
+function metricSql(m: Metric): string|undefined {
+  const raw = expressionForDialect(m, 'BIGQUERY') ?? m.expression ??
+      m.importedExpression;
+  return raw === undefined ? undefined : sqlWithoutComments(raw);
+}
+
+function fieldSqlOf(f: Field): string|undefined {
+  const raw = expressionForDialect(f, 'BIGQUERY') ?? fieldBinding(f);
+  return raw === undefined ? undefined : sqlWithoutComments(raw);
+}
 
 /** GRAPH_EXPAND accepts at most this many node tables (BigQuery limit). */
 export const GRAPH_EXPAND_MAX_NODE_TABLES = 10;
@@ -242,12 +253,12 @@ function graphView(lowered: SemanticModel, resolved: SemanticModel): GraphView {
 // A foreign key that references the destination's primary key (or one of its
 // unique keys): each source row reaches at most one destination row.
 function isToOne(rel: Relationship, destination: Entity): boolean {
-  const cols = new Set(rel.destination.columns);
-  if (!cols.size || rel.source.columns.length !== rel.destination.columns.length) {
+  if (!rel.destination.columns.length ||
+      rel.source.columns.length !== rel.destination.columns.length) {
     return false;
   }
   return [destination.keys ?? [], ...(destination.uniqueKeys ?? [])].some(
-      key => key.length === cols.size && key.every(c => cols.has(c)));
+      key => matchesKey(rel.destination.columns, key));
 }
 
 interface Bfs {
@@ -393,7 +404,7 @@ export function planMetricGraphs(
   const fallbacks: Array<{metric: Metric; reason: string}> = [];
   const groups = new Map<string, Candidate[]>();
   for (const metric of metrics) {
-    const expression = metric.expression ?? metric.importedExpression ?? '';
+    const expression = metricSql(metric) ?? '';
     const defined = referencedEntityNames(expression, definedNames);
     if (defined.length) {
       const reason = `it reads defined entity ${defined.join(', ')}, which has ` +
@@ -424,7 +435,7 @@ export function planMetricGraphs(
   }
 
   planViews(fallbacks.sort((a, b) => byName(a.metric, b.metric)),
-            {g, entityNames, target, max, taken, plan});
+            {g, entityNames, target, max, taken, plan, mainWarnings});
   return plan;
 }
 
@@ -620,7 +631,7 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
 // The decomposition still says what the metric says: a simple metric whose
 // aggregate was rewritten (a COUNTIF) is not the measure the main graph has.
 function sameAggregate(metric: Metric, d: MetricDecomposition): boolean {
-  const expr = (metric.expression ?? metric.importedExpression ?? '').trim();
+  const expr = (metricSql(metric) ?? '').trim();
   return !d.components[0].countIf && /^[A-Za-z_]+\s*\(/.test(expr);
 }
 
@@ -636,12 +647,12 @@ function unique(name: string, taken: Set<string>): string {
 }
 
 function graphUri(t: MetricGraphTarget, graph: string): string {
-  return `//bigquery.googleapis.com/projects/${t.project}/datasets/${
+  return `bigquery.googleapis.com/projects/${t.project}/datasets/${
       t.dataset}/propertyGraphs/${graph}`;
 }
 
 function viewUri(t: MetricGraphTarget, view: string): string {
-  return `//bigquery.googleapis.com/projects/${t.project}/datasets/${
+  return `bigquery.googleapis.com/projects/${t.project}/datasets/${
       t.dataset}/tables/${view}`;
 }
 
@@ -696,6 +707,7 @@ function sliceModel(
         description: `Component ${i + 1} of metric ${c.metric.name}: ${
             comp.expression}. Recombined as described on ${c.metric.name}.`,
       };
+      delete base.dialects;
       delete base.importedExpression;
       delete base.importedDialect;
       metrics.set(comp.name, {...base, expression: comp.expression, entity: comp.entity});
@@ -732,6 +744,7 @@ interface ViewContext {
   max: number;
   taken: Set<string>;
   plan: MetricGraphPlan;
+  mainWarnings: Set<string>;
 }
 
 function planViews(
@@ -742,10 +755,15 @@ function planViews(
     const viewable = viewFact(metric, vc);
     if ('why' in viewable) {
       plan.placements.set(metric.name, {kind: 'none', reason});
-      plan.warnings.push(
-          `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
-          `no fallback view either (${viewable.why}); query it with plain ` +
-          `SQL over the bound tables`);
+      const alreadySyntaxWarned = [...vc.mainWarnings].some(
+          w => w.startsWith(`metric '${metric.name}'`) &&
+              w.includes('the SQL parser cannot read it as one expression'));
+      if (!alreadySyntaxWarned) {
+        plan.warnings.push(
+            `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
+            `no fallback view either (${viewable.why}); query it with plain ` +
+            `SQL over the bound tables`);
+      }
       continue;
     }
     const list = groups.get(viewable.fact) ?? [];
@@ -792,7 +810,7 @@ function planViews(
     });
     const note = notes.length ? `; ${[...new Set(notes)].join('; ')}` : '';
     for (const m of members) {
-      const expression = m.metric.expression ?? m.metric.importedExpression ?? '';
+      const expression = metricSql(m.metric) ?? '';
       plan.placements.set(m.metric.name, {
         kind: 'view',
         ref,
@@ -813,7 +831,7 @@ function planViews(
 function viewFact(metric: Metric, vc: ViewContext):
     {fact: string; reads: string[]}|{why: string} {
   const {g} = vc;
-  const expression = metric.expression ?? metric.importedExpression;
+  const expression = metricSql(metric);
   if (!expression) return {why: 'it has no expression'};
   let reads = referencedEntityNames(expression, vc.entityNames);
   if (!reads.length && metric.entity) reads = [metric.entity];
@@ -868,16 +886,32 @@ function renderView(
   const columnOf = new Map<string, string>();
   const select: string[] = [];
   const blocks = new Map<string, string>();
+  const joinAlias = new Map<string, string>();
   for (const name of order) {
     const e = g.entities.get(name)!;
-    const bound = e.fields.filter(f => fieldBinding(f) !== undefined);
+    const bound = e.fields.filter(f => fieldSqlOf(f) !== undefined);
     const projected = bound.map(f => {
-      const local = stripQualifier(fieldBinding(f)!, name);
+      const local = stripQualifier(fieldSqlOf(f)!, name);
       return local === f.name ? quoteIfReserved(f.name) :
                                 `${local} AS ${quoteIfReserved(f.name)}`;
     });
     for (const c of joinCols.get(name) ?? []) {
-      if (!bound.some(f => f.name === c)) projected.push(quoteIfReserved(c));
+      const bare = c.replace(/^`(.*)`$/, '$1');
+      if (bound.some(f => f.name === c)) {
+        joinAlias.set(`${name}.${c}`, c);
+        continue;
+      }
+      const byCol = bound.find(f => {
+        const local = stripQualifier(fieldSqlOf(f)!, name).trim();
+        return isColumnName(local) &&
+            local.replace(/^`(.*)`$/, '$1').toLowerCase() === bare.toLowerCase();
+      });
+      if (byCol) {
+        joinAlias.set(`${name}.${c}`, byCol.name);
+        continue;
+      }
+      projected.push(quoteIfReserved(bare));
+      joinAlias.set(`${name}.${c}`, bare);
     }
     blocks.set(name, `(\n    SELECT\n      ${projected.join(',\n      ')}\n    FROM ${
         tableRef(e.dataSource)}\n  ) AS ${alias(name)}`);
@@ -899,9 +933,13 @@ function renderView(
     `FROM ${blocks.get(order[0])}`,
   ];
   for (const r of rels) {
-    const on = r.source.columns.map(
-        (c, i) => `${alias(r.source.entity)}.${quoteIfReserved(c)} = ${
-            alias(r.destination.entity)}.${quoteIfReserved(r.destination.columns[i])}`);
+    const on = r.source.columns.map((c, i) => {
+      const left = joinAlias.get(`${r.source.entity}.${c}`) ?? c;
+      const rightCol = r.destination.columns[i];
+      const right = joinAlias.get(`${r.destination.entity}.${rightCol}`) ?? rightCol;
+      return `${alias(r.source.entity)}.${quoteIfReserved(left)} = ${
+          alias(r.destination.entity)}.${quoteIfReserved(right)}`;
+    });
     lines.push(`LEFT JOIN ${blocks.get(r.destination.entity)}`);
     lines.push(`  ON ${on.join(' AND ')}`);
   }

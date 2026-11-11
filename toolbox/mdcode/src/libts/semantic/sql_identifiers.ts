@@ -1,7 +1,7 @@
 // Quoting for GoogleSQL identifiers emitted into generated graph DDL.
 //
-// Both graph generators (./graph_ddl, ./spanner) lower logical names -- entity
-// and relationship labels, property names, key columns -- into identifier
+// The graph generator (./graph_ddl) lowers logical names -- entity and
+// relationship labels, property names, key columns -- into identifier
 // positions of a `CREATE OR REPLACE PROPERTY GRAPH` statement. A name that is a
 // GoogleSQL RESERVED KEYWORD (e.g. an entity named `Order`) is a valid model
 // name but, emitted bare as `... AS Order`, makes the DDL a syntax error
@@ -22,7 +22,7 @@
 //
 // Source of truth: the GoogleSQL reserved-keyword lists published for BigQuery
 // and Spanner (their lexical-structure docs). This set is their UNION so one
-// table serves both generators: the two lists differ only in QUALIFY (BigQuery
+// table serves both engines: the two lists differ only in QUALIFY (BigQuery
 // reserves it; Spanner does not, and over-quoting it on Spanner is harmless),
 // and both reserve GRAPH_TABLE. NOTE: the @polyglot-sql/sdk transpiler is
 // deliberately NOT the oracle -- its reserved set diverges from BigQuery's in
@@ -166,6 +166,18 @@ export function quoteIdentifier(name: string): string {
 export function quoteIfReserved(name: string): string {
   return isSimpleIdentifier(name) && isReservedKeyword(name) ? backtick(name) :
                                                                name;
+}
+
+// The reserved keywords that are values. SQL that is one of them alone, such as
+// a field bound to `TRUE`, is that value, not a column of that name.
+const VALUE_KEYWORDS = new Set<string>(['TRUE', 'FALSE', 'NULL']);
+
+// Quotes SQL that is a lone reserved keyword, which a field binding reads as
+// the column of that name, as in `order`. TRUE, FALSE and NULL stay bare, since
+// both engines read a backticked word as a column name. Use on the SQL a field
+// binds to, where quoteIfReserved would turn such a value into a column.
+export function quoteColumnIfReserved(sql: string): string {
+  return VALUE_KEYWORDS.has(sql.toUpperCase()) ? sql : quoteIfReserved(sql);
 }
 
 

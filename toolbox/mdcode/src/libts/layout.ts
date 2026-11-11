@@ -5,11 +5,13 @@ import * as md from './metadata';
 import { StandardLayout } from './layouts/standard';
 import { DocumentsLayout } from './layouts/documents';
 import { SemanticModelLayout } from './layouts/semantic-model';
+import { OkfLayout } from './layouts/okf';
 
 export enum Layouts {
   STANDARD = 'standard',
   DOCUMENTS = 'documents',
-  SEMANTIC_MODEL = 'semantic-model'
+  SEMANTIC_MODEL = 'semantic-model',
+  OKF = 'okf'
 }
 
 
@@ -34,6 +36,8 @@ export function createLayout(layout: Layouts,
       return new DocumentsLayout(catalogPath);
     case Layouts.SEMANTIC_MODEL:
       return new SemanticModelLayout(catalogPath, entryGroup);
+    case Layouts.OKF:
+      return new OkfLayout(catalogPath, entryGroup);
     default:
       throw new Error(`Unknown layout type: ${layout}`);
   }

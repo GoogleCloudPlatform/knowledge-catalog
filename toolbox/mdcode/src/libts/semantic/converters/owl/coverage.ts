@@ -210,7 +210,7 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
   for (const c of classes) {
     if (!c.keys.length) continue;
     const C = c.localName;
-    const keys = dedupe(c.keys);
+    const keys = dedupe(c.keys.map(localName));
     const subject = `${C} HasKey (${keys.join(' ')})`;
     const e = entities.get(C)!;
     const carriers = e.abstract ? keyCarriers(C, keys) : [];

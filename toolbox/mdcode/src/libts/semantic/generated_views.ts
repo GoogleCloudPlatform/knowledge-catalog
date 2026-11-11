@@ -16,9 +16,9 @@
 // and qualification rules, and the small SQL helpers the view bodies use. It
 // imports nothing from bigquery.ts, which consumes it.
 
-import {Entity, fieldBinding} from './ir';
+import {Entity, expressionForDialect, fieldBinding} from './ir';
+import {sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
-import {stripQualifier} from './sql_expr_utils';
 
 /** A view the BigQuery leg deploys before the graph that reads it. */
 export interface GeneratedView {
@@ -76,11 +76,14 @@ export function tableName(ref: string): string {
 /**
  * The physical column a field of `entity` reads: its bound expression with the
  * entity qualifier stripped, or the field name itself when it is unbound or not
- * a declared field (already a raw column). Mirrors graph_ddl.ts physicalColumn.
+ * a declared field (already a raw column).
  */
 export function physicalColumnOf(entity: Entity, fieldName: string): string {
   const field = entity.fields.find(f => f.name === fieldName);
-  const expr = field ? fieldBinding(field) : undefined;
+  const raw = field ?
+      (expressionForDialect(field, 'BIGQUERY') ?? fieldBinding(field)) :
+      undefined;
+  const expr = raw === undefined ? undefined : sqlWithoutComments(raw);
   return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
 }
 
@@ -90,8 +93,9 @@ export function physicalColumnOf(entity: Entity, fieldName: string): string {
  * otherwise -- an expression names its own columns, so it cannot be prefixed.
  */
 export function aliased(alias: string, column: string): string {
-  return isSimpleIdentifier(column) ? `${alias}.${quoteIfReserved(column)}` :
-                                      `(${column})`;
+  return isSimpleIdentifier(column) && !/^(TRUE|FALSE|NULL)$/i.test(column) ?
+      `${alias}.${quoteIfReserved(column)}` :
+      `(${column})`;
 }
 
 /** A BigQuery string literal, or a typed NULL when the value is absent. */

@@ -9,15 +9,17 @@ import * as path from 'node:path';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {SpannerClient} from '../../src/libts/gcp/spanner';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {profiles, skillsGenerate} from '../../src/tool/commands';
+import {stubCloudSqlEntry, stubSpannerDialect} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER_DB =
-    '//spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
-const BQ = '//bigquery.googleapis.com/projects/acme';
+    'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
+const BQ = 'bigquery.googleapis.com/projects/acme';
 const CLUSTER =
-    '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+    'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
 
 let dir = '';
 let cwd = '';
@@ -61,6 +63,12 @@ ${deployments}    entities:
                  '');
 }
 
+// Profile file `name`, which binds Order and its key and fields to `source`.
+const profileFile = (name: string, source: string) =>
+    `name: ${name}\nentities:\n  - name: Order\n    source: ${source}\n` +
+    '    primary_key: [OrderId]\n    fields: [{ name: key, expression: ' +
+    'OrderId }, { name: total, expression: Total }]\n';
+
 beforeEach(() => {
   cwd = process.cwd();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-runtime-store-'));
@@ -71,6 +79,7 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('unexpected network call');
   }) as any);
+  stubSpannerDialect();
   spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
     out.push(a.join(' '));
     logs.push(a.join(' '));
@@ -125,105 +134,18 @@ describe('the profiles report and --print-store', () => {
         'commerce.yaml',
         model(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `        profile: prod\n`,
             `${SPANNER_DB}/tables/Orders`, false));
     writeModel(
         'commerce.profile.prod.yaml',
-        `name: prod\nentities:\n  - name: Order\n    source: ${
-            SPANNER_DB}/tables/Orders\n`);
+        profileFile('prod', `${SPANNER_DB}/tables/Orders`));
     expect(await profiles({printStore: true, profile: 'prod'})).toBe(0);
     expect(out).toEqual(['acme-ops/prod/commerce']);
     out = [];
     await profiles({profile: 'prod'});
     const target = out.find(l => l.trim().startsWith('target:'));
-    expect(target).toBe(`    target: ${SPANNER_DB}/propertyGraphs/commerce`);
-  });
-
-  test('agree on the target of a legacy wrapper', async () => {
-    writeModel(
-        'commerce.yaml',
-        model(
-            `      - name: analytical\n` +
-                `        target: ${BQ}/datasets/sales/propertyGraphs/commerce\n` +
-                `        profile: analytical\n` +
-                `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
-            `${SPANNER_DB}/tables/Orders`, false));
-    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-    for (const name of ['staging', 'analytical']) {
-      fs.writeFileSync(
-          path.join(eg, 'commerce.profiles', `${name}.yaml`),
-          `semantic_model:\n  - name: commerce\n    entities:\n` +
-              `      - name: Order\n        source: ${
-                  SPANNER_DB}/tables/Orders\n`);
-    }
-    expect(await profiles({printStore: true, profile: 'staging'})).toBe(0);
-    expect(out).toEqual(['acme-ops/prod/commerce']);
-    out = [];
-    await profiles({profile: 'staging'});
-    const target = out.find(l => l.trim().startsWith('target:'));
-    expect(target).toBe(
-        `    target: ${SPANNER_DB}/propertyGraphs/commerce`);
-  });
-});
-
-
-// Under `default`, a deployment with `profile: default` counts as one that
-// names no profile. A legacy wrapper falls back to the same deployments.
-describe('a deployment that names profile default', () => {
-  test('is the one a legacy wrapper no deployment names falls back to',
-       async () => {
-         writeModel(
-             'commerce.yaml',
-             model(
-                 `      - name: main\n` +
-                     `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
-                     `        profile: default\n`,
-                 `${SPANNER_DB}/tables/Orders`, false));
-         const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-         fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-         fs.writeFileSync(
-             path.join(eg, 'commerce.profiles', 'prod.yaml'),
-             `semantic_model:\n  - name: commerce\n    entities:\n` +
-                 `      - name: Order\n        source: ${
-                     SPANNER_DB}/tables/Orders\n`);
-         const byDefault = await createSemanticRuntimes({ctx: CTX});
-         if ('error' in byDefault) throw new Error(byDefault.error);
-         expect(byDefault[0].store?.name)
-             .toBe('projects/acme-ops/instances/prod/databases/commerce');
-         const wrapped = await createSemanticRuntimes({ctx: CTX, profile: 'prod'});
-         if ('error' in wrapped) throw new Error(wrapped.error);
-         expect(wrapped[0].storeError).toBeUndefined();
-         expect(wrapped[0].store?.name)
-             .toBe('projects/acme-ops/instances/prod/databases/commerce');
-       });
-});
-
-
-// A legacy wrapper names its target in `deployment_target`. The loader turns
-// it into a deployment called `default`, which the author never wrote, so a
-// message names the key.
-describe('a legacy wrapper whose deployment_target is in no accepted form', () => {
-  test('is reported as the wrapper\'s deployment_target', async () => {
-    writeModel(
-        'commerce.yaml',
-        model(
-            `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
-            `${SPANNER_DB}/tables/Orders`, false));
-    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-    fs.writeFileSync(
-        path.join(eg, 'commerce.profiles', 'staging.yaml'),
-        `semantic_model:\n  - name: commerce\n` +
-            `    deployment_target: spanner:graph:acme-ops.regional-us.prod.commerce.commerce\n` +
-            `    entities:\n      - name: Order\n        source: ${
-                SPANNER_DB}/tables/Orders\n`);
-    const rt = await createSemanticRuntimes({ctx: CTX, profile: 'staging'});
-    if ('error' in rt) throw new Error(rt.error);
-    expect(rt[0].storeError).not.toContain("deployment 'default'");
+    expect(target).toBe(`    target: ${SPANNER_DB}/graphs/commerce`);
   });
 });
 
@@ -235,7 +157,7 @@ describe('a deployment whose profile is a typo', () => {
         'commerce.yaml',
         model(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `        profile: prdo\n`,
             `${SPANNER_DB}/tables/Orders`).replace(/        executor:\n(.*\n){3}/, ''));
     writeModel(
@@ -259,7 +181,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: A
         extends: [B]
@@ -280,4 +202,94 @@ semantic_model:
          expect(rt.error).toStartWith("[commerce] model 'commerce': ");
          expect(rt.error).toContain('cycle');
        });
+});
+
+
+// A Cloud SQL table written as its resource name takes its dialect from its
+// Knowledge Catalog entry, which the runtime looks up before it loads.
+describe('a Cloud SQL source written as a resource name', () => {
+  const TABLE = 'cloudsql.googleapis.com/projects/acme-ops/locations/us-central1/' +
+      'instances/ms/databases/shop/schemas/sales/tables/Orders';
+  const DEPLOY = '      - {name: default, target: ' +
+      'bigquery.googleapis.com/projects/acme/datasets/d/propertyGraphs/g}\n';
+
+  test('takes the dialect its catalog entry gives', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, TABLE, false));
+    const lookup = stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    const rt = await createSemanticRuntimes({ctx: CTX});
+    if ('error' in rt) throw new Error(rt.error);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(rt[0].model.entities[0].sourceDialect).toBe('SQLSERVER');
+  });
+
+  test('a profile file that binds one takes the dialect its catalog entry gives', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, `${SPANNER_DB}/tables/Orders`, false));
+    writeModel('commerce.profile.prod.yaml',
+               `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n`);
+    stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    const rt = await createSemanticRuntimes({ctx: CTX, profile: 'prod'});
+    if ('error' in rt) throw new Error(rt.error);
+    expect(rt[0].model.entities[0].sourceDialect).toBe('SQLSERVER');
+
+    // So does a profile in a vanilla model's GOOGLE block, and one that binds
+    // nothing keeps the model file's Spanner source, which the runtime reads as
+    // SPANNER without reading its database.
+    fs.rmSync(path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.profile.prod.yaml'));
+    const profiles = [
+      {name: 'prod', entities: [{name: 'Order', source: TABLE}]},
+      {name: 'logical', entities: []},
+    ];
+    writeModel('commerce.yaml', `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({profiles})}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`);
+    for (const [profile, dialect] of [['prod', 'SQLSERVER'], ['logical', 'SPANNER']]) {
+      const block = await createSemanticRuntimes({ctx: CTX, profile});
+      if ('error' in block) throw new Error(block.error);
+      expect(block[0].model.entities[0].sourceDialect).toBe(dialect);
+    }
+    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
+  });
+
+  test('stops with the Dataplex message when its entry cannot be read', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, TABLE, false));
+    stubCloudSqlEntry(403);
+    const rt = await createSemanticRuntimes({ctx: CTX});
+    expect('error' in rt && rt.error).toContain(
+        "Turn on Dataplex integration for instance 'ms' (gcloud sql instances " +
+        'patch ms --enable-dataplex-integration --project acme-ops)');
+  });
+});
+
+
+// kcmd has no engine for a third-party table, so the runtime refuses the
+// profile that binds one, and so do skills-generate and --print-store. The
+// Cloud SQL lookups run first, and the refusal comes after the profiles load,
+// before any store is resolved.
+describe('a third-party source', () => {
+  test('is refused under the profile that binds it, naming the entity and the table', async () => {
+    const ENTRY = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+    writeModel('commerce.yaml', model(
+        `      - {name: prod, target: ${SPANNER_DB}/graphs/g}\n`,
+        `${SPANNER_DB}/tables/Orders`, false));
+    writeModel('commerce.profile.sf.yaml', profileFile('sf', ENTRY));
+    const error = `[commerce] model 'commerce' binds entity 'Order' to ` +
+        `third-party table '${ENTRY}', and kcmd has no engine for a ` +
+        `third-party table.`;
+    expect(await createSemanticRuntimes({ctx: CTX, profile: 'sf'})).toEqual({error});
+    expect(await skillsGenerate({out: 'skills', profile: 'sf'})).toBe(1);
+    expect(await profiles({printStore: true, profile: 'sf'})).toBe(1);
+    expect(logs).toEqual([`Error: ${error}`, `Error: ${error}`]);
+    expect('error' in await createSemanticRuntimes({ctx: CTX})).toBe(false);
+  });
 });

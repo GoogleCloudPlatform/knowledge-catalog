@@ -4,8 +4,6 @@ setup:
   catalog:
     entryTypes:
       - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
-    aspectTypes:
-      - name: projects/dataplex-types/locations/global/aspectTypes/overview
     entryGroups:
       - name: projects/test/locations/us/entryGroups/g1
 

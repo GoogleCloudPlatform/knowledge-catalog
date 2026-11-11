@@ -11,4 +11,5 @@ init:
 assert:
   fileSystem:
     catalog.yaml:
-      contains: "scope: kb.test-proj.us.test-kb"
+      - contains: "scope: kb.test-proj.us.test-kb"
+      - contains: "aspects:\n    - dataplex-types.global.overview"

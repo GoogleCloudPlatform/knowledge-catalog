@@ -13,7 +13,7 @@ import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 // A minimal loader-valid document: one model, one dataset (with a primary key
 // so it does not warn), no metrics.
-function doc(modelName: string, source = 'proj.ds.tbl'): string {
+function doc(modelName: string, source = 'bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl'): string {
   return `version: 0.2.0.dev0
 semantic_model:
   - name: ${modelName}
@@ -38,25 +38,27 @@ describe('loadSemanticModels', () => {
             [
               {name: 'a.yaml', text: doc('sales')},
               {name: 'b.yaml', text: doc('ops')},
-            ],
-            {allowLegacyBareSource: true});
+            ]);
         expect(res.error).toBeUndefined();
         expect(res.models.map(m => m.document)).toEqual(['a.yaml', 'b.yaml']);
         expect(res.models.map(m => m.model.name)).toEqual(['sales', 'ops']);
       });
 
   test('prefixes loader warnings with the originating document name', () => {
-    // A dataset with no primary_key makes the loader warn; the warning must
+    // A metric that names no entity makes the loader warn; the warning must
     // carry the document name so a multi-document push stays diagnosable.
-    const noKey = `version: 0.2.0.dev0
+    const unanchored = `version: 0.2.0.dev0
 semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: proj.ds.tbl
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl
+    metrics:
+      - name: n
+        expression:
+          dialects: [{dialect: BIGQUERY, expression: COUNT(*)}]
 `;
-    const res = loadSemanticModels(
-        [{name: 'sales.yaml', text: noKey}], {allowLegacyBareSource: true});
+    const res = loadSemanticModels([{name: 'sales.yaml', text: unanchored}]);
     expect(res.error).toBeUndefined();
     expect(res.warnings.some(w => w.startsWith('[sales.yaml] '))).toBe(true);
   });
@@ -68,20 +70,19 @@ semantic_model:
         [
           {name: 'good.yaml', text: doc('sales')},
           {name: 'broken.yaml', text: 'semantic_model: [ this is: not valid'},
-        ],
-        {allowLegacyBareSource: true});
+        ]);
     expect(res.error).toBeDefined();
     expect(res.error).toContain('broken.yaml');
     expect(res.models.map(m => m.model.name)).toEqual(['sales']);
   });
 
-  test('applies defaultProject when a source omits its project', () => {
+  test('rejects a bare table source with a document-named error', () => {
     const res = loadSemanticModels(
-        [{name: 'sales.yaml', text: doc('sales', 'ds.tbl')}],
-        {defaultProject: 'scope-proj', allowLegacyBareSource: true});
-    expect(res.error).toBeUndefined();
-    expect(res.models[0].model.entities[0].dataSource)
-        .toBe('scope-proj.ds.tbl');
+        [{name: 'sales.yaml', text: doc('sales', 'ds.tbl')}]);
+    expect(res.models).toEqual([]);
+    expect(res.error).toContain('sales.yaml');
+    expect(res.error).toContain(
+        'bare table name \'ds.tbl\' is not a valid source');
   });
 
   test('no documents yields no models and no error', () => {

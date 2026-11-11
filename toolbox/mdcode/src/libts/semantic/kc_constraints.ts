@@ -86,7 +86,7 @@ export interface ConstraintEmitContext {
 }
 
 // The entry id of one constraint: `<model>.constraints.<name>`, alongside
-// `<model>.metrics.<name>` and `<model>.actions.<name>`.
+// `<model>.actions.<name>`.
 export function constraintEntryId(
     modelId: string, constraintName: string): string {
   return `${modelId}.constraints.${slug(constraintName)}`;

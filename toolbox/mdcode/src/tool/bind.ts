@@ -1,4 +1,4 @@
-// `kcmd bind`: propose a binding profile from the raw warehouse (proposed; see
+// `kcmd bind`: propose a binding profile from the raw warehouse (see
 // docs/semantic-model/bind.md and src/libts/semantic/bind/).
 //
 //   kcmd bind --profile bigquery --scan my-project.ps_* [--from-catalog]
@@ -8,8 +8,10 @@
 // Reads the logical model (the scope's model documents, a --model file, or
 // the model pulled from Knowledge Catalog with --from-catalog), scans the
 // datasets' INFORMATION_SCHEMA (or a --scan-file), scores every entity
-// against every table, profiles the chosen tables, and writes
-// `<model>.profiles/<profile>.yaml` and `bind_report.md` beside it.
+// against every table, profiles the chosen tables, writes
+// `<model>.profile.<profile>.yaml` and `bind_report.md` beside `<model>.yaml`,
+// and upserts `deployments:` on `<model>.yaml` when `--deployment-target` is
+// given.
 //
 // Exit code: 0 when every decision was accepted; 2 when something needs a
 // person (an entity to review, an unbound entity, a proposed normalize rule)
@@ -19,7 +21,6 @@
 import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as yaml from 'yaml';
 
 import * as kcmd from '../libts';
 import {BigQueryClient} from '../libts/gcp/bigquery';
@@ -31,16 +32,16 @@ import {bindDocument, catalogSearchHits, checkProfile, enforceableEntities, Quer
 import {CatalogScan, filterScan, parseScanPattern, readScanFile, ScanPattern, targetDataset} from '../libts/semantic/bind/scan';
 import {bindSummary} from '../libts/semantic/bind/score';
 import {bigQueryGraphTargets} from '../libts/semantic/deployment_target';
-import {SemanticModel} from '../libts/semantic/ir';
-import {provisionedCustomAspects} from '../libts/semantic/kc_custom_types';
-import {loadModels} from '../libts/semantic/loader';
-import {serializeModel} from '../libts/semantic/osi_converter';
+import {asResourceName, loadModels, modelDocumentVersion, OSSIE_VERSION} from '../libts/semantic/loader';
+import {serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as bqProfile from '../libts/semantic/profile_bigquery';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {DEFAULT_PROFILE, plainCopy} from '../libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../libts/semantic/sql_parser';
+import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
+import {linkNodes, parseForUpdate, updateText} from '../libts/semantic/yaml_update';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
-
-import {kcV2Aspects, sqlParserReady} from './commands';
 
 export interface BindOptions {
   /** The profile to write (default `bigquery`). */
@@ -73,9 +74,9 @@ export interface BindOptions {
   /** Project the query jobs run in (default the scanned project). */
   project?: string;
   label?: string|string[];
-  /** The deployment target the profile declares (its dataset is excluded). */
+  /** The deployment target for this profile (its dataset is excluded). */
   deploymentTarget?: string;
-  /** Directory for bind_report.md and bind_scan.json (default: the profile's). */
+  /** Directory for bind_report.md and bind_scan.json (default: beside `<model>.yaml`). */
   out?: string;
   cwd?: string;
 }
@@ -83,7 +84,9 @@ export interface BindOptions {
 interface BindDoc {
   name: string;
   text: string;
-  profileDir: string;
+  modelFile: string;
+  profilePath: (profileName: string) => string;
+  ensureModelOnDisk?: boolean;
 }
 
 function apiContext(): context.ApiContext {
@@ -92,13 +95,17 @@ function apiContext(): context.ApiContext {
   } catch {
     const read = (cmd: string) => {
       try {
-        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
+        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']})
+            .toString()
+            .trim();
       } catch {
         return '';
       }
     };
-    const project = process.env.CLOUDSDK_CORE_PROJECT || read('gcloud -q config get-value project');
-    const token = read('gcloud -q auth application-default print-access-token');
+    const project = process.env.CLOUDSDK_CORE_PROJECT ||
+        read('gcloud -q config get-value project');
+    const token =
+        read('gcloud -q auth application-default print-access-token');
     return new context.ApiContext(project, 'global', token);
   }
 }
@@ -107,8 +114,9 @@ function list(v: string|string[]|undefined): string[] {
   return v === undefined ? [] : (Array.isArray(v) ? v : [v]).map(String);
 }
 
-async function scopeDocs(root: string, ctx: context.ApiContext, fromCatalog: boolean):
-    Promise<{docs: BindDoc[]; project?: string}|{error: string}> {
+async function scopeDocs(
+    root: string, ctx: context.ApiContext,
+    fromCatalog: boolean): Promise<{docs: BindDoc[]; project?: string}|{error: string}> {
   let snapshot: kcmd.CatalogSnapshot;
   try {
     snapshot = await kcmd.CatalogSnapshot.fromPath(root, ctx);
@@ -116,32 +124,43 @@ async function scopeDocs(root: string, ctx: context.ApiContext, fromCatalog: boo
     return {error: String(err?.message ?? err)};
   }
   if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
-    return {error: 'bind runs in a semantic-model scope (or pass --model <file>).'};
+    return {
+      error: 'bind runs in a semantic-model scope (or pass --model <file>).',
+    };
   }
   const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
-  const dirOf = (name: string) => path.join(path.dirname(layout.modelPath(name)), `${name}.profiles`);
   if (!fromCatalog) {
-    const docs = layout.modelDocuments().map(d => ({...d, profileDir: dirOf(d.name)}));
+    const docs = layout.modelDocuments().map(d => ({
+      ...d,
+      modelFile: layout.modelPath(d.name),
+      profilePath: (p: string) => layout.profilePath(d.name, p),
+    }));
     if (!docs.length) return {error: 'no semantic model documents found.'};
     return {docs, project: source.project};
   }
   const pulled = await pullModelDocs(new dataplex.CatalogClient(ctx), source);
   for (const w of pulled.warnings) console.warn(`Warning: ${w}`);
-  if (!pulled.docs.length) return {error: 'Knowledge Catalog holds no semantic model for this scope.'};
+  if (!pulled.docs.length) {
+    return {error: 'Knowledge Catalog holds no semantic model for this scope.'};
+  }
   return {
-    docs: pulled.docs.map(d => ({...d, profileDir: dirOf(d.name)})),
+    docs: pulled.docs.map(d => {
+      const modelFile = layout.modelPath(d.name);
+      return {
+        ...d,
+        modelFile,
+        profilePath: (p: string) => layout.profilePath(d.name, p),
+        ensureModelOnDisk: !fs.existsSync(modelFile),
+      };
+    }),
     project: source.project,
   };
 }
 
 /**
- * The scope's model(s) as pulled from Knowledge Catalog, serialized as logical
- * documents. Probes the annotation aspect types `kcmd init` provisioned and
- * hydrates them, as `kcmd pull` does: they make the read lossless (metric
- * expressions, verbatim relationship names, abstract relationships), and a
- * pull without them would bind a different model than the one pushed. Reads
- * the aspect fields `KC_V2_ASPECTS` selects, as `kcmd pull` does.
+ * The scope's model(s) as pulled from Knowledge Catalog using V2 aspects,
+ * serialized as logical model documents (`<model>.yaml`).
  */
 export async function pullModelDocs(
     catalog: dataplex.CatalogClient,
@@ -151,46 +170,102 @@ export async function pullModelDocs(
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
-    customAspects:
-        await provisionedCustomAspects(catalog, {project: source.project}),
-    v2Aspects: kcV2Aspects(),
   });
   return {
-    docs: pulled.models.map(m => ({
-      name: m.name,
-      text: serializeModel(m, {logical: true}).yaml,
-    })),
+    docs: pulled.models.map(m => {
+      const {files} = serializeModelFiles(m, {logical: true});
+      const modelFile =
+          files.find(f => f.fileName === `${m.name}.yaml`) ?? files[0];
+      return {name: m.name, text: modelFile.content};
+    }),
     warnings: pulled.warnings,
   };
 }
 
-function existingTarget(profileFile: string): string|undefined {
+/**
+ * Upserts a `deployments:` entry `{name: profileName, target, profile: profileName}`
+ * into `modelText`, stripping any leading `//` on `target` and preserving the
+ * rest of the YAML file byte-for-byte.
+ */
+export function upsertModelDeployment(
+    modelText: string, profileName: string, target: string): string {
+  const normalized = asResourceName(target.trim());
+  const {document, text} = parseForUpdate(modelText);
+  const value = plainCopy(document.toJS(YAML_OPTIONS));
+  const links = linkNodes(value, document.contents);
+  const isVanilla = modelDocumentVersion(text) === OSSIE_VERSION;
+  const models = Array.isArray(value?.semantic_model) ? value.semantic_model : [];
+  for (const m of models) {
+    if (!m || typeof m !== 'object') continue;
+    let owner: any = m;
+    if (isVanilla) {
+      const exts = Array.isArray(m.custom_extensions) ?
+          m.custom_extensions :
+          (m.custom_extensions = []);
+      let g = exts.find(
+          (x: any) => x && typeof x === 'object' && x.vendor_name === 'GOOGLE');
+      if (!g) {
+        g = {vendor_name: 'GOOGLE', data: {}};
+        exts.push(g);
+      }
+      if (typeof g.data === 'string') {
+        try {
+          g.data = JSON.parse(g.data);
+        } catch {
+          g.data = {};
+        }
+      }
+      owner = (g.data && typeof g.data === 'object') ? g.data : (g.data = {});
+    }
+    const deployments = Array.isArray(owner.deployments) ?
+        owner.deployments :
+        (owner.deployments = []);
+    const existing = deployments.find(
+        (d: any) => d && typeof d === 'object' &&
+            (d.profile === profileName || d.name === profileName));
+    if (existing) {
+      existing.target = normalized;
+      existing.profile = profileName;
+    } else {
+      deployments.push(
+          {name: profileName, target: normalized, profile: profileName});
+    }
+  }
+  return updateText(text, document, value, links);
+}
+
+function existingProfileTarget(
+    modelText: string, profileName: string): string|undefined {
   try {
-    const doc = yaml.parse(fs.readFileSync(profileFile, 'utf8'));
-    const t = doc?.semantic_model?.[0]?.deployment_target;
-    return typeof t === 'string' ? t : undefined;
+    const models = loadModels(modelText, {bindingOptional: true}).models;
+    for (const m of models) {
+      const forProfile = (m.deployments ?? [])
+                             .filter(
+                                 d => (d.profile ?? DEFAULT_PROFILE) ===
+                                         profileName ||
+                                     d.name === profileName);
+      if (forProfile.length) return forProfile[0].target;
+      const firstBq = bigQueryGraphTargets(m).targets[0];
+      if (firstBq) return firstBq.uri;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
 }
 
-function modelTargets(text: string): string[] {
-  try {
-    return loadModels(text, {bindingOptional: true}).models.flatMap(
-        (m: SemanticModel) => bigQueryGraphTargets(m).targets.map(t => t.uri));
-  } catch {
-    return [];
-  }
-}
-
 export async function bind(options: BindOptions = {}): Promise<number> {
-  const profileName = typeof options.profile === 'string' ? options.profile : 'bigquery';
-  if (!/^[A-Za-z0-9_-]+$/.test(profileName)) {
-    console.error(`Error: --profile must be a profile name; got '${profileName}'.`);
+  const profileName =
+      typeof options.profile === 'string' ? options.profile : 'bigquery';
+  if (!/^[A-Za-z0-9_-]+$/.test(profileName) ||
+      profileName.toLowerCase() === DEFAULT_PROFILE) {
+    console.error(
+        `Error: --profile must be a named profile (not '${DEFAULT_PROFILE}'); got '${profileName}'.`);
     return 1;
   }
   if (!options.scan && !options.scanFile) {
-    console.error('Error: pass --scan <project>.<dataset glob> (or --scan-file <file>).');
+    console.error(
+        'Error: pass --scan <project>.<dataset glob> (or --scan-file <file>).');
     return 1;
   }
   let pattern: ScanPattern|undefined;
@@ -207,14 +282,17 @@ export async function bind(options: BindOptions = {}): Promise<number> {
     console.error(`Error: ${labels.error}.`);
     return 1;
   }
-  // Every model document is loaded below, and the loader reads each
-  // expression with the SQL parser.
-  if (!await sqlParserReady()) return 1;
+  try {
+    await loadSqlEngine();
+  } catch (err: any) {
+    console.error(
+        `Error: the SQL parser could not be loaded: ${err.message || err}`);
+    return 1;
+  }
   const root = options.cwd ?? '.';
   const location = options.location ?? 'US';
   const ctx = apiContext();
 
-  // The model document(s).
   let docs: BindDoc[];
   let scopeProject: string|undefined;
   if (options.model) {
@@ -227,11 +305,18 @@ export async function bind(options: BindOptions = {}): Promise<number> {
     try {
       text = fs.readFileSync(file, 'utf8');
     } catch (e) {
-      console.error(`Error: could not read ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`Error: could not read ${file}: ${
+          e instanceof Error ? e.message : String(e)}`);
       return 1;
     }
     const stem = path.basename(file).replace(/\.(ya?ml|json)$/i, '');
-    docs = [{name: stem, text, profileDir: path.join(path.dirname(file), `${stem}.profiles`)}];
+    const dir = path.dirname(file);
+    docs = [{
+      name: stem,
+      text,
+      modelFile: file,
+      profilePath: (p: string) => path.join(dir, `${stem}.profile.${p}.yaml`),
+    }];
   } else {
     const scoped = await scopeDocs(root, ctx, !!options.fromCatalog);
     if ('error' in scoped) {
@@ -242,21 +327,23 @@ export async function bind(options: BindOptions = {}): Promise<number> {
     scopeProject = scoped.project;
   }
 
-  // The scan.
   const credentials = !!ctx.token;
   const jobProject = options.project ?? pattern?.project ?? ctx.project;
   const client = credentials ? new BigQueryClient(ctx) : undefined;
   const query: QueryFn|undefined = client && jobProject ?
-      sql => bqProfile.runProfileQuery(client, jobProject, sql, {location, labels: labels.labels}) :
+      sql => bqProfile.runProfileQuery(
+          client, jobProject, sql, {location, labels: labels.labels}) :
       undefined;
   let scan: CatalogScan;
   try {
     if (options.scanFile) {
-      scan = readScanFile(fs.readFileSync(path.resolve(root, options.scanFile), 'utf8'),
-                          pattern?.project ?? scopeProject ?? ctx.project);
+      scan = readScanFile(
+          fs.readFileSync(path.resolve(root, options.scanFile), 'utf8'),
+          pattern?.project ?? scopeProject ?? ctx.project);
     } else {
       if (!query) {
-        console.error('Error: the scan needs credentials (gcloud auth application-default login).');
+        console.error(
+            'Error: the scan needs credentials (gcloud auth application-default login).');
         return 1;
       }
       scan = await runScan(pattern!, location, query);
@@ -269,10 +356,14 @@ export async function bind(options: BindOptions = {}): Promise<number> {
   let failed = false;
   let review = 0;
   for (const doc of docs) {
-    const profileFile = path.join(doc.profileDir, `${profileName}.yaml`);
-    const target = options.deploymentTarget ?? existingTarget(profileFile) ?? modelTargets(doc.text)[0];
+    const profileFile = doc.profilePath(profileName);
+    const localModelText =
+        fs.existsSync(doc.modelFile) ? fs.readFileSync(doc.modelFile, 'utf8') : doc.text;
+    const rawTarget = options.deploymentTarget ?
+        asResourceName(options.deploymentTarget) :
+        existingProfileTarget(localModelText, profileName);
     const excluded = [...list(options.exclude)];
-    const td = targetDataset(target);
+    const td = targetDataset(rawTarget);
     if (td) excluded.push(td);
     const {tables, dropped} = filterScan(scan, {
       exclude: excluded,
@@ -287,61 +378,77 @@ export async function bind(options: BindOptions = {}): Promise<number> {
       const models = loadModels(doc.text, {bindingOptional: true}).models;
       kcHits = new Map();
       for (const m of models) {
-        for (const [k, v] of await catalogSearchHits(ctx, pattern?.project ?? ctx.project, m, tables)) {
+        for (const [k, v] of await catalogSearchHits(
+                 ctx, pattern?.project ?? ctx.project, m, tables)) {
           kcHits.set(k, v);
         }
       }
     }
 
     const profileData = options.profileData !== false;
-    if (profileData && !query) console.warn('Warning: no credentials; binding without profiling the data.');
+    if (profileData && !query) {
+      console.warn('Warning: no credentials; binding without profiling the data.');
+    }
     let bound;
     try {
-      bound = await bindDocument({
-        modelText: doc.text,
-        docName: doc.name,
-        tables,
-        profileName,
-        profileData,
-        defaultProject: pattern?.project ?? scopeProject,
-        kcHits,
-      }, query);
+      bound = await bindDocument(
+          {
+            modelText: doc.text,
+            docName: doc.name,
+            tables,
+            profileName,
+            profileData,
+            defaultProject: pattern?.project ?? scopeProject,
+            kcHits,
+          },
+          query);
     } catch (e) {
-      console.error(`Error: [${doc.name}] ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`Error: [${doc.name}] ${
+          e instanceof Error ? e.message : String(e)}`);
       failed = true;
       continue;
     }
+
+    const effectiveModelText = options.deploymentTarget ?
+        upsertModelDeployment(
+            localModelText, profileName, options.deploymentTarget) :
+        localModelText;
+
     const meta: BindRunMeta = {
       profile: profileName,
       scan: options.scan ?? options.scanFile!,
       tablesScanned: tables.length,
       dropped,
       acceptReview: !!options.acceptReview,
-      deploymentTarget: target,
+      deploymentTarget: rawTarget,
     };
-    let profileText = renderProfileYaml(bound.results, meta);
+    let profileText = renderProfileYaml(bound.results, meta, bound.models);
     if (options.enforceConstraints) {
-      // Which entities enforce is read off the profile as bound, so it is
-      // planned exactly as the push will lower it.
       const enforce = enforceableEntities(
-          doc.text, profileText, profileName, doc.name,
+          effectiveModelText, profileText, profileName, doc.name,
           pattern?.project ?? scopeProject);
       meta.enforceConstraints = enforce;
-      profileText = renderProfileYaml(bound.results, meta);
-      console.log(`[${doc.name}] constraints enforced in ${enforce.size} node view(s).`);
+      profileText = renderProfileYaml(bound.results, meta, bound.models);
+      console.log(
+          `[${doc.name}] constraints enforced in ${enforce.size} node view(s).`);
     }
     const reportText = renderBindReport(bound.results, bound.models, meta);
-    const outDir = options.out ? path.resolve(root, options.out) : doc.profileDir;
+    const modelDir = path.dirname(profileFile);
+    const outDir = options.out ? path.resolve(root, options.out) : modelDir;
     const reportFile = path.join(outDir, 'bind_report.md');
     const scanFile = path.join(outDir, 'bind_scan.json');
     try {
-      fs.mkdirSync(doc.profileDir, {recursive: true});
+      fs.mkdirSync(modelDir, {recursive: true});
       fs.mkdirSync(outDir, {recursive: true});
+      if (doc.ensureModelOnDisk || options.deploymentTarget) {
+        fs.writeFileSync(doc.modelFile, effectiveModelText);
+      }
       fs.writeFileSync(profileFile, profileText);
       fs.writeFileSync(reportFile, reportText);
       fs.writeFileSync(scanFile, `${JSON.stringify(scan, null, 2)}\n`);
     } catch (e) {
-      console.error(`Error: could not write: ${e instanceof Error ? e.message : String(e)}`);
+      console.error(`Error: could not write: ${
+          e instanceof Error ? e.message : String(e)}`);
       return 1;
     }
     for (const r of bound.results) {
@@ -349,15 +456,19 @@ export async function bind(options: BindOptions = {}): Promise<number> {
       for (const w of r.warnings) console.warn(`Warning: [${r.model}] ${w}`);
       if (!options.acceptReview) review += reviewItems(r);
     }
-    const errors = checkProfile(doc.text, profileText, profileName, doc.name,
-                                pattern?.project ?? scopeProject);
-    for (const e of errors) console.error(`Error: [${doc.name}] the written profile: ${e}`);
+    const errors = checkProfile(
+        effectiveModelText, profileText, profileName, doc.name,
+        pattern?.project ?? scopeProject);
+    for (const e of errors) {
+      console.error(`Error: [${doc.name}] the written profile: ${e}`);
+    }
     if (errors.length) failed = true;
     console.log(`Wrote ${profileFile}, ${reportFile} and ${scanFile}.`);
   }
   if (failed) return 1;
   if (review) {
-    console.log(`\n${review} item(s) need review (see bind_report.md); rerun with --accept-review to accept them.`);
+    console.log(
+        `\n${review} item(s) need review (see bind_report.md); rerun with --accept-review to accept them.`);
     return 2;
   }
   return 0;
@@ -372,9 +483,14 @@ function reviewItems(r: ModelBindResult): number {
 
 function printSummary(r: ModelBindResult): void {
   const s = bindSummary(r.bindings);
-  console.log(`[${r.model}] ${s.counts.auto} bound, ${s.counts.derived} derived, ${
-      s.counts.needs_review} need review, ${s.counts.unbound} unbound of ${s.concrete} concrete entities (${
-      Math.round(100 * s.acceptedShare)}% accepted); ${s.counts.vocabulary} vocabularies, ${
-      s.counts.no_table} without a table.`);
-  if (r.notProfiled) console.log(`[${r.model}] data not profiled: ${r.notProfiled}.`);
+  console.log(
+      `[${r.model}] ${s.counts.auto} bound, ${s.counts.derived} derived, ${
+          s.counts.needs_review} need review, ${
+          s.counts.unbound} unbound of ${s.concrete} concrete entities (${
+          Math.round(100 * s.acceptedShare)}% accepted); ${
+          s.counts.vocabulary} vocabularies, ${
+          s.counts.no_table} without a table.`);
+  if (r.notProfiled) {
+    console.log(`[${r.model}] data not profiled: ${r.notProfiled}.`);
+  }
 }

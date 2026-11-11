@@ -18,7 +18,7 @@ semantic_model:
     description: Orders and the write operations over them
     entities:
       - name: customer
-        source: samples.tpch.customer
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
@@ -28,7 +28,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: c_custkey
       - name: orders
-        source: samples.tpch.orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey

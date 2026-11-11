@@ -35,10 +35,16 @@ import * as context from '../gcp/context';
 import {AspectType, CatalogClient, Entry} from '../gcp/dataplex';
 
 import {lowerDefinedEntities, membershipPropertyName, resolveDefinedEntities} from './defined_entities';
-import {Constraint, ConstraintSeverity, DataType, Entity, fieldBinding, Relationship, SemanticModel, ViolationEffect} from './ir';
+import {Constraint, ConstraintSeverity, DataType, Entity, expressionForDialect, Field, fieldBinding, Relationship, SemanticModel, ViolationEffect} from './ir';
+import {entryIdOf} from './kc_ids';
 import {resolveInheritance} from './resolve_inheritance';
-import {stripQualifier} from './sql_expr_utils';
+import {isColumnName, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+
+function fieldSqlOf(f: Field): string|undefined {
+  const raw = expressionForDialect(f, 'BIGQUERY') ?? fieldBinding(f);
+  return raw === undefined ? undefined : sqlWithoutComments(raw);
+}
 
 
 // ---------------------------------------------------------------------------
@@ -506,10 +512,13 @@ export class Binder {
     return first.entity.keys;
   }
 
-  // The SQL a field reads on one table: its bound column or expression.
+  // The SQL a field (or physical key/join column) reads on one table.
   column(entity: Entity, field: string): string {
     const f = entity.fields.find(x => x.name === field);
-    const expr = f && fieldBinding(f);
+    if (!f && isColumnName(field)) {
+      return /^`[^`]+`$/.test(field) ? field : quoteIfReserved(field);
+    }
+    const expr = f && fieldSqlOf(f);
     if (!expr) {
       throw new Unsupported(
           `field '${entity.name}.${field}' is not bound under this binding`);
@@ -875,10 +884,10 @@ function keyParts(e: Entity, cols: string[], primary: boolean): QueryParts {
 
 export function columnOf(e: Entity, field: string): string {
   const f = e.fields.find(x => x.name === field);
-  const expr = f && fieldBinding(f);
+  const expr = f && fieldSqlOf(f);
   if (!expr) {
     // A key that is not a declared field is already a raw column.
-    if (!f) return quoteIfReserved(field);
+    if (!f) return /^`[^`]+`$/.test(field) ? field : quoteIfReserved(field);
     throw new Unsupported(`field '${e.name}.${field}' is not bound`);
   }
   const local = stripQualifier(expr, e.name);
@@ -1282,7 +1291,7 @@ function slug(s: string): string {
 export function entityEntryName(
     dest: KcDestination, model: string, entity: string): string {
   return `projects/${dest.project}/locations/${dest.location}/entryGroups/${
-      dest.entryGroup}/entries/${slug(model)}.entities.${slug(entity)}`;
+      dest.entryGroup}/entries/${slug(model)}/entities/${slug(entity)}`;
 }
 
 export function resultsAspectKey(dest: {project: string}): string {
@@ -1494,7 +1503,7 @@ export async function publishConstraintResults(
     if (res.status === 200) {
       published.push(entry.name);
     } else {
-      errors.push(`${entry.name.split('/').pop()}: ${
+      errors.push(`${entryIdOf(entry.name)}: ${
           res.status === 404 ? 'no such entry (run `kcmd push` first)' :
                                errorText(res.message, res.status)}`);
     }

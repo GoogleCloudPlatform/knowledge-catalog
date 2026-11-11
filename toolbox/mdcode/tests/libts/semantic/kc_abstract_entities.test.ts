@@ -1,22 +1,23 @@
 // Behavior specification for abstract entities and entity inheritance on the
-// Knowledge Catalog leg (src/libts/semantic/knowledge_catalog.ts for push,
+// Knowledge Catalog V2 leg (src/libts/semantic/knowledge_catalog.ts for push,
 // src/libts/semantic/kc_converter.ts for pull).
 //
 // An abstract entity (a table-less supertype) publishes as a semantic-entity
-// entry with the same shape an unbound logical entity already has: an empty
-// `source.resources`, its own fields in the schema aspect, and no primaryKey.
-// Neither closed template has a slot for a supertype or for "no table", so
-// `extends` and `abstract` ride the entry description as fixed trailing
-// paragraphs -- `Specializes: <parents>.` then `Abstract: no table of its own.`
-// -- which pull peels back off. No new Dataplex type is involved.
+// entry with `abstract: true` in `semantic-entity`, its own fields in `schema`,
+// and no source or primaryKey. `extends` and `abstract` also appear in the
+// entry description as fixed trailing paragraphs (`Specializes: <parents>.`
+// then `Abstract: no table of its own.`), which pull peels back off cleanly.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources, splitEntityTrailers} from '../../../src/libts/semantic/kc_converter';
 import {ABSTRACT_MARKER, generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(loadSqlEngine);
 
 const OPTS = {project: 'dest-proj', location: 'us', entryGroup: 'eg'};
 
@@ -28,6 +29,7 @@ const SCHEMA = 'dataplex-types.global.schema';
 function model(): SemanticModel {
   return {
     name: 'm',
+    version: '0.2.0.dev0/google',
     entities: [
       {
         name: 'Party',
@@ -39,6 +41,7 @@ function model(): SemanticModel {
       },
       {
         name: 'Customer',
+        authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customer',
         dataSource: 'p.d.customer',
         keys: ['id'],
         extends: ['Party'],
@@ -50,6 +53,7 @@ function model(): SemanticModel {
       },
       {
         name: 'Order',
+        authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/order',
         dataSource: 'p.d.order',
         keys: ['id'],
         fields: [
@@ -84,9 +88,9 @@ describe('push: an abstract entity is published', () => {
     const party = entryOf(entries, 'Party');
     expect(party).toBeDefined();
     expect(party.entryType).toEndWith('/semantic-entity');
-    expect(party.aspects[ENTITY].data).toEqual({source: {resources: []}});
+    expect(party.aspects[ENTITY].data).toEqual({abstract: true});
     expect(party.aspects[SCHEMA].data).toEqual({
-      fields: [{name: 'partyName', dataType: 'STRING', metadataType: 'STRING'}],
+      fields: [{name: 'partyName', dataType: 'String', metadataType: 'STRING'}],
     });
   });
 
@@ -98,9 +102,7 @@ describe('push: an abstract entity is published', () => {
 
   test('without the "no keys" or "is abstract; skipped" warnings', () => {
     const {warnings} = generateCatalogResources(model(), OPTS);
-    expect(warnings.filter(w => w.includes(`'Party'`) &&
-                               !w.includes('relationship')))
-        .toEqual([]);
+    expect(warnings.filter(w => w.includes(`'Party'`))).toEqual([]);
   });
 
   test('an abstract entity with no description carries only the marker', () => {
@@ -114,9 +116,11 @@ describe('push: an abstract entity is published', () => {
 
 
 describe('push: entity extends', () => {
-  test('a subtype carries a Specializes paragraph', () => {
+  test('a subtype carries extends in semantic-entity and a Specializes paragraph', () => {
     const {entries} = generateCatalogResources(model(), OPTS);
-    expect(entryOf(entries, 'Customer').entrySource.description)
+    const customer = entryOf(entries, 'Customer');
+    expect(customer.aspects[ENTITY].data.extends).toEqual(['Party']);
+    expect(customer.entrySource.description)
         .toBe('A buying party.\n\nSpecializes: Party.');
   });
 
@@ -138,12 +142,16 @@ describe('push: entity extends', () => {
 
 
 describe('push: relationships to an abstract endpoint', () => {
-  test('are skipped with a warning; others still publish', () => {
-    const {entryLinks, warnings} = generateCatalogResources(model(), OPTS);
-    expect(entryLinks).toHaveLength(1);
-    expect(warnings).toContain(
-        `relationship 'involves': endpoint entity 'Party' is abstract (no ` +
-        `table), so the relationship link is skipped.`);
+  test('publish as semantic-relationship entries with semantic-link and reference links, without warning', () => {
+    const {entries, entryLinks, warnings} =
+        generateCatalogResources(model(), OPTS);
+    expect(entryOf(entries, 'involves')).toBeDefined();
+    expect(entryOf(entries, 'involves').entryType)
+        .toEndWith('/semantic-relationship');
+    // 2 semantic-links (Order->Customer, Order->Party) + 4 relationship
+    // references + 1 extends reference (Customer->Party) = 7 links.
+    expect(entryLinks).toHaveLength(7);
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -166,7 +174,6 @@ describe('pull: extends and abstract are restored', () => {
     expect(customer.extends).toEqual(['Party']);
     expect(customer.description).toBe('A buying party.');
     expect(customer.abstract).toBeUndefined();
-    // No "no backing data source" warning for the abstract entity.
     expect(warnings.filter(w => w.includes(`entity 'Party'`))).toEqual([]);
   });
 

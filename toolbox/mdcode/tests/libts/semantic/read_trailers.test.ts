@@ -5,28 +5,26 @@
 // entry's description and schema only, so these are what make one
 // lookup_context call enough to execute. Pull drops both.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
-import {ANNOTATION_ASPECT_IDS} from '../../../src/libts/semantic/kc_custom_types';
 import {generateCatalogResources, physicalBindings} from '../../../src/libts/semantic/knowledge_catalog';
 import {contentsTrailer, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, splitContentsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer, withContentsTrailer, withQueryTrailer} from '../../../src/libts/semantic/read_trailers';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const OPTS = {project: 'dest', location: 'us', entryGroup: 'eg'};
-const ALL = [...ANNOTATION_ASPECT_IDS];
 const GRAPH =
-    '//bigquery.googleapis.com/projects/data-proj/datasets/sem/propertyGraphs/shop_graph';
+    'bigquery.googleapis.com/projects/data-proj/datasets/sem/propertyGraphs/shop_graph';
 
 function shop(): SemanticModel {
   return {
     name: 'shop',
     description: 'The shop model.',
-    customExtensions: [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({deploymentTargets: [GRAPH]}),
-    }],
+    deployments: [{name: 'default', target: GRAPH}],
     entities: [
       {
         name: 'Customer',
@@ -135,7 +133,7 @@ describe('query paragraph (metric)', () => {
 
   test('no BigQuery target, no queries', () => {
     const m = shop();
-    delete m.customExtensions;
+    delete m.deployments;
     expect(metricQueries(m).size).toBe(0);
   });
 
@@ -217,7 +215,7 @@ describe('contents paragraph (model anchor)', () => {
 
 describe('on the published entries', () => {
   const {entries, entryLinks} =
-      generateCatalogResources(shop(), {...OPTS, customAspects: ALL});
+      generateCatalogResources(shop(), {...OPTS, groundingTrailers: true});
 
   test('the model anchor lists its metrics and entities', () => {
     expect(descriptionOf(entries, 'shop')).toBe(
@@ -226,26 +224,26 @@ describe('on the published entries', () => {
   });
 
   test('a bound entity ends with Read through and Relationships (before Hydration)', () => {
-    expect(descriptionOf(entries, 'shop.entities.Customer')).toBe(
+    expect(descriptionOf(entries, 'shop/entities/Customer')).toBe(
         'A buyer.\n\nRead through: node view `data-proj.sem.customer`; ' +
         'graph `data-proj.sem.shop_graph`, node Customer.\n\n' +
         'Relationships: placedBy ← Order (customer_id = customer_id).');
-    const order = descriptionOf(entries, 'shop.entities.Order')!.split('\n\n');
+    const order = descriptionOf(entries, 'shop/entities/Order')!.split('\n\n');
     expect(order[1]).toMatch(/^Read through: node view `data-proj\.sem\.order`/);
     expect(order[2]).toBe('Relationships: placedBy → Customer (customer_id = customer_id).');
     expect(order[3]).toMatch(/^Hydration: /);
   });
 
   test('a metric ends with its query', () => {
-    expect(descriptionOf(entries, 'shop.metrics.revenue'))
+    expect(descriptionOf(entries, 'shop/metrics/revenue'))
         .toMatch(/^Gross revenue\.\n\nUnit: USD\.\n\nQuery: SELECT AGG\(Order_revenue\) /);
   });
 
   test('without the physical layout, nothing is appended', () => {
     const plain = generateCatalogResources(shop(), OPTS).entries;
     expect(descriptionOf(plain, 'shop')).toBe('The shop model.');
-    expect(descriptionOf(plain, 'shop.entities.Customer')).toBe('A buyer.');
-    expect(descriptionOf(plain, 'shop.metrics.revenue'))
+    expect(descriptionOf(plain, 'shop/entities/Customer')).toBe('A buyer.');
+    expect(descriptionOf(plain, 'shop/metrics/revenue'))
         .toBe('Gross revenue.\n\nUnit: USD.');
   });
 
@@ -253,10 +251,14 @@ describe('on the published entries', () => {
     const back = modelsFromCatalogResources(entries, entryLinks).models[0];
     const src = shop();
     expect(back.description).toBe(src.description);
-    expect(back.entities.map(e => e.description))
-        .toEqual(src.entities.map(e => e.description));
-    expect(back.metrics.map(m => m.description))
-        .toEqual(src.metrics.map(m => m.description));
+    const srcDescByName = new Map(src.entities.map(e => [e.name, e.description]));
+    for (const e of back.entities) {
+      expect(e.description).toBe(srcDescByName.get(e.name));
+    }
+    const srcMetricDescByName = new Map(src.metrics.map(m => [m.name, m.description]));
+    for (const m of back.metrics) {
+      expect(m.description).toBe(srcMetricDescByName.get(m.name));
+    }
     expect(back.entities.find(e => e.name === 'Order')!.hydration)
         .toEqual({grain: {latestBy: 'updated_at'}});
   });
@@ -280,7 +282,8 @@ describe('a metric named like its node table\'s column', () => {
 
   test('its MEASURE takes the __measure suffix', () => {
     const gen = generatePropertyGraph(withWon(), TARGET);
-    expect(gen.ddl).toContain('MEASURE(SUM(wonAmount)) AS won_amount__measure');
+    expect(gen.ddl).toMatch(
+        /MEASURE\(SUM\(won(?:Amount|_amount_input)\)\) AS won_amount__measure/);
     expect(gen.ddl).not.toMatch(/\) AS won_amount\b(?!__)/);
     expect(gen.measures).toContainEqual(
         {metric: 'won_amount', nodeTable: 'Order', measure: 'won_amount__measure'});

@@ -441,8 +441,8 @@ describe('validate_bigquery: results and the Knowledge Catalog aspect', () => {
     const updates = constraintResultsUpdates(
         results, dest, {model: 'sales', profile: 'bigquery', checkedAt: 'T'});
     expect(updates.map(u => u.name)).toEqual([
-      'projects/proj/locations/us/entryGroups/eg/entries/sales.entities.Opportunity',
-      'projects/proj/locations/us/entryGroups/eg/entries/sales.entities.Account',
+      'projects/proj/locations/us/entryGroups/eg/entries/sales/entities/Opportunity',
+      'projects/proj/locations/us/entryGroups/eg/entries/sales/entities/Account',
     ]);
     const key = resultsAspectKey(dest);
     expect(key).toBe('proj.global.semantic-constraint-results');

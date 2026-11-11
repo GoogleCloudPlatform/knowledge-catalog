@@ -24,8 +24,10 @@ import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_ca
 import {fromDocument} from '../../../src/libts/semantic/loader';
 import {lowerNodeViews, withHydrationBindings} from '../../../src/libts/semantic/node_views';
 import {modelDocument} from '../../../src/libts/semantic/osi_converter';
-import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
+import * as yaml from 'yaml';
 
 const TARGET = {project: 'p', dataset: 'sem'};
 const GRAPH = {project: 'p', dataset: 'sem', graphName: 'g'};
@@ -96,12 +98,9 @@ function model(): SemanticModel {
       },
     ],
     metrics: [],
-    customExtensions: [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({
-        deploymentTargets:
-            ['//bigquery.googleapis.com/projects/p/datasets/sem/propertyGraphs/g'],
-      }),
+    deployments: [{
+      name: 'bq',
+      target: 'bigquery.googleapis.com/projects/p/datasets/sem/propertyGraphs/g',
     }],
   };
 }
@@ -158,7 +157,7 @@ describe('loader', () => {
       name: 'm',
       datasets: [{
         name: 'Opportunity',
-        source: 'bigquery:p.crm.opportunity',
+        source: 'bigquery.googleapis.com/projects/p/datasets/crm/tables/opportunity',
         primary_key: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
@@ -205,7 +204,7 @@ describe('loader', () => {
         datasets: [
           {
             name: 'Opportunity',
-            source: 'bigquery:p.crm.opportunity',
+            source: 'bigquery.googleapis.com/projects/p/datasets/crm/tables/opportunity',
             primary_key: ['id'],
             fields: [
               {name: 'id', expression: 'id'},
@@ -242,7 +241,7 @@ describe('loader', () => {
 });
 
 describe('profile merge', () => {
-  const logical = () => ({
+  const logicalModel = () => fromDocument({
     version: '0.2.0.dev0/google',
     semantic_model: [{
       name: 'm',
@@ -253,46 +252,49 @@ describe('profile merge', () => {
         hydration: {grain: {deterministic: true}},
       }],
     }],
-  });
-  const profile = (entity: any) => ({
-    version: '0.2.0.dev0/google',
-    semantic_model: [{
-      name: 'm',
-      entities: [{name: 'Opportunity', source: 'bigquery:p.crm.opp', ...entity}],
-    }],
-  });
-  const entityOf = (doc: any) => doc.semantic_model[0].entities[0];
+  }, {bindingOptional: true}).models[0];
+  const apply = (entity: any) => applyProfileFile(
+      logicalModel(),
+      yaml.stringify({
+        name: 'bq',
+        entities: [{
+          name: 'Opportunity',
+          source: 'bigquery.googleapis.com/projects/p/datasets/crm/tables/opp',
+          ...entity,
+        }],
+      }, YAML_OPTIONS),
+      'bq');
 
   test('a profile sets hydration and mode, replacing the model\'s whole', () => {
-    const r = mergeProfile(logical(), profile({
+    const r = apply({
       hydration: {grain: {latest_by: 'created_at'}},
       mode: 'view',
-    }), 'bq');
-    expect(r.error).toBeUndefined();
-    expect(entityOf(r.doc).hydration).toEqual({grain: {latest_by: 'created_at'}});
-    expect(entityOf(r.doc).mode).toBe('view');
+    });
+    if ('error' in r) throw new Error(r.error);
+    expect(r.model.entities[0].hydration).toEqual({grain: {latestBy: 'created_at'}});
+    expect(r.model.entities[0].mode).toBe('view');
   });
 
   test('null withdraws the model\'s hydration', () => {
-    const r = mergeProfile(logical(), profile({hydration: null}), 'bq');
-    expect(r.error).toBeUndefined();
-    expect(entityOf(r.doc).hydration).toBeUndefined();
+    const r = apply({hydration: null});
+    if ('error' in r) throw new Error(r.error);
+    expect(r.model.entities[0].hydration).toBeUndefined();
   });
 
   test('an unknown rule is rejected naming the profile and entity', () => {
-    const r = mergeProfile(
-        logical(), profile({hydration: {sql: 'SELECT DISTINCT *'}}), 'bq');
-    expect(r.error).toContain(`profile 'bq': entity 'Opportunity' 'hydration' sets 'sql'`);
+    const r = apply({hydration: {sql: 'SELECT DISTINCT *'}});
+    expect('error' in r && r.error)
+        .toContain(`profile 'bq': entity 'Opportunity' 'hydration' sets 'sql'`);
   });
 
   test('a bad mode is rejected', () => {
-    const r = mergeProfile(logical(), profile({mode: 'table'}), 'bq');
-    expect(r.error).toContain(`'mode' must be 'view' or 'direct'`);
+    const r = apply({mode: 'table'});
+    expect('error' in r && r.error).toContain(`'mode' must be 'view' or 'direct'`);
   });
 
   test('other entity keys stay logical declarations', () => {
-    const r = mergeProfile(logical(), profile({description: 'x'}), 'bq');
-    expect(r.error).toContain(
+    const r = apply({description: 'x'});
+    expect('error' in r && r.error).toContain(
         `entity 'Opportunity' sets 'description', which a profile may not set`);
   });
 });
@@ -360,16 +362,12 @@ describe('static checks', () => {
 
   test('a derived entity cannot deploy to Spanner', () => {
     const m = model();
-    m.customExtensions = [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({
-        deploymentTargets: [
-          '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g',
-        ],
-      }),
+    m.deployments = [{
+      name: 'sp',
+      target: 'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g',
     }];
     expect(errorsOf(m).join('\n')).toContain(
-        `dataset 'Partner' in model 'sales' (doc.yaml) is derived from a relationship`);
+        `entity 'Partner' in model 'sales' (doc.yaml) is derived from a relationship`);
   });
 });
 

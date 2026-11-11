@@ -11,10 +11,9 @@
 // shipped. A failure is not a bug in the template; it is the template having
 // been renumbered, and the fix is to put the indices back and append.
 
-import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {describe, expect, test} from 'bun:test';
 
-import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, CUSTOM_TYPES, FILE_COPY_TYPE_ID, provisionCustomTypes} from '../../../src/libts/semantic/kc_custom_types';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, CUSTOM_TYPES} from '../../../src/libts/semantic/kc_custom_types';
 
 function template(id: string): any {
   const found = CUSTOM_TYPES.find(t => t.id === id);
@@ -82,97 +81,4 @@ describe('the semantic-constraint aspect template', () => {
     expect(indices(template(CONSTRAINT_TYPE_ID).recordFields))
         .toMatchObject({expression: 1, onViolation: 3});
   });
-});
-
-describe('the semantic-model-file aspect template', () => {
-  test('holds the file name, the content, the push id and the copy count at ' +
-           'indices 1 to 4, and a part\'s number and count at 5 and 6',
-       () => {
-         const fields = template(FILE_COPY_TYPE_ID).recordFields;
-         expect(indices(fields)).toEqual({
-           fileName: 1,
-           content: 2,
-           pushId: 3,
-           pushFileCount: 4,
-           part: 5,
-           partCount: 6,
-         });
-         expect(fields.map((f: any) => f.type))
-             .toEqual(['string', 'string', 'string', 'int', 'int', 'int']);
-         // The push id, the copy count and the part fields came later, so
-         // they are optional and init can patch them into a type an earlier
-         // kcmd created.
-         expect(fields.map((f: any) => f.constraints)).toEqual([
-           {required: true},
-           {required: true},
-           undefined,
-           undefined,
-           undefined,
-           undefined,
-         ]);
-       });
-});
-
-describe('provisionCustomTypes', () => {
-  afterEach(() => {
-    mock.restore();
-  });
-
-  // Every push stores the model file with the file-copy type, so a refusal to
-  // create it is not survived the way an optional type's is.
-  test('a refusal to create semantic-model-file is an error naming it',
-       async () => {
-         spyOn(CatalogClient.prototype, 'createAspectType')
-             .mockImplementation(
-                 async (_p: any, _l: any, id: string) => id ===
-                         FILE_COPY_TYPE_ID ?
-                     {status: 403, message: 'permission denied'} :
-                     {status: 200, result: {}});
-         spyOn(CatalogClient.prototype, 'createEntryType')
-             .mockImplementation(async () => ({status: 200, result: {}}));
-         spyOn(CatalogClient.prototype, 'getAspectType')
-             .mockImplementation(
-                 async () => ({status: 404, message: 'not found'}));
-
-         const result = await provisionCustomTypes(
-             new CatalogClient({} as any), {project: 'acme'});
-
-         expect(result.denied).toBeUndefined();
-         expect(result.error)
-             .toBe(
-                 'no permission to create aspect type ' +
-                 '\'semantic-model-file\' in project \'acme\' (permission ' +
-                 'denied); every push needs it, so init cannot finish');
-       });
-
-  // A push that stores a file in parts needs the part fields, which a type
-  // an earlier kcmd created lacks. Init patches the type it finds with the
-  // whole template, so it gains them.
-  test('init adds the part fields to a semantic-model-file type that is ' +
-           'already there',
-       async () => {
-         spyOn(CatalogClient.prototype, 'createAspectType')
-             .mockImplementation(
-                 async () => ({status: 409, message: 'already exists'}));
-         const update =
-             spyOn(CatalogClient.prototype, 'updateAspectType')
-                 .mockImplementation(async () => ({status: 200, result: {}}));
-         spyOn(CatalogClient.prototype, 'awaitOperation')
-             .mockImplementation(async () => undefined);
-         spyOn(CatalogClient.prototype, 'createEntryType')
-             .mockImplementation(
-                 async () => ({status: 409, message: 'already exists'}));
-
-         const result = await provisionCustomTypes(
-             new CatalogClient({} as any), {project: 'acme'});
-
-         expect(result).toEqual({});
-         const call =
-             update.mock.calls.find((c: any[]) => c[2] === FILE_COPY_TYPE_ID)!;
-         expect(call[0]).toBe('acme');
-         expect(call[4])
-             .toEqual(['description', 'display_name', 'metadata_template']);
-         expect(indices((call[3] as any).metadataTemplate.recordFields))
-             .toMatchObject({part: 5, partCount: 6});
-       });
 });

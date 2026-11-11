@@ -5,7 +5,7 @@
 // every query is answered from fixtures/data_profile/shop.results.yaml, the
 // rows the library goldens (profile_bigquery.test.ts) are built from.
 
-import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -17,7 +17,10 @@ import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 import {planBigQueryProfile, QueryRow} from '../../../src/libts/semantic/profile_bigquery';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {profile, profileGate} from '../../../src/tool/commands';
+
+beforeAll(loadSqlEngine);
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'data_profile');
 const SHOP = fs.readFileSync(path.join(FIXTURES, 'shop.yaml'), 'utf8');

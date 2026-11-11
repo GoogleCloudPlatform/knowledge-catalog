@@ -79,15 +79,12 @@ describe('CatalogClient.lookupEntryLinks', () => {
 
   test('a non-200 page aborts and is returned as-is', async () => {
     const client = new CatalogClient(CTX);
-    const get =
-        spyOn(client as any, '_get')
-            .mockImplementation(async () => ({status: 403, message: 'denied'}));
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    const get = spyOn(client as any, '_get').mockResolvedValue(failed);
 
     const res = await client.lookupEntryLinks('proj', 'us', {entry: ENTRY});
 
-    expect(res.status).toBe(403);
-    expect(res.message).toBe('denied');
-    expect(res.result).toBeUndefined();
+    expect(res).toEqual(failed);
     expect(get).toHaveBeenCalledTimes(1);
   });
 
@@ -246,6 +243,97 @@ describe('_fixEntry removed aspects', () => {
 });
 
 
+describe('CatalogClient.lookupEntryAspectTypes', () => {
+  test('reads the FULL view and names each aspect type once, with a project ID',
+       async () => {
+         const client = new CatalogClient(CTX);
+         const get = spyOn(client as any, '_get').mockImplementation(async () => ({
+           status: 200,
+           result: {
+             name: ENTRY,
+             aspects: {
+               // A FULL read gives no data to an aspect the type does not require.
+               'dataplex-types.global.overview': {},
+               '655216118709.global.guidelines@Schema.order_id': {},
+               'dataplex-types.global.guidelines@Schema.customer_id': {},
+             },
+           },
+         }));
+
+         const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+         expect(get.mock.calls[0].slice(0, 2)).toEqual(
+             ['projects/proj/locations/us:lookupEntry', {entry: ENTRY, view: 'FULL'}]);
+         expect(res).toEqual({
+           status: 200,
+           result: ['dataplex-types.global.overview', 'dataplex-types.global.guidelines'],
+         });
+       });
+
+  test('looks up an unreadable project once per aspect type', async () => {
+    const client = new CatalogClient(CTX);
+    spyOn(client as any, '_get').mockImplementation(async () => ({
+      status: 200,
+      result: {
+        name: ENTRY,
+        aspects: {
+          '111.global.guidelines@Schema.order_id': {},
+          '111.global.guidelines@Schema.customer_id': {},
+        },
+      },
+    }));
+    // Resource Manager cannot read the project, and crm caches only the
+    // projects it can read.
+    const lookup = spyOn(ResourceManagerClient.prototype, 'getProject')
+                       .mockResolvedValue({status: 403} as any);
+
+    const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+    expect(res.result).toEqual(['111.global.guidelines']);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    lookup.mockRestore();
+  });
+
+  test('a failed read is returned as-is', async () => {
+    const client = new CatalogClient(CTX);
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    spyOn(client as any, '_get').mockResolvedValue(failed);
+
+    expect(await client.lookupEntryAspectTypes('proj', 'us', ENTRY))
+        .toEqual(failed);
+  });
+});
+
+
+test('CatalogClient.lookupEntry sends each path as a paths parameter',
+     async () => {
+       const client = new CatalogClient(CTX);
+       const get = spyOn(client as any, '_get')
+                       .mockImplementation(async () => ({status: 404}));
+       await client.lookupEntry('proj', 'us', ENTRY, {
+         aspects: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
+       expect(get.mock.calls[0][1]).toEqual({
+         entry: ENTRY,
+         view: 'CUSTOM',
+         aspectTypes: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
+     });
+
+test('CatalogClient.lookupEntry supports {view: "ALL"}', async () => {
+  const client = new CatalogClient(CTX);
+  const get = spyOn(client as any, '_get')
+                  .mockImplementation(async () => ({status: 404}));
+  await client.lookupEntry('proj', 'us', ENTRY, {view: 'ALL'});
+  expect(get.mock.calls[0][1]).toEqual({
+    entry: ENTRY,
+    view: 'ALL',
+  });
+});
+
+
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
 // unless deleteMissingAspects is set, so a caller that means to remove one has
 // to send it.
@@ -348,3 +436,29 @@ describe('entrySource.resource on a read', () => {
          lookup.mockRestore();
        });
 });
+
+// With GCP_LOG set, a request is logged as its method and URL, with its body
+// on the next line.
+test('GCP_LOG logs each request as its method and URL, with any body on ' +
+         'the next line',
+     async () => {
+       const client = new CatalogClient(CTX);
+       spyOn(client as any, '_requestCore')
+           .mockImplementation(async () => new Response('{}'));
+       const log = spyOn(console, 'log').mockImplementation(() => {});
+       process.env.GCP_LOG = '1';
+       await client.getEntryGroup('proj', 'us', 'g');
+       await (client as any)._post('projects/proj/x', {a: 1});
+       delete process.env.GCP_LOG;
+       // mockRestore empties log.mock.calls, so copy them first.
+       const calls = [...log.mock.calls];
+       log.mockRestore();
+       const endpoint =
+           process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com';
+       const v1 = `${endpoint}/v1/projects/proj`;
+       // Each request line is followed by its response's.
+       expect(calls.filter((_, i) => i % 2 === 0)).toEqual([
+         [`[GCP_LOG] GET ${v1}/locations/us/entryGroups/g`, ''],
+         [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
+       ]);
+     });

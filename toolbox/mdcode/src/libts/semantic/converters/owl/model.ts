@@ -138,14 +138,14 @@ export interface OwlDisjointClassesAxiom {
   policy?: OwlConstraintPolicy;
 }
 
-/** An `owl:Class` -- becomes an OSI dataset (entity). */
+/** A named `owl:Class` -- becomes an OSI dataset (entity). */
 export interface OwlClass extends OwlCommonAnnotations {
   // The term's local name (the part after the namespace `#`/`/`), used as the
   // OSI entity name, e.g. `Customer`.
   localName: string;
-  // The term's full IRI. Lets the mapper tell this class's individuals
-  // (OwlIndividual.types) from those of a same-named class in another
-  // namespace. Absent only in hand-built models.
+  // The term's full IRI. Lets the mapper match keys, superclasses, domains,
+  // ranges, and individuals by full IRI rather than local name alone. Absent
+  // only in hand-built models.
   iri?: string;
   // The class-level boolean annotation whose predicate local name is
   // `vocabulary` (`core:vocabulary true`, kcmd:vocabulary, ...): true marks the
@@ -166,12 +166,15 @@ export interface OwlClass extends OwlCommonAnnotations {
   synonyms: string[];
   // skos:example values -> ai_context.examples.
   examples: string[];
-  // Local names of the properties named by owl:hasKey -> the entity's
-  // primary_key (grain). Empty when the class declares no key.
+  // Full IRIs of the properties named by owl:hasKey (or local names in
+  // hand-built models) -> the entity's primary_key (grain). Empty when the
+  // class declares no key.
   keys: string[];
-  // Local names of `rdfs:subClassOf` superclasses, in document order -> the
-  // entity's `extends` (entity-level inheritance). Named superclasses only;
-  // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
+  // `rdfs:subClassOf` superclasses, in document order -> the entity's
+  // `extends` (entity-level inheritance). A superclass import writes as an
+  // entity is kept by local name, and any other as its full IRI. Named
+  // superclasses only; blank-node axioms (owl:Restriction, ...) and the class
+  // itself are not recorded. Empty when none.
   subClassOf: string[];
   // Referent IRIs of `owl:equivalentClass` classes, in document order. No
   // native OSI home (a class is one entity; equivalence is a fact ABOUT it, not
@@ -265,9 +268,12 @@ export type OwlClassExpr =
  * An `owl:DatatypeProperty` -- becomes a field on its domain class's dataset.
  */
 export interface OwlDatatypeProperty extends OwlCommonAnnotations {
+  // The property's full IRI (absent only in hand-built models).
+  iri?: string;
   localName: string;
-  // Local names of every rdfs:domain class this property hangs off; the field
-  // is added to each. A property may declare more than one domain (it then
+  // Every rdfs:domain class this property hangs off; the field is added to
+  // each. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A property may declare more than one domain (it then
   // appears on each entity), or one `owl:unionOf` domain, whose member classes
   // are listed here (the form to use: several rdfs:domain triples mean an
   // intersection in OWL). Empty when no domain is declared (skipped with a
@@ -321,17 +327,22 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
  * classes.
  */
 export interface OwlObjectProperty extends OwlCommonAnnotations {
+  // The property's full IRI (absent only in hand-built models).
+  iri?: string;
   localName: string;
-  // Local names of the rdfs:domain (edge source) and rdfs:range (edge
-  // destination) classes. A relationship maps a single source to a single
+  // The named rdfs:domain (edge source) and rdfs:range (edge destination)
+  // classes. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A relationship maps a single source to a single
   // destination, so the mapper uses the first of each and warns when more are
   // declared (multiple domains/ranges mean an intersection in OWL, which has no
   // clean single-edge shape). Empty when none is declared (skipped with a
   // warning: an edge needs both endpoints).
   domains: string[];
   ranges: string[];
-  // As OwlDatatypeProperty.unsupportedDomains.
+  // As OwlDatatypeProperty.unsupportedDomains, plus any anonymous rdfs:range
+  // class expressions.
   unsupportedDomains?: string[];
+  unsupportedRanges?: string[];
   label?: string;
   comment?: string;
   synonyms: string[];

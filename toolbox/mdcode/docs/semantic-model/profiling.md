@@ -244,7 +244,7 @@ data it could not settle.
 The queries only read, so the gate also runs under `--validate-only`. It does
 not apply in two cases, and says so with a warning:
 - a Spanner graph, which it does not profile;
-- `--no-profile`, which deploys no graph.
+- `--no-deployment`, which deploys no graph.
 
 ## Permissions
 

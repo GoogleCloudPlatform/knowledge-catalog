@@ -3,9 +3,12 @@
 import {describe, expect, test} from 'bun:test';
 
 import {
+  coversKey,
   DialectExpression,
   expressionForDialect,
   Field,
+  isFieldBound,
+  matchesKey,
   Metric,
   normalizeDataType,
 } from '../../../src/libts/semantic/ir';
@@ -88,6 +91,67 @@ describe('expressionForDialect', () => {
 
     expect(expressionForDialect(unbound, 'BIGQUERY')).toBeUndefined();
   });
+});
+
+describe('isFieldBound', () => {
+  const bound = (field: Field) => isFieldBound(field);
+
+  test('a non-empty dialect list with no expression is a binding', () => {
+    const field: Field = {
+      name: 'order_month',
+      dialects: [{dialect: 'SNOWFLAKE', expression: "DATE_TRUNC('month', ts)"}],
+    };
+    expect(bound(field)).toBe(true);
+  });
+
+  test('an expression or an imported vendor expression is a binding', () => {
+    expect(bound({name: 'a', expression: 'a'})).toBe(true);
+    expect(bound({
+      name: 'a',
+      importedExpression: 'DIV0(a, b)',
+      importedDialect: 'SNOWFLAKE',
+    })).toBe(true);
+  });
+
+  test('an empty dialect list, stringForm or importedDialect alone is not', () => {
+    expect(bound({name: 'a'})).toBe(false);
+    expect(bound({name: 'a', dialects: []})).toBe(false);
+    expect(bound({name: 'a', stringForm: true})).toBe(false);
+    expect(bound({name: 'a', importedDialect: 'SNOWFLAKE'})).toBe(false);
+  });
+});
+
+// coversKey accepts a join on any key, a superset counting; matchesKey, which
+// a BigQuery graph edge needs, accepts only the primary key's own columns.
+describe('coversKey and matchesKey', () => {
+  const pk = ['c_id', 'c_region'];
+  const uks = [['c_email']];
+
+  test.each([
+    [['c_id', 'c_region']],
+    [['c_region', 'c_id']],
+    [['C_ID', '`c_region`']],
+  ])('%j covers and matches the primary key', to => {
+    expect({covers: coversKey(to, pk, uks), matches: matchesKey(to, pk)})
+        .toEqual({covers: true, matches: true});
+  });
+
+  test.each([
+    [['c_email']],
+    [['c_id', 'c_region', 'c_email']],
+    [['c_id', 'c_region', 'C_ID']],
+  ])('%j covers a key without matching the primary key', to => {
+    expect({covers: coversKey(to, pk, uks), matches: matchesKey(to, pk)})
+        .toEqual({covers: true, matches: false});
+  });
+
+  test('part of the primary key, or an empty one, neither covers nor matches it',
+       () => {
+         expect(coversKey(['c_id'], pk, [])).toBe(false);
+         expect(matchesKey(['c_id'], pk)).toBe(false);
+         expect(coversKey([], [], [])).toBe(false);
+         expect(matchesKey([], [])).toBe(false);
+       });
 });
 
 describe('normalizeDataType', () => {

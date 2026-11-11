@@ -13,25 +13,27 @@
 // inherited field unbound on one subtype -- the per-table signatures differ.
 //
 // So a shared abstract label carries only the inherited fields that EVERY
-// descendant table binds. A field bound on some descendants but not others is
-// still a property of those descendants (under their DEFAULT LABEL); it is just
-// not part of the shared label. Each such omission is warned, naming the
-// descendants that leave the field unbound. Both graph generators (graph_ddl.ts,
-// which writes the BigQuery graph, and spanner.ts) read this one computation,
-// so they never disagree.
+// descendant table exposes on the target engine. A field bound on some
+// descendants but not others is still a property of those descendants (under
+// their DEFAULT LABEL); it is just not part of the shared label. Each unbound
+// omission is warned, naming the descendants that leave the field unbound.
+// Both graph generators (bigquery.ts and spanner.ts, through graph_ddl.ts)
+// read this one computation, so they never disagree.
 
-import {Entity, fieldBinding} from './ir';
+import {Entity, Field, isFieldBound} from './ir';
 
 /**
  * For each abstract label carried by at least one of `nodes`, the names of the
- * label's fields that every carrying node binds. `nodes` are the entities that
- * form node tables, with inheritance resolved (`extends` is the full ancestor
- * set and inherited fields are flattened onto each node). `labelByName` maps
- * every label carrier by name; only its abstract entries are considered.
+ * label's fields that every carrying node exposes (`hasSql`). `nodes` are the
+ * entities that form node tables, with inheritance resolved (`extends` is the
+ * full ancestor set and inherited fields are flattened onto each node).
+ * `labelByName` maps every label carrier by name; only its abstract entries are
+ * considered.
  */
 export function sharedAbstractLabelFields(
-    nodes: Entity[], labelByName: Map<string, Entity>,
-    warnings: string[]): Map<string, Set<string>> {
+    nodes: Entity[], labelByName: Map<string, Entity>, warnings: string[],
+    hasSql: (node: Entity, field: Field) => boolean = (_n, f) =>
+        isFieldBound(f)): Map<string, Set<string>> {
   const carriers = new Map<string, Entity[]>();
   for (const node of nodes) {
     for (const name of node.extends ?? []) {
@@ -46,15 +48,18 @@ export function sharedAbstractLabelFields(
   for (const [name, tables] of carriers) {
     const fields = new Set<string>();
     for (const field of labelByName.get(name)!.fields) {
-      const unbound = tables.filter(
-          t => !t.fields.some(
-              f => f.name === field.name && fieldBinding(f) !== undefined));
-      if (!unbound.length) {
+      const missingSql = tables.filter(
+          t => !t.fields.some(f => f.name === field.name && hasSql(t, f)));
+      if (!missingSql.length) {
         fields.add(field.name);
         continue;
       }
-      // Unbound everywhere: no table exposes it, so there is nothing to omit.
-      if (unbound.length === tables.length) continue;
+      const unbound = tables.filter(
+          t => !t.fields.some(f => f.name === field.name && isFieldBound(f)));
+      // Unbound everywhere (no table exposes it), or bound everywhere in
+      // vendor SQL that renderNodeTable already warns about: nothing to omit
+      // with an unbound-label warning.
+      if (!unbound.length || unbound.length === tables.length) continue;
       warnings.push(
           `label '${name}': inherited field '${field.name}' is unbound on ${
               unbound.map(t => `'${t.name}'`).join(', ')}; every table that ` +

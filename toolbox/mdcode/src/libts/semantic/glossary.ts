@@ -103,11 +103,6 @@ function humanize(id: string): string {
       .join(' ');
 }
 
-// The knowledge_catalog.ts entry-id slug (kept in step with Namer there).
-function entrySlug(s: string): string {
-  return s.replace(/[^A-Za-z0-9_.-]/g, '_');
-}
-
 // FNV-1a, 32-bit, hex: a short stable suffix that keeps link ids unique when
 // the readable part is truncated.
 function fnv(s: string): string {
@@ -626,7 +621,6 @@ export function planGlossary(
       `projects/${semNumber}/locations/${sem.location}/entryGroups/${
           sem.entryGroup}` :
       '';
-  const modelSlug = entrySlug(model.name);
 
   // K5: the node view each entity is read through (node_views.ts), and the
   // `@bigquery` definition link a refused semantic-entry link falls back to.
@@ -724,8 +718,8 @@ export function planGlossary(
       // of the node view the entity is read through (K5).
       if (sem) {
         const entryId = d.kind === 'metric' ?
-            `${modelSlug}.metrics.${entrySlug(d.ref)}` :
-            `${modelSlug}.entities.${entrySlug(hit.entity!)}`;
+            `${model.name}/metrics/${d.ref}` :
+            `${model.name}/entities/${hit.entity!}`;
         const entry = `${semGroup}/entries/${entryId}`;
         const path = hit.field ? `Schema.${hit.field}` : undefined;
         const viewEntity = d.kind === 'metric' ?

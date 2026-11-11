@@ -33,9 +33,7 @@ import {generateSkill, skillNameFor, whyNameIsInvalid} from '../../../src/libts/
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 function loadFixtureModel(name: string): SemanticModel {
-  return loadModels(
-             fs.readFileSync(path.join(FIXTURES, name), 'utf8'),
-             {allowLegacyBareSource: true})
+  return loadModels(fs.readFileSync(path.join(FIXTURES, name), 'utf8'))
       .models[0];
 }
 
@@ -483,7 +481,7 @@ describe('the binding is one section', () => {
     profile: 'alloydb',
     store: {
       kind: 'alloydb',
-      name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
+      name: 'projects/q/locations/us-central1/clusters/j/databases/e',
       project: 'q',
       location: 'us-central1',
       cluster: 'j',

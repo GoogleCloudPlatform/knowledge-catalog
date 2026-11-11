@@ -10,7 +10,7 @@
 // Running example: customers hold memberships in clubs; `belongsTo` is the
 // customer -> club edge reached through an active membership.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
@@ -22,11 +22,14 @@ import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_ca
 import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import {pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(() => loadSqlEngine());
 
 const GEN_OPTS = {project: 'p', dataset: 'd'};
 const KC_OPTS = {project: 'dest-proj', location: 'us', entryGroup: 'eg'};
-const TARGET = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+const TARGET = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
 function model(): SemanticModel {
   return {
@@ -110,10 +113,7 @@ function model(): SemanticModel {
       },
     ],
     metrics: [],
-    customExtensions: [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({deploymentTargets: [TARGET]}),
-    }],
+    deployments: [{name: 'default', target: TARGET}],
   };
 }
 
@@ -151,16 +151,16 @@ describe('loader', () => {
     version,
     semantic_model: [{
       name: 'm',
-      datasets: [
+      [version === '0.2.0.dev0/google' ? 'entities' : 'datasets']: [
         {
           name: 'Customer',
-          source: 'bigquery:p.d.customers',
+          source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customers',
           primary_key: ['customerId'],
           fields: [{name: 'customerId', expression: 'customer_id'}],
         },
         {
           name: 'Membership',
-          source: 'bigquery:p.d.memberships',
+          source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/memberships',
           primary_key: ['membershipId'],
           fields: [
             {name: 'membershipId', expression: 'membership_id'},
@@ -171,7 +171,7 @@ describe('loader', () => {
         },
         {
           name: 'Club',
-          source: 'bigquery:p.d.clubs',
+          source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/clubs',
           primary_key: ['clubId'],
           fields: [{name: 'clubId', expression: 'club_id'}],
         },
@@ -363,8 +363,8 @@ describe('BigQuery lowering', () => {
         .toContain(
             '`p.d.edge_belongs_to` AS belongsTo ' +
             'KEY(source_customer_id, target_club_id) ' +
-            'SOURCE KEY(source_customer_id) REFERENCES Customer(customer_id) ' +
-            'DESTINATION KEY(target_club_id) REFERENCES Club(club_id)');
+            'SOURCE KEY(source_customer_id) REFERENCES Customer(customerId) ' +
+            'DESTINATION KEY(target_club_id) REFERENCES Club(clubId)');
   });
 
   test('views come after the vocabularies they read, in model order', () => {
@@ -464,13 +464,9 @@ describe('validation', () => {
   test('a derived relationship is an error for a Spanner graph', () => {
     const m = model();
     m.entities[4] = {...m.entities[4], dataSource: 'order_status'};
-    m.customExtensions = [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({
-        deploymentTargets: [
-          '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g'
-        ],
-      }),
+    m.deployments = [{
+      name: 'default',
+      target: 'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g',
     }];
     expect(errorsOf(m).some(
                e => /relationship 'belongsTo' .* is derived \('via'\), which only a BigQuery graph push materializes/
@@ -480,58 +476,53 @@ describe('validation', () => {
 });
 
 describe('Knowledge Catalog push / pull', () => {
-  const joinsOf = (res: any): any[] =>
-      [...(res.entryLinks ?? []), ...(res.entries ?? [])].flatMap(
-          (x: any) => Object.values(x.aspects ?? {})
-                          .flatMap((a: any) => a?.data?.joins ?? []));
-  const derivedJoin = (res: any) => joinsOf(res).find(
-      (j: any) => (j.description ?? '').toLowerCase().includes(
-          'derived via: ^memberof'));
+  const derivedEntry = (res: any) =>
+      (res.entries ?? []).find(
+          (e: any) => e.name?.endsWith('/relationships/belongsTo'));
 
-  test('push publishes a JOIN over the endpoint keys, with the derivation', () => {
-    const join = derivedJoin(generateCatalogResources(model(), KC_OPTS));
-    expect(join.type).toBe('JOIN');
-    expect(join.source.fields).toEqual(['customerId']);
-    expect(join.target.fields).toEqual(['clubId']);
-    expect(join.description)
+  test('push publishes a semantic-relationship entry with the derivation', () => {
+    const entry = derivedEntry(generateCatalogResources(model(), KC_OPTS));
+    expect(entry).toBeDefined();
+    expect(entry.aspects['dataplex-types.global.semantic-relationship'].data)
+        .toEqual({
+          source: {name: 'Customer'},
+          target: {name: 'Club'},
+        });
+    expect(entry.entrySource.description)
         .toBe(
             'The clubs a customer is an active member of.\n\n' +
             'Derived via: ^memberOf, inClub.\n\n' +
             `Derived filter: Membership.status = 'active'`);
   });
 
-  test('pull restores via and filter; push is a fixed point', () => {
+  test('pull restores via and filter verbatim; push is a fixed point', () => {
     const pushed = generateCatalogResources(model(), KC_OPTS);
     const {models} = modelsFromCatalogResources(pushed.entries, pushed.entryLinks);
     const pulled = models[0];
-    const r = pulled.relationships.find(x => x.via?.length && x.filter)!;
+    const r = pulled.relationships.find(x => x.name === 'belongsTo')!;
     expect(r.source.entity).toBe('Customer');
     expect(r.destination.entity).toBe('Club');
     expect(r.filter).toBe(`Membership.status = 'active'`);
     expect(r.description).toBe('The clubs a customer is an active member of.');
     expect(r.source.columns).toEqual([]);
-    // Pull recovers relationship names in link-slug form; each step resolves
-    // to a pulled relationship, so the chain still follows.
     expect(resolveChain(r, pulled.relationships).error).toBeUndefined();
     expect(r.via!.map(s => !!s.inverse)).toEqual([true, false]);
     const again = generateCatalogResources(pulled, KC_OPTS);
-    expect(derivedJoin(again).description.toLowerCase())
-        .toBe(derivedJoin(pushed).description.toLowerCase());
+    expect(derivedEntry(again).entrySource.description)
+        .toBe(derivedEntry(pushed).entrySource.description);
     const twice = generateCatalogResources(
         modelsFromCatalogResources(again.entries, again.entryLinks).models[0],
         KC_OPTS);
-    expect(derivedJoin(twice).description).toBe(derivedJoin(again).description);
+    expect(derivedEntry(twice).entrySource.description)
+        .toBe(derivedEntry(again).entrySource.description);
   });
 
-  test('a derived edge with an unkeyed endpoint is not published, warned', () => {
+  test('a derived edge with an unkeyed endpoint still publishes in V2 while the entity warns', () => {
     const m = model();
     m.entities[2].keys = [];
     const out = generateCatalogResources(m, KC_OPTS);
-    expect(derivedJoin(out)).toBeUndefined();
-    expect(out.warnings.some(
-               (w: string) => w.includes(
-                   `relationship 'belongsTo': derived, and endpoint entity ` +
-                   `'Club' has no primary key`)))
+    expect(derivedEntry(out)).toBeDefined();
+    expect(out.warnings.some((w: string) => w.includes(`entity 'Club': no keys`)))
         .toBe(true);
   });
 });
@@ -564,10 +555,13 @@ describe('derived trailers codec', () => {
 describe('OSI round-trip', () => {
   test('via and filter survive serialize -> load', () => {
     const m = model();
-    // Each source as a load records it, in an accepted form, so the
-    // serialized document reloads.
+    m.version = '0.2.0.dev0/google';
     for (const e of m.entities) {
-      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+      if (e.dataSource) {
+        const [proj, ds, tbl] = e.dataSource.split('.');
+        e.authoredSource =
+            `bigquery.googleapis.com/projects/${proj}/datasets/${ds}/tables/${tbl}`;
+      }
     }
     const {yaml} = serializeModel(m);
     expect(yaml).toContain('- ^memberOf');

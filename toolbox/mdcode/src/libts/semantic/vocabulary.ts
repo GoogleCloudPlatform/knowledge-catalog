@@ -29,8 +29,14 @@
 //
 // Everything K3 owns lives here so the feature is easy to find, rename or drop.
 
-import {Association, Entity, Field, fieldBinding, Relationship, SemanticModel, VocabularyMember} from './ir';
+import {Association, Entity, expressionForDialect, Field, fieldBinding, Relationship, SemanticModel, VocabularyMember} from './ir';
 import {aliased, edgeViewName, GeneratedView, physicalColumnOf, snakeCase, sqlInteger, sqlString, tableName, viewRef, ViewTarget} from './generated_views';
+import {sqlWithoutComments} from './sql_expr_utils';
+
+function vocabFieldSql(field: Field): string|undefined {
+  const expr = expressionForDialect(field, 'BIGQUERY') ?? fieldBinding(field);
+  return expr === undefined ? undefined : sqlWithoutComments(expr);
+}
 
 /** The columns of a generated vocabulary view, in order. */
 export const VOCABULARY_COLUMNS =
@@ -93,8 +99,8 @@ export function withVocabularyBindings(entity: Entity): Entity {
   if (!generatesVocabularyView(entity)) return entity;
   const keys = entity.keys ?? [];
   const fields = entity.fields.map(f => {
-    if (fieldBinding(f) !== undefined) return f;
-    const column = keys.length === 1 && keys[0] === f.name ?
+    if (vocabFieldSql(f) !== undefined) return f;
+    const column = (keys.length === 1 && keys[0] === f.name) ?
         'code' :
         defaultColumn(f.name);
     return column ? {...f, expression: column} : f;
@@ -105,10 +111,10 @@ export function withVocabularyBindings(entity: Entity): Entity {
       ({name: column, expression: column, type: COLUMN_TYPES[column]});
   if (!fields.length) {
     out.fields = VOCABULARY_COLUMNS.map(synthesized);
-  } else if (!fields.some(f => fieldBinding(f) === 'code')) {
+  } else if (!fields.some(f => vocabFieldSql(f) === 'code')) {
     out.fields = [synthesized('code'), ...fields];
   }
-  out.keys = [out.fields.find(f => fieldBinding(f) === 'code')!.name];
+  out.keys = [out.fields.find(f => vocabFieldSql(f) === 'code')!.name];
   return out;
 }
 
@@ -161,7 +167,7 @@ export function bindVocabularies(
           `'${name}' is empty`);
     }
     const out = withVocabularyBindings({...entity, dataSource: ref});
-    const codeField = out.fields.find(f => fieldBinding(f) === 'code');
+    const codeField = out.fields.find(f => vocabFieldSql(f) === 'code');
     if (codeField?.type !== undefined && codeField.type !== 'String') {
       warnings.push(
           `entity '${entity.name}': field '${codeField.name}' reads the ` +
@@ -175,7 +181,8 @@ export function bindVocabularies(
       kind: 'vocabulary',
       ddl: vocabularyViewDdl(out, ref),
     });
-    return out;
+    // The generated view's physical key column is always `code`.
+    return {...out, keys: ['code']};
   });
   return {entities: bound, views};
 }
@@ -206,6 +213,10 @@ export function lowerVocabularies(
     if (!dest || !isVocabulary(dest) || !src || rel.abstract ||
         rel.association || rel.via?.length || !rel.source.columns.length ||
         !rel.destination.columns.length || src.abstract || !src.dataSource) {
+      if (dest && !rel.association && !rel.abstract &&
+          generatesVocabularyView(dest) && rel.destination.columns.length === 1) {
+        return {...rel, destination: {...rel.destination, columns: ['code']}};
+      }
       return rel;
     }
     const edge = vocabularyEdgeView(rel, src, dest, target);
@@ -217,7 +228,9 @@ export function lowerVocabularies(
 
 // Whether a field compares as text (so LOWER() applies): String or untyped.
 function textual(entity: Entity, fieldName: string): boolean {
-  const type = entity.fields.find(f => f.name === fieldName)?.type;
+  const field = entity.fields.find(f => f.name === fieldName) ??
+      entity.fields.find(f => physicalColumnOf(entity, f.name) === fieldName);
+  const type = field?.type;
   return type === undefined || type === 'String';
 }
 

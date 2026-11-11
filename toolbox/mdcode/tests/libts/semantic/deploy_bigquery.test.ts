@@ -5,7 +5,7 @@
 // exercised end to end over an Ossie fixture (loader -> IR -> generator ->
 // target), with the BigQuery client stubbed so no network call is made.
 
-import {describe, expect, spyOn, test} from 'bun:test';
+import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -14,16 +14,17 @@ import {ApiContext} from '../../../src/libts/gcp/context';
 import {bigQueryGraphTargets, deployBigQuery} from '../../../src/libts/semantic/deploy_bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(() => loadSqlEngine());
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-// The deploy leg now consumes models already parsed by loadSemanticModels
+// The deploy leg consumes models already parsed by loadSemanticModels
 // (shared with the Knowledge Catalog leg). These tests still author documents,
-// so this helper parses them the way commands.ts does. defaultProject mirrors
-// the scope's declared project.
-function models(docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(
-      docs, {defaultProject, allowLegacyBareSource: true});
+// so this helper parses them the way commands.ts does.
+function models(docs: {name: string; text: string}[]) {
+  const r = loadSemanticModels(docs);
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -31,7 +32,7 @@ function models(docs: {name: string; text: string}[], defaultProject = 'test-pro
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 const BQ_URI =
-    '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
+    'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
 
 // A loader-valid model that declares a GOOGLE BigQuery Graph deployment target
 // (resolves to demo.sales.sales_graph), and the same model without one.
@@ -39,35 +40,35 @@ const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const OSSIE_NO_TARGET =
     fs.readFileSync(path.join(FIXTURES, 'sales_no_target.yaml'), 'utf8');
-// An existing fixture whose only GOOGLE deployment target is a (non-BigQuery)
-// Dataplex URI; exercises the deploy leg's unparseable-target path.
+// Derived from sales_google_ext.yaml with a (non-BigQuery) Dataplex URI target
+// to exercise the deploy leg's unparseable-target path while keeping the
+// fixture itself schema-valid.
 const OSSIE_DATAPLEX_ONLY =
-    fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8');
-// A model whose only GOOGLE target carries the BigQuery prefix but fails the
-// strict URI match; exercises the "declared but unparseable" report.
+    fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8')
+        .replace(
+            'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph',
+            'projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph');
+// A model whose target carries the BigQuery prefix but fails the strict URI
+// match (`/propertyGraph/` instead of `/propertyGraphs/`).
 const OSSIE_BAD_TARGET =
-    fs.readFileSync(path.join(FIXTURES, 'sales_bad_target.yaml'), 'utf8');
-// A model whose dataset `source` omits its project, so the loader must qualify
-// it with the caller-supplied defaultProject.
-const OSSIE_UNQUALIFIED_SOURCE = fs.readFileSync(
-    path.join(FIXTURES, 'sales_unqualified_source.yaml'), 'utf8');
+    OSSIE.replace('/propertyGraphs/sales_graph', '/propertyGraph/sales_graph');
 
-// A model carrying only a single custom_extension.
-function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
+// A model carrying deployments.
+function modelWithDeployments(...targets: string[]): SemanticModel {
   return {
     name: 'm',
     entities: [],
     relationships: [],
     metrics: [],
-    customExtensions: [{vendorName: vendor, data}],
+    deployments: targets.map((target, i) => ({name: `d_${i}`, target})),
   };
 }
 
 
 describe('bigQueryGraphTargets', () => {
   test('parses a BigQuery Graph deployment target', () => {
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [BQ_URI]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(BQ_URI));
     expect(targets).toEqual([
       {
         project: 'demo',
@@ -79,51 +80,39 @@ describe('bigQueryGraphTargets', () => {
     expect(malformed).toEqual([]);
   });
 
-  test('ignores non-GOOGLE vendor extensions', () => {
-    const {targets} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [BQ_URI]}), 'DATABRICKS'));
-    expect(targets).toEqual([]);
-  });
-
   test('reports a non-BigQuery deployment target as malformed', () => {
     // We only support BigQuery Graph targets, so any other URI does not parse
     // as one and is collected as malformed (rejected), not silently ignored.
     const dataplexUri =
         'projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph';
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [dataplexUri]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(dataplexUri));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([dataplexUri]);
   });
 
-  test('returns [] for a model with no custom extensions', () => {
+  test('returns [] for a model with no deployments', () => {
     const {targets} = bigQueryGraphTargets(
         {name: 'm', entities: [], relationships: [], metrics: []});
     expect(targets).toEqual([]);
   });
 
-  test('throws on malformed extension JSON', () => {
-    expect(() => bigQueryGraphTargets(modelWithExtension('{not json')))
-        .toThrow(/not valid JSON/);
-  });
-
   test('collects multiple targets in order', () => {
     const uri2 =
-        '//bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
-    const {targets} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [BQ_URI, uri2]})));
+        'bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
+    const {targets} = bigQueryGraphTargets(modelWithDeployments(BQ_URI, uri2));
     expect(targets.map(t => t.graphName)).toEqual(['sales_graph', 'g2']);
   });
 
-  test('collects a prefix-matching URI that fails the strict match', () => {
+  test('collects a prefix-matching target that fails the strict match', () => {
     // A backtick/semicolon in the graph name would break out of the quoted
     // identifier in the generated DDL; the tightened capture groups reject it.
     // It carries the BigQuery prefix, so it is surfaced as malformed rather
     // than silently dropped.
     const evil =
-        '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
-    const {targets, malformed} = bigQueryGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
+        'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(evil));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([evil]);
   });
@@ -136,8 +125,8 @@ describe('bigQueryGraphTargets', () => {
         '//bigquery.googleapis.co/projects/demo/datasets/sales/propertyGraphs/g';
     const scheme =
         'https://bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g';
-    const {targets, malformed} = bigQueryGraphTargets(modelWithExtension(
-        JSON.stringify({deploymentTargets: [hostTypo, scheme]})));
+    const {targets, malformed} =
+        bigQueryGraphTargets(modelWithDeployments(hostTypo, scheme));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([hostTypo, scheme]);
   });
@@ -448,13 +437,15 @@ describe('deployBigQuery', () => {
       'names an unparseable BigQuery target instead of reporting none',
       async () => {
         // A typo'd URI that carries the BigQuery prefix must be reported as
-        // unparseable, not as "declares no deploymentTarget".
+        // unparseable, not as "declares no deployment target".
         const res = await deployBigQuery(
             models([{name: 'sales', text: OSSIE_BAD_TARGET}]), CTX,
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
         expect(res.details).toContain('propertyGraph/sales_graph');
+        expect(res.details).toContain(
+            'Expected bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>.');
         expect(res.details).not.toContain('declares no BigQuery Graph');
       });
 
@@ -504,21 +495,6 @@ describe('deployBigQuery', () => {
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
-      });
-
-  test(
-      'qualifies an under-qualified source with the given defaultProject',
-      async () => {
-        // The loader qualifies `sales.orders` with the passed defaultProject
-        // ('scope-proj'), not the ambient ctx.project ('test-project'): the
-        // scope's declared project is deterministic where gcloud's is not.
-        const res = await deployBigQuery(
-            models([{name: 'sales', text: OSSIE_UNQUALIFIED_SOURCE}], 'scope-proj'),
-            CTX, {validateOnly: true});
-        expect(res.success).toBe(true);
-        const ddl = res.ddl.join('\n');
-        expect(ddl).toContain('`scope-proj.sales.orders`');
-        expect(ddl).not.toContain('test-project.sales.orders');
       });
 
   test('validateOnly over an empty workspace is a clean no-op', async () => {

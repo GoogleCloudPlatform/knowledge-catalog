@@ -7,7 +7,7 @@
 import * as cp from 'child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 import { pullTargetDir, listMarkdown, fromStaging, manifestFile, requireManifest } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();

@@ -54,6 +54,7 @@ import * as context from '../gcp/context';
 import {AspectType, CatalogClient, Entry} from '../gcp/dataplex';
 
 import {Entity, Field, Relationship, SemanticModel} from './ir';
+import {entryIdOf} from './kc_ids';
 import {scaleText} from './units_history';
 import {allSet, Binder, columnOf, cte, entityEntryName, errorText, groupJ, indent, joinOn, KcDestination, keyExpr, parseConstraintSpec, projectJ, q, sqlString, str, table, Unsupported,} from './validate_bigquery';
 
@@ -1689,7 +1690,7 @@ export async function publishProfileResults(
     if (res.status === 200) {
       published.push(entry.name);
     } else {
-      errors.push(`${entry.name.split('/').pop()}: ${
+      errors.push(`${entryIdOf(entry.name)}: ${
           res.status === 404 ? 'no such entry (run `kcmd push` first)' :
                                errorText(res.message, res.status)}`);
     }

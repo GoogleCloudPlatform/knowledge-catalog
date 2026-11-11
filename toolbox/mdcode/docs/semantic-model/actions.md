@@ -78,8 +78,8 @@ semantic_model:
     entities:
       - name: Account
         description: A customer's money at this bank.
-        primary_key: [accountId]
-        source: my-project.bank.account
+        primary_key: [account_id]
+        source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/account
         fields:
           - { name: accountId,      datatype: Integer, expression: account_id }
           - { name: name,           datatype: String,  expression: name }
@@ -88,8 +88,8 @@ semantic_model:
           - { name: status,         datatype: String,  expression: status, description: "open, frozen or closed." }
       - name: Transfer
         description: One movement of money between two accounts.
-        primary_key: [transferId]
-        source: my-project.bank.transfer
+        primary_key: [transfer_id]
+        source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/transfer
         fields:
           - { name: transferId, datatype: String,  expression: transfer_id }
           - { name: amount,     datatype: Float,   expression: amount }
@@ -98,8 +98,8 @@ semantic_model:
       - name: TransferDebits
         from: Transfer
         to: Account
-        from_columns: [debitedId]
-        to_columns: [accountId]
+        from_columns: [debited_account_id]
+        to_columns: [account_id]
     actions:
       - name: TransferFunds
         description: Move money from one account to another.
@@ -263,8 +263,8 @@ team owns it and your model needs only to record that it exists.
 Nothing declares this state: it follows from the executor being absent, so the
 same action is performable under a profile that supplies one and not
 performable under a profile that supplies none or withdraws the model's with
-`executor: null`. A catalog-only push — `--no-profile`,
-or a model with no deployment target — publishes it like any other action, and
+`executor: null`. A catalog-only push — `--no-deployment`,
+or a model with no deployments — publishes it like any other action, and
 `kcmd profiles` lists it under `cannot run:` for each binding that supplies no
 executor for it.
 
@@ -285,32 +285,45 @@ rather than in the model it binds. Here it replaces the `mcp` executor the model
 declared for `TransferFunds`:
 
 ```yaml
-# payments.profiles/operational.yaml — this store owns the rows, so it writes them
-semantic_model:
-  - name: payments
-    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
-    entities:
-      - name: Account
-        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
-        fields:
-          - { name: accountId, expression: account_id }
-          - { name: balance,   expression: balance }
-          # ... and the model's remaining entities and fields, bound the same way
-    actions:
-      - name: TransferFunds
-        executor:
-          sql:
-            statements:
-              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
-              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
-              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
+# payments.profile.operational.yaml — this store owns the rows, so it writes them
+name: operational
+entities:
+  - name: Account
+    source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
+    primary_key: [account_id]
+    fields:
+      - { name: accountId, expression: account_id }
+      - { name: balance,   expression: balance }
+      # ... and the model's remaining entities and fields, bound the same way
+relationships:
+  - { name: TransferDebits, from_columns: [debited_account_id], to_columns: [account_id] }
+actions:
+  - name: TransferFunds
+    executor:
+      sql:
+        statements:
+          - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+          - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+          - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
 ```
 
-A profile is an overlay on the model's bindings: a field it does not restate
-keeps the column the model file gives it. So the profile you put a `sql`
-executor in has to restate every column its store names differently, the ones
-its statements touch included — leave one out and it keeps the model's column,
-which this store may not have. Of the action itself, only the executor is
+Your model file then names the profile in a deployment:
+
+```yaml
+# payments.yaml, beside the profile file
+semantic_model:
+  - name: payments
+    deployments:
+      - name: operational
+        profile: operational
+        target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/graphs/payments
+```
+
+A profile restates each field whose model file expression reads a column, or
+names it in `fields_exclude`, and push rejects a profile that does neither.
+So no field of the profile you put a `sql` executor in silently keeps a
+column of the model file, which this store may not have. Of the action
+itself, only the executor is
 restated: what the call takes, what gates it and what it changes stay in the
 model, exactly as [declared](#1-declare-the-action).
 
@@ -351,7 +364,7 @@ executing a row of it. A statement that says `accountId` where the column is
 
 ```
 Error: action 'TransferFunds' in model 'payments'
-(payments.profiles/operational.yaml): statement 1 of its sql executor was
+(payments, deployment 'operational'): statement 1 of its sql executor was
 rejected by Spanner database 'my-project/my-instance/bank': Unrecognized name:
 accountId; Did you mean account? [at 1:54]. Statements reach the store exactly
 as written, so every table and column has to be the name the database uses.
@@ -391,10 +404,11 @@ The placement is enforced: select a profile whose model declares a `sql`
 executor and the command refuses, naming the action:
 
 ```
-Error: [payments] profile 'operational': action 'TransferFunds' in model
-'payments' declares a 'sql' executor. A statement names one database's own
-tables and columns, so it belongs in the profile that binds them, not in the
-model. Move the executor into each profile that performs this write as DML.
+Error: [payments] deployment 'operational': profile 'operational': action
+'TransferFunds' in model 'payments' declares a 'sql' executor. A statement names
+one database's own tables and columns, so it belongs in the profile that binds
+them, not in the model. Move the executor into each profile that performs this
+write as DML.
 ```
 
 A single-file model is the exception: that one document is both the model and
@@ -978,11 +992,10 @@ whether `TransferDebits` is an entity or an edge. A consumer that needs that
 answer reads it off your model, the only place that still answers correctly
 after a rename.
 
-Every action in your model gets an entry, whether or not the binding you pushed
-can perform it. When that binding gives an action no executor, the entry
+Every action in your model gets an entry, whether or not the model file gives
+it an executor. When the model file gives an action no executor, the entry
 publishes without the executor fields, so the catalog records an action that
-nothing is yet wired up to run. A push reads the binding named by `--profile`,
-or by `default_profile` in `catalog.yaml` when you don't name one.
+nothing is yet wired up to run.
 
 Remove an action from your document and the next push deletes its entry, because
 your model owns the `<model>.actions.` id prefix. A catalog search can list the
@@ -1101,9 +1114,9 @@ in your model or binding profile:
                                            apply to this call"
     affects                         ───▶ references/<action>.md "## What it changes"
 
-  the binding profile                    where it lands in the generated skill
+  deployments & binding profile          where it lands in the generated skill
   ─────────────────────────────────      ─────────────────────────────────────────
-  deployment_target                 ───▶ SKILL.md "## Finding a record" +
+  deployments[].target              ───▶ SKILL.md "## Finding a record" +
                                            "## Running an action" (Store)
   actions[].executor                ───▶ SKILL.md "## Running an action" (Executor
                                            & whether each action is runnable)
@@ -1161,7 +1174,7 @@ This is a prototype. Four things you might reasonably expect are absent.
   coordinates of the service that performs it. No code in this repository
   dispatches either.
 - **Only a `sql` action needs a store.** Its statements are written against the
-  database your profile's deployment target names, so a profile binding no
+  database of each deployment that uses your profile, so a profile binding no
   store lists its `sql` actions as not runnable and says why. Which backend
   that store is does not matter: Spanner, AlloyDB and BigQuery all execute DML.
   A profile's `mcp`, `rest` and `grpc` actions need no store and are offered as

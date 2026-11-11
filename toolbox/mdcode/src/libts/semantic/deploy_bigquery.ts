@@ -5,7 +5,7 @@
 // shared with the Knowledge Catalog leg so a multi-destination push parses each
 // document once), lowers each to `CREATE OR REPLACE PROPERTY GRAPH` DDL
 // (generator), and executes that DDL against the BigQuery project named by the
-// model's GOOGLE deployment target.
+// model's deployment target.
 //
 // This is a library module: it emits no console output. The generated DDL and
 // any loader/generator warnings are returned in `DeployResult` for the CLI
@@ -17,18 +17,18 @@ import {BigQueryClient, QueryResponse} from '../gcp/bigquery';
 import * as context from '../gcp/context';
 
 import {generatePropertyGraph} from './bigquery';
-// The GOOGLE deployment-target reader lives in its own module so both deploy
+// The deployment-target reader lives in its own module so both deploy
 // legs (BigQuery, Spanner) and the push-time validator share one parse. The
 // BigQuery-facing views are re-exported here so existing importers
 // (validate.ts, knowledge_catalog.ts, and the deploy tests) keep their
 // historical import path.
-import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
+import {BigQueryGraphTarget, bigQueryGraphTargets, BQ_GRAPH_FORM, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 import {ConstraintRates, measureConstraintRates} from './constraint_enforcement';
 import {describeMetricGraphPlan, planMetricGraphs} from './metric_slices';
 import {lowerNodeViews, orderGeneratedViews} from './node_views';
 
-export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
+export {bigQueryGraphTargets, googleDeploymentTargets};
 export type {BigQueryGraphTarget};
 
 
@@ -183,7 +183,7 @@ async function awaitQueryDone(
 // location, but record a warning so the degraded path is visible -- otherwise a
 // silent fallback can route a non-US CREATE to the wrong region and fail later
 // with an opaque location error.
-async function datasetLocation(
+export async function datasetLocation(
     bigQuery: BigQueryClient, target: BigQueryGraphTarget,
     warnings: string[]): Promise<string|undefined> {
   const res = await bigQuery.getDataset(target.project, target.dataset);
@@ -254,27 +254,20 @@ export async function deployBigQuery(
 
   for (const {document, model} of models) {
     modelsSeen++;
-    let targets: BigQueryGraphTarget[];
-    let malformed: string[];
-    try {
-      ({targets, malformed} = bigQueryGraphTargets(model));
-    } catch (err: any) {
-      return fail(`Model '${model.name}' (${document}): ${err.message || err}`);
-    }
+    const {targets, malformed} = bigQueryGraphTargets(model);
     if (!targets.length) {
       // A malformed-but-present target must not be reported as "none
-      // declared" -- that sends the author hunting for an extension they
+      // declared" -- that sends the author hunting for a deployment they
       // already wrote. Name the URIs that failed to parse.
       if (malformed.length) {
         return fail(
             `Model '${model.name}' (${document}) declares BigQuery Graph ` +
-            `deploymentTarget(s) that could not be parsed: ` +
-            `${malformed.join(', ')}. Expected //bigquery.googleapis.com/` +
-            `projects/<p>/datasets/<d>/propertyGraphs/<g>.`);
+            `deployment target(s) that could not be parsed: ` +
+            `${malformed.join(', ')}. Expected ${BQ_GRAPH_FORM}.`);
       }
       return fail(
           `Model '${model.name}' (${document}) declares no BigQuery Graph ` +
-          `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
+          `deployment target; nothing to deploy.`);
     }
     // Malformed targets alongside valid ones: surface them so a typo'd URI is
     // not silently dropped when the deploy otherwise succeeds.
