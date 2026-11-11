@@ -524,14 +524,14 @@ function transpilingModel(
 }
 
 // What transpileOutcomes gives for each model document of the semantic-model
-// scope `snapshot`, or undefined for another scope. The import reads each
-// table's dialect as `kcmd import` does, so a table whose dialect cannot be
-// read gives the error or warning the import gives.
+// scope or context set `snapshot`, or undefined for another scope. The import
+// reads each table's dialect as `kcmd import` does, so a table whose dialect
+// cannot be read gives the error or warning the import gives.
 async function scopeTranspileOutcomes(
     ctx: context.ApiContext,
     snapshot: kcmd.CatalogSnapshot): Promise<Map<string, string|null>|undefined> {
-  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) return undefined;
-  const layout = snapshot.layout as SemanticModelLayout;
+  const layout = semanticLayoutOf(snapshot);
+  if (!layout) return undefined;
   const profileDocs = profileDocsReader(layout);
   await loadSqlEngine();
   // Only a document that may get the advice needs its tables' dialects.

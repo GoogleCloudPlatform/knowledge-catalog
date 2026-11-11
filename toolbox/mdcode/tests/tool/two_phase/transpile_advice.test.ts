@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import * as engine from '../../../src/libts/semantic/import_model';
-import {ImportCommandOptions, importModel, profiles} from '../../../src/tool/commands';
+import {ImportCommandOptions, importModel, profiles, skillsGenerate} from '../../../src/tool/commands';
 
 import {bqTable, CTX, CUSTOMER, runPush, Scope, SPANNER, SPANNER_CUSTOMER, writeScope} from './harness';
 
@@ -234,10 +234,10 @@ semantic_model:
         expect([...after.errors, ...after.warnings].join('\n')).not.toContain('kcmd import');
       });
 
-  // Runs `kcmd profiles` with `flags`, where reading a Spanner database
-  // answers `status`. Gives its exit code, the lines it prints and how many
-  // times it ran the import engine.
-  const report = async (flags: Parameters<typeof profiles>[0], status = 200) => {
+  // Runs `command`, where reading a Spanner database answers `status`. Gives
+  // its exit code, the lines it prints and how many times it ran the import
+  // engine.
+  const report = async (command: () => Promise<number>, status = 200) => {
     mock.restore();
     spyOn(ApiContext, 'default').mockReturnValue(CTX);
     spyOn(SpannerClient.prototype, 'getDatabase').mockResolvedValue(
@@ -249,7 +249,7 @@ semantic_model:
         lines.push(a.join(' '));
       });
     }
-    const code = await profiles(flags);
+    const code = await command();
     const runs = imports.mock.calls.length;
     mock.restore();
     return {code, lines, runs};
@@ -269,7 +269,8 @@ semantic_model:
   ] as Array<[string, Scope, number]>)(
       'names the same error in kcmd profiles --print-store%s', async (_, scope, status) => {
         writeScope(dir, scope);
-        const {code, lines} = await report({printStore: true, profile: 'prod'}, status);
+        const {code, lines} =
+            await report(() => profiles({printStore: true, profile: 'prod'}), status);
         expect(code).toBe(1);
         expect(lines).toContain(BINDING_TEXT_ERROR);
       });
@@ -285,6 +286,16 @@ semantic_model:
     ['runs the import once for a model file with a BigQuery table', {entities: [withCode()]}, 1],
   ] as Array<[string, Scope, number]>)('%s', async (_, scope, runs) => {
     writeScope(dir, scope);
-    expect((await report({})).runs).toBe(runs);
+    expect((await report(() => profiles({}))).runs).toBe(runs);
+  });
+
+  test('names the same error in skills-generate in a context set', async () => {
+    writeScope(dir, {entities: [withCode({name: 'custom', expression: snowflake('MY_UDF(c_key)')})]});
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                     'scope: context-set.test-project.us.commerce_eg\n');
+    expect((await report(() => skillsGenerate({}))).lines).toContain(
+        warning("field 'Customer.code'", `field 'Customer.custom' ${MODEL} has no expression ` +
+                "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
+                'BIGQUERY source; give it one'));
   });
 });
