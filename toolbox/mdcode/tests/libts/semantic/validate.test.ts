@@ -650,9 +650,10 @@ describe('inheritance rules', () => {
   });
 
   // A redeclaration sets `expression` and nothing else.
-  test('a subtype redeclaring an inherited field with nothing set is rejected', () => {
+  test('a subtype redeclaring an inherited field with no expression is rejected', () => {
     for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
-                     {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
+                     {name: 'name', importedDialect: 'SNOWFLAKE'},
+                     {name: 'name', type: 'Integer' as const}]) {
       expect(check({
         entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
       }).join('\n')).toContain(

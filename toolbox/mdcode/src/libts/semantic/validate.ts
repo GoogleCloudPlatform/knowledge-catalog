@@ -1343,9 +1343,10 @@ function inheritanceRuleErrors(
               `${where(entity.name)}: field '${field.name}' is inherited, so ` +
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
-        } else if (!isFieldBound(field)) {
-          // A redeclaration sets `expression` and nothing else, so a line with
-          // only the name is not one.
+        }
+        if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else, so a line
+          // with no `expression` is not one.
           const from = (ancestorsOf.get(entity.name) ?? [])
                            .find(a => ownNames.get(a)?.has(field.name));
           errors.push(
