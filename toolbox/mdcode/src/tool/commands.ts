@@ -557,19 +557,26 @@ async function scopeTranspileOutcomes(
 // that may get the advice to add a BigQuery text: null when it would write
 // its files, or the first error it would stop on. The import reads each
 // table's dialect from `dialects`, read with `load` for the same files, and
-// calls services with `ctx`. With `fromTexts`, it reads the texts of `docs`
-// and of their profile files in place of the files on disk. The caller has
-// loaded the SQL parser.
+// calls services with `ctx`. The caller has loaded the SQL parser.
+//
+// `pull` is set for pull's run, which writes nothing. That run names the
+// entry group directory in --out, so it skips the checks of where the files
+// go and the second read of the catalog's types they make. Pull needs none
+// of those checks: it refuses or deletes another model's file, and the
+// engine reads each profile file beside the model. With `pull.texts`, the
+// import reads the texts of `docs` and of their profile files in place of
+// the files on disk. With `pull.profileDirGone`, it takes the older profile
+// directory beside the model as gone.
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
-    dialects: SourceDialects,
-    fromTexts = false): Promise<Map<string, string|null>> {
+    dialects: SourceDialects, pull?: {texts: boolean; profileDirGone: boolean}):
+    Promise<Map<string, string|null>> {
   const outcomes = new Map<string, string|null>();
   for (const doc of docs) {
     const model = transpilingModel(doc, profileDocs, load);
     if (!model) continue;
-    const source = fromTexts ? {
+    const source = pull?.texts ? {
       text: doc.text,
       profileFiles: profileDocs(doc.name).map(
           p => ({fileName: path.basename(p.path), content: p.text})),
@@ -580,8 +587,14 @@ async function transpileOutcomes(
           flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
           input: 'first-party',
           transpile: true,
+          ...pull ? {out: path.dirname(layout.modelPath(doc.name))} : {},
         },
-        {source, readDialects: async () => dialects, api: () => ctx});
+        {
+          source,
+          readDialects: async () => dialects,
+          api: () => ctx,
+          withoutProfileDir: pull?.profileDirGone,
+        });
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
   return outcomes;
@@ -2184,7 +2197,8 @@ async function pullSemanticModel(
   }
   const refusal = modelFile && await pushRefusal(
       ctx, layout, source, {name: pulled.name, text: modelFile.content},
-      pulledProfileDocs(layout, pulled, updated), overviews);
+      pulledProfileDocs(layout, pulled, updated), overviews,
+      options.forceRemove);
   if (refusal) {
     console.warn(
         `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
@@ -2207,12 +2221,13 @@ async function pullSemanticModel(
 // writing nothing, and that import reads no table's dialect either. The
 // import reads the files on disk, which pull has written, unless given
 // `overviews`, which pull gives under --dry-run. It then reads `doc` and
-// `profiles`.
+// `profiles`. With `forceRemove`, it takes the older profile directory as
+// gone, since pull --force-remove deletes it.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
-    profiles: ReturnType<ProfileDocs>,
-    overviews?: TwoPhaseScope['overviews']): Promise<string|undefined> {
+    profiles: ReturnType<ProfileDocs>, overviews?: TwoPhaseScope['overviews'],
+    forceRemove = false): Promise<string|undefined> {
   const parserError = await sqlParserError();
   if (parserError) return parserError;
   const docs = [doc];
@@ -2223,7 +2238,7 @@ async function pushRefusal(
     readWithoutDialect: true,
     transpileOutcomes: await transpileOutcomes(
         ctx, docs, profileDocs, layout, {}, noDialects,
-        overviews !== undefined),
+        {texts: overviews !== undefined, profileDirGone: forceRemove}),
   };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load, overviews,
@@ -2779,6 +2794,9 @@ interface ImportSource {
 // BigQuery text.
 interface ImportIo {
   source?: ImportSource;
+  // Set when the older `<model>.profiles/` directory beside the input is gone
+  // by the time the import would run, as after pull --force-remove.
+  withoutProfileDir?: boolean;
   api?: () => context.ApiContext;
   readDialects?: (texts: string[]) => Promise<SourceDialects>;
   transpileOutcome?:
@@ -2867,7 +2885,7 @@ async function planOneImport(
   const stem = path.basename(file).replace(YAML_FILE, '');
   // Push refuses the older `<model>.profiles/` directory, which import does
   // not read.
-  if (legacyProfileFiles(dir, stem).length) {
+  if (!io.withoutProfileDir && legacyProfileFiles(dir, stem).length) {
     if (input === 'first-party') return fail(legacyProfileDirError(stem));
     warnings.push(legacyProfileDirError(stem));
   }

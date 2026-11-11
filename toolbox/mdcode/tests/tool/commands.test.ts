@@ -2176,6 +2176,35 @@ describe('a pull', () => {
              "entity 'Order' has no source in this profile.");
        });
 
+  // Under --dry-run --force-remove, that import leaves out the files the pull
+  // would delete: another model's file and the older profile directory.
+  test('under --dry-run --force-remove runs that import without the files ' +
+           'pull deletes',
+       async () => {
+         fs.mkdirSync(local('commerce.profiles'), {recursive: true});
+         fs.writeFileSync(local('commerce.profiles/dev.yaml'), 'name: dev\n');
+         fs.writeFileSync(local('sales.yaml'), MODEL_YAML.replace('commerce', 'sales'));
+         fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                          'scope: semantic-model.test-project.us.commerce_eg\n');
+         pulled(snowflakeCode());
+         expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
+         expect(messages(console.warn)).toBe(`${CODE_ADVICE}.`);
+       });
+
+  // That import writes nothing, so it skips the checks of where the files go,
+  // and reads no catalog type a second time.
+  test('reads each type catalog.yaml lists once', async () => {
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n' +
+            'snapshot:\n  aspects: [test-project.global.overview]\n');
+    pulled(snowflakeCode());
+    expect(await pull()).toBe(0);
+    expect(messages(console.warn)).toBe(`${CODE_ADVICE}.`);
+    expect(CatalogClient.prototype.getAspectType).toHaveBeenCalledTimes(1);
+  });
+
   // With no table's dialect read, pull still reads which fields and entities
   // an ANSI_SQL expression reads, and warns as push refuses. It leaves to push
   // a text that one of the dialects the table may have cannot parse.
