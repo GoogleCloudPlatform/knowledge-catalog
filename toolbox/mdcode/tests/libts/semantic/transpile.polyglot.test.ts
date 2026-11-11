@@ -400,6 +400,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'd + INTERVAL -9223372036854775808 DAY', {error: 'kcmd does not translate the number 9223372036854775808'}],
     ['MYSQL', 'd + INTERVAL 1 MICROSECOND', {error: 'kcmd does not translate INTERVAL 1 MICROSECOND'}],
     ['MYSQL', 'd + INTERVAL 1 MONTH', {error: 'kcmd does not translate + INTERVAL 1 MONTH on a value that may be a TIMESTAMP'}],
+    ['MYSQL', 'DATE_SUB(CURDATE(), INTERVAL 1 DAY) - INTERVAL 1 MONTH', {sql: "DATE_SUB(DATE_SUB(CURRENT_DATE, INTERVAL '1' DAY), INTERVAL '1' MONTH)"}],
+    ['MYSQL', 'DATE_SUB(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL 1 MONTH)', {error: 'kcmd does not translate DATE_SUB of DATE_SUB'}],
     ['DATABRICKS', 'd - INTERVAL 1 WEEK', {error: 'kcmd does not translate - INTERVAL 1 WEEK on a value that may be a TIMESTAMP'}],
     ['MYSQL', 'COALESCE(i, INTERVAL 1 DAY) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of an expression'}],
     ['POSTGRES', "COALESCE(i, INTERVAL '1 day') + INTERVAL '1 day'", {error: 'kcmd does not translate + of an expression'}],

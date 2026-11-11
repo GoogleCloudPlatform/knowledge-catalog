@@ -1112,7 +1112,7 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
   const added = kind !== 'mul' && sides.find(s => s?.interval)?.interval;
-  if (added && read !== 'spanner') return intervalShape(kind, value, INTERVAL_SHAPES[read]);
+  if (added && read !== 'spanner') return intervalShape(kind, value, read);
   if (added) {
     const untranslated = sides.find(s => s?.interval && !interval(s.interval));
     return untranslated ? `INTERVAL ${intervalText(untranslated.interval)}` :
@@ -1134,12 +1134,13 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
 }
 
 // The operand and the amount of `value`, a `+` or `-` of `kind` with an
-// INTERVAL, to check next, or a message, by `shape`, the dialect's entry in
-// INTERVAL_SHAPES. Any other value beside the INTERVAL may be a number, a
-// string or another INTERVAL, such as MySQL's `d + 1`, which is a number.
+// INTERVAL, to check next, or a message, by the entry in INTERVAL_SHAPES of the
+// engine's dialect `read`. Any other value beside the INTERVAL may be a number,
+// a string or another INTERVAL, such as MySQL's `d + 1`, which is a number.
 // BigQuery adds no month, quarter or year to a TIMESTAMP, and its DATE_ADD adds
 // no week, so import adds one only to a DATE it can see.
-function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[]|string {
+function intervalShape(kind: string, value: any, read: string): unknown[]|string {
+  const shape = INTERVAL_SHAPES[read];
   const op = OPERATORS[kind];
   const first = kind === 'add' && !!value.left?.interval;
   const [operand, added] = first ? [value.right, value.left.interval] :
@@ -1157,7 +1158,7 @@ function intervalShape(kind: string, value: any, shape: IntervalShape): unknown[
     return `${op} of ${valueName(b)}`;
   }
   const timestampless = MONTH_PARTS.has(unit) || (unit === 'week' && shape.dateAdd.includes(unit));
-  if (timestampless && !isDate(operand)) {
+  if (timestampless && timeType(operand, read) !== 'DATE') {
     return `${op} INTERVAL ${intervalText(added)} on a value that may be a TIMESTAMP`;
   }
   return [operand, added.this];
@@ -1270,7 +1271,7 @@ function timeType(node: any, read: string): string|undefined {
   if (sum && shape) {
     const kind = b.add ? 'add' : 'sub';
     const added = sum.left?.interval ?? sum.right?.interval;
-    const operands = added ? intervalShape(kind, sum, shape) : daysAdded(kind, sum, shape);
+    const operands = added ? intervalShape(kind, sum, read) : daysAdded(kind, sum, shape);
     const date = Array.isArray(operands) ? timeType(operands[0], read) : undefined;
     return date === 'DATE' && added && shape.operator.includes(wholeUnit(added)!) ?
         'DATETIME' : date;
@@ -1320,7 +1321,7 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
                                                   `INTERVAL ${intervalText(added)}`}`;
     }
     if (/\./.test(numberText(count) ?? '')) return `${name} of a fraction`;
-    if (MONTH_PARTS.has(unit) && !isDate(value)) {
+    if (MONTH_PARTS.has(unit) && timeType(value, read) !== 'DATE') {
       return `${name} of a ${unit} to a value that may be a TIMESTAMP`;
     }
     if (read === 'databricks' && args.length === 2 && numberText(count) === undefined &&
