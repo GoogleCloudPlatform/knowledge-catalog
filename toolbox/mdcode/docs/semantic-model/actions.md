@@ -354,9 +354,6 @@ and its fields' `expression` keys bind it to.
 `@parameter` references are the exception: they name an argument bound at call
 time rather than anything in your database.
 
-A statement with ` #` in it must be in quotes or written as a block scalar with
-`|`, since YAML reads an unquoted ` #` as the start of a comment.
-
 Push checks those names for you, against the store itself. Before anything is
 published, every statement in a `sql` executor is sent to the database the
 profile binds — Spanner plans it, BigQuery dry-runs it — which parses it,
@@ -922,6 +919,9 @@ carries the write rather than a pointer to whoever performs it:
   schema isn't an action. A `;` anywhere but the end is rejected, because each
   list entry runs on its own and anything after the separator would silently not
   run.
+- Write a statement with ` #` in it in quotes or as a block scalar with `|`.
+  YAML reads an unquoted ` #` as the start of a comment, so push refuses an
+  unquoted statement with a comment on the same line.
 - **Every `@name` a statement binds has to resolve** to a parameter your
   action declares. Anything you write another way is left alone — a literal
   passes, and so does a SQL function. Nothing is interpolated into the

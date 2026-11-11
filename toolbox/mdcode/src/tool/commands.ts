@@ -1176,7 +1176,8 @@ async function checkBeforeWrites(
     const model = withProfileFiles(base, profileDocs);
     if ('errors' in model) return stop(model.errors);
     models.push(model);
-    // The model file and each profile file must be valid UTF-8.
+    // The model file and each profile file must be valid UTF-8, and no
+    // unquoted action statement in them may have a comment on the same line.
     // withProfileFiles has read the profile files, so profileDocs does not
     // throw here.
     const modelPath = layout.modelPath(base.document);
@@ -1185,18 +1186,20 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    // No unquoted action statement in them has a comment on the same line.
     // Pull writes its files as UTF-8, so their bytes are not checked.
-    const cut: string[] = [];
+    const commented: string[] = [];
     for (const file of [modelFile, ...profileDocs(base.document)]) {
       const error = scope.pulled ?
           undefined :
           checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
-      cut.push(...commentCutStatementErrors(
-          file.text, file.fileName, base.model.name));
+      // The model file goes by its document name, as in the other action
+      // messages.
+      const label = file === modelFile ? base.document : file.fileName;
+      commented.push(
+          ...commentCutStatementErrors(file.text, label, base.model.name));
     }
-    if (cut.length) return fail(...cut);
+    if (commented.length) return fail(...commented);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;

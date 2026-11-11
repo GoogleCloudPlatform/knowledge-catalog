@@ -1025,50 +1025,47 @@ function sqlExecutorErrors(
   return errors;
 }
 
-/**
- * The errors for the `sql` executor statements in the model or profile file
- * `text` that have a YAML comment on the same line. YAML reads ` #` after an
- * unquoted value as the start of a comment and drops the rest of the line, so
- * the statement it reads can be shorter than the one written. A
- * quoted statement and a block scalar keep ` #` as text, and a comment on its
- * own line cuts nothing, so those pass. `file` and `model` name the file and
- * its model in each message. Empty for text with a YAML error, which the load
- * reports.
- */
+// The errors for each unquoted `sql` executor statement in the model or
+// profile file `text` that has a comment on the same line. YAML ends an
+// unquoted value at ` #`, so the statement it reads is shorter than the one
+// written. `file` and `model` name the file and its model in each message.
+// Empty for text with a YAML error, which the load reports.
 export function commentCutStatementErrors(
     text: string, file: string, model: string): string[] {
   const doc = yaml.parseDocument(text, YAML_OPTIONS);
   if (doc.errors.length) return [];
-  const node = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
-  const items = (n: unknown) => {
-    const seq = node(n);
+  const resolved = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
+  // The node at `path` under `n`, following aliases.
+  const nodeAt = (n: unknown, ...path: string[]) =>
+      path.reduce((at: unknown, key) => {
+        const map = resolved(at);
+        return yaml.isMap(map) ? map.get(key, true) : undefined;
+      }, n);
+  // The items of the list at `path` under `n`.
+  const listAt = (n: unknown, ...path: string[]) => {
+    const seq = resolved(nodeAt(n, ...path));
     return yaml.isSeq(seq) ? seq.items : [];
-  };
-  const get = (n: unknown, key: string) => {
-    const map = node(n);
-    return yaml.isMap(map) ? map.get(key, true) : undefined;
   };
   // A model file lists actions under each model, and a profile file at its
   // top level.
   const actions = [
-    ...items(get(doc.contents, 'semantic_model'))
-        .flatMap(m => items(get(m, 'actions'))),
-    ...items(get(doc.contents, 'actions')),
+    ...listAt(doc.contents, 'semantic_model')
+        .flatMap(m => listAt(m, 'actions')),
+    ...listAt(doc.contents, 'actions'),
   ];
   const errors: string[] = [];
   for (const action of actions) {
-    const name = node(get(action, 'name'));
-    const statements = get(get(get(action, 'executor'), 'sql'), 'statements');
-    items(statements).forEach((item, i) => {
-      const s = node(item);
-      if (!yaml.isScalar(s) || s.type !== 'PLAIN' || !s.range) return;
-      if (!/^[ \t]+#/.test(text.slice(s.range[1]))) return;
+    const name = resolved(nodeAt(action, 'name'));
+    listAt(action, 'executor', 'sql', 'statements').forEach((item, i) => {
+      const statement = resolved(item);
+      if (!yaml.isScalar(statement) || statement.type !== 'PLAIN') return;
+      if (!/^[ \t]+#/.test(text.slice(statement.range![1]))) return;
       errors.push(
           `action '${yaml.isScalar(name) ? name.value : ''}' in model '${
               model}' (${file}) has a sql executor whose statement ${
               i + 1} has a comment on the same line, so YAML reads the ` +
-          `statement as '${s.value}'. Put the statement in quotes, or ` +
-          `write it as a block scalar with '|'.`);
+          `statement as '${statement.value}'. Put the statement in quotes, ` +
+          `or write it as a block scalar with '|'.`);
     });
   }
   return errors;
