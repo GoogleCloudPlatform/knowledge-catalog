@@ -686,15 +686,17 @@ const TRUNC_PARTS: Record<string, string> = {...PARTS, week: 'ISOWEEK'};
 const MONTH_PARTS = new Set(['month', 'quarter', 'year']);
 
 // The one shape of `+` and `-` with an INTERVAL that import translates from a
-// dialect: a column or a call of one of its `functions`, plus or minus
-// INTERVAL n unit with a whole number n. A `+` may name the INTERVAL first. The
-// repairs write a unit in `dateAdd` as DATE_ADD or DATE_SUB, which keep a DATE
-// a DATE, as the source does. They keep the `+` or `-` of a unit in
-// `operator`, which gives a DATETIME for a DATE, where the source gives a
-// timestamp without time zone. `notes` says why a unit is not translated.
-// With `days`, the dialect reads a whole number n in place of the INTERVAL as
-// INTERVAL n DAY, and the repairs write DATE_ADD or DATE_SUB for a call of one
-// of its `functions` plus or minus n.
+// dialect: a column, a cast to DATE, a DATE literal or a call of one of its
+// `functions`, plus or minus INTERVAL n unit with a whole number n. A `+` may
+// name the INTERVAL first. The repairs write a unit in `dateAdd` as DATE_ADD or
+// DATE_SUB, which keep a DATE a DATE, as the source does. They keep the `+` or
+// `-` of a unit in `operator`, which gives a DATETIME for a DATE, where the
+// source gives a timestamp without time zone. `notes` says why a unit is not
+// translated. With `days`, the dialect reads a whole number n in place of the
+// INTERVAL as INTERVAL n DAY, and the repairs write DATE_ADD or DATE_SUB for a
+// call of one of its `functions` plus or minus n. A cast to DATE or a DATE
+// literal plus or minus n keeps the `+` or `-`, which BigQuery also reads as
+// days.
 interface IntervalShape {
   functions: string[];
   dateAdd: string[];
@@ -1160,7 +1162,7 @@ function intervalShape(kind: string, value: any, read: string): unknown[]|string
                   `INTERVAL ${intervalText(added)}`;
   }
   const b = bare(operand);
-  if (!b?.column && !shape.functions.includes(String(b?.function?.name).toUpperCase())) {
+  if (!b?.column && !isDate(b) && !shape.functions.includes(String(b?.function?.name).toUpperCase())) {
     return `${op} of ${valueName(b)}`;
   }
   const timestampless = MONTH_PARTS.has(unit) || (unit === 'week' && shape.dateAdd.includes(unit));
@@ -1187,15 +1189,15 @@ function wholeUnit(added: any): string|undefined {
 }
 
 // The operands of `value`, a `+` or `-` of `kind`, to check next, when it is a
-// call of one of the `functions` of `shape` plus or minus a whole number
-// literal, and the dialect counts that number as days. Otherwise undefined. A
-// column is not a date import can see, so its sum with a number does not reach
-// this check.
+// cast to DATE, a DATE literal or a call of one of the `functions` of `shape`,
+// plus or minus a whole number literal, and the dialect counts that number as
+// days. Otherwise undefined. A column is not a date import can see, so its sum
+// with a number does not reach this check.
 function daysAdded(kind: string, value: any, shape: IntervalShape|undefined): unknown[]|undefined {
   const [operand, count] = dayOperands(kind, value);
   const call = String(bare(operand)?.function?.name).toUpperCase();
   return shape?.days && kind !== 'mul' && /^-?\d+$/.test(numberText(count) ?? '') &&
-      shape.functions.includes(call) ? [operand, count] : undefined;
+      (shape.functions.includes(call) || isDate(operand)) ? [operand, count] : undefined;
 }
 
 // The date and the number of days in `value`, a `+` or `-` of `kind`. A `+`

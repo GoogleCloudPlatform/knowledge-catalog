@@ -274,14 +274,15 @@ SQL that gives the same value in BigQuery for ordinary data, whatever the
 column types are. It translates aggregates, CASE, COALESCE and other NULL
 handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. It translates date and
-interval arithmetic only as a column, the current date or a date-adding function
-plus or minus `INTERVAL n unit` with a whole number n, in the units that give
-the source's value and type in BigQuery. It adds months, quarters and years
-only to a value it can see is a DATE, such as the current date, as it does
-weeks outside PostgreSQL, since BigQuery cannot add them to a TIMESTAMP. A
-SPANNER text keeps its date arithmetic, which is BigQuery's. From PostgreSQL,
-Snowflake and Databricks, it also translates the current date or a date-adding
-function plus or minus a whole number n, which those databases add as n days.
+interval arithmetic only as a column, a cast to DATE, a DATE literal, the
+current date or a date-adding function plus or minus `INTERVAL n unit` with a
+whole number n, in the units that give the source's value and type in BigQuery.
+It adds months, quarters and years only to a value it can see is a DATE, such
+as the current date, as it does weeks outside PostgreSQL, since BigQuery cannot
+add them to a TIMESTAMP. A SPANNER text keeps its date arithmetic, which is
+BigQuery's. From PostgreSQL, Snowflake and Databricks, it also translates a
+cast to DATE, a DATE literal, the current date or a date-adding function plus
+or minus a whole number n, which those databases add as n days.
 Its warning about any other text names the first part it does not translate. It
 names a function and a date part as the author wrote them, such as `CHAR_LENGTH`
 or `DATEPART` with part `w`.
