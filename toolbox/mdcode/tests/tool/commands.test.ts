@@ -3899,3 +3899,35 @@ describe('what a push says about relationships', () => {
     });
   }
 });
+
+// skills-generate runs none of push's profile checks, so under a profile it
+// warns about a field whose table cannot run its text, as it does without one.
+describe('skills-generate --profile', () => {
+  const rows = [
+    ['SPANNER', 'spanner.googleapis.com/projects/test-project/instances/i/databases/db/tables/customer'],
+    ['ALLOYDB', 'alloydb.googleapis.com/projects/test-project/locations/us-central1/clusters/c/databases/db/schemas/public/tables/customer'],
+    ['POSTGRES', 'cloudsql.googleapis.com/projects/test-project/locations/us-central1/instances/shop/databases/sales/schemas/public/tables/customer'],
+  ] as const;
+  for (const [dialect, source] of rows) {
+    test(`warns about a field its ${dialect} table cannot run`, async () => {
+      writeWorkspace();
+      fs.writeFileSync(local('commerce.profile.p.yaml'), `name: p
+entities:
+  - name: Customer
+    source: ${source}
+    fields:
+      - name: key
+        expression:
+          dialects:
+            - {dialect: BIGQUERY, expression: c_key}
+`);
+      fakeCatalog();
+
+      expect(await skillsGenerate({out: 'skills', profile: 'p'})).toBe(0);
+      expect(messages(console.warn)).toContain(
+          `Warning: [commerce] field 'Customer.key': no '${dialect}' or ` +
+          `'ANSI_SQL' dialect, so the ${dialect} table of entity 'Customer' ` +
+          'cannot run it');
+    });
+  }
+});
