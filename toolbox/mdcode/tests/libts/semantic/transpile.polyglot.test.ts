@@ -219,6 +219,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['DATABRICKS', 'concat(s, YEAR(d))', {error: 'kcmd does not translate concat of a value that is not text'}],
     ['SNOWFLAKE', 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)', {sql: 'ROUND(x, 1) * ABS(x) * FLOOR(x) * CEIL(x)'}],
     ['SNOWFLAKE', 'SUM(a) / AVG(x)', {sql: 'CAST(SUM(a) AS NUMERIC) / AVG(CAST(x AS NUMERIC))'}],
+    ['SNOWFLAKE', '((SUM(a) - SUM(b)) / SUM(a)) * 100', {sql: '(CAST((SUM(a) - SUM(b)) AS NUMERIC) / SUM(a)) * 100'}],
     ['POSTGRES', 'AVG(x)', {sql: 'AVG(CAST(x AS NUMERIC))'}],
     ['POSTGRES', 'TRIM(FROM s)', {sql: "TRIM(s, ' ')"}],
     // Text compared by a collation, which differs only for text that differs in

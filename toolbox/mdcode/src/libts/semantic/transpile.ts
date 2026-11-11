@@ -481,7 +481,16 @@ function engineTranslation(
     write: string): {sql: string}|{error: string} {
   const sql = write === 'bigquery' && EXTRACT_FIRST.has(read) ?
       withExtract(engine, text, dialect, read) : text;
-  const res = engine.transpile(sql, read, write);
+  // The engine reads some expressions only after SELECT, such as one that
+  // starts with `((`. T-SQL reads `SELECT a = b` as an alias, so the engine
+  // reads the expression alone first.
+  let res = engine.transpile(sql, read, write);
+  if (!res.success) {
+    const selected = engine.transpile(`SELECT ${sql}`, read, write);
+    if (selected.success) {
+      res = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
+    }
+  }
   if (!res.success || !res.sql || res.sql.length === 0)
     return {error: res.error ?? 'transpilation produced no output'};
   // A field/metric is a single scalar expression, so the engine should
