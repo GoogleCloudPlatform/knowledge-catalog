@@ -276,12 +276,14 @@ handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. It translates date and
 interval arithmetic only as a column, the current date or a date-adding function
 plus or minus `INTERVAL n unit` with a whole number n, in the units that give
-the source's value and type in BigQuery. From PostgreSQL, Snowflake and
-Databricks, it also translates the current date or a date-adding function plus
-or minus a whole number n, which those databases add as n days. Its warning
-about any other text names the first part it does not translate. It names a
-function and a date part as the author wrote them, such as `CHAR_LENGTH` or
-`DATEPART` with part `w`.
+the source's value and type in BigQuery. It adds months, quarters and years
+only to the current date, as it does weeks outside PostgreSQL, since BigQuery
+cannot add them to a TIMESTAMP. A SPANNER text keeps its date arithmetic, which
+is BigQuery's. From PostgreSQL, Snowflake and Databricks, it also translates the
+current date or a date-adding function plus or minus a whole number n, which
+those databases add as n days. Its warning about any other text names the first
+part it does not translate. It names a function and a date part as the author
+wrote them, such as `CHAR_LENGTH` or `DATEPART` with part `w`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with the current
@@ -293,10 +295,12 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
-- A TIMESTAMP column plus or minus an INTERVAL of days or weeks can be an hour
-  off across a daylight saving change. A MySQL or PostgreSQL session in a time
-  zone with daylight saving time adds a day as 23 or 25 hours there, and
-  BigQuery adds 24.
+- A TIMESTAMP column plus or minus an INTERVAL can be an hour off across a
+  daylight saving change. MySQL, PostgreSQL, Snowflake and Databricks add a
+  day in the session time zone, so a day there can be 23 or 25 hours, where
+  BigQuery adds 24. Snowflake's default time zone, America/Los_Angeles, has
+  daylight saving time. MySQL also adds hours and minutes in the local time,
+  and gives a DATETIME where BigQuery gives a TIMESTAMP.
 - MySQL, SQL Server and PostgreSQL compare text by a collation. Text that
   differs only in letter case, accents or trailing spaces can give another
   value. PostgreSQL also ignores spaces and punctuation when it sorts text.
