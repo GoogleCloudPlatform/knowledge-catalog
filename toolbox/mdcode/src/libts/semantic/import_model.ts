@@ -67,22 +67,24 @@ export interface ImportSemanticModelOptions {
   fileName?: string;
   /**
    * Whether the import writes the model file `fileName` over the input file.
-   * An import that stops writes nothing over it. When it does and the written
-   * file has a `GOOGLE` block, a message in a third-party import that names
-   * an import command names one with `--input first-party`, which reads that
-   * file.
+   * An import that stops writes nothing over it. A third-party import asks.
+   * When it writes over its input, the import that the advice to add a
+   * BigQuery text suggests reads the files it writes. When the written file
+   * also has a `GOOGLE` block, a message that names an import command names
+   * one with `--input first-party`, which reads that file.
    */
   overwritesInput?: (fileName: string) => Promise<boolean>;
   /**
    * The first error the import that the advice to add a BigQuery text
    * suggests would stop on, or null when it would write its files. That
-   * import is this one again with `--transpile`, or, with `readsWritten`,
-   * an import with `--input first-party` of `files`, which this third-party
-   * import writes over its input. Called only when that advice may be given.
-   * Without it, the advice names the command alone.
+   * import is this one again with `--transpile`. With `readsWritten`, it
+   * reads `files`, which this import writes over its input, and with
+   * `firstParty` it takes `--input first-party`. Called only when that advice
+   * may be given. Without it, the advice names the command alone.
    */
   transpileOutcome?:
-      (files: SerializedFile[], readsWritten: boolean) => Promise<string|null>;
+      (files: SerializedFile[], readsWritten: boolean,
+       firstParty: boolean) => Promise<string|null>;
 }
 
 /** Lists the entries of an entry group. */
@@ -1949,11 +1951,16 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
+  // Whether this third-party import writes its files over its input, asked
+  // once and only when a message depends on it. A strict import writes the
+  // model its input holds, so the import its advice suggests reads the input.
+  let overwrote: Promise<boolean>|undefined;
+  const overwrites = () => overwrote ??=
+      (async () => !doc.strict && !!await opts.overwritesInput?.(fileName))();
   // Third-party import refuses a file with a GOOGLE block, so a command that
   // reads such a file written over the input takes --input first-party.
   const thirdPartyImport = !doc.strict &&
-      !(documentHasGoogleBlock(doc.root) &&
-        await opts.overwritesInput?.(fileName));
+      !(documentHasGoogleBlock(doc.root) && await overwrites());
   // Push's messages name the model document after the input file in strict
   // mode, since strict mode writes nothing on an error, and after the file
   // the import writes otherwise.
@@ -1982,7 +1989,8 @@ async function validateOutputDocument(
             transpilesFile(content, profileFiles, loadOptions) ?
         new Map([[
           document,
-          await opts.transpileOutcome(files, !doc.strict && !thirdPartyImport),
+          await opts.transpileOutcome(
+              files, await overwrites(), !thirdPartyImport),
         ]]) :
         undefined;
     const loaded = loadModels(content, {...loadOptions, transpileOutcomes});

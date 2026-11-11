@@ -196,7 +196,8 @@ semantic_model:
   }});
   // A third-party import over its input that stops writes nothing, so its
   // advice names that import with --transpile. One that writes names the
-  // import of the file it writes, with the profile files beside it.
+  // import of the file it writes, with the profile files beside it, and with
+  // --input first-party when that file has a GOOGLE block.
   test.each([
     ['an in-place import a leftover profile file stops', {flavor: 'ossie'}, 1,
      "'kcmd import <file> --flavor ossie --transpile'",
@@ -209,6 +210,11 @@ semantic_model:
          '0.2.0.dev0 document; sibling profile files are Google-flavor only, and a ' +
          '0.2.0.dev0 model keeps its profiles in its GOOGLE block',
      {flavor: 'ossie', input: 'first-party', transpile: true, out: VANILLA}],
+    ['an import over its input that writes no GOOGLE block', {flavor: 'google', out: VANILLA}, 0,
+     "'kcmd import <file> --flavor google --transpile'",
+     `--out '${VANILLA}' names a file, but the import gives 2 files (commerce.yaml, ` +
+         'commerce.profile.prod.yaml); name a directory instead',
+     {flavor: 'google', transpile: true, out: VANILLA}],
   ] as Array<[string, ImportCommandOptions, number, string, string, ImportCommandOptions]>)(
       '%s names the command that works once the error is fixed',
       async (_, options, code, command, error, suggested) => {

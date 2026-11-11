@@ -2742,15 +2742,16 @@ const YAML_FILE = /\.ya?ml$/i;
 export async function importModel(
     file: string, options: ImportCommandOptions = {}): Promise<number> {
   // The advice to add a BigQuery text names the first error the import it
-  // suggests would stop on: this import again with `--transpile`, or, of
-  // the file this import writes over its input, `--input first-party`. An
-  // import with `--transpile` has given every text it can translate a
-  // BigQuery text, so it runs no second import.
+  // suggests would stop on: this import again with `--transpile`, of the
+  // files this import writes when it writes them over its input, and with
+  // `--input first-party` when the advice names that. An import with
+  // `--transpile` has given every text it can translate a BigQuery text, so
+  // it runs no second import.
   const plan = await planImport(file, options, options.transpile ? {} : {
-    transpileOutcome: async (written, readDialects, api) => {
+    transpileOutcome: async (written, firstParty, readDialects, api) => {
       const followed = await planImport(
           file,
-          {...options, ...written ? {input: 'first-party'} : {}, transpile: true},
+          {...options, ...firstParty ? {input: 'first-party'} : {}, transpile: true},
           {source: written, readDialects, api});
       return 'errors' in followed ? followed.errors[0] ?? null : null;
     },
@@ -2778,7 +2779,7 @@ interface ImportIo {
   api?: () => context.ApiContext;
   readDialects?: (texts: string[]) => Promise<SourceDialects>;
   transpileOutcome?:
-      (written: ImportSource|undefined,
+      (written: ImportSource|undefined, firstParty: boolean,
        readDialects: (texts: string[]) => Promise<SourceDialects>,
        api: () => context.ApiContext) => Promise<string|null>;
 }
@@ -2795,8 +2796,9 @@ type ImportPlan = {warnings: string[]; errors: string[]}|
 // calls services with, by default one made when first needed. `io.readDialects`
 // reads each table's dialect. `io.transpileOutcome` gives the first error the
 // import with `--transpile` would stop on, of the input or, given, of the
-// file this import writes and the profile files beside it then, for the
-// advice to add a BigQuery text.
+// file this import writes and the profile files beside it then, and with
+// `--input first-party` when `firstParty` is set, for the advice to add a
+// BigQuery text.
 async function planImport(
     file: string, options: ImportCommandOptions,
     io: ImportIo = {}): Promise<ImportPlan> {
@@ -2811,9 +2813,9 @@ async function planImport(
     readDialects: (texts: string[]) => dialectsRead ??=
         (io.readDialects ?? (t => readDialects(api(), t)))(texts),
   };
-  // A third-party import that writes a GOOGLE block over its input names
-  // import commands that read the file it writes. An import that stops
-  // writes nothing, so it runs again and names commands that read its input.
+  // A third-party import that writes its files over its input names import
+  // commands that read the files it writes. An import that stops writes
+  // nothing, so it runs again and names commands that read its input.
   let readsWritten = false;
   const plan = await planOneImport(file, options, {
     ...once,
@@ -2913,21 +2915,23 @@ async function planOneImport(
         overwritesInput: async fileName =>
             io.overwrites(await overwritesInput(fileName)),
         // The advice names the first error of the import it suggests: this
-        // import again with `--transpile`, or, when the advice reads the file
-        // this import writes over its input, that file with `--input
-        // first-party`. That import reads the profile files beside it once
-        // this one writes its own.
+        // import again with `--transpile`, of the files this import writes
+        // when it writes them over its input, and with `--input first-party`
+        // when the advice names that. Of the written files, that import reads
+        // the profile files beside the model file once this one writes its
+        // own.
         ...io.transpileOutcome ?
             {
               transpileOutcome:
-                  (files: SerializedFile[], readsWritten: boolean) =>
+                  (files: SerializedFile[], readsWritten: boolean,
+                   firstParty: boolean) =>
                       io.transpileOutcome!(
                           readsWritten ? {
                             text: files[0].content,
                             profileFiles: besideWritten(files.slice(1)),
                           } :
                                          undefined,
-                          readDialectsOnce, api),
+                          firstParty, readDialectsOnce, api),
             } :
             {},
       });
