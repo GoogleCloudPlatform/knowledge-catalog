@@ -751,6 +751,9 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
+  const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
+      sourcesDialect(model) :
+      undefined;
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -854,7 +857,7 @@ export function validateActions(
       }
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
-    errors.push(...sqlExecutorErrors(action, where));
+    errors.push(...sqlExecutorErrors(action, where, sqlDialect));
   }
   return errors;
 }
@@ -876,7 +879,8 @@ export function validateActions(
 //   - Every `@parameter` is declared. This is the load-bearing one: it is what
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
-function sqlExecutorErrors(action: Action, where: string): string[] {
+function sqlExecutorErrors(
+    action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
   const executor = action.executor;
   const errors: string[] = [];
@@ -917,7 +921,7 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
           `${at} contains ';'. Each statement runs on its own, so write ` +
           `one statement per list entry.`);
     }
-    for (const name of referencedParameters(text)) {
+    for (const name of referencedParameters(text, dialect)) {
       if (!bindable.has(name)) {
         errors.push(
             `${at} binds '@${name}', but action '${action.name}' ` +

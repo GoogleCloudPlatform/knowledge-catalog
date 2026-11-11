@@ -633,6 +633,57 @@ describe('validatePushRequirements gates actions', () => {
     expect(errs).toEqual([]);
   });
 
+  test('an @name inside a SQL comment is not read as a binding', () => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {
+        kind: 'sql',
+        sql: {
+          statements: [
+            'UPDATE orders SET status = @status -- @note is optional',
+            'UPDATE orders SET status = @status /* @note */',
+            'UPDATE orders SET status = @status # @note is optional',
+          ],
+        },
+      },
+      parameters: [{name: 'status', type: 'String'}],
+    }])]);
+    expect(errs).toEqual([]);
+  });
+
+  test('PostgreSQL sources keep # as an operator while skipping nested comments and $$ literals',
+       () => {
+         const pgSource =
+             'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d/schemas/public/tables/orders';
+         const pgModel = (statement: string) => ({
+           document: 'doc',
+           model: {
+             name: 'm',
+             entities: [{
+               name: 'orders',
+               authoredSource: pgSource,
+               dataSource: pgSource,
+               keys: ['id'],
+               fields: [{name: 'id', type: 'Integer' as const}],
+             }],
+             relationships: [],
+             metrics: [],
+             actions: [{
+               name: 'A',
+               executor: {kind: 'sql' as const, sql: {statements: [statement]}},
+               parameters: [{name: 'id', type: 'Integer' as const}],
+             }],
+           },
+         });
+         expect(validatePushRequirements([pgModel(
+                    '/* outer /* inner */ @skip */ UPDATE orders ' +
+                    'SET note = $$@raw$$ WHERE id = @id -- @other')]))
+             .toEqual([]);
+         expect(validatePushRequirements([pgModel(
+                    'UPDATE orders SET doc = doc #- \'{draft}\' WHERE id = @missing')]))
+             .toEqual([expect.stringContaining('binds \'@missing\'')]);
+       });
+
   test(
       'a created row gets its key from the statement, whatever affects says',
       () => {

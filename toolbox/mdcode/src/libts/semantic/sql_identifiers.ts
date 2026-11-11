@@ -1,4 +1,6 @@
-// Quoting for GoogleSQL identifiers emitted into generated graph DDL.
+// Quoting for GoogleSQL identifiers emitted into generated graph DDL, plus
+// SQL action statement scanners (`referencedParameters`, which is
+// dialect-aware, and `leadingDmlVerb`).
 //
 // The graph generator (./graph_ddl) lowers logical names -- entity and
 // relationship labels, property names, key columns -- into identifier
@@ -181,14 +183,124 @@ export function quoteColumnIfReserved(sql: string): string {
 }
 
 
-// The distinct `@name` references in a SQL statement, ignoring the ones inside
-// a single-quoted string so a literal containing an '@' is not read as a
-// binding. Used to check that every parameter a statement reads is one the
-// caller will bind, and to bind only the parameters a statement actually reads.
-export function referencedParameters(text: string): string[] {
-  const withoutStrings = text.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+const DOLLAR_QUOTE_TAG =
+    /\$(?:[A-Za-z_\x80-\uffff][A-Za-z0-9_\x80-\uffff]*)?\$/y;
+
+function endOfLineComment(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++;
+  return i;
+}
+
+function endOfBlockComment(
+    text: string, from: number, nested: boolean): number {
+  if (!nested) {
+    const end = text.indexOf('*/', from + 2);
+    return end < 0 ? text.length : end + 2;
+  }
+  let depth = 1;
+  let i = from + 2;
+  while (i < text.length && depth > 0) {
+    if (text[i] === '/' && text[i + 1] === '*') {
+      depth++;
+      i += 2;
+    } else if (text[i] === '*' && text[i + 1] === '/') {
+      depth--;
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  return i;
+}
+
+function endOfQuoted(
+    text: string, from: number, backslashEscapes: boolean,
+    doubledQuotes: boolean): number {
+  const quote = text[from];
+  for (let i = from + 1; i < text.length; i++) {
+    if (backslashEscapes && text[i] === '\\') {
+      i++;
+    } else if (text[i] === quote) {
+      if (doubledQuotes && text[i + 1] === quote) {
+        i++;
+        continue;
+      }
+      return i + 1;
+    }
+  }
+  return text.length;
+}
+
+function endOfTripleQuoted(text: string, from: number): number {
+  const quote = text[from];
+  for (let i = from + 3; i < text.length; i++) {
+    if (text[i] === '\\') {
+      i++;
+    } else if (
+        text[i] === quote && text[i + 1] === quote && text[i + 2] === quote) {
+      return i + 3;
+    }
+  }
+  return text.length;
+}
+
+// The distinct `@name` references in a SQL statement, ignoring comments and
+// quoted strings or identifiers so prose or a literal containing an '@' is not
+// read as a binding. `#` starts a line comment in GoogleSQL (the default), and
+// stays an operator (`#>`, `#-`) on PostgreSQL/AlloyDB. Used to check that
+// every parameter a statement reads is one the caller will bind, and to bind
+// only the parameters a statement actually reads.
+export function referencedParameters(
+    text: string, dialect?: string|null): string[] {
+  const postgres = dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+  const identCont =
+      postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   const names = new Set<string>();
-  for (const m of withoutStrings.matchAll(/@([A-Za-z_]\w*)/g)) names.add(m[1]);
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '-' && text[i + 1] === '-') {
+      i = endOfLineComment(text, i + 2);
+    } else if (!postgres && c === '#') {
+      i = endOfLineComment(text, i + 1);
+    } else if (c === '/' && text[i + 1] === '*') {
+      i = endOfBlockComment(text, i, postgres) - 1;
+    } else if (
+        !postgres && (c === '\'' || c === '"') && text[i + 1] === c &&
+        text[i + 2] === c) {
+      i = endOfTripleQuoted(text, i) - 1;
+    } else if (c === '\'' || c === '"') {
+      i = endOfQuoted(text, i, !postgres, postgres) - 1;
+    } else if (!postgres && c === '`') {
+      i = endOfQuoted(text, i, true, false) - 1;
+    } else if (postgres && c === '$' && !/[0-9]/.test(text[i - 1] ?? '')) {
+      DOLLAR_QUOTE_TAG.lastIndex = i;
+      const m = DOLLAR_QUOTE_TAG.exec(text);
+      if (m) {
+        const end = text.indexOf(m[0], i + m[0].length);
+        if (end < 0) break;
+        i = end + m[0].length - 1;
+      }
+    } else if (/[A-Za-z_\x80-\uffff]/.test(c)) {
+      let j = i + 1;
+      while (j < text.length && identCont.test(text[j])) j++;
+      if (postgres && j === i + 1 && (c === 'e' || c === 'E') &&
+          text[j] === '\'') {
+        i = endOfQuoted(text, j, true, true) - 1;
+      } else {
+        i = j - 1;
+      }
+    } else if (c === '@') {
+      if (text[i + 1] === '@') {
+        while (text[i + 1] === '@') i++;
+      } else if (/[A-Za-z_]/.test(text[i + 1] ?? '')) {
+        let k = i + 2;
+        while (k < text.length && /\w/.test(text[k])) k++;
+        names.add(text.slice(i + 1, k));
+        i = k - 1;
+      }
+    }
+  }
   return [...names];
 }
 

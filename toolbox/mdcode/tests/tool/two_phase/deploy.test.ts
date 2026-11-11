@@ -656,4 +656,98 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       warnings: [unreadScore('pa')],
     }],
   },
+  {
+    name: 'push accepts @name inside SQL comments of a profile action, ' +
+        'omits commented parameters from BigQuery dry-run, and still catches ' +
+        'an undeclared binding after # on AlloyDB',
+    deployments: [
+      {name: 'bq', target: bqGraph('g'), profile: 'bigquery'},
+      {name: 'sp', target: spannerGraph('g'), profile: 'spanner'},
+      {name: 'pg', target: ALLOYDB, profile: 'alloydb'},
+    ],
+    actions: [{
+      name: 'refund',
+      parameters: [
+        {name: 'id', type: 'Integer', description: 'The customer key.'},
+        {name: 'note', type: 'String', description: 'Optional note.'},
+      ],
+    }],
+    profiles: {
+      bigquery: {
+        ...boundTo('d'),
+        actions: [{
+          name: 'refund',
+          executor: {
+            sql: {
+              statements: [
+                'UPDATE `test-project.d.customer` SET c_key = c_key WHERE c_key = @id -- @note (@undeclared)',
+              ],
+            },
+          },
+        }],
+      },
+      spanner: {
+        ...boundAt(SPANNER_CUSTOMER),
+        actions: [{
+          name: 'refund',
+          executor: {
+            sql: {
+              statements: [
+                'UPDATE Customer SET c_key = c_key WHERE c_key = @id -- @undeclared',
+                'UPDATE Customer SET c_key = c_key WHERE c_key = @id /* @undeclared */',
+                '# @undeclared\nUPDATE Customer SET c_key = c_key WHERE c_key = @id',
+              ],
+            },
+          },
+        }],
+      },
+      alloydb: {
+        ...boundAt(`${ALLOYDB}/schemas/public/tables/customer`),
+        actions: [{
+          name: 'refund',
+          executor: {
+            sql: {
+              statements: [
+                '/* outer /* inner */ @undeclared */ UPDATE customer SET c_key = c_key WHERE c_key = @id -- @other',
+              ],
+            },
+          },
+        }],
+      },
+    },
+    services: {
+      bqDml: (...a: any[]) => REAL.bqDml(...a),
+    },
+    code: 0,
+    check: r => {
+      const dmlCalls = r.fake.query.mock.calls.filter(
+          c => c[3] === true && String(c[1]).startsWith('UPDATE'));
+      expect(dmlCalls.map(c => c[4])).toEqual([{id: 'INT64'}]);
+    },
+    then: [{
+      profiles: {
+        bigquery: boundTo('d'),
+        spanner: boundAt(SPANNER_CUSTOMER),
+        alloydb: {
+          ...boundAt(`${ALLOYDB}/schemas/public/tables/customer`),
+          actions: [{
+            name: 'refund',
+            executor: {
+              sql: {
+                statements: [
+                  'UPDATE customer SET c_key = c_key #- \'{draft}\' WHERE c_key = @missing',
+                ],
+              },
+            },
+          }],
+        },
+      },
+      code: 1,
+      nothingWritten: true,
+      errors: [err(
+          "action 'refund' in model 'commerce' (commerce, deployment 'pg') " +
+          "has a sql executor whose statement 1 binds '@missing', but action " +
+          "'refund' declares no parameter of that name.")],
+    }],
+  },
 ], {deployments: ['g1', 'g2'], code: 0});

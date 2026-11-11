@@ -4,6 +4,7 @@ import * as gcp from '../../src/libts/gcp';
 import {BigLakeClient} from '../../src/libts/gcp/biglake';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 import * as spanner from '../../src/libts/gcp/spanner';
+import {leadingDmlVerb} from '../../src/libts/semantic/sql_identifiers';
 
 import {REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
 
@@ -283,7 +284,7 @@ export class BigQueryClientMock extends bigquery.BigQueryClient {
   async query(project: string, sql: string, location?: string, dryRun?: boolean,
               namedParameterTypes?: Record<string, string>):
       Promise<gcp.ApiResult<bigquery.QueryResponse>> {
-    if (dryRun && /^\s*(INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b/i.test(sql)) {
+    if (dryRun && (leadingDmlVerb(sql) !== '' || /^\s*TRUNCATE\b/i.test(sql))) {
       this.dryRunDml.push({project, sql, parameterTypes: namedParameterTypes});
       const rejection = mockPlanRejection(sql, this.dmlSchema);
       return rejection ? {status: 400, message: rejection} :
@@ -336,10 +337,13 @@ export function mockSchema(tables: Record<string, string[]>): MockSchema {
 // what the live e2e tests cover.
 export function mockPlanRejection(
     sql: string, schema: MockSchema): string|null {
+  const uncommented =
+      sql.replace(/\/\*[\s\S]*?\*\/|(?:--|#).*$/gm, ' ')
+          .replace(/\b(?:r|b|rb|br)?'(?:\\.|[^'\\])*'/gi, ' ');
   // The written table, with any backtick-quoted qualification stripped to its
   // last part, so `p.d.account` and a bare `account` both look up the same.
   const written =
-      /\b(?:INTO|UPDATE|FROM)\s+`?([A-Za-z_][\w.$-]*)`?/i.exec(sql)?.[1];
+      /\b(?:INTO|UPDATE|FROM)\s+`?([A-Za-z_][\w.$-]*)`?/i.exec(uncommented)?.[1];
   const table = written?.split('.').pop();
   if (!table || !schema.has(table.toLowerCase())) {
     return JSON.stringify({
@@ -353,8 +357,8 @@ export function mockPlanRejection(
   ]);
   // Drop bound parameters and the table reference itself; what is left in
   // identifier position should all be columns.
-  const rest = sql.replace(/@\w+/g, ' ').replace(/`[^`]*`/g, ' ');
-  const bare = written && !sql.includes('`') ? written : '';
+  const rest = uncommented.replace(/@\w+/g, ' ').replace(/`[^`]*`/g, ' ');
+  const bare = written && !uncommented.includes('`') ? written : '';
   for (const m of rest.matchAll(/[A-Za-z_]\w*/g)) {
     const word = m[0].toLowerCase();
     if (keywords.has(word) || word === bare.toLowerCase()) continue;

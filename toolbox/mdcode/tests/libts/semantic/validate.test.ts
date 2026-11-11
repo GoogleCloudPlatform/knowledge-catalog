@@ -391,6 +391,24 @@ describe('action statement pre-flight', () => {
       expect(Object.keys(spanner.planned[0].paramTypes ?? {})).toEqual(['id']);
     });
 
+    test('omits a parameter named only inside a comment', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([
+            'DELETE FROM account WHERE account_id = @id -- @amount is untouched',
+            'DELETE FROM account WHERE account_id = @id /* @amount */',
+            '# @amount is untouched\nDELETE FROM account WHERE account_id = @id',
+          ])])],
+          spanner);
+      expect(errs).toEqual([]);
+      expect(spanner.planned.map(p => p.paramTypes)).toEqual([
+        {id: {code: 'INT64'}},
+        {id: {code: 'INT64'}},
+        {id: {code: 'INT64'}},
+      ]);
+    });
+
     // An Opaque parameter means the model does not know the type. Asserting one
     // would invent a constraint the author never wrote, so it is left for the
     // store to infer.
@@ -582,6 +600,21 @@ describe('action statement pre-flight', () => {
           [bqModel([sqlAction([GOOD])])], bq, 'p');
       expect(bq.dryRunDml[0].parameterTypes)
           .toEqual({amount: 'FLOAT64', id: 'INT64'});
+    });
+
+    test('omits a parameter named only inside a comment', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      const errs = await validateBigQueryActionStatements(
+          [bqModel([sqlAction([
+            'DELETE FROM account WHERE account_id = @id -- @amount is untouched',
+            'DELETE FROM account WHERE account_id = @id /* @amount */',
+            '# @amount is untouched\nDELETE FROM account WHERE account_id = @id',
+          ])])],
+          bq, 'p');
+      expect(errs).toEqual([]);
+      expect(bq.dryRunDml.map(d => d.parameterTypes))
+          .toEqual([{id: 'INT64'}, {id: 'INT64'}, {id: 'INT64'}]);
     });
 
     test('checks every statement of every action', async () => {
