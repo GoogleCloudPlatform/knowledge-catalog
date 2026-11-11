@@ -3885,8 +3885,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
          });
   });
 
-  // Spanner compares names ignoring case, and gives a property one type in
-  // the whole graph.
+  // Spanner compares names ignoring case.
   describe('Spanner graphs', () => {
     const table = (t: string) =>
         SPANNER_TARGET.replace(/graphs\/g$/, `tables/${t}`);
@@ -3928,21 +3927,10 @@ ${['employee', 'purchase'].map((e, i) => `      - name: ${e}
       }
     });
 
-    test('refuses a property that two tables declare with datatypes of different Spanner types, ignoring case', () => {
-      expect(graphOf('g', [['code', 'String'], ['Code', 'Integer']]))
-          .toEqual([IN(
-              ", where property 'code' has one type across the graph, but " +
-              "entity 'employee' declares it String and entity 'purchase' " +
-              'declares it Integer; give the fields one datatype, or rename ' +
-              'one.')]);
-      // DateTime and DateTimeTz are both a Spanner TIMESTAMP, and fields of
-      // different names are different properties.
-      for (const fields of [
-             [['at', 'DateTime'], ['at', 'DateTimeTz']],
-             [['code', 'String'], ['kind', 'Integer']],
-           ]) {
-        expect(graphOf('g', fields)).toEqual([]);
-      }
+    // Spanner types a property by its expression, which the live check reads.
+    test('accepts a property that two tables declare with different datatypes', () => {
+      expect(graphOf('g', [['score', 'Decimal'], ['score', 'Float']]))
+          .toEqual([]);
     });
 
     test('refuses a property expression that holds a subquery', () => {

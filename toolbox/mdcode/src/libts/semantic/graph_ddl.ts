@@ -23,7 +23,7 @@
 // ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
 
-import {AiContext, Association, DataType, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
+import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {isColumnName, qualifiedColumns, selfReferenceMessage, withSiblingsSpliced} from './sql_expr_utils';
 import {quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -55,10 +55,9 @@ export interface GraphElement {
   // node's table they read. Empty for a node table.
   references: Array<{entity: string; columns: string[]}>;
   // Each field property the table lists under any of its labels, once, with
-  // the text the DDL writes for it, such as `dept AS code`, the SQL it reads
-  // in the table, such as `dept`, and the field's datatype.
-  properties:
-      Array<{name: string; text: string; sql: string; type?: DataType}>;
+  // the text the DDL writes for it, such as `dept AS code`, and the SQL it
+  // reads in the table, such as `dept`.
+  properties: Array<{name: string; text: string; sql: string}>;
 }
 
 // What the generator knows about the graph when it hands the model's metrics
@@ -467,7 +466,6 @@ function renderNodeTable(
       name: f.name,
       text: renderFieldPropertyCore(f, entity, engine),
       sql: localSql(f, entity, engine),
-      type: f.type,
     })),
   });
   return lines.join('\n');
@@ -815,7 +813,6 @@ function renderAssociationEdge(
       name: f.name,
       text: renderFieldPropertyCore(f, owner, engine),
       sql: localSql(f, owner, engine),
-      type: f.type,
     })),
   });
 

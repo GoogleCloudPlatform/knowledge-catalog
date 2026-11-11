@@ -801,11 +801,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   target names the graph. Spanner takes a graph name that starts with a
   letter, holds only letters, digits and underscores, and is at most 128
   characters long. The name cannot be that of a table the graph reads,
-  ignoring case. Two tables of a Spanner graph cannot declare a property of
-  one name, ignoring case, with datatypes Spanner stores as different types,
-  such as `String` and `Integer`. The expression of a Spanner graph property
-  cannot hold a subquery. A BigQuery graph also cannot hold a metric named
-  like a field of another entity, ignoring case. BigQuery limits the
+  ignoring case. The expression of a Spanner graph property cannot hold a
+  subquery. A BigQuery graph also cannot hold a metric
+  named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line
   kcmd adds to it. Each `extensions` value (`instructions`, and `examples`

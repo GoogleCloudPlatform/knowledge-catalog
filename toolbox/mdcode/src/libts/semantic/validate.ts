@@ -18,7 +18,7 @@ import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bi
 import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {GraphElement} from './graph_ddl';
-import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, DataType, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
@@ -622,10 +622,9 @@ const SPANNER_GRAPH_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
 // What Spanner refuses in the graph of `model` that `target` names, each as
 // the end of a sentence about a deployment: a name Spanner does not accept,
-// the name of a table of the target database that the graph reads, a property
-// that two tables of the graph declare with datatypes of different Spanner
-// types, and a property expression that holds a subquery. Names compare
-// ignoring case, as Spanner compares them.
+// the name of a table of the target database that the graph reads, and a
+// property expression that holds a subquery. Names compare ignoring case, as
+// Spanner compares them.
 function spannerGraphProblems(
     model: SemanticModel, target: SpannerGraphTarget): string[] {
   const graph = target.graphName;
@@ -658,25 +657,6 @@ function spannerGraphProblems(
             owner(named)} reads; a graph cannot share its name with a table ` +
         `of its database, compared ignoring case. Rename the graph in the ` +
         `target.`);
-  }
-  // Each property's declared datatypes, by its name in lower case.
-  const declared = new Map<string, Array<{owner: string; type: DataType}>>();
-  for (const e of elements) {
-    for (const {name, type} of e.properties) {
-      if (!type) continue;
-      const key = name.toLowerCase();
-      declared.set(key, [...declared.get(key) ?? [], {owner: owner(e), type}]);
-    }
-  }
-  for (const [key, types] of declared) {
-    if (new Set(types.map(t => storeCodeFor(t.type))).size < 2) continue;
-    const name = elements.flatMap(e => e.properties)
-                     .find(p => p.name.toLowerCase() === key)!.name;
-    problems.push(
-        `targets Spanner, where property '${name}' has one type across the ` +
-        `graph, but ${
-            listed(types.map(t => `${t.owner} declares it ${t.type}`))}; ` +
-        `give the fields one datatype, or rename one.`);
   }
   // The tables that list each property whose SQL holds a subquery, by the
   // property's name and SQL, so a property a subtype inherits is reported
