@@ -340,6 +340,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SPANNER', "TIMESTAMP_TRUNC(year, 'YEAR')", {error: "kcmd does not translate TIMESTAMP_TRUNC with part 'YEAR'"}],
     ['SPANNER', 'DATE_TRUNC(week, (WEEK))', {error: "kcmd does not translate DATE_TRUNC with part 'WEEK'"}],
     ['POSTGRES', "DATE_TRUNC(('decade'), d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
+    ['SQLSERVER', 'DATEPART(wk, week)', {error: "kcmd does not translate DATEPART with part 'wk'"}],
     ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DOW'"}],
     ['POSTGRES', 'EXTRACT(week(monday) FROM d)', {error: "kcmd does not translate EXTRACT with part 'week(monday)'"}],
     ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd does not translate EXTRACT of a difference'}],
