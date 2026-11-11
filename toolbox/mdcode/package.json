@@ -41,7 +41,7 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@polyglot-sql/sdk": "^0.9.1",
     "cac": "^7.0.0",
     "glob": "^13.0.6",
