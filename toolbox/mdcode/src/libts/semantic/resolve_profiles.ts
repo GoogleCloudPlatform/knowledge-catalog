@@ -1459,10 +1459,22 @@ export function importCommand(
 }
 
 // Whether `kcmd import --transpile` gives a BigQuery text to a field or metric
-// of `model`, or to a field one of `profiles` binds: when the advice to add
-// one may be given, and so when the import it suggests is run first.
+// of `model`, or to a field one of `profiles` binds, while `model` or one of
+// `profiles` binds a BigQuery table: when the advice to add one may be given,
+// and so when the import it suggests is run first. Only a message about a
+// BigQuery table gives that advice.
 export function transpilesSomething(
     model: SemanticModel, profiles: ProfileSpec[] = []): boolean {
+  const onBigQuery =
+      (e: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'>) =>
+          sourcesDialect({entities: [e]}) === 'BIGQUERY';
+  if (!(model.entities ?? []).some(onBigQuery) &&
+      !profiles.some(p => p.entities.some(pe => onBigQuery({
+        dataSource: pe.source ?? '',
+        authoredSource: pe.source,
+      })))) {
+    return false;
+  }
   const entityNames = (model.entities ?? []).map(e => e.name);
   return [
     ...(model.entities ?? []).flatMap(e => e.fields ?? []),

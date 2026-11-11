@@ -1436,11 +1436,15 @@ async function printStore(
   // before any AlloyDB lookup. A scope that push refuses for its named
   // profiles gets push's errors, also before any AlloyDB lookup.
   let refused: string[] = [];
+  // The advice to add a BigQuery text names what the import it suggests
+  // gives, as push's does.
+  const transpileOutcomes = await scopeTranspileOutcomes(ctx, snapshot);
   const opened = await createSemanticRuntimes({
     profile: named,
     ctx,
     oneModel: true,
     snapshot,
+    transpileOutcomes,
     proceed: async () => {
       const layout = semanticLayoutOf(snapshot)!;
       const docs = layout.modelDocuments();
@@ -1459,6 +1463,7 @@ async function printStore(
       const load = {
         sourceDialects: read.dialects,
         sourceDatabases: read.databases,
+        transpileOutcomes,
       };
       const {models} =
           loadSemanticModels(docs, {bindingOptional: true, ...load});

@@ -4,14 +4,17 @@
 // (src/tool/commands.ts, transpileOutcomes, and
 // src/libts/semantic/resolve_profiles.ts, transpileAdvice).
 
-import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
+import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {importModel} from '../../../src/tool/commands';
+import {ApiContext} from '../../../src/libts/gcp/context';
+import {SpannerClient} from '../../../src/libts/gcp/spanner';
+import * as engine from '../../../src/libts/semantic/import_model';
+import {importModel, profiles} from '../../../src/tool/commands';
 
-import {bqTable, CUSTOMER, runPush, Scope, writeScope} from './harness';
+import {bqTable, CTX, CUSTOMER, runPush, Scope, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const snowflake = (text: string) =>
     ({dialects: [{dialect: 'SNOWFLAKE', expression: text}]});
@@ -50,6 +53,18 @@ const COMMAND = "add one with 'kcmd import <file> --input first-party --flavor g
 const warning = (subject: string, error: string) => `Warning: [commerce] ${
     subject}: no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its ` +
     `'SNOWFLAKE' expression; give it one, or ${COMMAND} after fixing this: ${error}`;
+// A profile binding whose only text reads another entity once translated.
+const BINDING_TEXT: Scope = {
+  entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
+                                    {name: 'code', expression: bigquery('c_code')}]},
+             ORDERS],
+  profiles: prod([...CUSTOMER.fields,
+                  {name: 'code', expression: snowflake('IFF(TRUE, Orders.id, 0)')}]),
+};
+const BINDING_TEXT_ERROR = `Error: ${PROFILE} field 'Customer.code' has no expression for ` +
+    "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or " +
+    `${COMMAND} after fixing this: ${PROFILE} field 'Customer.code' reads entity 'Orders'; a ` +
+    'field expression reads only its own entity';
 const unanchored = (reach: string) => `metric 'm': its expression reaches ${reach}; set ` +
     "'entity' on the metric, or scope its expression to one entity";
 
@@ -110,16 +125,7 @@ describe('the advice to add a BigQuery text', () => {
        name: 'placed', from: 'Orders', to: 'Customer', from_columns: ['o_cust'],
        to_columns: ['key'],
      }]}],
-    ['a profile binding\'s own text',
-     {entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
-                                        {name: 'code', expression: bigquery('c_code')}]},
-                 ORDERS],
-      profiles: prod([...CUSTOMER.fields,
-                      {name: 'code', expression: snowflake('IFF(TRUE, Orders.id, 0)')}])},
-     `Error: ${PROFILE} field 'Customer.code' has no expression for BIGQUERY or ANSI_SQL, ` +
-         `and this profile's sources are BIGQUERY; give it one, or ${COMMAND} after fixing ` +
-         `this: ${PROFILE} field 'Customer.code' reads entity 'Orders'; a field expression ` +
-         'reads only its own entity',
+    ['a profile binding\'s own text', BINDING_TEXT, BINDING_TEXT_ERROR,
      {entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
                                         {name: 'code', expression: bigquery('c_code')}]},
                  ORDERS],
@@ -152,4 +158,45 @@ describe('the advice to add a BigQuery text', () => {
         expect(after.code).toBe(0);
         expect([...after.errors, ...after.warnings].join('\n')).not.toContain(COMMAND);
       });
+
+  // Runs `kcmd profiles` with `flags`. Gives its exit code, the lines it
+  // prints and how many times it ran the import engine.
+  const report = async (flags: Parameters<typeof profiles>[0]) => {
+    mock.restore();
+    spyOn(ApiContext, 'default').mockReturnValue(CTX);
+    spyOn(SpannerClient.prototype, 'getDatabase').mockResolvedValue(
+        {status: 200, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
+    const imports = spyOn(engine, 'importSemanticModelYaml');
+    const lines: string[] = [];
+    for (const stream of ['error', 'warn', 'log'] as const) {
+      spyOn(console, stream).mockImplementation((...a: unknown[]) => {
+        lines.push(a.join(' '));
+      });
+    }
+    const code = await profiles(flags);
+    const runs = imports.mock.calls.length;
+    mock.restore();
+    return {code, lines, runs};
+  };
+
+  test('names the same error in kcmd profiles --print-store', async () => {
+    writeScope(dir, BINDING_TEXT);
+    const {code, lines} = await report({printStore: true, profile: 'prod'});
+    expect(code).toBe(1);
+    expect(lines).toContain(BINDING_TEXT_ERROR);
+  });
+
+  // Only a message about a BigQuery table gives the advice, so a command runs
+  // the import only for a model file with a BigQuery table.
+  test.each([
+    ['runs no import for a model file with no BigQuery table',
+     {entities: [{...CUSTOMER, source: SPANNER_CUSTOMER, fields: [{
+       name: 'key', expression: {dialects: [{dialect: 'SPANNER', expression: 'c_key'}]},
+     }]}]},
+     0],
+    ['runs the import once for a model file with a BigQuery table', {entities: [withCode()]}, 1],
+  ] as Array<[string, Scope, number]>)('%s', async (_, scope, runs) => {
+    writeScope(dir, scope);
+    expect((await report({})).runs).toBe(runs);
+  });
 });
