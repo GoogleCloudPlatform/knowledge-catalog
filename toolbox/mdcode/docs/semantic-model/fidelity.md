@@ -301,8 +301,8 @@ From MySQL, Databricks and SQL Server it adds a week to a column as 7 days,
 which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks that
 is an expression becomes `7 * (n)` days. These are the units it adds, by
 database. Milliseconds and microseconds go wherever seconds go, where the
-database names them: PostgreSQL and Databricks name both, and MySQL names
-microseconds.
+database names them: PostgreSQL, Snowflake and Databricks name both, and MySQL
+names microseconds.
 
 - MySQL: every unit from seconds to years to a column and to a value it can
   see is a DATE, such as the current date.

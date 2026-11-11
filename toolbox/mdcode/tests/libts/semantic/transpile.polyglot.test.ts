@@ -746,13 +746,15 @@ describe('polyglotTranspiler (date arithmetic)', () => {
       MONTH: ['month', 'months', 'mon', 'mons'], YEAR: ['year', 'years', 'y', 'yr', 'yrs'],
     }, w => `d::date - INTERVAL '1 ${w}'`, u => `CAST(d AS DATE) - INTERVAL 1 ${u}`),
     ...spelled('SNOWFLAKE', {
+      MICROSECOND: ['microsecond', 'us', 'usec', 'microseconds'], MILLISECOND: ['millisecond', 'ms', 'msec', 'milliseconds'],
       SECOND: ['second', 's', 'sec', 'seconds', 'secs'], MINUTE: ['minute', 'm', 'mi', 'min', 'minutes', 'mins'],
       HOUR: ['hour', 'h', 'hh', 'hr', 'hours', 'hrs'], DAY: ['day', 'd', 'dd', 'days', 'dayofmonth', "'day'"],
       WEEK: ['week', 'w', 'wk', 'weekofyear', 'woy', 'wy'], MONTH: ['month', 'mm', 'mon', 'mons', 'months'],
       QUARTER: ['quarter', 'q', 'qtr', 'qtrs', 'quarters'], YEAR: ['year', 'y', 'yy', 'yyy', 'yyyy', 'yr', 'years', 'yrs'],
     }, w => `DATEADD(${w}, 1, CURRENT_DATE)`,
-       u => SUB_DAY.includes(u) ? `${sfDate} + INTERVAL 1 ${u}` : `DATE_ADD(${sfDate}, INTERVAL 1 ${u})`),
+       u => DAY_OR_LONGER.includes(u) ? `DATE_ADD(${sfDate}, INTERVAL 1 ${u})` : `${sfDate} + INTERVAL 1 ${u}`),
     ...spelled('SNOWFLAKE', {
+      MICROSECOND: ['microsecond', 'us', 'usec', 'microseconds'], MILLISECOND: ['millisecond', 'ms', 'msec', 'milliseconds'],
       SECOND: ['second', 's', 'sec', 'seconds', 'secs'], MINUTE: ['minute', 'm', 'mi', 'min', 'minutes', 'mins'],
       HOUR: ['hour', 'h', 'hh', 'hr', 'hours', 'hrs'], DAY: ['day', 'd', 'dd', 'days', 'dayofmonth'],
     }, w => `d - INTERVAL '1 ${w}'`, u => u === 'DAY' ? 'DATE_SUB(d, INTERVAL 1 DAY)' : `d - INTERVAL 1 ${u}`),

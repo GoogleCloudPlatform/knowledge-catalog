@@ -965,6 +965,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     functions: {DATEADD: 'part', TIMEADD: 'part', TIMESTAMPADD: 'part'}, keywords: false,
     intervals: [...SUB_DAY, 'DAY'],
     words: named({
+      MICROSECOND: ['us', 'usec', 'microseconds'], MILLISECOND: ['ms', 'msec', 'milliseconds'],
       SECOND: ['s', 'sec', 'seconds', 'secs'], MINUTE: ['m', 'mi', 'min', 'minutes', 'mins'],
       HOUR: ['h', 'hh', 'hr', 'hours', 'hrs'], DAY: ['d', 'dd', 'days', 'dayofmonth'],
       WEEK: ['w', 'wk', 'weekofyear', 'woy', 'wy'], MONTH: ['mm', 'mon', 'mons', 'months'],
