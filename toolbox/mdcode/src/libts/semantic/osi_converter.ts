@@ -260,9 +260,18 @@ const ONE_LINE_STRING: yaml.ScalarTag = {
   default: true,
   identify: value => typeof value === 'string',
   resolve: value => value,
+  // A string written double-quoted, such as one that holds a carriage
+  // return, stays on one line too.
   stringify: (item, ctx, onComment, onChompKeep) => stringifyString(
-      item as yaml.Scalar,
-      {...ctx, actualString: true, options: {...ctx.options, lineWidth: 0}},
+      item as yaml.Scalar, {
+        ...ctx,
+        actualString: true,
+        options: {
+          ...ctx.options,
+          lineWidth: 0,
+          doubleQuotedMinMultiLineLength: Infinity,
+        },
+      },
       onComment, onChompKeep),
 };
 

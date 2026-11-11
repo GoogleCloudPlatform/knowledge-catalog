@@ -1373,6 +1373,21 @@ semantic_model:
     expect(await push({deployment: false})).toBe(0);
   });
 
+  // A statement that holds a carriage return is written double-quoted, and
+  // pull keeps it on one line too.
+  test('a pulled statement with a carriage return stays on one line', async () => {
+    const statement =
+        'UPDATE ledger SET closed = TRUE -- all of them\\r\\nWHERE closed = FALSE';
+    await pushed({
+      'commerce.yaml': WITH_SQL_ACTION.replace('UPDATE ledger SET closed = TRUE', statement),
+      'commerce.profile.prod.yaml': PROFILE,
+    });
+    fs.rmSync(local('commerce.yaml'));
+
+    expect(await pull()).toBe(0);
+    expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toContain(`- "${statement}"`);
+  });
+
   // `text` with each pair of `pairs` replaced, each first part found once.
   const edited = (text: string, ...pairs: Array<[string, string]>) =>
       pairs.reduce((t, [from, to]) => {
