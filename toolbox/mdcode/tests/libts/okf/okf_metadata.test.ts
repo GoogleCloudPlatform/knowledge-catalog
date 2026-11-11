@@ -9,7 +9,6 @@ import {
 const FULL = {
   tags: ['bikeshare'],
   status: 'deprecated',
-  superseded_by: '/metrics/gross-margin.md',
   stale_after: '2027-01-01',
   runtime: 'bigquery',
   parameters: [{name: 'year', type: 'integer', required: true}],
@@ -39,7 +38,7 @@ describe('appendOkfMetadata', () => {
     );
   });
 
-  test('carries only OKF keys and producer extensions, not title, extra, links, or residue', () => {
+  test('carries only OKF keys and producer-defined keys, not title, extra, links, or residue', () => {
     const out = appendOkfMetadata('body', {
       title: 'T',
       description: 'D',
@@ -49,11 +48,13 @@ describe('appendOkfMetadata', () => {
       extra: {resource: {parent: 'agents'}},
       links: [{type: 'related', entries: ['a', 'b']}],
       tags: ['a'],
-      'x-acme-owner': 'team:data',
+      owner_team: 'team:data',
+      'x-owner': 'team:platform',
       custom_key: 'keep-me',
     });
     expect(out).toContain('tags:');
-    expect(out).toContain('x-acme-owner: team:data');
+    expect(out).toContain('owner_team: team:data');
+    expect(out).toContain('x-owner: team:platform');
     expect(out).toContain('custom_key: keep-me');
     expect(out).not.toContain('title');
     expect(out).not.toContain('description');
@@ -65,7 +66,8 @@ describe('appendOkfMetadata', () => {
     const {metadata} = splitOkfMetadata(out);
     expect(metadata).toEqual({
       tags: ['a'],
-      'x-acme-owner': 'team:data',
+      owner_team: 'team:data',
+      'x-owner': 'team:platform',
       custom_key: 'keep-me',
     });
   });

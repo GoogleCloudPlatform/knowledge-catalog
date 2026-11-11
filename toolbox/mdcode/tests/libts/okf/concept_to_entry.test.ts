@@ -299,8 +299,13 @@ describe('conceptToEntry', () => {
     ]);
   });
 
-  test('a non-index concept with no entryType and no frontmatter type is refused', () => {
-    expect(() => conceptToEntry(concept({}), GROUP)).toThrow(ConceptError);
+  test('a non-index concept with no entryType and no frontmatter type is refused with an actionable message', () => {
+    expect(() => conceptToEntry(concept({}, 'body', 'README'), GROUP)).toThrow(
+      new ConceptError(
+        'README.md: an OKF concept needs a non-empty `type` in its frontmatter ' +
+          '(OKF v0.2 §11); add one, or move the file out of bundle/.',
+      ),
+    );
   });
 
   test('entryToConcept and conceptToEntry round-trip without losing fields', () => {
@@ -329,7 +334,7 @@ describe('conceptToEntry', () => {
     expect(restored).toEqual(original);
   });
 
-  test('round-trips OKF v0.3 superseded_by, Attested Computation keys, x-* extensions, and unknown keys across push -> pull', () => {
+  test('round-trips OKF v0.2 Attested Computation keys and producer-defined frontmatter keys across push -> pull', () => {
     const pushed = conceptToEntry(
       concept(
         {
@@ -338,7 +343,6 @@ describe('conceptToEntry', () => {
           description: 'Recognized revenue for a fiscal year.',
           tags: ['finance', 'revenue'],
           status: 'deprecated',
-          superseded_by: '/computations/net-revenue.md',
           stale_after: '2026-12-31T00:00:00Z',
           runtime: 'bigquery',
           parameters: [{name: 'year', type: 'integer', required: true}],
@@ -346,10 +350,9 @@ describe('conceptToEntry', () => {
           executor: {
             resource: '/references/skills/run-on-bq.md',
             receipt: ['job_id', 'executed_sql', 'result'],
-            'x-acme-timeout': 30,
           },
           attester: {resource: '/references/attesters/sql-equality.py'},
-          'x-acme-owner': 'team:finance-fpa',
+          owner_team: 'team:finance-fpa',
           custom_domain: 'corporate-finance',
         },
         '# Computation\n',
@@ -359,9 +362,6 @@ describe('conceptToEntry', () => {
     );
 
     const pulled = entryToConcept(pushed, 'computations/revenue');
-    expect(pulled.frontmatter['superseded_by']).toBe(
-      '/computations/net-revenue.md',
-    );
     expect(pulled.frontmatter['runtime']).toBe('bigquery');
     expect(pulled.frontmatter['parameters']).toEqual([
       {name: 'year', type: 'integer', required: true},
@@ -372,12 +372,11 @@ describe('conceptToEntry', () => {
     expect(pulled.frontmatter['executor']).toEqual({
       resource: '/references/skills/run-on-bq.md',
       receipt: ['job_id', 'executed_sql', 'result'],
-      'x-acme-timeout': 30,
     });
     expect(pulled.frontmatter['attester']).toEqual({
       resource: '/references/attesters/sql-equality.py',
     });
-    expect(pulled.frontmatter['x-acme-owner']).toBe('team:finance-fpa');
+    expect(pulled.frontmatter['owner_team']).toBe('team:finance-fpa');
     expect(pulled.frontmatter['custom_domain']).toBe('corporate-finance');
   });
 
