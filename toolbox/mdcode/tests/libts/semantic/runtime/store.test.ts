@@ -108,31 +108,21 @@ describe('where a model says it lives', () => {
 
 
 describe('a binding that disagrees with the target', () => {
-  // An action's statements name a table and drop the qualifier, so a write
-  // against a stray binding still runs -- against whatever table of that name
-  // the TARGET store holds. Nothing downstream would report it, which is why
-  // it is refused here.
-  test('an entity bound to another database is refused, and both are named',
+  // Push refuses a Spanner deployment whose database holds no table an
+  // entity is bound to, so the store fails with push's error.
+  test('an entity bound to another database or system gets push\'s error',
        () => {
-         const other =
-             'spanner.googleapis.com/projects/p/instances/i/databases/other';
-         const store = resolveStore(
-             bound(`${DB}/graphs/g`, `${other}/tables/Customer`));
-         expect('error' in store).toBe(true);
-         if (!('error' in store)) return;
-         expect(store.error).toContain('databases/other');
-         expect(store.error).toContain('deployment target is projects/p');
-       });
-
-  test('an entity bound to another system is refused for the same reason',
-       () => {
-         const store = resolveStore(bound(
-             `${DB}/graphs/g`, `${DATASET}/tables/Customer`));
-         expect('error' in store).toBe(true);
-         if (!('error' in store)) return;
-         expect(store.error).toContain(`'Customer' to ${DATASET}/tables/Customer`);
-         expect(store.error)
-             .toContain('projects/p/instances/i/databases/d');
+         for (const table of [
+                'spanner.googleapis.com/projects/p/instances/i/databases/other/tables/Customer',
+                `${DATASET}/tables/Customer`,
+              ]) {
+           expect(resolveStore(bound(`${DB}/graphs/g`, table))).toEqual({
+             error: "[m] deployment 'default' targets Spanner database " +
+                 "'p/i/d', but the model file binds entity 'Customer' to " +
+                 `'${table}', which is not a table in that database.`,
+             named: true,
+           });
+         }
        });
 
   test('an entity this profile binds to nothing is not a mis-binding', () => {
@@ -150,16 +140,17 @@ describe('a binding that disagrees with the target', () => {
   });
 
   // A BigQuery graph may read tables in another dataset, and push accepts
-  // that, so the store gives none and does not fail.
-  test('a BigQuery table in another dataset gives no store and does not fail it',
+  // that. An action's statements name a table and drop the qualifier, so a
+  // model with actions gives no store, though the store does not fail.
+  test('a BigQuery table in another dataset gives the store unless the model has actions',
        () => {
-         const store = resolveStore(bound(
-             `${DATASET}/propertyGraphs/g`,
-             'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'));
-         expect(store).toEqual({
-           error: expect.stringContaining(
-               "binds 'Customer' to bigquery.googleapis.com/projects/p/datasets/raw/tables/customer"),
-         });
+         const raw = 'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer';
+         const m = bound(`${DATASET}/propertyGraphs/g`, raw);
+         const store = resolveStore(m);
+         expect('error' in store ? store.error : store.name)
+             .toBe('projects/p/datasets/s');
+         expect(resolveStore({...m, actions: [{name: 'refund'}]} as SemanticModel))
+             .toEqual({error: expect.stringContaining(`binds 'Customer' to ${raw}`)});
        });
 });
 
@@ -223,6 +214,19 @@ describe('a model that declares more than one deployment target', () => {
         targets([PG, `${DATASET}/propertyGraphs/g`], PG_TABLE));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
+  });
+
+  // Two graphs in one BigQuery dataset or one Spanner database are one store.
+  test('two graphs in one store resolve to it', () => {
+    for (const [uris, source, name] of [
+      [[`${DATASET}/propertyGraphs/g`, `${DATASET}/propertyGraphs/g2`],
+       `${DATASET}/tables/Customer`, 'projects/p/datasets/s'],
+      [[`${DB}/graphs/g`, `${DB}/graphs/g2`], `${DB}/tables/Customer`,
+       'projects/p/instances/i/databases/d'],
+    ] as const) {
+      const store = resolveStore(targets([...uris], source));
+      expect('error' in store ? store.error : store.name).toBe(name);
+    }
   });
 
   test('two BigQuery targets is ambiguous in the same way', () => {
@@ -519,7 +523,7 @@ describe('an AlloyDB source', () => {
         `${CLUSTER}/databases/d`,
         `${CLUSTER}/databases/other/schemas/public/tables/customer`));
     expect('error' in store && store.error)
-        .toContain("'Customer' to " + `${CLUSTER}/databases/other`);
+        .toContain(`'Customer' to '${CLUSTER}/databases/other`);
   });
 });
 

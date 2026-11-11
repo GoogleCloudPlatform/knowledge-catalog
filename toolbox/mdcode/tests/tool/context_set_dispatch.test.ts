@@ -1,5 +1,6 @@
 // Tests for the `context-set` split workspace in src/tool/commands.ts:
-// `kcmd init --context-set`, two-leg `kcmd pull`, and two-leg `kcmd push`.
+// `kcmd init --context-set`, two-leg `kcmd pull`, two-leg `kcmd push`, and
+// `kcmd profiles --print-store`.
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -15,7 +16,7 @@ import {CUSTOM_TYPES} from '../../src/libts/semantic/kc_custom_types';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {CatalogSnapshot} from '../../src/libts/snapshot';
 import {CatalogSync} from '../../src/libts/sync';
-import {init, pull, push} from '../../src/tool/commands';
+import {init, profiles, pull, push} from '../../src/tool/commands';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('proj', 'us', 'test-token');
@@ -520,4 +521,36 @@ A customer with at least one order in the past 90 days.
             `Warning: could not update context set overview on '${GROUP}/entries/cs_entry'`);
         expect(warnings.join('\n')).toContain('404 (Entry not found)');
       });
+});
+
+describe('kcmd profiles --print-store in a context-set workspace', () => {
+  test('prints the store a semantic-model workspace prints', async () => {
+    const egDir = path.join(dir, 'catalog', 'EntryGroups', 'cs');
+    fs.mkdirSync(egDir, {recursive: true});
+    const bq = 'bigquery.googleapis.com/projects/proj/datasets/sales';
+    fs.writeFileSync(path.join(egDir, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: prod, target: ${bq}/propertyGraphs/commerce }
+    entities:
+      - name: Customer
+        source: ${bq}/tables/customer
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`);
+    const logs: string[] = [];
+    spyOn(console, 'log').mockImplementation((...args: any[]) => {
+      logs.push(args.join(' '));
+    });
+
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'), 'scope: semantic-model.proj.us.cs\n');
+    expect(await profiles({printStore: true})).toBe(0);
+    writeContextSetManifest();
+    expect(await profiles({printStore: true})).toBe(0);
+
+    expect(logs).toEqual(['bigquery:proj/sales', 'bigquery:proj/sales']);
+  });
 });

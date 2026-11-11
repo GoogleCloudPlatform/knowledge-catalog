@@ -16,17 +16,17 @@ import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
 import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
-import {alloyDbTargets, ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {alloyDbTargets, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, tablesOutsideTarget} from './deployment_target';
 import {GraphElement} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem, writtenSource} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
+import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
+import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
@@ -41,11 +41,14 @@ import {SqlColumn} from './sql_parser';
 // `warnings` collects non-fatal messages (such as an expression the SQL parser
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
+//
+// `load` is what the caller read of each table's dialect.
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
       fieldsPruned?: boolean;
       warnings?: string[];
+      load?: DialectLoad;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
@@ -82,7 +85,7 @@ export function validatePushRequirements(
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
-        flaggedMetrics));
+        flaggedMetrics, opts.load));
     if (deployInfo.bigQuery.length > 0) {
       errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
     }
@@ -258,7 +261,8 @@ export function validateDeployments(
     if (engine !== 'bigquery') continue;
     if (!referenced) {
       referenced = new Set();
-      validateExpressionReferences([{document, model}], false, [], referenced);
+      validateExpressionReferences(
+          [{document, model}], false, [], referenced, load);
     }
     for (const m of available) {
       const problem =
@@ -826,9 +830,10 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
+  // Null when no lookup read the dialect of the model's tables, as in pull.
+  const sources = sourcesDialect(model);
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sourcesDialect(model) ??
-          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : undefined) :
+      sources ?? (alloyDbTargets(model).targets.length ? 'ALLOYDB' : sources) :
       undefined;
   for (const action of actions) {
     const where =
@@ -955,9 +960,18 @@ export function validateActions(
 //   - Every `@parameter` is declared. This is the load-bearing one: it is what
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
+//
+// A null `dialect` says no lookup read the dialect of the model's tables. The
+// errors are then those that every dialect in SQL_CODE_DIALECTS gives, and
+// push, which reads the dialect, reports the others.
 function sqlExecutorErrors(
     action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
+  if (dialect === null) {
+    const [first, ...rest] =
+        SQL_CODE_DIALECTS.map(d => sqlExecutorErrors(action, where, d));
+    return first.filter(e => rest.every(errors => errors.includes(e)));
+  }
   const executor = action.executor;
   const errors: string[] = [];
   const bindable = new Set(action.parameters.map(p => p.name));
@@ -1830,10 +1844,15 @@ function metricNoSqlError(
 //
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
-// `flaggedMetrics` collects the name of each metric it reports.
+// `flaggedMetrics` collects the name of each metric it reports. With
+// `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
+// lookup read is read as columnsWithoutDialect reads it in the dialects those
+// tables may have, where it is otherwise skipped. A metric text that read
+// leaves a name out of is then left out of the rules on which entities the
+// text reaches.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>): string[] {
+    flaggedMetrics?: Set<string>, load: DialectLoad = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1855,11 +1874,27 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = sourcesDialect(model);
+    const sourcesRead = sourcesDialect(model);
+    const dialectless = sourcesRead === null && !!load.readWithoutDialect;
+    const impliedDialect = dialectless ? undefined : sourcesRead;
+    const candidates =
+        dialectless ? possibleDialects(model.entities ?? []) : [];
+    // The columns `text` reads, and whether the read left a name out.
+    const read = (text: string, dialect: string) => {
+      if (dialect !== 'ANSI_SQL' || !dialectless) {
+        return {
+          columns: columnsForSource(text, dialect, impliedDialect),
+          skipped: false,
+        };
+      }
+      const r = columnsWithoutDialect(text, candidates);
+      return {columns: r?.columns, skipped: !!r?.skipped};
+    };
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
-          // A caller that looked up no table's dialect reads no ANSI_SQL
-          // text when every table needs the lookup, so it warns about none.
+          // A caller that looked up no table's dialect and did not set
+          // readWithoutDialect reads no ANSI_SQL text when every table needs
+          // the lookup, so it warns about none.
           const unreadDialects = impliedDialect === null ?
               unread.filter(d => d !== 'ANSI_SQL') :
               unread;
@@ -1890,7 +1925,7 @@ export function validateExpressionReferences(
         const allColumns: SqlColumn[] = [];
         const unreadDialects: string[] = [];
         for (const {text, dialect} of sources) {
-          const columns = columnsForSource(text, dialect, impliedDialect);
+          const {columns} = read(text, dialect);
           if (!columns) {
             unreadDialects.push(dialect);
             continue;
@@ -1969,12 +2004,15 @@ export function validateExpressionReferences(
           sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
       const allColumns: SqlColumn[] = [];
       const unreadDialects: string[] = [];
+      // Whether the read left a name out of a text.
+      let partial = false;
       for (const {text, dialect} of readable) {
-        const columns = columnsForSource(text, dialect, impliedDialect);
+        const {columns, skipped} = read(text, dialect);
         if (!columns) {
           unreadDialects.push(dialect);
           continue;
         }
+        partial ||= skipped;
         allColumns.push(...columns);
       }
       addUnreadableWarning(
@@ -1992,8 +2030,10 @@ export function validateExpressionReferences(
       if (noSql) {
         errors.push(noSql);
       } else if (
-          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
-          !authored && reached.length > 1) {
+          !partial &&
+          (!authored && unreadDialects.length === 0 &&
+               allColumns.length === 0 ||
+           !authored && reached.length > 1)) {
         const fixHint = model.version === '0.2.0.dev0' ?
             `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
             `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
@@ -2015,7 +2055,7 @@ export function validateExpressionReferences(
                 anchor}' is not declared in the model.`);
       }
 
-      if (authored !== undefined && fieldsByEntity.has(authored) &&
+      if (!partial && authored !== undefined && fieldsByEntity.has(authored) &&
           reached.length > 0 && !reached.includes(authored)) {
         errors.push(
             `metric '${metric.name}' in model '${model.name}' (${
@@ -2124,7 +2164,6 @@ export function deploymentTableErrors(
     document: string, model: SemanticModel,
     deployment: ResolvedDeployment): string[] {
   let sourceOf = (e: Entity): string|undefined => e.authoredSource;
-  let bindings = 'the model file';
   if (deployment.profile !== DEFAULT_PROFILE) {
     const profile = model.profiles?.find(p => p.name === deployment.profile);
     // `model.profiles` lacks a profile file that does not load, which push
@@ -2132,18 +2171,8 @@ export function deploymentTableErrors(
     if (!profile) return [];
     const bound = new Map(profile.entities.map(pe => [pe.name, pe.source]));
     sourceOf = e => bound.get(e.name);
-    bindings = `profile '${profile.name}'`;
   }
-  const {database, target, outside} = targetDatabase(deployment);
-  const errors: string[] = [];
-  for (const e of model.entities ?? []) {
-    const source = sourceOf(e)?.trim();
-    if (!source || databaseOf(source) === database) continue;
-    errors.push(
-        `[${document}] deployment '${deployment.name}' targets ${target}, ` +
-        `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
-  }
-  return errors;
+  return tablesOutsideTarget(document, model, deployment, sourceOf);
 }
 
 // The error for a Spanner `deployment` on the model file's own bindings when
@@ -2161,20 +2190,6 @@ export function spannerMetricsErrors(
     `metrics, which a Spanner graph cannot hold; name a profile with ` +
     `metrics_exclude: "*".`,
   ];
-}
-
-// The database the tables of a deployment target must be in, as databaseOf
-// gives it, and how an error names the target and a table outside it.
-function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
-  if (engine === 'bigquery') {
-    return {database: 'bigquery', target: 'a BigQuery graph',
-            outside: 'which is not a BigQuery or BigLake table'};
-  }
-  const [system, name] = engine === 'spanner' ?
-      ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
-      ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
-  return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
-          outside: 'which is not a table in that database'};
 }
 
 // What localChecks reads. `loaded` is the load of `docs` with the dialects in
@@ -2308,7 +2323,7 @@ export async function localChecks(
         m.document,
         ...validatePushRequirements(
             [{...m, model: {...m.model, deployments: inlineAlloyDb}}],
-            {warnings: kcWarnings}));
+            {warnings: kcWarnings, load}));
   });
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
@@ -2405,7 +2420,7 @@ async function deploymentPlan(
   // localChecks has already warned about the SQL they cannot read.
   const unprunedErrors = [
     ...validateInheritance([checked]),
-    ...validateExpressionReferences([checked]),
+    ...validateExpressionReferences([checked], false, [], undefined, load),
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
@@ -2420,7 +2435,7 @@ async function deploymentPlan(
   };
   const errors = [
     ...unprunedErrors,
-    ...validatePushRequirements([narrowed], {fieldsPruned: true}),
+    ...validatePushRequirements([narrowed], {fieldsPruned: true, load}),
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.

@@ -2619,6 +2619,44 @@ describe('kcmd profiles --print-store', () => {
     });
   }
 
+  // Push refuses a deployment whose database holds no table an entity is
+  // bound to, so --print-store gives push's errors, one to a line, naming the
+  // model file. A GOOGLE block profile has no file of its own.
+  test('gives push\'s error for each table outside the database the deployment targets', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    const other = OPERATIONAL_GRAPH.replace('commerce/graphs/commerce', 'other/tables');
+    const tables = [['Customer', 'Customer'], ['Order', 'Orders']];
+    const data = JSON.stringify({
+      deployments: [{name: 'prod', target: OPERATIONAL_GRAPH, profile: 'p'}],
+      profiles: [{name: 'p', entities: tables.map(([name, table]) => ({
+        name, source: `${other}/${table}`, primary_key: ['key'],
+        fields: [{name: 'key', expression: 'key'}],
+      }))}],
+    });
+    const dataset = (name: string) => `      - name: ${name}
+        source: ${OPERATIONAL_GRAPH.replace('graphs/commerce', 'tables/' + name)}
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: key}]}
+`;
+    fs.writeFileSync(path.join(eg, 'orders.yaml'), `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${data}'
+    datasets:
+${dataset('Customer')}${dataset('Order')}`);
+    expect(await profiles({printStore: true, profile: 'p'})).toBe(1);
+    expect(errs).toEqual(tables.map(([entity, table]) =>
+        "Error: [orders] deployment 'prod' targets Spanner database " +
+        `'acme-ops/prod/commerce', but profile 'p' binds entity '${entity}' ` +
+        `to '${other}/${table}', which is not a table in that database.`));
+  });
+
   test('a profile file has no store when no deployment names it', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');

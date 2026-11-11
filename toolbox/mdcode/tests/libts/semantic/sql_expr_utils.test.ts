@@ -2,9 +2,9 @@
 // src/libts/semantic/sql_expr_utils.ts that both the model file's checks and a
 // binding profile's checks use.
 
-import {beforeAll, describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -307,6 +307,20 @@ describe('columnsForSource', () => {
     expect(columnsForSource('UPPER("c")', 'ANSI_SQL', 'POSTGRES')).toEqual([{name: 'c'}]);
     expect(columnsForSource('UPPER("c")', 'ANSI_SQL', null)).toBeUndefined();
     expect(columnsForSource('UPPER(c)', 'MYSQL', null)).toEqual([{name: 'c'}]);
+  });
+});
+
+describe('columnsWithoutDialect', () => {
+  // T-SQL's parser panics on IF(...).
+  test('reads no text one of the dialects cannot parse, and prints nothing', () => {
+    const error = spyOn(console, 'error');
+    try {
+      expect(columnsWithoutDialect('IF(t.flag, t.a, 0)', ['MYSQL', 'SQLSERVER']))
+          .toBeUndefined();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 });
 

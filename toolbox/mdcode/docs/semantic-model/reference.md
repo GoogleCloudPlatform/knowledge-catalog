@@ -83,15 +83,21 @@ kcmd pull
 Rebuilds the model file and profile files from the Knowledge Catalog entries.
 It changes a local file only where the catalog differs from it, so the rest
 keeps its comments, key order and formatting, and writes a file whole when it
-cannot. When the model entry's `kcmd-push-state` label says the last push
-stopped partway, it writes nothing.
+cannot. An overview sidecar that push would read into the overview the catalog
+holds keeps its bytes, whatever its line endings. When push's checks that call
+no service would refuse the model pull writes, pull warns and gives push's first
+error. Pull leaves out push's checks that call a service, such as those that
+need a table's SQL dialect, the source check and the Spanner graph check, so
+only push reports those. When
+the model entry's `kcmd-push-state` label says the last push stopped partway,
+it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. The summary counts the files it deletes. |
 
 ### import
 
@@ -227,7 +233,7 @@ instance.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile. It reads every model's profiles first: its sibling `<model>.profile.<name>.yaml` files (for a `0.2.0.dev0/google` model), and the profiles a vanilla `0.2.0.dev0` model carries in its `GOOGLE` custom extension block. It errors on a profile file that breaks one of the [profile file rules](profiles.md#file-layout) or on a `GOOGLE` block profile that does not load. Like push, it checks each named profile against the model file loaded on its own, with the profile checks listed under [Validation](profiles.md#validation) and the [Sources](profiles.md#sources) rules on one database and on dialect text. When a check fails, it gives the errors push gives for those profiles, before any AlloyDB call. It reads each source's dialect as push does. When a Spanner database or a third-party table's entry cannot be read, it skips the dialect rules for that table. When a Cloud SQL table's entry cannot be read, it stops, as push does. Like push, it errors on an entry that reads but gives no dialect or names no table. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. Of several, it is the single Spanner or AlloyDB store, or else the single BigQuery dataset. Two graphs in one BigQuery dataset or one Spanner database name one store. For a BigQuery store it is the graph's dataset, even when the profile binds a BigLake table or a table in another dataset. When the model declares actions, such a table is an error. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. When a deployment that names the store binds an entity to a table outside its database, it gives push's error. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile. It reads every model's profiles first: its sibling `<model>.profile.<name>.yaml` files (for a `0.2.0.dev0/google` model), and the profiles a vanilla `0.2.0.dev0` model carries in its `GOOGLE` custom extension block. It errors on a profile file that breaks one of the [profile file rules](profiles.md#file-layout) or on a `GOOGLE` block profile that does not load. Like push, it checks each named profile against the model file loaded on its own, with the profile checks listed under [Validation](profiles.md#validation) and the [Sources](profiles.md#sources) rules on one database and on dialect text. When a check fails, it gives the errors push gives for those profiles, before any AlloyDB call. It reads each source's dialect as push does. When a Spanner database or a third-party table's entry cannot be read, it skips the dialect rules for that table. When a Cloud SQL table's entry cannot be read, it stops, as push does. Like push, it errors on an entry that reads but gives no dialect or names no table. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -260,11 +266,12 @@ several targets leave the store ambiguous, or when a deployment names a profile
 the model does not declare. It accepts a deployment that names `default` or a
 declared profile, as push does. It accepts a Spanner deployment
 that names no profile in a model with metrics, which push refuses. It fails on
-two BigQuery deployments that use one profile, since they leave no single
-store, while push deploys both. It accepts a model that binds a table outside
+two BigQuery deployments of one profile in two datasets, since they leave no
+single store, while push deploys both. It accepts a model that binds a table outside
 the database a deployment deploys to, which push refuses, unless the model has
-actions and that database is the Spanner or AlloyDB store of the selected
-profile. It also accepts a profile file that no deployment uses, as push does,
+actions and that deployment names the store of the selected profile. A BigQuery
+graph may bind a BigLake table or a table in any BigQuery dataset. It also
+accepts a profile file that no deployment uses, as push does,
 and writes a skill whose store line says there
 is none. A vanilla model lists its deployments in a `GOOGLE` block.
 The command fails the same way when a target there is in no accepted form, or
@@ -290,10 +297,11 @@ that reads one. So does `kcmd profiles --print-store`.
 
 For a model with actions, it also fails without writing anything when the
 profile names a store that cannot be resolved. That happens when the model
-binds a table outside its Spanner or AlloyDB store, when the AlloyDB cluster
-has no primary instance, when the primary is not READY, or when the instance
-listing fails. A model with no actions still gets its skill in those cases,
-since the skill does not name the store.
+binds a table outside its Spanner or AlloyDB store, when a BigQuery graph
+deployment that names the store binds a table that is not a BigQuery or BigLake
+table, when the AlloyDB cluster has no primary instance, when the primary is
+not READY, or when the instance listing fails. A model with no actions still
+gets its skill in those cases, since the skill does not name the store.
 
 A BigQuery graph may read tables in other datasets, as push allows. For such a
 model, and for a profile whose deployments name no target, the store line says

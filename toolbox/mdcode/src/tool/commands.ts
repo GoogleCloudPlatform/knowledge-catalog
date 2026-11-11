@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -24,7 +24,7 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
-import {SemanticModel} from '../libts/semantic/ir';
+import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
@@ -1021,6 +1021,15 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
+  // The overview sidecars to check in place of those on disk: the catalog's,
+  // by entry id, and the local ones to read from disk.
+  overviews?: {
+    catalog: Map<string, OverviewSidecar>;
+    local: Array<{entryId: string; path: string}>;
+  };
+  // Set when the model and profile texts are the ones pull writes. Pull
+  // writes them as UTF-8, so their bytes on disk are not checked.
+  pulled?: boolean;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
@@ -1176,6 +1185,7 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
+    if (scope.pulled) continue;
     for (const file of [modelFile, ...profileDocs(base.document)]) {
       const error = checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
@@ -1184,14 +1194,18 @@ async function checkBeforeWrites(
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
   if (docs.length === 1) {
+    const local = scope.overviews?.local ?? layout.overviewSidecarPaths();
     try {
-      for (const {path: sidecar} of layout.overviewSidecarPaths()) {
+      for (const {path: sidecar} of local) {
         const error = checkUtf8(
             sidecar, fileNameOf(layout, docs[0].name, sidecar),
             fs.readFileSync(sidecar, 'utf8'));
         if (error) return fail(error);
       }
-      overviews = layout.overviewSidecars();
+      overviews = new Map([
+        ...scope.overviews?.catalog ?? [],
+        ...layout.overviewSidecars(local),
+      ]);
     } catch (err: any) {
       return fail(err.message);
     }
@@ -1319,7 +1333,7 @@ async function printStore(
     oneModel: true,
     snapshot,
     proceed: async () => {
-      const layout = snapshot.layout as SemanticModelLayout;
+      const layout = semanticLayoutOf(snapshot)!;
       const docs = layout.modelDocuments();
       const profileDocs = profileDocsReader(layout);
       // The check reads each source's dialect as push does. When a read
@@ -1358,10 +1372,8 @@ async function printStore(
   }
   if (refused.length) return printErrors(...refused);
   for (const {store, storeError} of opened) {
-    if (!store) {
-      console.error(`Error: ${storeError}`);
-      return 1;
-    }
+    // A store error may hold several of push's errors, one to a line.
+    if (!store) return printErrors(...String(storeError).split('\n'));
     console.log(storeLine(store));
   }
   return 0;
@@ -1831,6 +1843,7 @@ async function pullSemanticModel(
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
+  let removed = 0;
   if (staleLocal.length) {
     if (!options.forceRemove) {
       const localList = staleLocal.map(n => `'${n}'`).join(', ');
@@ -1852,11 +1865,15 @@ async function pullSemanticModel(
       ];
       if (!options.dryRun) {
         layout.removeModelDocument(name);
-        for (const p of paths.slice(1)) fs.rmSync(p);
+        for (const p of paths.slice(1)) {
+          fs.rmSync(p);
+          removeEmptyDirs(p, path.dirname(paths[0]));
+        }
       }
       for (const p of paths) {
         console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
       }
+      removed += paths.length;
     }
   }
 
@@ -1865,24 +1882,138 @@ async function pullSemanticModel(
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
   const updated = updatedFiles(layout, source, pulled.name, files);
   for (const [id, sidecar] of result.overviews ?? []) {
+    const fileName = `${id}.overview.md`;
     updated.push({
-      fileName: `${id}.overview.md`,
-      content: formatOverviewSidecar(sidecar),
+      fileName,
+      content: keptSidecar(layout, pulled.name, fileName, sidecar) ??
+          formatOverviewSidecar(sidecar),
     });
   }
-  return writePulledFiles(layout, pulled.name, updated, options);
+  const code = writePulledFiles(layout, pulled.name, updated, options, removed);
+  const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
+  // Under --dry-run the sidecars on disk are not the ones pull leaves, so the
+  // check reads the catalog's, and each local one that pull keeps because
+  // the catalog lacks it.
+  let overviews: TwoPhaseScope['overviews'];
+  if (options.dryRun) {
+    const catalog = new Map([...result.overviews ?? []].filter(
+        ([id]) => pulledFileTarget(
+            layout, pulled.name, `${id}.overview.md`, true)));
+    const local = options.forceRemove ?
+        [] :
+        layout.overviewSidecarPaths().filter(s => !catalog.has(s.entryId));
+    overviews = {catalog, local};
+  }
+  const refusal = modelFile && await pushRefusal(
+      ctx, layout, source, {name: pulled.name, text: modelFile.content},
+      pulledProfileDocs(layout, pulled, updated), overviews);
+  if (refusal) {
+    console.warn(
+        `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
+        `writes it: ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}`);
+  }
+  return code;
+}
+
+
+// Push's first error for the model file `doc` and the profile files
+// `profiles`, or undefined when push accepts them. Like push, it loads the SQL
+// parser and runs push's checks that call no service. It reads no table's SQL
+// dialect, since that calls a service, so only push runs the checks that need
+// one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
+// SQL for the checks of which fields and entities an expression reads, and
+// skips each name whose reading depends on the dialect. It gives an error in
+// an action's SQL statement only when every dialect gives it. It reads the
+// overview sidecars on disk, as push does, unless given `overviews`.
+async function pushRefusal(
+    ctx: context.ApiContext, layout: SemanticModelLayout,
+    source: SemanticModelSource, doc: {name: string; text: string},
+    profiles: ReturnType<ProfileDocs>,
+    overviews?: TwoPhaseScope['overviews']): Promise<string|undefined> {
+  const parserError = await sqlParserError();
+  if (parserError) return parserError;
+  const docs = [doc];
+  const profileDocs = () => profiles;
+  const load = {readWithoutDialect: true};
+  const checked = await checkBeforeWrites(
+      {}, {ctx, layout, source, docs, profileDocs, load, overviews,
+           pulled: true},
+      true);
+  return 'errors' in checked ? checked.errors[0]?.error : undefined;
+}
+
+
+// The profile files among `files` that pull writes for `pulled`, as push
+// reads them, in name order.
+function pulledProfileDocs(
+    layout: SemanticModelLayout, pulled: SemanticModel,
+    files: SerializedFile[]): ReturnType<ProfileDocs> {
+  return (pulled.profiles ?? [])
+      .flatMap(({name}) => {
+        const fileName = `${pulled.name}.profile.${name}.yaml`;
+        const file = files.find(f => f.fileName === fileName);
+        const target = pulledFileTarget(layout, pulled.name, fileName, false);
+        return file && target ?
+            [{name, text: file.content, path: target.path, fileName}] :
+            [];
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+
+// The text of the local overview sidecar `fileName` of `model` when push
+// would read it into `sidecar`, the overview the catalog holds, so pull keeps
+// its bytes, whatever its line endings and trailing blank lines. Undefined
+// when the file does not exist, is not valid UTF-8 or does not parse.
+function keptSidecar(
+    layout: SemanticModelLayout, model: string, fileName: string,
+    sidecar: OverviewSidecar): string|undefined {
+  const target = pulledFileTarget(layout, model, fileName, true);
+  if (!target || !fs.existsSync(target.path)) return undefined;
+  const text = fs.readFileSync(target.path, 'utf8');
+  if (checkUtf8(target.path, fileName, text)) return undefined;
+  try {
+    return sameOverview(parseOverviewSidecar(text, fileName), sidecar) ?
+        text :
+        undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+
+// Deletes the directory that held `file`, and each directory above it below
+// `top`, while it is empty.
+function removeEmptyDirs(file: string, top: string): void {
+  const stop = path.resolve(top);
+  let dir = path.dirname(path.resolve(file));
+  while (dir.startsWith(`${stop}${path.sep}`) && !fs.readdirSync(dir).length) {
+    fs.rmdirSync(dir);
+    dir = path.dirname(dir);
+  }
 }
 
 
 // The model and profile files pull writes for `pulled`. The catalog stores no
 // profile's actions, so a profile file keeps the actions it binds locally. A
-// vanilla model declares no action.
+// vanilla model declares no action. A profile that excludes every metric
+// names them all, in name order, when its local `metrics_exclude` is a list,
+// and is "*" otherwise.
 function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
-  const model = pulled.version === OSSIE_VERSION ? pulled : {
+  const vanilla = pulled.version === OSSIE_VERSION;
+  const locals = localProfiles(layout, pulled.name, vanilla);
+  const model = {
     ...pulled,
     profiles: pulled.profiles?.map(p => {
-      const actions = localProfileActions(layout, pulled.name, p.name);
-      return actions ? {...p, actions} : p;
+      const local = locals.get(p.name);
+      const actions = vanilla ? undefined : local?.actions;
+      const named = p.metricsExclude === '*' &&
+          Array.isArray(local?.metricsExclude);
+      return {
+        ...p,
+        ...(actions ? {actions} : {}),
+        ...(named ? {metricsExclude: pulled.metrics.map(m => m.name)} : {}),
+      };
     }),
   };
   return serializeModelFiles(model, {logical: true});
@@ -1942,10 +2073,9 @@ function updatedFiles(
       return file;
     }
     if (base === file.content && fromCatalog) return {...file, content: text};
-    // A GOOGLE block's `data` that keeps its layout can read as other
-    // content, as when a profile's `metrics_exclude` names every metric, which
-    // reads as `*`, and the catalog adds a metric. The file is then changed
-    // with that `data` as the catalog holds it.
+    // When a GOOGLE block's `data` that keeps its layout would not read as
+    // the catalog's content, the file is changed with that `data` as the
+    // catalog holds it.
     for (const content of new Set([true, false].map(
              jsonLayout => updatedText(text, base, file.content, jsonLayout)))) {
       const changed = read(content);
@@ -2011,30 +2141,43 @@ function updatedFiles(
 }
 
 
-// The actions the local profile file of `profile` binds, or undefined when it
-// binds none or does not load.
-function localProfileActions(
-    layout: SemanticModelLayout, model: string, profile: string) {
-  const file = layout.localProfileFiles(model).find(
-      f => (f.profileName ?? path.basename(f.path, '.yaml')) === profile);
-  if (!file) return undefined;
-  try {
-    return loadProfileFile(fs.readFileSync(file.path, 'utf8'), profile).actions;
-  } catch (err) {
-    if (!(err instanceof SemanticModelError)) throw err;
-    return undefined;
+// The local profiles of `model`, by name: those in the GOOGLE block of the
+// local model file for a vanilla model, and else each local profile file that
+// loads.
+function localProfiles(
+    layout: SemanticModelLayout, model: string,
+    vanilla: boolean): Map<string, ProfileSpec> {
+  if (vanilla) {
+    const doc = layout.modelDocuments().find(
+        d => layout.modelPath(d.name) === layout.modelPath(model));
+    const loaded = doc && loadSemanticModels([doc], {bindingOptional: true});
+    const profiles = loaded?.models[0]?.model.profiles ?? [];
+    return new Map(profiles.map(p => [p.name, p]));
   }
+  const out = new Map<string, ProfileSpec>();
+  for (const file of layout.localProfileFiles(model)) {
+    const name = file.profileName ?? path.basename(file.path, '.yaml');
+    if (out.has(name)) continue;
+    try {
+      out.set(name, loadProfileFile(fs.readFileSync(file.path, 'utf8'), name));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+    }
+  }
+  return out;
 }
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
 // read. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove.
+// pull did not write, or deletes it under --force-remove with each directory
+// that leaves empty. The summary counts the files it removes, and `removed`
+// more that the pull removed before.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions): number {
+    options: PullOptions, removed = 0): number {
   const written = new Set<string>();
-  const counts = {created: 0, updated: 0, unchanged: 0};
+  const counts = {created: 0, updated: 0, unchanged: 0, removed};
   for (const {fileName, content} of files) {
     const target = pulledFileTarget(layout, model, fileName, true);
     if (!target) {
@@ -2077,6 +2220,7 @@ function writePulledFiles(
           `catalog; delete it, or pull with --force-remove to delete it.`);
     } else if (options.dryRun) {
       console.log(`  would remove ${stale.path}`);
+      counts.removed++;
     } else {
       // The older `<model>.profiles/` directory and a sidecar have no layout
       // method.
@@ -2085,17 +2229,23 @@ function writePulledFiles(
       } else {
         fs.rmSync(stale.path);
       }
+      removeEmptyDirs(stale.path, path.dirname(layout.modelPath(model)));
       console.log(`  removed ${stale.path}`);
+      counts.removed++;
     }
   }
 
   const unchanged = counts.unchanged ? `; ${counts.unchanged} unchanged` : '';
+  const gone = counts.removed ?
+      `; ${options.dryRun ? 'would remove' : 'removed'} ${counts.removed} ` +
+          'file(s)' :
+      '';
   console.log(
       options.dryRun ?
           `Dry run: would write ${counts.created} new and ${
-              counts.updated} updated file(s)${unchanged}.` :
+              counts.updated} updated file(s)${unchanged}${gone}.` :
           `Wrote ${counts.created} new and ${counts.updated} updated ` +
-              `file(s)${unchanged}.`);
+              `file(s)${unchanged}${gone}.`);
   return 0;
 }
 
@@ -2569,10 +2719,14 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   for (const runtime of opened) {
     const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
-      // A store error already names the model.
-      const named = generated.error.startsWith(`Model '`);
-      console.error(`Error: ${named ? '' : `[${runtime.model.name}] `}${
-          generated.error}`);
+      // A store error already names the model, or holds push's errors, one
+      // to a line, each naming the model file.
+      for (const line of generated.error.split('\n')) {
+        const named = line.startsWith(`Model '`) ||
+            line.startsWith(`[${runtime.document}] `);
+        console.error(
+            `Error: ${named ? '' : `[${runtime.model.name}] `}${line}`);
+      }
       failed = true;
       continue;
     }

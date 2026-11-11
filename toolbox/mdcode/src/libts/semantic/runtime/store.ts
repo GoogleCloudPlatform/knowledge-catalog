@@ -17,8 +17,8 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets} from '../deployment_target';
-import {SemanticModel} from '../ir';
+import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets, ParsedDeploymentTarget, resolveModelDeployments, tablesOutsideTarget} from '../deployment_target';
+import {Entity, SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
@@ -169,13 +169,14 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
  * set with it when the deployments give no store whatever the model is used
- * for: a target in no accepted form in any deployment, or several targets for
- * the profile. `named` alone means the model binds a table outside its Spanner
- * or AlloyDB store.
+ * for: a target in no accepted form in any deployment, or several stores for
+ * the profile. `named` alone means push refuses a table the model binds
+ * outside the database a deployment targets, or the model declares actions
+ * and binds a table outside its Spanner or AlloyDB store.
  *
  * Neither is set when the profile names no store, unless a target is in no
- * accepted form. Neither is set either when a BigQuery model binds a table
- * outside the graph's dataset.
+ * accepted form. Neither is set either when a BigQuery model with actions
+ * binds a BigLake table or a table in another BigQuery dataset.
  */
 export interface StoreError {
   error: string;
@@ -189,24 +190,32 @@ export interface StoreError {
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
  * name none or `default` for `default`. With several targets, the store is the
- * single operational one, Spanner or AlloyDB.
+ * one the operational targets, Spanner or AlloyDB, name, or else the one the
+ * BigQuery targets name. Two graphs in one BigQuery dataset or one Spanner
+ * database are one store. `document` names the model file in push's errors.
+ * `sourceOf` gives the source push checks for each entity, and defaults to the
+ * source the entity is written with.
  *
- * Fails five ways:
+ * Fails six ways:
  *
  * 1. A target names no supported destination. Push checks the target of every
  *    deployment, so this fails the store under every profile.
  * 2. No deployment uses the profile.
- * 3. There are several targets and no single operational one, so which store
- *    is meant is ambiguous.
+ * 3. The targets name several stores and no single operational one, so which
+ *    store is meant is ambiguous.
  * 4. There is no target, so there is nothing to run against.
- * 5. The model binds a table outside the store. For a Spanner or AlloyDB
- *    store, a write would land in the wrong place, and the error is named. A
- *    BigQuery graph may read tables in any dataset, so
- *    for a BigQuery store the error is not named.
+ * 5. A deployment of the profile targets a database that holds no table an
+ *    entity is bound to, which push refuses. The error is push's, and named.
+ * 6. The model declares actions and binds a table outside the store. For a
+ *    Spanner or AlloyDB store, a write would land in the wrong place, and the
+ *    error is named. A BigQuery graph may read tables in any dataset, so for a
+ *    BigQuery store the error is not named.
  */
 export function resolveStore(
-    model: SemanticModel, profile: string = DEFAULT_PROFILE): ChosenStore|
-    StoreError {
+    model: SemanticModel, profile: string = DEFAULT_PROFILE,
+    document = model.name,
+    sourceOf: (e: Entity) => string|undefined = writtenSource):
+    ChosenStore|StoreError {
   // Push checks the target of every deployment the model declares, so the
   // targets of every deployment are read before the profile's are picked.
   const all = googleDeploymentTargets(model);
@@ -241,7 +250,11 @@ export function resolveStore(
 
   const operational = [...spanner, ...alloyDb];
   const contenders = operational.length ? operational : bigQuery;
-  if (contenders.length > 1) {
+  const stores = operational.length ?
+      [...spanner.map(t => targetStore({engine: 'spanner', coordinates: t})),
+       ...alloyDb.map(t => targetStore({engine: 'alloydb', coordinates: t}))] :
+      bigQuery.map(t => targetStore({engine: 'bigquery', coordinates: t}));
+  if (new Set(stores.map(s => s.name)).size > 1) {
     const counted = [
       ...(spanner.length ? [`${spanner.length} Spanner`] : []),
       ...(alloyDb.length ? [`${alloyDb.length} AlloyDB`] : []),
@@ -274,7 +287,18 @@ export function resolveStore(
 
   const store = storeFor(spanner[0], alloyDb[0], bigQuery[0]);
 
-  const strays = strayBindings(model, store);
+  // Push refuses a deployment whose database holds no table an entity is
+  // bound to. Each deployment that names the store is checked, with the
+  // profile's bindings applied to the model.
+  const resolved = resolveModelDeployments(scoped);
+  const outside = 'error' in resolved ? [] : resolved.deployments
+      .filter(d => targetStore(d).name === store.name)
+      .flatMap(d => tablesOutsideTarget(document, model, d, sourceOf));
+  if (outside.length) return {error: outside.join('\n'), named: true};
+
+  // Only an action writes, so only a model that declares one needs every
+  // table in the store.
+  const strays = model.actions?.length ? strayBindings(model, store) : [];
   if (strays.length) {
     return {
       error: `Model '${model.name}' binds ${strays.join(', ')}, but its ` +
@@ -345,6 +369,19 @@ function deploymentNames(
   const names =
       uris.map(uri => deployments.find(d => d.target === uri)?.name ?? uri);
   return ` for profile '${profile}' (${names.join(', ')})`;
+}
+
+
+// The store the deployment target `target` names.
+function targetStore(target: ParsedDeploymentTarget): ChosenStore {
+  switch (target.engine) {
+    case 'spanner':
+      return storeFor(target.coordinates, undefined, undefined);
+    case 'alloydb':
+      return storeFor(undefined, target.coordinates, undefined);
+    case 'bigquery':
+      return storeFor(undefined, undefined, target.coordinates);
+  }
 }
 
 

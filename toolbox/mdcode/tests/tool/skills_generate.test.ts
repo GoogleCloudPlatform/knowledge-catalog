@@ -475,6 +475,46 @@ semantic_model:
          }
        });
 
+  // Push's errors reach skills-generate one to a line, each naming the
+  // model file once.
+  test('gives push\'s error for each table outside the database the deployment targets', async () => {
+    writeModel('orders.yaml', modelText('commerce', 'IssueCredit')
+        .replace('databases/commerce/tables/Orders', 'databases/other/tables/Orders')
+        .replace('    actions:', `      - name: Customer
+        source: ${SPANNER}/databases/other/tables/Customers
+        primary_key: [key]
+        fields:
+          - { name: key, expression: CustomerId }
+    actions:`));
+    expect(await skillsGenerate({out: 'skills'})).toBe(1);
+    expect(logs.filter(l => l.startsWith('Error:')))
+        .toEqual([['Order', 'Orders'], ['Customer', 'Customers']].map(
+            ([entity, table]) => "Error: [orders] deployment 'prod' targets " +
+                "Spanner database 'acme-ops/prod/commerce', but the model " +
+                `file binds entity '${entity}' to '${SPANNER}/databases/other/` +
+                `tables/${table}', which is not a table in that database.`));
+  });
+
+  // A profile that leaves an entity out keeps the model file's table, which
+  // the profile does not bind.
+  test('names the model file\'s table for an entity the profile leaves out', async () => {
+    writeModel('commerce.yaml', modelText('commerce', 'IssueCredit')
+        .replace(/        executor:\n(.*\n){3}/, '')
+        .replace(
+            `      - name: prod\n        target: ${SPANNER}/databases/commerce/` +
+                'graphs/commerce',
+            `      - name: ops\n        target: ${SPANNER}/databases/other/` +
+                'graphs/commerce\n        profile: ops'));
+    writeModel('commerce.profile.ops.yaml', 'name: ops\nentities: []\n');
+    expect(await skillsGenerate({out: 'skills', profile: 'ops'})).toBe(1);
+    expect(logs.filter(l => l.startsWith('Error:'))).toEqual([
+      `Error: Model 'commerce' binds 'Order' to ${SPANNER}/databases/commerce/tables/Orders, ` +
+      'but its deployment target is projects/acme-ops/instances/prod/databases/other. ' +
+      "An action's statements address a table by name alone, so the write would land in " +
+      "the target store's table of that name rather than in the bound one. Bind both to " +
+      'the same store.']);
+  });
+
   // A BigQuery graph may read tables in another dataset, and push accepts
   // that. The skill is written, and its store line says there is none.
   test('a BigQuery graph over tables in another dataset still gets its skill',

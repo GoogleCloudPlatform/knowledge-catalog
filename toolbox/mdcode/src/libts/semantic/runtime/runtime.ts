@@ -51,9 +51,10 @@ export interface SemanticRuntime {
    * Set when the model's deployments name a target and still no store
    * results. The target of any deployment may be in no accepted form, the
    * profile's several targets may leave the store ambiguous, the model may
-   * bind a table outside its Spanner or AlloyDB store, or finding how to
-   * connect may fail, such as the lookup of an AlloyDB cluster's primary
-   * instance. `storeError` says why.
+   * bind a table outside its Spanner or AlloyDB store, a BigQuery graph
+   * deployment that names the store may bind a table that is not a BigQuery
+   * or BigLake table, or finding how to connect may fail, such as the lookup
+   * of an AlloyDB cluster's primary instance. `storeError` says why.
    */
   storeFailed?: boolean;
   /**
@@ -307,8 +308,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
-    // inheritance does not change.
-    const chosen = resolveStore(authored, profile);
+    // inheritance does not change. Push reads a named profile's own sources,
+    // so an entity the profile leaves out is not reported as one it binds.
+    const declared =
+        (profilesByDoc.get(document) ?? []).find(p => p.name === profile);
+    const spec = profile === DEFAULT_PROFILE || !declared ? undefined :
+        'spec' in declared ? declared.spec :
+        loadProfileFile(declared.text, profile, {skipActions: true});
+    const bound = spec && new Map(spec.entities.map(pe => [pe.name, pe.source]));
+    const chosen = bound ?
+        resolveStore(authored, profile, document, e => bound.get(e.name)) :
+        resolveStore(authored, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

@@ -227,10 +227,12 @@ export class SemanticModelLayout implements CatalogLayout {
     ];
   }
 
-  // The overview sidecar of each entry, by entry id. Throws naming a sidecar
+  // The overview sidecar of each entry, by entry id, read from `paths`, which
+  // default to every sidecar on disk. Throws naming a sidecar
   // parseOverviewSidecar rejects.
-  overviewSidecars(): Map<string, OverviewSidecar> {
-    return new Map(this.overviewSidecarPaths().map(
+  overviewSidecars(paths = this.overviewSidecarPaths()):
+      Map<string, OverviewSidecar> {
+    return new Map(paths.map(
         ({entryId, path: p}) => [
           entryId,
           parseOverviewSidecar(
@@ -541,7 +543,28 @@ export function parseOverviewSidecar(
   if (links !== undefined && !(Array.isArray(links) && links.every(isLink))) {
     throw fail('links is a list of entries, each a url and an optional title.');
   }
-  return {content: split.body.trim() || undefined, contentType, links};
+  // splitFrontmatter joins the lines after frontmatter with LF, so a sidecar
+  // with no frontmatter is read with LF line endings too.
+  return {
+    content: split.body.replace(/\r\n/g, '\n').trim() || undefined,
+    contentType,
+    links,
+  };
+}
+
+// Whether the overviews `a` and `b` hold the same content, contentType and
+// links, as the catalog stores them: empty content and an empty list of links
+// are none.
+export function sameOverview(a: OverviewSidecar, b: OverviewSidecar): boolean {
+  const stored = ({content, contentType, links}: OverviewSidecar) =>
+      JSON.stringify({
+        content: content || undefined,
+        contentType,
+        links: links?.length ?
+            links.map(({url, title}) => ({url, title})) :
+            undefined,
+      });
+  return stored(a) === stored(b);
 }
 
 // The text of the overview sidecar that holds `overview`.

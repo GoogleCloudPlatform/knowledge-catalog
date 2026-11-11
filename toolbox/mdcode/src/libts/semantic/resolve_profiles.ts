@@ -33,7 +33,7 @@ import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KE
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {translatesToBigQuery} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -443,8 +443,15 @@ export function loadProfileFile(
 // The source dialects a command looked up before it loads
 // (LoadOptions.sourceDialects). `sourceDatabases` holds the database each
 // third-party table's entry names, by entry name, for the one-database rule.
-export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&
-    {sourceDatabases?: ReadonlyMap<string, string>};
+// With `readWithoutDialect`, push's checks of which fields and entities the
+// expressions of a model file or a profile read parse an ANSI_SQL text as
+// generic SQL when no lookup read its tables' dialect, and leave out each name
+// whose reading depends on the dialect (see columnsWithoutDialect). Without
+// it, they skip such a text.
+export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&{
+  sourceDatabases?: ReadonlyMap<string, string>;
+  readWithoutDialect?: boolean;
+};
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
@@ -1396,6 +1403,14 @@ export function tableDialects(
   return undefined;
 }
 
+// Every dialect the tables of the concrete `entities` may have, a table no
+// lookup read included.
+export function possibleDialects(
+    entities: ReadonlyArray<Parameters<typeof tableDialects>[0]>): string[] {
+  return [...new Set(entities.filter(e => !e.abstract)
+                         .flatMap(e => tableDialects(e, true)?.dialects ?? []))];
+}
+
 // Each field of each entity whose table `tableDialects(entity, withUnread)`
 // gives, with that table. An inherited field is listed on each entity that
 // inherits it.
@@ -1662,6 +1677,9 @@ export function validateProfileCompleteness(
         `profile reads from one system a single query can reach`);
   }
   const dialect = dialectOfSources(stated);
+  const candidates = dialect === null ?
+      possibleDialects(stated.map(s => profiledByName.get(s.entity)!)) :
+      [];
 
 
   // The expressions of each entity the profile may bind.
@@ -1677,17 +1695,21 @@ export function validateProfileCompleteness(
     // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
-    // as the profile's own SQL, and not at all when no lookup read its
-    // dialect.
+    // as the profile's own SQL. When no lookup read its dialect, it is read
+    // with `readWithoutDialect` as columnsWithoutDialect reads it in the
+    // dialects the profile's tables may have, and not at all without.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
       // A text with no SQL is reported above, and has nothing to read.
       const readable = expressionSources(pf).filter(
           s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
-              !(s.dialect === 'ANSI_SQL' && dialect === null));
+              !(s.dialect === 'ANSI_SQL' && dialect === null &&
+                !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
-        const columns = columnReferences(
-            text, written === 'ANSI_SQL' && dialect ? dialect : written);
+        const columns = written === 'ANSI_SQL' && dialect === null ?
+            columnsWithoutDialect(text, candidates)?.columns :
+            columnReferences(
+                text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {
           unreadable.add(fieldLabel(pe.name, pf.name));
           continue;

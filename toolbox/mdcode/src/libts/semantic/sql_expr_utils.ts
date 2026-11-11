@@ -15,7 +15,7 @@
 
 import {Field, fieldBinding} from './ir';
 import {quoteIfReserved} from './sql_identifiers';
-import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments} from './sql_parser';
+import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
 // text with no dialect, is read as BigQuery.
@@ -272,6 +272,45 @@ export function columnsForSource(
   const bqBare =
       new Set(bqCols.filter(c => c.qualifier === undefined).map(c => c.name));
   return cols.filter(c => c.qualifier !== undefined || bqBare.has(c.name));
+}
+
+// The columns an ANSI_SQL text reads when no lookup read its tables' dialect,
+// read as generic SQL. `dialects` are the dialects those tables may have.
+// Each name whose reading depends on the dialect is left out: an unqualified
+// name, which may be a keyword there, such as `month` in
+// `DATE_TRUNC(month, ts)`, and a name in double quotes, which some databases
+// read as a string. `skipped` is set when a name is left out. Undefined when
+// the parser cannot read the text in one of `dialects` or as generic SQL.
+export function columnsWithoutDialect(
+    text: string, dialects: readonly string[]):
+    {columns: SqlColumn[]; skipped: boolean}|undefined {
+  // T-SQL's parser panics on `IF(...)`, and the tables may not run T-SQL, so
+  // the engine's message stays out of the output.
+  if (withoutEngineMessages(
+          () => dialects.some(d => !columnReferences(text, d)))) {
+    return undefined;
+  }
+  const tokens = sqlTokens(text, 'ANSI_SQL');
+  if (!tokens) return undefined;
+  // Each name in double quotes is read as a placeholder name, so the columns
+  // it gives can be told apart.
+  const chars = Array.from(text);
+  const stem = unusedName(text, 'kcmd_quoted_');
+  let read = '';
+  let end = 0;
+  tokens.filter(t => t.token_type === 'QUOTED_IDENTIFIER' &&
+                    chars[t.span.start] === '"')
+      .forEach((t, k) => {
+        read += chars.slice(end, t.span.start).join('') + stem + k;
+        end = t.span.end;
+      });
+  read += chars.slice(end).join('');
+  const all = columnReferences(read, 'ANSI_SQL');
+  if (!all) return undefined;
+  const columns = all.filter(
+      c => c.qualifier !== undefined && !c.qualifier.startsWith(stem) &&
+          !c.name.startsWith(stem));
+  return {columns, skipped: columns.length < all.length};
 }
 
 // The entities from `entityNames` that `columns` read, deduplicated in
