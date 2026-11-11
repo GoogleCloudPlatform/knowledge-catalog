@@ -1321,8 +1321,8 @@ async function repairDocument(
  * In both runs, every other concrete entity and every other field of one is
  * bound, so the runs differ only in the one left unbound. An abstract entity
  * and its fields take no binding in either run. The checks read the repaired
- * model and the input's profile files. A model that does not load cannot be
- * checked, and gets no such remedy.
+ * model and the input's profile files. A model or profile file that does not
+ * load cannot be checked, and gets no such remedy.
  */
 async function offerUnbinding(
     doc: ImportDocument, opts: ImportSemanticModelOptions,
@@ -1331,23 +1331,26 @@ async function offerUnbinding(
   const offer = (u: Unbinding) => {
     doc.errors[u.at] = `${doc.errors[u.at].slice(0, -1)}, ${u.clause}.`;
   };
+  const profiles = (opts.profileFiles ?? []).map(pf => ({
+    name: parseProfileName(pf.fileName),
+    text: pf.content,
+    fileName: pf.fileName,
+  }));
   let model: SemanticModel;
   try {
     [model] = fromDocument(
                   plainCopy(doc.root),
                   {bindingOptional: true, warnUnacceptedSource: true})
                   .models;
+    for (const p of profiles) {
+      loadProfileFile(p.text, p.name, {skipActions: true});
+    }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
     return;
   }
   const name = doc.model.name;
   const docs = [{name, text: JSON.stringify(doc.root)}];
-  const profiles = (opts.profileFiles ?? []).map(pf => ({
-    name: parseProfileName(pf.fileName),
-    text: pf.content,
-    fileName: pf.fileName,
-  }));
   // Every run reads the same text, so its profiles are read once.
   const declared = declaredProfiles(docs[0], profiles);
   // A concrete entity with no source takes the table of the first concrete

@@ -340,10 +340,14 @@ describe('conversion, strict mode, and translation', () => {
                    .errors).not.toContain(needed);
       });
 
-  // Push's checks need a model that loads, with or without deployments. A
-  // named profile binds or excludes each field the model file leaves unbound.
+  // Push's checks need a model and profile files that load, with or without
+  // deployments. A named profile binds or excludes each field the model file
+  // leaves unbound.
+  const PROD_GRAPH = `    deployments: [{name: d, target: ${BQ_PREFIX}/propertyGraphs/g, profile: prod}]\n`;
   test.each([
     ['the repaired model does not load', '    colour: red\n', []],
+    ['a profile file does not load', PROD_GRAPH,
+     [{fileName: 'retail.profile.prod.yaml', content: 'name: prod\ncolour: red\n'}]],
     ['a profile file leaves the field out', '',
      [{fileName: 'retail.profile.prod.yaml',
        content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n    primary_key: [order_id]\n`}]],
