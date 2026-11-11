@@ -1032,8 +1032,8 @@ describe('profile checks', () => {
          `      - name: items\n        abstract: true\n` +
          `    deployments: [{name: g, target: ${BQ_GRAPH}}, ` +
          `{name: h, target: ${BQ_GRAPH.replace('/sales/', '/dev/')}}]\n`), [],
-     () => "Warning: [retail -> g] abstract entity 'items' is not a supertype of any concrete " +
-         'entity; it has no table and no descendant to label, so it produces no graph element'],
+     () => "Warning: [retail -> g] abstract entity 'items' has no table, and no entity with a " +
+         'node table extends it, so it produces no graph element'],
     ['a field a profile excludes',
      model(`          - {name: extra, expression: extra}\n    deployments: [{name: g, target: ${BQ_GRAPH}, profile: pg}]\n`),
      pg(`${KEYED}    fields_exclude: [extra]\n`),

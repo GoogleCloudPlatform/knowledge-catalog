@@ -412,10 +412,9 @@ Each rule and its reason:
   the deployment uses: the model file's own, or the named profile's. *Why:* a
   graph node table is keyed by the dataset's `primary_key`, and `unique_keys`
   do not stand in for it. A model with no deployments, an AlloyDB deployment,
-  and a supertype extended by another dataset need none — though a concrete
-  supertype without a `primary_key` forms no node table and its label is left
-  off its subtypes (push warns), so give it a `primary_key` or mark it
-  `abstract: true` when it has no table of its own.
+  and a supertype extended by another dataset need none. A supertype forms no
+  node table, abstract or not, so its label rides on its subtypes whether or
+  not it declares a `primary_key`.
 
 - **A BigQuery graph-bound relationship MUST join on its target's primary key.**
   For a BigQuery target, a non-M:N relationship's `to_columns` MUST name

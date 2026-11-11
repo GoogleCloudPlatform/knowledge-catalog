@@ -2465,8 +2465,10 @@ semantic_model:
            }
 
            // A concrete supertype without primary_key passes on both BigQuery
-           // and Spanner when the leaf entity extending it declares one, and
-           // push warns that its node table and subtype label are omitted.
+           // and Spanner when the leaf entity extending it declares one. A
+           // supertype forms no node table and needs no KEY, so its label stays
+           // on the leaf, and push warns only that Knowledge Catalog records no
+           // key for it.
            const withSupertype = commerce({targets: 1}).replace(
                '      - name: purchase\n',
                `      - name: item\n        source: ${BQ('dev', 'item')}\n` +
@@ -2478,10 +2480,7 @@ semantic_model:
                spyOn(console, 'warn').mockImplementation((m: any) => {
                  warned.push(String(m));
                });
-           for (const [graph, text] of [
-                    ['commerce_prod', withSupertype],
-                    ['commerce', spannerCommerce(withSupertype)],
-                  ] as const) {
+           for (const text of [withSupertype, spannerCommerce(withSupertype)]) {
              warned.length = 0;
              writeScope({'commerce.yaml': text});
              expect(await pushResult()).toEqual({code: 0, errors: []});
@@ -2490,13 +2489,6 @@ semantic_model:
                    'source model; declare primary_key or unique_keys in the ' +
                    'model file or in a profile to record a key in Knowledge ' +
                    'Catalog',
-               `Warning: [commerce -> ${graph}] entity 'item': empty KEY (no ` +
-                   'primary key); node table skipped, as a graph node ' +
-                   'requires a KEY',
-               `Warning: [commerce -> ${graph}] entity 'purchase' extends ` +
-                   "'item', which has no node table and is not abstract (it " +
-                   "was dropped, e.g. for an empty KEY); the 'item' label is " +
-                   "omitted from 'purchase'",
              ]);
              expect(await profiles()).toBe(0);
            }
