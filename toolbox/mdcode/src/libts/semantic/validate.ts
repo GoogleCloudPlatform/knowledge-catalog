@@ -26,7 +26,7 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
+import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
@@ -830,9 +830,10 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
+  // Null when no lookup read the dialect of the model's tables, as in pull.
+  const sources = sourcesDialect(model);
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sourcesDialect(model) ??
-          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : undefined) :
+      sources ?? (alloyDbTargets(model).targets.length ? 'ALLOYDB' : sources) :
       undefined;
   for (const action of actions) {
     const where =
@@ -959,9 +960,18 @@ export function validateActions(
 //   - Every `@parameter` is declared. This is the load-bearing one: it is what
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
+//
+// A null `dialect` says no lookup read the dialect of the model's tables. The
+// errors are then those that every dialect in SQL_CODE_DIALECTS gives, and
+// push, which reads the dialect, reports the others.
 function sqlExecutorErrors(
     action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
+  if (dialect === null) {
+    const [first, ...rest] =
+        SQL_CODE_DIALECTS.map(d => sqlExecutorErrors(action, where, d));
+    return first.filter(e => rest.every(errors => errors.includes(e)));
+  }
   const executor = action.executor;
   const errors: string[] = [];
   const bindable = new Set(action.parameters.map(p => p.name));

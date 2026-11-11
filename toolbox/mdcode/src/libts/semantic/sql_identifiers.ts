@@ -247,6 +247,11 @@ function endOfTripleQuoted(text: string, from: number): number {
   return text.length;
 }
 
+// One dialect for each way sqlCode reads a statement: SPANNER for GoogleSQL,
+// which it reads for every dialect but POSTGRES and ALLOYDB, and POSTGRES for
+// PostgreSQL.
+export const SQL_CODE_DIALECTS = ['SPANNER', 'POSTGRES'] as const;
+
 // `text` with each comment and each quoted string or identifier replaced by a
 // space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
 // `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).

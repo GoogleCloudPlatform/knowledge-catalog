@@ -2049,6 +2049,32 @@ describe('a pull', () => {
     }
   }
 
+  // A Spanner database reads an action's statement as GoogleSQL or as
+  // PostgreSQL. With no table's dialect read, pull warns only about an error
+  // push gives under both.
+  for (const [what, statement, error] of [
+    // PostgreSQL reads `$$@raw$$` as a string.
+    ['a parameter only GoogleSQL reads',
+     'UPDATE orders SET note = $$@raw$$ WHERE id = @id', ''],
+    // GoogleSQL reads `#` as the start of a comment.
+    ['a parameter only PostgreSQL reads',
+     'UPDATE orders SET flags = flags # 1 WHERE id = @missing', ''],
+    ['a parameter both read', 'UPDATE orders SET note = @note WHERE id = @id',
+     "has a sql executor whose statement 1 binds '@note', but action 'tag' " +
+         'declares no parameter of that name.'],
+  ]) {
+    test(`on a Spanner table ${error ? 'warns' : 'gives no warning'} about ` +
+             `${what} that an action does not declare`,
+         () => checkPull({
+           name: 'commerce', relationships: [], metrics: [],
+           entities: [onTable('Order', `${SPANNER}/orders`, ['id'])],
+           actions: [{
+             name: 'tag', parameters: [{name: 'id', type: 'String'}],
+             executor: {kind: 'sql', sql: {statements: [statement]}},
+           }],
+         }, error && `action 'tag' in model 'commerce' (commerce) ${error}`));
+  }
+
   // A table's dialect may read an unqualified name as a keyword and a name in
   // double quotes as a string, so pull skips both. A metric text that loses a
   // name is not judged on the entities it reaches.
