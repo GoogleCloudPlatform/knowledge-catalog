@@ -2110,6 +2110,9 @@ describe('a pull', () => {
     // GoogleSQL reads `#` as the start of a comment.
     ['a parameter only PostgreSQL reads',
      'UPDATE orders SET flags = flags # 1 WHERE id = @missing', ''],
+    // GoogleSQL matches `@ID` to `id`, and PostgreSQL does not.
+    ['a parameter GoogleSQL matches in another case',
+     'UPDATE orders SET note = @ID WHERE id = @id', ''],
     ['a parameter both read', 'UPDATE orders SET note = @note WHERE id = @id',
      "has a sql executor whose statement 1 binds '@note', but action 'tag' " +
          'declares no parameter of that name.'],
