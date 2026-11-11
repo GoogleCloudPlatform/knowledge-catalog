@@ -50,6 +50,15 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: " z\n\n  \\n"\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\nd: 1\n'
   ],
   [
+    'a block scalar whose first line of text starts with a tab',
+    'a: |\n    \tx\n    y\n', v => (v.a = '\tx\nz\n'), 'a: |\n    \tx\n    z\n'
+  ],
+  [
+    'a block scalar whose header sets its indentation',
+    'k:\n  data: |-4\n      x\n      y\nq: 1\n', v => (v.k.data = 'x\nz'),
+    'k:\n  data: |-4\n      x\n      z\nq: 1\n'
+  ],
+  [
     '`|+` block scalars moved, and text that ends in two line breaks added',
     'a:\n  m: |+  # h\n    x\n\n  w:\n    v: |+\n      y\n  k: 1\n\nc:\n  - 1\n',
     v => (v.a = {k: 1, c: {m: v.a.m, w: v.a.w}}, v.c.push('y\n\n'), v.d = 'x\n\n'),

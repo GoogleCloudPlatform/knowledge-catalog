@@ -436,15 +436,22 @@ function setScalar(
   if (!/^(BLOCK|QUOTE_SINGLE)/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
-  // A block scalar written again keeps the indentation of its lines of text.
-  const indent = blockIndent(u.text, node);
-  if (indent !== undefined && /^[|>][-+]?\r?\n/.test(s)) {
-    const pad = ' '.repeat(slot.col + u.step);
-    s = s.split(u.nl)
-            .map((line, i) => i && line.startsWith(pad) ?
-                     ' '.repeat(indent) + line.slice(pad.length) :
-                     line)
-            .join(u.nl);
+  // A block scalar written again keeps the indentation of its lines of text,
+  // and a header that sets that indentation keeps setting it.
+  const indent = blockIndent(u.text, node, slot.col);
+  const digit = /^[|>][-+]?[1-9]/.test(written) || /^[|>][1-9]/.test(s);
+  if (indent !== undefined && /^[|>]/.test(s) &&
+      (!digit || indent - slot.col <= 9)) {
+    s = s.replaceAll(
+        u.nl + ' '.repeat(slot.col + u.step), u.nl + ' '.repeat(indent));
+    if (digit) {
+      const head = (t: string) => /^[|>][-+0-9]*/.exec(t)![0];
+      const bare = (t: string) => head(t).replace(/[0-9]/, '');
+      s = (bare(written) === bare(s) && head(written) !== bare(written) ?
+               head(written) :
+               bare(s).replace(/^[|>]/, h => h + (indent - slot.col))) +
+          s.slice(head(s).length);
+    }
   }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
@@ -809,15 +816,21 @@ function headerTail(t: string, from: number): string|undefined {
 }
 
 /**
- * The indentation of the first line of text of the block scalar `node`, or
- * undefined when `node` is not a block scalar, its header sets the
- * indentation, or it has no line of text.
+ * The indentation of the lines of text of the block scalar `node`, whose key
+ * or `-` is at column `col`, or undefined when `node` is not a block scalar or
+ * has no line of text. A header that sets the indentation gives it, and
+ * otherwise the spaces before its first line of text do.
  */
-function blockIndent(t: string, node: yaml.Scalar): number|undefined {
+function blockIndent(
+    t: string, node: yaml.Scalar, col: number): number|undefined {
   const [from, to] = node.range!;
-  if (!/^[|>][-+]?(?![-+0-9])/.test(t.slice(from, to))) return undefined;
+  const header =
+      /^[|>](?:([1-9])[-+]?|[-+]([1-9])?)?(?![-+0-9])/.exec(t.slice(from, to));
+  if (!header) return undefined;
+  const digit = header[1] ?? header[2];
+  if (digit) return col + Number(digit);
   const line = t.slice(from, to).split('\n').slice(1).find(l => l.trim());
-  return line === undefined ? undefined : indentOf(line);
+  return line === undefined ? undefined : /^ */.exec(line)![0].length;
 }
 
 function lineStart(t: string, p: number): number {
