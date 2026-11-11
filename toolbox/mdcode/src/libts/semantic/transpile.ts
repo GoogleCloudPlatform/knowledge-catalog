@@ -785,8 +785,8 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
 
 // The unit each word in `words` names, by the word in lower case.
 function named(words: Partial<Record<Unit, string[]>>): Record<string, Unit> {
-  return lookup(Object.fromEntries(Object.entries(words).flatMap(
-      ([unit, list]) => [unit.toLowerCase(), ...list!].map(w => [w, unit as Unit]))));
+  return Object.fromEntries(Object.entries(words).flatMap(
+      ([unit, list]) => [unit.toLowerCase(), ...list!].map(w => [w, unit as Unit])));
 }
 
 const SUB_DAY: Unit[] = ['SECOND', 'MINUTE', 'HOUR'];
@@ -815,7 +815,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
-    words: lookup({}), intervalFirst: false,
+    words: {}, intervalFirst: false,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: {...adds(['DAY'], 'DATE_ADD', 'column'), ...adds(SUB_DAY, '+', 'column')}},
       DATE: {
@@ -944,7 +944,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   },
   generic: {
     date: 'DATE', today: ['CURRENT_DATE'], now: {functions: ['CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
-    functions: {}, words: lookup({}),
+    functions: {}, words: {},
     notes: {DAY: 'which gives a DATE in some databases and a timestamp in others'},
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: {}},
@@ -1532,10 +1532,10 @@ function article(noun: string): string {
 function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sides = [value.left, value.right];
   const op = OPERATORS[kind];
-  const added = kind !== 'mul' && sides.find(s => bare(s)?.interval);
-  if (added && read === 'spanner') {
-    const untranslated = sides.find(s => bare(s)?.interval && !spannerInterval(bare(s).interval));
-    return untranslated ? `INTERVAL ${intervalText(bare(untranslated).interval)}` :
+  const intervals = kind === 'mul' || read !== 'spanner' ? [] : sides.flatMap(spannerIntervals);
+  if (intervals.length) {
+    const untranslated = intervals.find(i => !spannerInterval(i));
+    return untranslated ? `INTERVAL ${intervalText(untranslated)}` :
                           sides.map(s => bare(s)?.interval ? bare(s).interval.this : s);
   }
   const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
@@ -1719,6 +1719,14 @@ function valueName(node: any): string {
 // SPANNER text: a whole number or a column of days, hours or minutes.
 function spannerInterval(value: any): boolean {
   return spannerAmount(value) && ['DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
+}
+
+// The engine intervals that `node`, a side of `+` or `-` in a SPANNER text, can
+// give: an INTERVAL, one after a minus sign, or one that COALESCE, IF or a
+// similar function returns. BigQuery adds no month or year to a TIMESTAMP.
+function spannerIntervals(node: any): any[] {
+  const b = bare(node);
+  return b?.interval ? [b.interval] : b?.neg ? spannerIntervals(b.neg.this) : returned(b).flatMap(spannerIntervals);
 }
 
 // Whether `value`, an engine interval in a SPANNER text, names one unit and a

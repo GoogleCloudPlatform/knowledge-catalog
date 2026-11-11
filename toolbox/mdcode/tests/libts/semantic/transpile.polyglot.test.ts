@@ -633,6 +633,8 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     // one beside + or - with a unit other than days, hours or minutes.
     ['SPANNER', "d + INTERVAL '1 day'", {error: "kcmd does not translate INTERVAL '1 day'"}],
     ['SPANNER', 'd + (INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', 'd + COALESCE(INTERVAL 1 MONTH, INTERVAL 2 DAY)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', 'd + (-INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
     ['SPANNER', 'd + INTERVAL TRUE DAY', {error: 'kcmd does not translate INTERVAL ? DAY'}],
     ['SPANNER', 'DATE_ADD(d, INTERVAL 1.5 DAY)', {error: 'kcmd does not translate INTERVAL 1.5 DAY'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
