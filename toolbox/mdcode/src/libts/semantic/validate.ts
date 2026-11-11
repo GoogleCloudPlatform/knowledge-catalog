@@ -19,14 +19,14 @@ import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
 import {alloyDbTargets, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, tablesOutsideTarget} from './deployment_target';
-import {declaredFields, expressionProblems, ifResolvable, inlineDialectProblems, placementProblems, transpileAdvice} from './expression_checks';
+import {declaredFields, expressionProblems, ifResolvable, inlineDialectProblems, placementProblems} from './expression_checks';
 import {GraphElement} from './graph_ddl';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, listed, LoadedModel, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, holdsSubquery, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
@@ -52,6 +52,7 @@ export function validatePushRequirements(
       fieldsPruned?: boolean;
       warnings?: string[];
       load?: DialectLoad;
+      transpileOutcomes?: TranspileOutcomes;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
@@ -90,7 +91,8 @@ export function validatePushRequirements(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
         flaggedMetrics, opts.load));
     if (deployInfo.bigQuery.length > 0) {
-      errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
+      errors.push(...measurePlacementErrors(
+          model, document, flaggedMetrics, opts.transpileOutcomes));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -336,10 +338,10 @@ function measureProblem(
 // reported.
 function measurePlacementErrors(
     model: SemanticModel, document: string,
-    alreadyFlagged: ReadonlySet<string>): string[] {
+    alreadyFlagged: ReadonlySet<string>,
+    outcomes?: TranspileOutcomes): string[] {
   return placementProblems(model, document, alreadyFlagged, metric => {
-           const advice = transpileAdvice(
-               model, document, metric, {metric: metric.name});
+           const advice = transpileAdvice(model, document, metric, outcomes);
            return advice ? `, or ${advice}` : '';
          }).map(p => p.problem);
 }
@@ -352,8 +354,8 @@ export function validateInlineDialects(
     model: SemanticModel, document: string, load: DialectLoad): string[] {
   return inlineDialectProblems(
              model, document, load.sourceDatabases,
-             (e, f, dialect) => importHint(
-                 f, dialect, model, document, {entity: e.name, field: f.name}))
+             (_, f, dialect) => importHint(
+                 f, dialect, model, document, load.transpileOutcomes))
       .map(p => p.problem);
 }
 
@@ -2316,9 +2318,17 @@ async function deploymentPlan(
           (model.deployments ?? []).filter(d => d.name === deployment.name),
     },
   };
+  // The advice to add a BigQuery text names the model file's import outcome.
+  const outcome = load.transpileOutcomes?.get(document);
   const errors = [
     ...unprunedErrors,
-    ...validatePushRequirements([narrowed], {fieldsPruned: true, load}),
+    ...validatePushRequirements([narrowed], {
+      fieldsPruned: true,
+      load,
+      transpileOutcomes: outcome === undefined ?
+          undefined :
+          new Map([[narrowed.document, outcome]]),
+    }),
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.

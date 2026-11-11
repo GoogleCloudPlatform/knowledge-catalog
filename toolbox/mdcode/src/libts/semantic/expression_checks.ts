@@ -1,16 +1,12 @@
-// Push's checks of the SQL of each field and metric, which push runs on the
-// model file and the `--transpile` advice runs on the model file as `kcmd
-// import --transpile` would write it, so that the advice names the problem
-// that command would stop on.
+// Push's checks of the SQL of each field and metric.
 
 import {Entity, expressionForDialect, Field, isFieldBound, Metric, SemanticModel, SqlDialect} from './ir';
 import {inheritedNoSqlProblems, noSqlProblemOf, noSqlReason, OSSIE_VERSION, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, resolveInheritance} from './resolve_inheritance';
-import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, noTextFor, possibleDialects, sourcesDialect} from './resolve_profiles';
+import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
-import {bigQueryTranslation, translatedModel} from './transpile';
 
 // A field of an entity, or a metric.
 export type ExpressionItem = {entity: string; field: string}|{metric: string};
@@ -21,10 +17,6 @@ export interface ExpressionProblem {
   item?: ExpressionItem;
   problem: string;
 }
-
-const sameItem = (a: ExpressionItem, b: ExpressionItem) => 'metric' in a ?
-    'metric' in b && a.metric === b.metric :
-    'entity' in b && a.entity === b.entity && a.field === b.field;
 
 // `declaredFields` and `declaredConcepts` both resolve inheritance, and
 // resolving THROWS on an `extends` naming an entity the model does not declare,
@@ -621,56 +613,4 @@ export function placementProblems(
     }
   }
   return problems;
-}
-
-// The problems push reports about the SQL of `model`'s fields and metrics, in
-// `document`, once `kcmd import --transpile` has translated it, in the order
-// push reports them, kept by model and document. Measure placement is left
-// out: push judges it on each graph deployment's model, which leaves out a
-// metric that cannot be a measure.
-const afterTranslation =
-    new WeakMap<SemanticModel, Map<string, ExpressionProblem[]>>();
-function problemsAfterTranslation(
-    model: SemanticModel, document: string): ExpressionProblem[] {
-  const byDocument = afterTranslation.get(model) ?? new Map();
-  afterTranslation.set(model, byDocument);
-  const cached = byDocument.get(document);
-  if (cached) return cached;
-  const translated = translatedModel(model);
-  const problems = [
-    ...inlineDialectProblems(translated, document),
-    ...expressionProblems(translated, document),
-  ];
-  byDocument.set(document, problems);
-  return problems;
-}
-
-// The `--transpile` advice for `node`, a field or metric of `model` with no
-// BigQuery text, as push names it in `document`: "add one with '<command>'"
-// when import's translator gives `node` a BigQuery text, or undefined when it
-// gives none. A command with `--input first-party` writes nothing while push
-// would refuse the model file as that command writes it, so then the advice
-// goes on with the first problem push would report, and the command works
-// once that problem is fixed. A problem of `item`, the field or metric that
-// `node` is in the model file, comes first. A third-party import writes the
-// file whatever push would report, so its advice names no problem.
-export function transpileAdvice(
-    model: SemanticModel, document: string,
-    node: Pick<
-        Field, 'dialects'|'expression'|'importedExpression'|'importedDialect'>,
-    item?: ExpressionItem): string|undefined {
-  if (!node.importedExpression ||
-      bigQueryTranslation(node, (model.entities ?? []).map(e => e.name)) ===
-          undefined) {
-    return undefined;
-  }
-  const command = `add one with '${importCommand('--transpile', model)}'`;
-  if (model.thirdPartyImport) return command;
-  const problems = problemsAfterTranslation(model, document);
-  const first =
-      (item && problems.find(p => p.item && sameItem(p.item, item))) ??
-      problems[0];
-  return first ?
-      `${command} after fixing this: ${first.problem.replace(/\.$/, '')}` :
-      command;
 }

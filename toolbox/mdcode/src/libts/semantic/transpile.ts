@@ -366,35 +366,6 @@ export function translatesToBigQuery(
   return bigQueryTranslation(node, entityNames) !== undefined;
 }
 
-/**
- * `model` as `kcmd import --transpile` writes its model file: each field and
- * metric that `transpileModel` translates gains the BIGQUERY text
- * bigQueryTranslation gives it, which a load of that file reads as its
- * expression. Profiles are left as they are. The input is never mutated.
- */
-export function translatedModel(model: SemanticModel): SemanticModel {
-  const clone: SemanticModel = structuredClone(model);
-  const entityNames = (clone.entities ?? []).map(e => e.name);
-  const add = (node: TranspileNode) => {
-    const sql = bigQueryTranslation(node, entityNames);
-    if (sql === undefined) return;
-    node.dialects = [
-      ...(node.dialects ?? []),
-      {dialect: DEFAULT_TARGET as SqlDialect, expression: sql},
-    ];
-    node.stringForm = false;
-    node.expression = sql;
-  };
-  for (const e of clone.entities ?? []) {
-    for (const f of e.fields ?? []) add(f);
-  }
-  for (const r of clone.relationships ?? []) {
-    for (const f of r.association?.fields ?? []) add(f);
-  }
-  for (const m of clone.metrics ?? []) add(m);
-  return clone;
-}
-
 function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const s = new Set(a);

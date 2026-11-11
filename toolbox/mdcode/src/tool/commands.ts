@@ -26,16 +26,16 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadModels, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
-import {sourceDialects} from '../libts/semantic/source_dialect';
+import {SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
@@ -460,11 +460,14 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 }
 
 // The dialects sourceDialects reads for the model documents `docs` and their
-// profile files, for every load the command makes. Prints each source whose
-// dialect cannot be read and returns null.
+// profile files, for every load the command makes, and what the import the
+// advice to add a BigQuery text suggests gives for each document that may get
+// it (see transpileOutcomes). `layout` gives each document's model file.
+// Prints each source whose dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
-    profileDocs: ProfileDocs): Promise<DialectLoad|null> {
+    profileDocs: ProfileDocs,
+    layout: SemanticModelLayout): Promise<DialectLoad|null> {
   const texts = docs.map(d => d.text);
   for (const doc of docs) {
     try {
@@ -473,12 +476,106 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, databases, errors} = await readDialects(ctx, texts);
-  if (errors.length) {
-    for (const e of errors) console.error(`Error: ${e}`);
+  const read = await readDialects(ctx, texts);
+  if (read.errors.length) {
+    for (const e of read.errors) console.error(`Error: ${e}`);
     return null;
   }
-  return {sourceDialects: dialects, sourceDatabases: databases};
+  const load = {sourceDialects: read.dialects, sourceDatabases: read.databases};
+  return {
+    ...load,
+    transpileOutcomes:
+        await transpileOutcomes(ctx, docs, profileDocs, layout, load, read),
+  };
+}
+
+// The model `doc` holds, loaded with `load`, when `kcmd import --transpile`
+// gives a BigQuery text to one of its fields or metrics or to a field one of
+// its profiles binds (see transpilesSomething), or undefined. The caller has
+// loaded the SQL parser, which the translator needs.
+function transpilingModel(
+    doc: {name: string; text: string}, profileDocs: ProfileDocs,
+    load: DialectLoad): SemanticModel|undefined {
+  let model: SemanticModel|undefined;
+  try {
+    model = loadModels(doc.text, {bindingOptional: true, ...load}).models[0];
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+  }
+  if (!model) return undefined;
+  let files: Array<{name: string; text: string}> = [];
+  try {
+    files = profileDocs(doc.name);
+  } catch {
+    // A profile file the layout rejects is reported where it is read.
+  }
+  const profiles = [
+    ...model.profiles ?? [],
+    ...files.flatMap(f => {
+      try {
+        return [loadProfileFile(f.text, f.name, {skipActions: true})];
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        return [];
+      }
+    }),
+  ];
+  return transpilesSomething(model, profiles) ? model : undefined;
+}
+
+// What transpileOutcomes gives for each model document of the semantic-model
+// scope `snapshot`, or undefined for another scope or when a table's dialect
+// cannot be read, which the caller reports.
+async function scopeTranspileOutcomes(
+    ctx: context.ApiContext,
+    snapshot: kcmd.CatalogSnapshot): Promise<Map<string, string|null>|undefined> {
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) return undefined;
+  const layout = snapshot.layout as SemanticModelLayout;
+  const profileDocs = profileDocsReader(layout);
+  await loadSqlEngine();
+  // Only a document that may get the advice needs its tables' dialects.
+  const docs = layout.modelDocuments().filter(
+      doc => transpilingModel(doc, profileDocs, {}));
+  if (!docs.length) return undefined;
+  const texts = docs.map(d => d.text);
+  for (const doc of docs) {
+    try {
+      texts.push(...profileDocs(doc.name).map(p => p.text));
+    } catch {
+      // A profile file the layout rejects is reported where it is read.
+    }
+  }
+  const read = await readDialects(ctx, texts);
+  if (read.errors.length) return undefined;
+  return transpileOutcomes(
+      ctx, docs, profileDocs, layout,
+      {sourceDialects: read.dialects, sourceDatabases: read.databases}, read);
+}
+
+// What `kcmd import <model file> --input first-party --flavor <its flavor>
+// --transpile` gives, run in place and writing nothing, for each of `docs`
+// that may get the advice to add a BigQuery text: null when it would write
+// its files, or the first error it would stop on. The import reads each
+// table's dialect from `dialects`, read with `load` for the same files, and
+// calls services with `ctx`. The caller has loaded the SQL parser.
+async function transpileOutcomes(
+    ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
+    profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
+    dialects: SourceDialects): Promise<Map<string, string|null>> {
+  const outcomes = new Map<string, string|null>();
+  for (const doc of docs) {
+    const model = transpilingModel(doc, profileDocs, load);
+    if (!model) continue;
+    const plan = await planImport(
+        layout.modelPath(doc.name), {
+          flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
+          input: 'first-party',
+          transpile: true,
+        },
+        {readDialects: async () => dialects, api: () => ctx});
+    outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
+  }
+  return outcomes;
 }
 
 // The dialect of each source the files `texts` write, read with the clients
@@ -1044,7 +1141,8 @@ async function pushInTwoPhases(
   if (named && negated) {
     return fail('Cannot combine --no-deployment with --deployment.');
   }
-  const load = await dialectLoad(ctx, scope.docs, scope.profileDocs);
+  const load =
+      await dialectLoad(ctx, scope.docs, scope.profileDocs, scope.layout);
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
@@ -1499,7 +1597,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
   // Source dialects are looked up once, as push does.
-  const load = await dialectLoad(ctx, docs, profileDocs);
+  const load = await dialectLoad(ctx, docs, profileDocs, layout);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
@@ -2620,7 +2718,48 @@ const YAML_FILE = /\.ya?ml$/i;
 // Writes nothing when the engine reports an error. Returns a process exit code.
 export async function importModel(
     file: string, options: ImportCommandOptions = {}): Promise<number> {
-  const fail = printErrors;
+  const plan = await planImport(file, options, {
+    // The advice to add a BigQuery text names the first error the import it
+    // suggests would stop on: this import again with `--transpile`, or, of
+    // the file this import writes over its input, `--input first-party`.
+    transpileOutcome: async (written, readDialects, api) => {
+      const followed = await planImport(
+          file,
+          {...options, ...written ? {input: 'first-party'} : {}, transpile: true},
+          {source: written, readDialects, api});
+      return 'errors' in followed ? followed.errors[0] ?? null : null;
+    },
+  });
+  for (const w of plan.warnings) console.warn(`Warning: ${w}`);
+  if ('errors' in plan) return printErrors(...plan.errors);
+  for (const {fileName: target, content} of plan.writes) {
+    writeFileAt(target, content);
+    console.log(`wrote ${target}`);
+  }
+  return 0;
+}
+
+// What `kcmd import <file>` with `options` does, writing nothing: the warnings
+// it prints, then the errors it stops on, or each file it writes, where.
+// `io.source` reads the input from memory in place of `file`: the text of
+// the model file and its profile files. `io.api` gives the context the import
+// calls services with, by default one made when first needed. `io.readDialects`
+// reads each table's dialect. `io.transpileOutcome` gives the first error the
+// import with `--transpile` would stop on, of the input or, given, of the
+// file this import writes, for the advice to add a BigQuery text.
+async function planImport(
+    file: string, options: ImportCommandOptions, io: {
+      source?: {text: string; profileFiles: SerializedFile[]};
+      api?: () => context.ApiContext;
+      readDialects?: (texts: string[]) => Promise<SourceDialects>;
+      transpileOutcome?:
+          (written: {text: string; profileFiles: SerializedFile[]}|undefined,
+           readDialects: (texts: string[]) => Promise<SourceDialects>,
+           api: () => context.ApiContext) => Promise<string|null>;
+    } = {}): Promise<{warnings: string[]; errors: string[]}|
+                     {warnings: string[]; writes: SerializedFile[]}> {
+  const warnings: string[] = [];
+  const fail = (...errors: string[]) => ({warnings, errors});
   const {input = 'third-party', flavor} = options;
   if (!flavor) {
     return fail(
@@ -2634,7 +2773,7 @@ export async function importModel(
         `--input '${input}' is not supported; use 'third-party' or ` +
         `'first-party'.`);
   }
-  if (!fs.existsSync(file)) return fail(`file not found: ${file}`);
+  if (!io.source && !fs.existsSync(file)) return fail(`file not found: ${file}`);
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
@@ -2646,9 +2785,9 @@ export async function importModel(
   // not read.
   if (legacyProfileFiles(dir, stem).length) {
     if (input === 'first-party') return fail(legacyProfileDirError(stem));
-    console.warn(`Warning: ${legacyProfileDirError(stem)}`);
+    warnings.push(legacyProfileDirError(stem));
   }
-  const profileFiles =
+  const profileFiles = io.source?.profileFiles ??
       profileFileNamesBeside(dir, stem)
           .map(f => ({
                  fileName: f,
@@ -2656,10 +2795,10 @@ export async function importModel(
                }));
   // One context, made on first use.
   let ctx: context.ApiContext|undefined;
-  const api = () => ctx ??= context.ApiContext.default();
+  const api = io.api ?? (() => ctx ??= context.ApiContext.default());
   // The workspace's layout, read once, when the files go into it.
   let layoutRead: Promise<SemanticModelLayout|string>|undefined;
-  const layoutOf = () => layoutRead ??= workspaceLayout();
+  const layoutOf = () => layoutRead ??= workspaceLayout(api);
   // Where the model file `fileName` goes, when it has a place.
   const modelTarget = async (fileName: string) => {
     if (options.out) {
@@ -2671,31 +2810,55 @@ export async function importModel(
         undefined :
         layout.modelPath(fileName.replace(YAML_FILE, ''));
   };
-  const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
-    flavor: flavor as 'ossie' | 'google',
-    sourcePrefix: options.sourcePrefix,
-    transpile: !!options.transpile,
-    strict: input === 'first-party',
-    profileFiles,
-    fileName: path.basename(file),
-    // Each is called only when needed: for a --source-prefix that names an
-    // entry group, and for files that name a Cloud SQL, Spanner or third-party
-    // table. An import that needs neither needs no credentials.
-    listEntries: (project, location, entryGroup) =>
-        new dataplex.CatalogClient(api()).listEntries(
-            project, location, entryGroup),
-    readDialects: texts => readDialects(api(), texts),
-    overwritesInput: async fileName => {
-      const target = await modelTarget(fileName);
-      return !!target && path.resolve(target) === path.resolve(file);
-    },
-  });
-  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+  const overwritesInput = async (fileName: string) => {
+    const target = await modelTarget(fileName);
+    return !!target && path.resolve(target) === path.resolve(file);
+  };
+  // Each table's dialect is read once for the run.
+  let dialectsRead: Promise<SourceDialects>|undefined;
+  const readDialectsOnce = (texts: string[]) => dialectsRead ??=
+      (io.readDialects ?? (t => readDialects(api(), t)))(texts);
+  const result = await importSemanticModelYaml(
+      io.source?.text ?? fs.readFileSync(file, 'utf8'), {
+        flavor: flavor as 'ossie' | 'google',
+        sourcePrefix: options.sourcePrefix,
+        transpile: !!options.transpile,
+        strict: input === 'first-party',
+        profileFiles,
+        fileName: path.basename(file),
+        // Each is called only when needed: for a --source-prefix that names an
+        // entry group, and for files that name a Cloud SQL, Spanner or
+        // third-party table. An import that needs neither needs no
+        // credentials.
+        listEntries: (project, location, entryGroup) =>
+            new dataplex.CatalogClient(api()).listEntries(
+                project, location, entryGroup),
+        readDialects: readDialectsOnce,
+        overwritesInput,
+        // The advice names the first error of the import it suggests: this
+        // import again with `--transpile`, or, when the advice reads the file
+        // this import writes over its input, that file with `--input
+        // first-party`.
+        ...io.transpileOutcome ?
+            {
+              transpileOutcome:
+                  (files: SerializedFile[], readsWritten: boolean) =>
+                      io.transpileOutcome!(
+                          readsWritten ? {
+                            text: files[0].content,
+                            profileFiles: files.slice(1),
+                          } :
+                                         undefined,
+                          readDialectsOnce, api),
+            } :
+            {},
+      });
+  warnings.push(...result.warnings);
   if (!result.ok) return fail(...result.errors);
 
   // Every target is found before anything is written, so a file that has
   // none writes nothing.
-  let targets: Array<{path: string; write: (text: string) => void}|undefined>;
+  let targets: Array<{path: string}|undefined>;
   if (options.out && YAML_FILE.test(options.out)) {
     if (result.files.length > 1) {
       return fail(
@@ -2704,14 +2867,10 @@ export async function importModel(
               result.files.map(f => f.fileName).join(', ')}); name a ` +
           `directory instead.`);
     }
-    const out = options.out;
-    targets = [{path: out, write: text => writeFileAt(out, text)}];
+    targets = [{path: options.out}];
   } else if (options.out) {
     const out = options.out;
-    targets = result.files.map(f => {
-      const target = path.join(out, f.fileName);
-      return {path: target, write: text => writeFileAt(target, text)};
-    });
+    targets = result.files.map(f => ({path: path.join(out, f.fileName)}));
   } else {
     const layout = await layoutOf();
     if (typeof layout === 'string') return fail(layout);
@@ -2760,12 +2919,11 @@ export async function importModel(
         f => `the import gives '${f.fileName}', which has no place in the ` +
             `semantic-model layout.`));
   }
-  const written = result.files.map((f, i) => {
-    targets[i]!.write(f.content);
-    return targets[i]!.path;
-  });
-  for (const w of written) console.log(`wrote ${w}`);
-  return 0;
+  return {
+    warnings,
+    writes: result.files.map(
+        (f, i) => ({fileName: targets[i]!.path, content: f.content})),
+  };
 }
 
 // Prints each of `errors` once, as `Error: ...`, and gives exit code 1.
@@ -2783,13 +2941,14 @@ function writeFileAt(file: string, text: string): void {
 // The semantic-model layout of the workspace in `.`, where `kcmd owl import`
 // and `kcmd import` write without --out, or the error for a workspace that
 // has none.
-async function workspaceLayout(): Promise<SemanticModelLayout|string> {
+async function workspaceLayout(
+    api = () => context.ApiContext.default()):
+    Promise<SemanticModelLayout|string> {
   if (!fs.existsSync('catalog.yaml')) {
     return `there is no catalog.yaml in this directory, so there is no model ` +
         `layout to write into. Pass --out <path> to write the file directly.`;
   }
-  const snapshot =
-      await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', api());
   const layout = semanticLayoutOf(snapshot);
   if (!layout) {
     return `this catalog is not a semantic-model scope, so there is no ` +
@@ -2864,6 +3023,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const opened = await createSemanticRuntimes({
     profile: named,
     ctx,
+    transpileOutcomes: await scopeTranspileOutcomes(ctx, snapshot),
     oneModel: options.name ?
         count => `--name applies to one skill, and this scope has ${
             count} models. Drop it and each takes its model's name.` :

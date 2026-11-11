@@ -29,13 +29,13 @@
 
 import * as yaml from 'yaml';
 
-import {ExpressionItem, transpileAdvice} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
+import {bigQueryTranslation} from './transpile';
 import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -443,15 +443,19 @@ export function loadProfileFile(
 // The source dialects a command looked up before it loads
 // (LoadOptions.sourceDialects), LoadOptions.thirdPartyImport, which kcmd
 // import sets for a file another product wrote unless it writes a GOOGLE block
-// over that file, and LoadOptions.fieldTextChecked. `sourceDatabases` holds
-// the database each third-party table's entry names, by entry name, for the
-// one-database rule. With `readWithoutDialect`, push's checks of which fields
-// and entities the expressions of a model file or a profile read parse an
-// ANSI_SQL text as generic SQL when no lookup read its tables' dialect, and
-// leave out each name whose reading depends on the dialect (see
-// columnsWithoutDialect). Without it, they skip such a text.
+// over that file, LoadOptions.fieldTextChecked and
+// LoadOptions.transpileOutcomes. `sourceDatabases` holds the database each
+// third-party table's entry names, by entry name, for the one-database rule.
+// With `readWithoutDialect`, push's checks of which fields and entities the
+// expressions of a model file or a profile read parse an ANSI_SQL text as
+// generic SQL when no lookup read its tables' dialect, and leave out each name
+// whose reading depends on the dialect (see columnsWithoutDialect). Without
+// it, they skip such a text.
 export type DialectLoad =
-    Pick<LoadOptions, 'sourceDialects'|'thirdPartyImport'|'fieldTextChecked'>&{
+    Pick<
+        LoadOptions,
+        'sourceDialects'|'thirdPartyImport'|'fieldTextChecked'|
+        'transpileOutcomes'>&{
       sourceDatabases?: ReadonlyMap<string, string>;
       readWithoutDialect?: boolean;
     };
@@ -459,9 +463,13 @@ export type DialectLoad =
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
-  // field takes, the source dialects it was given, and whether the caller
-  // checks each field's text on its table (LoadOptions.fieldTextChecked).
-  load?: Pick<LoadOptions, 'dialect'|'sourceDialects'|'fieldTextChecked'>;
+  // field takes, the source dialects it was given, whether the caller checks
+  // each field's text on its table (LoadOptions.fieldTextChecked), and what
+  // the import the advice to add a BigQuery text suggests gives
+  // (LoadOptions.transpileOutcomes).
+  load?: Pick<
+      LoadOptions,
+      'dialect'|'sourceDialects'|'fieldTextChecked'|'transpileOutcomes'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
   warnings?: string[];
@@ -498,7 +506,8 @@ export function applyProfile(
     // warnings, judged on its tables in the load dialect, as the callers
     // judge them. Keep those the model did not give already.
     const before = new Set(entityAndMetricWarnings(
-        model, opts.load?.dialect ?? DEFAULT_DIALECT));
+        model, opts.load?.dialect ?? DEFAULT_DIALECT, undefined, undefined,
+        opts.load?.transpileOutcomes));
     opts.warnings.push(...res.warnings.filter(w => !before.has(w)));
   }
   return res.model;
@@ -802,11 +811,13 @@ function warningsAfterProfile(
   const prefix = from ? `[${from.document}] ` : '';
   const preferred = opts.load?.dialect ?? DEFAULT_DIALECT;
   const checked = !!opts.load?.fieldTextChecked;
-  const before = new Set(entityAndMetricWarnings(model, preferred, checked)
-                             .map(w => prefix + w));
+  // The warnings name the model file's document as its load does.
+  const warningsOf = (m: SemanticModel) => entityAndMetricWarnings(
+      m, preferred, checked, from?.document ?? model.name,
+      opts.load?.transpileOutcomes).map(w => prefix + w);
+  const before = new Set(warningsOf(model));
   const kept = (from?.warnings ?? []).filter(w => !before.has(w));
-  const after =
-      entityAndMetricWarnings(applied, preferred, checked).map(w => prefix + w);
+  const after = warningsOf(applied);
   return [...new Set([...after, ...kept])];
 }
 
@@ -1447,15 +1458,57 @@ export function importCommand(
   return `kcmd import <file>${input} --flavor ${flavor} ${flags}`;
 }
 
+// Whether `kcmd import --transpile` gives a BigQuery text to a field or metric
+// of `model`, or to a field one of `profiles` binds: when the advice to add
+// one may be given, and so when the import it suggests is run first.
+export function transpilesSomething(
+    model: SemanticModel, profiles: ProfileSpec[] = []): boolean {
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  return [
+    ...(model.entities ?? []).flatMap(e => e.fields ?? []),
+    ...model.metrics ?? [],
+    ...profiles.flatMap(p => p.entities.flatMap(pe => pe.fields ?? [])),
+  ].some(node => bigQueryTranslation(node, entityNames) !== undefined);
+}
+
+// What the import that the advice to add a BigQuery text suggests gives, by
+// the name push's messages give its model document: null when it would write
+// its files, or the first error it would stop on. A command that may give the
+// advice runs that import first, writing nothing (see transpilesSomething).
+export type TranspileOutcomes = ReadonlyMap<string, string|null>;
+
+// The advice to add a BigQuery text to `node`, a field or metric of `model`,
+// whose document push's messages name `document`: "add one with
+// '<command>'" when import's translator gives `node` a BigQuery text, or
+// undefined when it gives none. When `outcomes` says the import that command
+// runs would stop, the advice goes on with the first error it would stop on,
+// in its own words.
+export function transpileAdvice(
+    model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>,
+    document: string,
+    node: Pick<
+        Field, 'dialects'|'expression'|'importedExpression'|'importedDialect'>,
+    outcomes?: TranspileOutcomes): string|undefined {
+  if (!node.importedExpression ||
+      bigQueryTranslation(node, (model.entities ?? []).map(e => e.name)) ===
+          undefined) {
+    return undefined;
+  }
+  const command = `add one with '${importCommand('--transpile', model)}'`;
+  const stop = outcomes?.get(document);
+  return stop ? `${command} after fixing this: ${stop.replace(/\.$/, '')}` :
+                command;
+}
+
 // The advice for `f`, a field or metric with no text in `dialect`: give it
 // one, or, when `dialect` is BIGQUERY, add one with import, as
-// transpileAdvice gives that advice for `f` in `model`, written in `document`.
-// `item` is the field or metric `f` is in the model file.
+// transpileAdvice gives it.
 export function importHint(
     f: Parameters<typeof transpileAdvice>[2], dialect: string,
-    model: SemanticModel, document: string, item?: ExpressionItem): string {
+    model: Parameters<typeof transpileAdvice>[0], document: string,
+    outcomes?: TranspileOutcomes): string {
   const advice = dialect === 'BIGQUERY' ?
-      transpileAdvice(model, document, f, item) :
+      transpileAdvice(model, document, f, outcomes) :
       undefined;
   return advice ? `; give it one, or ${advice}` : '; give it one';
 }
@@ -1882,8 +1935,7 @@ export function validateProfileCompleteness(
                   dialect}${
                   importHint(
                       f, dialect, baseModel, document,
-                      asInModelFile === f ? {entity: e.name, field: f.name} :
-                                            undefined)}`);
+                      opts.transpileOutcomes)}`);
         }
       }
     }
@@ -1892,9 +1944,10 @@ export function validateProfileCompleteness(
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
           const advice = dialect === 'BIGQUERY' ?
-              transpileAdvice(baseModel, document, m, {metric: m.name}) :
+              transpileAdvice(
+                  baseModel, document, m, opts.transpileOutcomes) :
               undefined;
-          // Advice that ends with a problem comes last.
+          // Advice that ends with an error comes last.
           const choices = advice === undefined ?
               ['give it one', `add it to 'metrics_exclude'`] :
               advice.endsWith(`'${importCommand('--transpile', baseModel)}'`) ?

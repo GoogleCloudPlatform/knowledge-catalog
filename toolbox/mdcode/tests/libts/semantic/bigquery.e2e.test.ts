@@ -174,8 +174,8 @@ describe('dialect selection is surfaced by risk when the target dialect is absen
         const {warnings: loadWarnings} =
             loadFixture('lineitem_databricks_ext.yaml');
         expect(loadWarnings)
-            .toContainEqual(expect.stringContaining(
-                'metric \'revenue\': no \'BIGQUERY\' or \'ANSI_SQL\' dialect, so a BIGQUERY table cannot run its \'DATABRICKS\' expression; give it one, or add one with \'kcmd import <file> --input first-party --flavor ossie --transpile\''));
+            .toContain(
+                'metric \'revenue\': no \'BIGQUERY\' or \'ANSI_SQL\' dialect, so a BIGQUERY table cannot run its \'DATABRICKS\' expression; give it one, or add one with \'kcmd import <file> --input first-party --flavor ossie --transpile\'');
       });
 });
 

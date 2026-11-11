@@ -12,7 +12,7 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -72,6 +72,16 @@ export interface ImportSemanticModelOptions {
    * `--input first-party`, which reads that file.
    */
   overwritesInput?: (fileName: string) => Promise<boolean>;
+  /**
+   * The first error the import that the advice to add a BigQuery text
+   * suggests would stop on, or null when it would write its files. That
+   * import is this one again with `--transpile`, or, with `readsWritten`,
+   * an import with `--input first-party` of `files`, which this third-party
+   * import writes over its input. Called only when that advice may be given.
+   * Without it, the advice names the command alone.
+   */
+  transpileOutcome?:
+      (files: SerializedFile[], readsWritten: boolean) => Promise<string|null>;
 }
 
 /** Lists the entries of an entry group. */
@@ -1896,6 +1906,35 @@ function writeDocument(
   return updateText(doc.text, doc.document, root, doc.links);
 }
 
+// Whether `kcmd import --transpile` gives a BigQuery text to the model file
+// `content` loaded with `options`, or to a field one of its profiles or
+// `profileFiles` binds (see transpilesSomething). A file that does not load
+// gives none, since push stops on the error first.
+function transpilesFile(
+    content: string, profileFiles: SerializedFile[],
+    options: Parameters<typeof loadModels>[1]): boolean {
+  let model: SemanticModel|undefined;
+  try {
+    model = loadModels(content, options).models[0];
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+  }
+  if (!model) return false;
+  const profiles = [
+    ...model.profiles ?? [],
+    ...profileFiles.flatMap(pf => {
+      try {
+        return [loadProfileFile(
+            pf.content, parseProfileName(pf.fileName), {skipActions: true})];
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        return [];
+      }
+    }),
+  ];
+  return transpilesSomething(model, profiles);
+}
+
 /**
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
@@ -1914,6 +1953,11 @@ async function validateOutputDocument(
   const thirdPartyImport = !doc.strict &&
       !(documentHasGoogleBlock(doc.root) &&
         await opts.overwritesInput?.(fileName));
+  // Push's messages name the model document after the input file in strict
+  // mode, since strict mode writes nothing on an error, and after the file
+  // the import writes otherwise.
+  const input = doc.strict ? opts.fileName : undefined;
+  const document = (input ?? fileName).replace(/\.ya?ml$/, '');
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
@@ -1921,14 +1965,26 @@ async function validateOutputDocument(
     // non-strict mode, deduplicating warnings already recorded. Step 2 gives
     // push's error for a field its table cannot run, so the load warns about
     // it only on a table of the preferred dialect or one no lookup has read.
-    const loaded = loadModels(
-        content, {
-          bindingOptional: true,
-          warnUnacceptedSource: !doc.strict,
-          fieldTextChecked: true,
-          sourceDialects: load.sourceDialects,
-          thirdPartyImport,
-        });
+    const loadOptions = {
+      bindingOptional: true,
+      warnUnacceptedSource: !doc.strict,
+      fieldTextChecked: true,
+      sourceDialects: load.sourceDialects,
+      thirdPartyImport,
+      document,
+    };
+    // The advice to add a BigQuery text names the first error the import it
+    // suggests would stop on, so that import runs first when the advice may
+    // be given.
+    const transpileOutcomes: TranspileOutcomes|undefined =
+        opts.transpileOutcome &&
+            transpilesFile(content, profileFiles, loadOptions) ?
+        new Map([[
+          document,
+          await opts.transpileOutcome(files, !doc.strict && !thirdPartyImport),
+        ]]) :
+        undefined;
+    const loaded = loadModels(content, {...loadOptions, transpileOutcomes});
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1940,11 +1996,7 @@ async function validateOutputDocument(
     // 2. Run push's local checks on the model file and each profile it
     // declares. What push rejects is an error in strict mode and a warning
     // otherwise.
-    const input = doc.strict ? opts.fileName : undefined;
-    const model = {
-      name: (input ?? fileName).replace(/\.ya?ml$/, ''),
-      text: content,
-    };
+    const model = {name: document, text: content};
     // Where the input holds profile `name`, which the output writes in
     // `written`: its profile file, or the input file's GOOGLE block. Strict
     // mode writes nothing on an error, so its messages name the input file.
@@ -1992,7 +2044,8 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, load)) {
+               () => profiles, declaredBy, doc.warnings,
+               {...load, transpileOutcomes})) {
         doc.warnOrError(error);
       }
       return;
@@ -2013,7 +2066,7 @@ async function validateOutputDocument(
           declaredBy,
           // A profile's warnings come from a second load of the model file,
           // which names the same import command as the first.
-          load: {...load, thirdPartyImport},
+          load: {...load, thirdPartyImport, transpileOutcomes},
         },
         warn);
     // Push prints each error once.

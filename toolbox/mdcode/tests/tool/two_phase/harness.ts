@@ -314,7 +314,7 @@ function installRun(services: Services): {out: Line[]; fake: Fake} {
 }
 
 // What one push printed and called.
-async function runPush(services: Services, flags: commands.PushOptions) {
+export async function runPush(services: Services, flags: commands.PushOptions) {
   const {out, fake} = installRun(services);
   const code = await commands.push(flags);
   return {

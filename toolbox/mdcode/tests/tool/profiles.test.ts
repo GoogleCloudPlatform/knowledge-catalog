@@ -1799,9 +1799,9 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       });
     });
 
-    // Push refuses a metric with no entity whose text reaches no entity, so
-    // the profile's error names that problem after the import command.
-    test('and names push\'s problem after the import command for a vendor-only metric with no entity', async () => {
+    // The import the advice suggests stops on a metric with no entity whose
+    // text reaches no entity, so the profile's error names that error last.
+    test('and names the import\'s first error for a vendor-only metric with no entity', async () => {
       writeScope({
         'commerce.yaml': `${commerce()}    metrics:
       - name: purchases
@@ -1815,12 +1815,10 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
           "[commerce.profile.prod.yaml] profile 'prod': metric 'purchases' " +
               'has no expression for BIGQUERY or ANSI_SQL, and this ' +
               "profile's sources are BIGQUERY; give it one, add it to " +
-              "'metrics_exclude', or add one with 'kcmd import <file> " +
-              "--input first-party --flavor google --transpile' after fixing " +
-              "this: metric 'purchases' in model 'commerce' (commerce) has no " +
-              "'entity' anchor and its expression reaches no declared entity, " +
-              'so it does not resolve to a single entity; set \'entity\' on ' +
-              'the metric or scope its expression to one entity');
+              "'metrics_exclude', or add one with 'kcmd import <file> --input " +
+              "first-party --flavor google --transpile' after fixing this: " +
+              "metric 'purchases': its expression reaches no declared entity; " +
+              "set 'entity' on the metric, or scope its expression to one entity");
     });
 
     // A profile file push cannot read gives one error, which names the file,
@@ -2032,13 +2030,17 @@ semantic_model:
           entities: complete('prod').entities.map(
               e => ({...e, source: `${SPANNER_DB}/tables/${e.name}`})),
         };
-        for (const [label, profile, prod] of [
-               ['inherited', complete('prod'), []],
-               ['rebound', rebound, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
-               ['on Spanner', onSpanner, [blockError('SPANNER')]],
+        // On Spanner, the import the advice suggests stops on the profile's
+        // error, in its own words.
+        const afterSpanner = error.slice(0, -1) + " after fixing this: [commerce.yaml] " +
+            blockError('SPANNER').replace('[commerce] ', '') + '.';
+        for (const [label, profile, model, prod] of [
+               ['inherited', complete('prod'), error, []],
+               ['rebound', rebound, error, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
+               ['on Spanner', onSpanner, afterSpanner, [blockError('SPANNER')]],
              ] as const) {
           writeScope({'commerce.yaml': withAmount(profile)});
-          await expectReport({default: [error], prod: [...prod]}, label);
+          await expectReport({default: [model], prod: [...prod]}, label);
         }
       });
 
@@ -2401,8 +2403,10 @@ semantic_model:
                           errors: string[]]> = [
         ['inherited', commerce(), profileFile('prod'), [hinted]],
         ['rebound', commerce(), rebound, [profileError('BIGQUERY', PROFILE_HINT), hinted]],
+        // The import the advice suggests stops on the profile's error.
         ['on Spanner', commerce(), spannerProfile,
-         [profileError('SPANNER'), hinted]],
+         [profileError('SPANNER'),
+          `${hinted.slice(0, -1)} after fixing this: ${profileError('SPANNER')}.`]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
         ['no source in the model file',
@@ -2422,10 +2426,11 @@ semantic_model:
         }
         // The report gives the model file's error under its own bindings.
         expect(await profiles()).toBe(1);
-        const inline = errors.filter(e => e === hinted);
+        const isModel = (e: string) => e.startsWith(modelNoText('purchase.amount'));
         expect({label, inline: rejects(section(INLINE)),
                 prod: rejects(profileSection('prod'))})
-            .toEqual({label, inline, prod: errors.filter(e => e !== hinted)});
+            .toEqual({label, inline: errors.filter(isModel),
+                      prod: errors.filter(e => !isModel(e))});
       }
     });
 
