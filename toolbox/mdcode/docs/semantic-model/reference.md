@@ -51,15 +51,14 @@ Push runs in two phases:
    tables, a dry run of its BigQuery graph DDL, the Spanner graph check, and
    each action statement, which BigQuery dry-runs and Spanner plans. It also
    prints the warnings of each graph this push deploys, such as a metric the
-   graph leaves out.
-   Knowledge Catalog receives every profile, so this phase prints the load
-   warnings of each profile, whether or not a selected deployment applies it,
-   each prefixed with `profile '<name>':`. Spanner cannot dry-run a property
-   graph's DDL without executing it. The Spanner graph check plans a query of
-   what each node and edge table reads and reads the database's schema
-   instead (see [Validation](#validation)). A graph whose DDL Spanner still
-   rejects fails in the second phase below, after Knowledge Catalog is
-   written.
+   graph leaves out. Knowledge Catalog receives
+   every profile, so this phase prints the load warnings of each profile,
+   whether or not a selected deployment applies it, each prefixed with
+   `profile '<name>':`. Spanner cannot dry-run a property graph's DDL without
+   executing it. The Spanner graph check plans a query of what each node and
+   edge table reads and reads the database's schema instead (see
+   [Validation](#validation)). A graph whose DDL Spanner still rejects fails in
+   the second phase below, after Knowledge Catalog is written.
 2. **Publish and deploy phase:** Publishes the model file (as written) and any
    sibling `<model>.profile.<name>.yaml` files to Knowledge Catalog, then
    deploys each selected deployment in order with the profile it names. An
@@ -846,7 +845,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   sources are in that database. Spanner creates no property graph in a
   PostgreSQL-dialect database, so every push refuses a Spanner deployment
   there before anything is written, whether or not it deploys that deployment.
-  *(live — needs `spanner.databases.get` on the database)*
+  *(live — needs `spanner.databases.get` on the
+  database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a
@@ -996,8 +996,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   graph's dataset when push can read it. A table in another location fails the
   push, and the error names the table's location when BigQuery reports it. A
   **Spanner-targeting** model's sources live in Spanner, and the Spanner graph
-  check below reads them. The `source` construct and the resource names it
-  takes are defined in [model spec §7.1](model_spec.md#71-table-sources).
+  check below reads them. The `source` construct and the resource names it takes
+  are defined in [model spec §7.1](model_spec.md#71-table-sources).
   *(live — needs BigQuery access)*
 * **Spanner accepts each Spanner graph push deploys.** Push checks the graph
   of each Spanner deployment it would deploy against the target database,
@@ -1073,9 +1073,9 @@ model is present), on the database the target names:
   `spanner.databases.select`, and
   `spanner.databases.beginOrRollbackReadWriteTransaction` — the Spanner graph
   check reads the schema and plans its queries on a session, and the DML
-  pre-flight plans each statement on one. A `PLAN` of a DML statement has to
-  open the read-write transaction it would write in even though it never
-  commits one. All four come with `roles/spanner.databaseUser`.
+  pre-flight plans each statement on one. A `PLAN` of a DML statement has to open
+  the read-write transaction it would write in even though it never commits one.
+  All four come with `roles/spanner.databaseUser`.
 * `spanner.instances.get` on the instance, to read the instance's edition
   before any write. `spanner.databases.get` lets push check that the database
   exists. Both come with `roles/spanner.databaseUser` granted on the instance
