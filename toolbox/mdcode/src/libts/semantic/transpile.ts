@@ -719,10 +719,14 @@ type Unit = typeof UNITS[number];
 // What import writes for an amount added to an operand: BigQuery's DATE_ADD or
 // DATE_SUB, or its `+` or `-`, and the row of the result in the same table.
 // With `timestamp`, BigQuery adds to TIMESTAMP(x), the operand at midnight UTC.
+// With `utc`, BigQuery adds to DATETIME(x, 'UTC'), the wall-clock time in UTC
+// of a TIMESTAMP, and reads the result back with TIMESTAMP(y, 'UTC'), as a
+// source adds a month to a timestamp in its time zone, UTC.
 interface Addition {
   form: 'DATE_ADD'|'+';
   gives: string;
   timestamp?: true;
+  utc?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
@@ -804,6 +808,12 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
   return Object.fromEntries(units.map(u => [u, {form, gives}]));
 }
 
+// `units`, each added with `+` to the wall-clock time in UTC (see Addition),
+// giving the row `gives`.
+function inUtc(units: readonly Unit[], gives: string): Partial<Record<Unit, Addition>> {
+  return Object.fromEntries(units.map(u => [u, {form: '+', gives, utc: true}]));
+}
+
 // The unit each word in `words` names, by the word in lower case.
 function named(words: Partial<Record<Unit, string[]>>): Record<string, Unit> {
   return Object.fromEntries(Object.entries(words).flatMap(
@@ -859,7 +869,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // plus any INTERVAL, as BigQuery's `+` gives a DATETIME, and a date for a
   // date plus a whole number. A column plus an INTERVAL is a timestamp, which
   // no whole number is added to. Its current timestamp is a timestamptz, a
-  // TIMESTAMP in BigQuery, and a day there is 24 hours in UTC. It has no
+  // TIMESTAMP in BigQuery, and a day there is 24 hours in UTC. It adds a month
+  // or a year to it in UTC (see Addition). It has no
   // INTERVAL of a quarter. It joins INTERVALs of any units into one value,
   // which it adds months first, then days, then time, as BigQuery adds an
   // INTERVAL.
@@ -891,7 +902,10 @@ const DATE_TABLES: Record<string, DateTable> = {
       },
       timestamptz: {
         type: 'TIMESTAMP', name: 'a timestamptz',
-        units: adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'timestamptz'),
+        units: {
+          ...adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'timestamptz'),
+          ...inUtc(['MONTH', 'YEAR'], 'timestamptz'),
+        },
       },
     },
   },
@@ -941,8 +955,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // months and years, or of weeks and smaller units, into one value, whose
   // smallest unit gives the type of a DATE plus it. It adds a whole
   // number to a DATE as days. Its current timestamp is a TIMESTAMP, and a day
-  // there is 24 hours in UTC. Its three-argument dateadd and date_add give a
-  // TIMESTAMP.
+  // there is 24 hours in UTC. It adds a month or a year to it in UTC. Its
+  // three-argument dateadd and date_add give a TIMESTAMP.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
     functions: {DATE_ADD: 'days', DATE_SUB: 'days', DATEADD: 'days'},
@@ -965,7 +979,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       },
       TIMESTAMP: {
         type: 'TIMESTAMP', name: 'a TIMESTAMP',
-        units: adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'TIMESTAMP'),
+        units: {...adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'TIMESTAMP'), ...inUtc(['MONTH', 'YEAR'], 'TIMESTAMP')},
       },
     },
   },
@@ -1350,7 +1364,12 @@ function valueOn(table: DateTable, read: string, sum: {
   const gives = table.rows[addition.gives];
   const other = joined.parts.find(p => !gives.units[p.unit]);
   if (other) return `${spelled(other)} on ${found.name}`;
-  return {operand, amount: undefined, subtract, first, call, interval, addition, values: joined.values};
+  // A month added in UTC (see Addition) puts the whole value there.
+  const utc = joined.parts.some(p => row.units[p.unit]?.utc);
+  return {
+    operand, amount: undefined, subtract, first, call, interval, addition: utc ? {...addition, utc} : addition,
+    values: joined.values,
+  };
 }
 
 // The interval `node`, a side of a `+` or `-` in the engine's dialect `read`,
@@ -2360,9 +2379,10 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     }
     if (typeof sum === 'object' && sum.unit) {
       changed = true;
-      // An operand of DATE_ADD or TIMESTAMP needs no parentheses.
+      // An operand of DATE_ADD, or of a function that reads it, needs no
+      // parentheses.
       let operand = sum.operand;
-      while ((sum.addition.form === 'DATE_ADD' || sum.addition.timestamp) && operand?.paren) {
+      while ((sum.addition.form === 'DATE_ADD' || readsOf(sum).length) && operand?.paren) {
         operand = operand.paren.this;
       }
       return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
@@ -2379,15 +2399,18 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       const sql = sorted.map((p, i) => `INTERVAL _${i + 1} ${p.unit}`).join(' + ');
       return formCall(sorted.length > 1 ? `(${sql})` : sql, sorted.map(p => p.amount));
     }
-    // A `+` that BigQuery adds to TIMESTAMP(x) reads its operand so.
+    // A `+` that BigQuery adds to TIMESTAMP(x) or in UTC reads its operand so,
+    // and one in UTC reads its result back.
     let inner = typeof sum === 'object' ? sum.operand : undefined;
     while (inner?.paren) inner = inner.paren.this;
-    const stamped = typeof sum === 'object' && sum.addition.timestamp ?
-        swapped(node, new Map([[sum.operand, formCall('TIMESTAMP(_1)', [inner])]])) : undefined;
+    const reads = typeof sum === 'object' ? readsOf(sum) : [];
+    const stamped = typeof sum === 'object' && reads.length ?
+        swapped(node, new Map([[sum.operand, formCall(readSql(reads), [inner])]])) : undefined;
     const exact = stamped ?? (isNode(node) ? exactForm(node, read) : undefined);
     if (exact && typeof exact === 'object') changed = true;
     const source = exact && typeof exact === 'object' ? exact : node;
     const out: any = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, rewrite(v)]));
+    if (reads.includes('UTC')) return formCall(UTC_BACK, [out]);
     const part = EXTRACT_FIRST.has(read) && Object.keys(PARTS).find(k => out[k]?.this);
     if (!part) return out;
     changed = true;
@@ -2409,19 +2432,30 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
 
 // The DATE_CALL for `sum`, with `operand` and `amount`, its operand and amount
 // ready for the engine, in `dialect`: the operand, the amount, the unit and
-// BigQuery's form, and 'DATE' when the source reads the operand as a DATE
-// first, or 'TIMESTAMP' when BigQuery adds to TIMESTAMP(x). A sum written with
-// `+` or `-` for a function call goes in parentheses, unless it is the `whole`
-// text.
+// BigQuery's form, then the names in READS of how BigQuery reads the operand
+// first (see readsOf). A sum written with `+` or `-` for a function call goes
+// in parentheses, unless it is the `whole` text or BigQuery reads it back.
 function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolean, dialect: string): unknown {
   const op = sum.first ? 'INTERVAL +' : sum.subtract ? '-' : '+';
+  const reads = readsOf(sum);
   const form = sum.addition.form === 'DATE_ADD' ? (sum.subtract ? 'DATE_SUB' : 'DATE_ADD') :
-      sum.call && !whole ? `(${op})` : op;
+      sum.call && !whole && !reads.includes('UTC') ? `(${op})` : op;
   const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
   const text = (value: string) => ({literal: {literal_type: 'string', value}});
-  const args = [operand, amount, text(sum.unit!), text(form)];
-  const reads = sum.asDate ? 'DATE' : sum.addition.timestamp ? 'TIMESTAMP' : undefined;
-  return {function: {...call, args: reads ? [...args, text(reads)] : args}};
+  return {function: {...call, args: [operand, amount, text(sum.unit!), text(form), ...reads.map(text)]}};
+}
+
+// How BigQuery reads the operand of `sum` first, as names in READS, in order:
+// DATE when the source reads the operand as a DATE first, TIMESTAMP when
+// BigQuery adds to TIMESTAMP(x), and UTC when it adds in UTC (see Addition).
+function readsOf(sum: DateSum): string[] {
+  const first = sum.asDate ? ['DATE'] : sum.addition.timestamp ? ['TIMESTAMP'] : [];
+  return sum.addition.utc ? [...first, 'UTC'] : first;
+}
+
+// BigQuery's SQL that reads _1 as `reads`, names in READS, say in order.
+function readSql(reads: string[]): string {
+  return reads.reduce((sql, r) => READS[r].replace('_1', sql), '_1');
 }
 
 // The engine's EXTRACT field for `part`, a key of PARTS, such as `Year`.
@@ -2580,9 +2614,12 @@ function repairNode(node: any, read: string): unknown {
 // parentheses puts the sum in parentheses, since it stands where the source
 // calls a function.
 function dateSql(args: any[]): unknown {
-  const [operand, amount, unit, form, reads] = args;
+  const [operand, amount, unit, form, ...given] = args;
   const text = (n: any) => String(bare(n)?.literal?.value);
-  const date = reads ? formSql([{literal: {literal_type: 'string', value: READS[text(reads)]}}, operand]) : operand;
+  const reads = given.map(text);
+  const sql = (value: string) => ({literal: {literal_type: 'string', value}});
+  const date = reads.length ? formSql([sql(readSql(reads)), operand]) : operand;
+  const back = (sum: unknown) => reads.includes('UTC') ? formSql([sql(UTC_BACK), sum]) : sum;
   const name = text(unit);
   const added = {
     interval: {this: amount, unit: {type: 'simple', unit: extractField(name.toLowerCase()), use_plural: false}},
@@ -2590,23 +2627,27 @@ function dateSql(args: any[]): unknown {
   const how = text(form);
   if (how === 'DATE_ADD' || how === 'DATE_SUB') {
     const call = sqlExpressionTree(`${how}(x, y)`, 'BIGQUERY');
-    return {function: {...call.function, args: [date, added]}};
+    return back({function: {...call.function, args: [date, added]}});
   }
   const op = how.replace(/^\((.*)\)$/, '$1');
   const kind = op === '-' ? 'sub' : 'add';
   const template = sqlExpressionTree(op === '-' ? 'x - y' : 'x + y', 'BIGQUERY')[kind];
   const sum = {[kind]: {...template, ...(op === 'INTERVAL +' ? {left: added, right: date} : {left: date, right: added})}};
-  return op === how ? sum : {paren: {this: sum}};
+  return back(op === how ? sum : {paren: {this: sum}});
 }
 
 // How BigQuery reads an operand first, by the name a DATE_CALL gives. Its
 // CAST(CAST(x AS DATETIME) AS DATE) gives the date of a DATE, a DATETIME, a
 // TIMESTAMP in UTC, or a string with or without a time of day, as Databricks'
-// date_add does. TIMESTAMP(x) gives a DATE at midnight UTC.
+// date_add does. TIMESTAMP(x) gives a DATE at midnight UTC. DATETIME(x, 'UTC')
+// gives the wall-clock time in UTC of a TIMESTAMP, and UTC_BACK reads a sum
+// of it back as the TIMESTAMP.
 const READS: Record<string, string> = {
   DATE: 'CAST(CAST(_1 AS DATETIME) AS DATE)',
   TIMESTAMP: 'TIMESTAMP(_1)',
+  UTC: "DATETIME(_1, 'UTC')",
 };
+const UTC_BACK = "TIMESTAMP(_1, 'UTC')";
 
 // BigQuery's SQL for a FORM_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the form's SQL, then the operands it names _1, _2 and so on.

@@ -314,7 +314,10 @@ names microseconds.
   of INTERVALs is, below.
 - PostgreSQL: seconds, minutes, hours, days and weeks to a column and to the
   current timestamp, which stays a TIMESTAMP, and months and years too to a
-  DATE and to a DATE plus an INTERVAL. An INTERVAL string can name several
+  DATE and to a DATE plus an INTERVAL. Months and years go to the current
+  timestamp as a DATETIME in UTC, which BigQuery reads back as a TIMESTAMP:
+  `NOW() + INTERVAL '1 month'` becomes `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP(),
+  'UTC') + INTERVAL 1 MONTH, 'UTC')`. An INTERVAL string can name several
   units, such as '1 day 2 hours', and decades, centuries and millennia, which
   count as 10, 100 and 1000 years. A cast to INTERVAL with fields, such as
   `'90 minutes'::interval hour`, and `INTERVAL '90 minutes' HOUR` become the
@@ -328,7 +331,8 @@ names microseconds.
   date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
   Seconds, minutes and hours go to TIMESTAMP(x) of a DATE, its midnight in
   UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
-  hours, days and weeks to the current timestamp, a TIMESTAMP.
+  hours, days and weeks to the current timestamp, a TIMESTAMP, and months and
+  years to it as a DATETIME in UTC, as from PostgreSQL.
 - SQL Server: days to a column, and days, weeks, months, quarters and years to
   a date, such as a cast to date or CURRENT_DATE. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
@@ -353,10 +357,12 @@ INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
 times an amount. Alone, it becomes BigQuery's INTERVAL sum as written. Added
 to a value, it gets the form and type that its smallest unit gets in the list
 above. Where that form is `+`, import keeps the sum as written, and each of
-its units must be one the list adds to the result. BigQuery then adds months
-first, then days, then time, as PostgreSQL and Databricks do. Where that form
-is DATE_ADD, the INTERVALs must add up to one amount of their smallest unit,
-so they must all be months and years, or all be weeks and smaller units.
+its units must be one the list adds to the result. A sum with months or years
+on the current timestamp goes to its DATETIME in UTC as a whole. BigQuery then
+adds months first, then days, then time, as PostgreSQL and Databricks do.
+Where that form is DATE_ADD, the INTERVALs must add up to one amount of their
+smallest unit, so they must all be months and years, or all be weeks and
+smaller units.
 Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
 `DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
 years, or weeks and smaller units, as Databricks does. A single INTERVAL
