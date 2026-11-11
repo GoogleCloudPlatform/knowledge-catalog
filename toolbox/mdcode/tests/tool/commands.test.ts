@@ -1433,6 +1433,9 @@ semantic_model:
     name: 'Item', source: `${TABLES}/item`, primary_key: ['sku'],
     fields: [{name: 'sku', expression: 'i_sku'}],
   }));
+  // BLOCK_DATA whose profile excludes `metrics`.
+  const excluding = (metrics: string[]) => blockData(
+      d => Object.assign(d.profiles[0], {metrics_exclude: metrics}));
   // A second profile file, and the files of a model with both profiles.
   const staging = (profile: string) => edited(
       profile, ['# Production bindings.', '# Staging bindings.'],
@@ -1573,8 +1576,6 @@ semantic_model:
            customers +
                `      - { name: buyers, expression: ${ansi('COUNT(Order.buyer)')} }\n`,
          ]);
-         const excluding = (metrics: string[]) => blockData(
-             d => Object.assign(d.profiles[0], {metrics_exclude: metrics}));
          const moved = (d: typeof BLOCK_DATA) =>
              d.profiles[0].entities[0].source = `${TABLES}/orders_v2`;
          const catalog = excluding(['buyers', 'customers', 'orders']);
@@ -1710,25 +1711,39 @@ semantic_model:
        });
 
   // Pull keeps a changed local file only when it holds the catalog's content.
-  test('writes a profile file whole when the changed file would not hold ' +
-           'the catalog\'s content',
-       async () => {
-         await pushed(
-             BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])));
-         fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
-         // A change that leaves the local text as it is.
-         spyOn(pullUpdate, 'updatedText').mockImplementation(text => text);
+  for (const [why, setup, written] of [
+    ['the changed file would not hold the catalog\'s content', async () => {
+      await pushed(BOTH(MODEL, edited(PROFILE, ['/orders\n', '/orders_v2\n'])));
+      fs.writeFileSync(local('commerce.profile.prod.yaml'), PROFILE);
+      // A change that leaves the local text as it is.
+      spyOn(pullUpdate, 'updatedText').mockImplementation(text => text);
+    }, '/orders_v2'],
+    // A writer other than push may leave a profile that binds a field the
+    // catalog's model lacks. The local profile file is the catalog's beside
+    // the local model file, but it does not load beside the catalog's.
+    ['the catalog\'s profile binds a field its model lacks', async () => {
+      await pushed(BOTH(LARGER, LARGER_PROFILE));
+      const {models: [model]} = await pullKc.pullKnowledgeCatalog(
+          new CatalogClient(CTX),
+          {project: 'test-project', location: 'us', entryGroup: 'commerce_eg'});
+      pulled({...model, entities: model.entities.map(e => e.name === 'Customer' ?
+          {...e, fields: e.fields.filter(f => f.name !== 'since')} : e)});
+    }, 'c_since'],
+  ] as const) {
+    test(`writes a profile file whole when ${why}`, async () => {
+      await setup();
 
-         expect(await pull()).toBe(0);
-         const profile =
-             fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
-         expect(profile).not.toContain('# Production bindings.');
-         expect(profile).toContain('/orders_v2');
-         expect(messages(console.warn as Mock<any>)).toContain(
-             'Warning: pull cannot change only the values that differ in ' +
-             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
-             'from the catalog.');
-       });
+      expect(await pull()).toBe(0);
+      const profile =
+          fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8');
+      expect(profile).not.toContain('# Production bindings.');
+      expect(profile).toContain(written);
+      expect(messages(console.warn as Mock<any>)).toContain(
+          'Warning: pull cannot change only the values that differ in ' +
+          `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
+          'from the catalog.');
+    });
+  }
 
   test('changes a profile file whose metrics_exclude list names every ' +
            'metric only beside the local model file',
@@ -1738,11 +1753,8 @@ semantic_model:
          // not have, so pull reads it beside the local model file, where it
          // excludes every metric just as the catalog's does. The list gets
          // `buyers`.
-         await pushed({
-           'commerce.yaml': MODEL,
-           'commerce.profile.prod.yaml': PROFILE.replace(
-               '[orders, customers]', '[orders, customers, buyers]'),
-         });
+         await pushed(BOTH(MODEL, PROFILE.replace(
+             '[orders, customers]', '[orders, customers, buyers]')));
          fs.writeFileSync(local('commerce.yaml'), edited(
              MODEL,
              ['      - { name: buyers, expression: COUNT(Order.buyer) }\n', ''],
@@ -1788,72 +1800,27 @@ semantic_model:
              .not.toBe(PROFILE);
        });
 
-  // A writer other than push may leave a profile that binds a field the
-  // catalog's model lacks. The local profile file is the catalog's beside the
-  // local model file, but it does not load beside the catalog's.
-  test('writes a profile file whole when the catalog\'s profile binds a ' +
-           'field its model lacks',
-       async () => {
-         await pushed(BOTH(LARGER, LARGER_PROFILE));
-         const {models: [model]} = await pullKc.pullKnowledgeCatalog(
-             new CatalogClient(CTX),
-             {project: 'test-project', location: 'us',
-              entryGroup: 'commerce_eg'});
-         pulled({
-           ...model,
-           entities: model.entities.map(e => e.name !== 'Customer' ? e : {
-             ...e, fields: e.fields.filter(f => f.name !== 'since'),
-           }),
-         });
-
-         expect(await pull()).toBe(0);
-         expect(messages(console.warn as Mock<any>)).toContain(
-             'Warning: pull cannot change only the values that differ in ' +
-             `${shown('commerce.profile.prod.yaml')}, so it writes the file ` +
-             'from the catalog.');
-         expect(fs.readFileSync(local('commerce.profile.prod.yaml'), 'utf8'))
-             .not.toContain('# Production bindings.');
-       });
-
   // A vanilla model's GOOGLE block profile names every metric in its
   // `metrics_exclude`. The catalog adds metric `buyers` and excludes it there.
   test('adds the metric the catalog adds to a vanilla profile\'s ' +
            'metrics_exclude list',
        async () => {
-         const withOps = (model: string, excluded: string[]) => model.replace(
-             '    ai_context: Answer in dollars.\n',
-             '    ai_context: Answer in dollars.\n    custom_extensions:\n' +
-                 '      - vendor_name: GOOGLE   # ops bindings\n' +
-                 '        data: |\n' +
-                 JSON.stringify({profiles: [{
-                       name: 'ops',
-                       entities: [
-                         {name: 'Order', source: `${TABLES}/orders`,
-                          primary_key: ['id'],
-                          fields: [{name: 'id', expression: 'o_id'},
-                                   {name: 'buyer', expression: 'o_buyer'}]},
-                         {name: 'Customer', source: `${TABLES}/customer`,
-                          primary_key: ['key'],
-                          fields: [{name: 'key', expression: 'c_key'}]},
-                       ],
-                       relationships: [{name: 'placed_by',
-                                        from_columns: ['buyer'],
-                                        to_columns: ['key']}],
-                       metrics_exclude: excluded,
-                     }]}, null, 2).replace(/^/gm, '          ') + '\n');
-         await pushed({'commerce.yaml': withOps(
+         await pushed({'commerce.yaml': withBlock(
+             excluding(['orders', 'customers', 'buyers']),
              VANILLA + '      - { name: buyers, expression: ' +
-                 `${ansi('COUNT(Order.buyer)')} }\n`,
-             ['orders', 'customers', 'buyers'])});
-         fs.writeFileSync(
-             local('commerce.yaml'), withOps(VANILLA, ['orders', 'customers']));
+                 `${ansi('COUNT(Order.buyer)')} }\n`)});
+         const text = withBlock(excluding(['orders', 'customers']));
+         fs.writeFileSync(local('commerce.yaml'), text);
 
          expect(await pull()).toBe(0);
          expect(messages(console.warn as Mock<any>))
              .not.toContain('pull cannot change');
          const written = fs.readFileSync(local('commerce.yaml'), 'utf8');
-         for (const kept of ['# Hand-written vanilla model.', '# ops bindings',
-                             '# flow style', 'name: buyers']) {
+         // The block's JSON keeps its text up to the list.
+         const block = text.slice(text.indexOf('        data: |\n'),
+                                  text.indexOf('"metrics_exclude"'));
+         for (const kept of ['# Hand-written vanilla model.', '# bindings',
+                             '# flow style', 'name: buyers', block]) {
            expect(written).toContain(kept);
          }
          const [, excluded] =
@@ -1959,8 +1926,7 @@ describe('a pull', () => {
          fs.renameSync(local('commerce.yaml'), local('sales.yaml'));
          for (const name of ['sales.overview.md',
                              'sales/entities/Customer.overview.md',
-                             'sales.profiles/a.yaml',
-                             'sales.profiles/b.yaml']) {
+                             'sales.profiles/a.yaml', 'sales.profiles/b.yaml']) {
            fs.mkdirSync(path.dirname(local(name)), {recursive: true});
            fs.writeFileSync(local(name), 'Old.\n');
          }
@@ -1977,6 +1943,40 @@ describe('a pull', () => {
          expect(fs.readdirSync(entryGroupDir()).sort())
              .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
        });
+
+  // Writes catalog.yaml, and pulls `model` with `options`.
+  const pullModel = (model = SECOND_GEN, options: {dryRun?: boolean} = {}) => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                     'scope: semantic-model.test-project.us.commerce_eg\n');
+    pulled(model);
+    return pull(options);
+  };
+  // Pulls `model`, and checks that pull writes its model file, warns with
+  // push's `error` when there is one, and reads no table's SQL dialect.
+  const checkPull = async (model: SemanticModel, error: string) => {
+    expect(await pullModel(model)).toBe(0);
+    expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+        .toBe(serializedFiles(model)['commerce.yaml']);
+    expect(messages(console.warn)).toBe(error && `Warning: push refuses ${
+        shown('commerce.yaml')} as pull writes it: ${error}`);
+    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
+    expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
+  };
+  // The tables of a Spanner database and of a Cloud SQL database.
+  const SPANNER = 'spanner.googleapis.com/projects/test-project/instances/i/' +
+      'databases/db/tables';
+  const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
+      'us-central1/instances/i/databases/shop/tables';
+  // Entity `name` on table `source`, whose fields read the columns of their
+  // names.
+  const onTable = (name: string, source: string, fields: string[]) => ({
+    name, dataSource: source, keys: ['id'],
+    fields: fields.map(f => ({name: f, expression: f, stringForm: true})),
+  });
+  // Metric `name`, on `entity` when one is given.
+  const metric = (name: string, expression: string, entity?: string) =>
+      ({name, expression, stringForm: true,
+        ...(entity ? {entity, authoredEntity: entity} : {})});
 
   // Another writer may delete an entry the model needs, such as an entity
   // another one extends or a metric reads. Pull still writes the model file,
@@ -1996,12 +1996,8 @@ describe('a pull', () => {
     // profile field reads.
     ['a field a profile field reads',
      {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
-       name: 'Customer',
-       source: 'spanner.googleapis.com/projects/test-project/instances/i/' +
-           'databases/db/tables/customer',
-       fields: [
-         {name: 'id', expression: 'Customer.gone * 2', stringForm: true},
-       ],
+       name: 'Customer', source: `${SPANNER}/customer`,
+       fields: [{name: 'id', expression: 'Customer.gone * 2', stringForm: true}],
      }]}]},
      "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
          "'Customer.gone', which is not a field of 'Customer'."],
@@ -2009,41 +2005,23 @@ describe('a pull', () => {
     // name.
     ['the profile a deployment names',
      {...SECOND_GEN,
-      profiles: ['staging', 'dev'].map(
-          name => ({...SECOND_GEN.profiles![0], name})),
-      deployments: [{
-        name: 'qa',
-        target: 'bigquery.googleapis.com/projects/test-project/datasets/d/' +
-            'propertyGraphs/g',
-        profile: 'missing',
-      }]},
+      profiles: ['staging', 'dev'].map(name => ({...SECOND_GEN.profiles![0], name})),
+      deployments: [{name: 'qa', target: 'bigquery.googleapis.com/projects/' +
+                         'test-project/datasets/d/propertyGraphs/g',
+                     profile: 'missing'}]},
      "[commerce] model 'commerce': deployment 'qa' names unknown binding " +
          "profile 'missing'; defined profiles: dev, staging."],
   ] as Array<[string, SemanticModel, string]>) {
     test(`warns when push refuses the model file it writes without ${what}`,
-         async () => {
-           fs.writeFileSync(
-               path.join(dir, 'catalog.yaml'),
-               'scope: semantic-model.test-project.us.commerce_eg\n');
-           pulled(model);
-
-           expect(await pull()).toBe(0);
-           expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
-               .toBe(serializedFiles(model)['commerce.yaml']);
-           expect(messages(console.warn)).toBe(
-               `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
-               `writes it: ${error}`);
-         });
+         () => checkPull(model, error));
   }
 
   // With no table's dialect read, pull still reads which fields and entities
   // an ANSI_SQL expression reads, and warns as push refuses. It leaves to push
   // a text that one of the dialects the table may have cannot parse.
   for (const [kind, source] of [
-    ['Spanner', 'spanner.googleapis.com/projects/test-project/instances/i/' +
-         'databases/db/tables/orders'],
-    ['Cloud SQL', 'cloudsql.googleapis.com/projects/test-project/locations/' +
-         'us-central1/instances/i/databases/shop/tables/orders'],
+    ['Spanner', `${SPANNER}/orders`],
+    ['Cloud SQL', `${CLOUDSQL}/orders`],
     ['third-party', 'projects/test-project/locations/us/entryGroups/snow/' +
          'entries/orders'],
   ]) {
@@ -2063,32 +2041,11 @@ describe('a pull', () => {
     ] as Array<[string, string[], string, string]>) {
       test(`on a ${kind} table ${error ? 'warns' : 'gives no warning'} ` +
                `about ${what} a metric reads that the catalog lacks`,
-           async () => {
-             fs.writeFileSync(
-                 path.join(dir, 'catalog.yaml'),
-                 'scope: semantic-model.test-project.us.commerce_eg\n');
-             pulled({
-               name: 'commerce',
-               relationships: [],
-               entities: [{
-                 name: 'Order', dataSource: source, keys: ['id'],
-                 fields: fields.map(
-                     name => ({name, expression: name, stringForm: true})),
-               }],
-               metrics: [{
-                 name: 'm', entity: 'Order', authoredEntity: 'Order',
-                 expression, stringForm: true,
-               }],
-             });
-
-             expect(await pull()).toBe(0);
-             expect(messages(console.warn)).toBe(
-                 error && `Warning: push refuses ${shown('commerce.yaml')} ` +
-                     `as pull writes it: metric 'm' in model 'commerce' ` +
-                     `(commerce): ${error}`);
-             expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
-             expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
-           });
+           () => checkPull({
+             name: 'commerce', relationships: [],
+             entities: [onTable('Order', source, fields)],
+             metrics: [metric('m', expression, 'Order')],
+           }, error && `metric 'm' in model 'commerce' (commerce): ${error}`));
     }
   }
 
@@ -2096,64 +2053,30 @@ describe('a pull', () => {
   // double quotes as a string, so pull skips both. A metric text that loses a
   // name is not judged on the entities it reaches.
   test('skips the names whose reading depends on the table\'s dialect',
-       async () => {
-         fs.writeFileSync(
-             path.join(dir, 'catalog.yaml'),
-             'scope: semantic-model.test-project.us.commerce_eg\n');
-         const table = (name: string) => 'spanner.googleapis.com/projects/' +
-             `test-project/instances/i/databases/db/tables/${name}`;
-         const metric = (name: string, expression: string, entity?: string) =>
-             ({name, expression, stringForm: true,
-               ...(entity ? {entity, authoredEntity: entity} : {})});
-         pulled({
-           name: 'commerce',
-           relationships: [],
-           entities: ['Order', 'Customer'].map(name => ({
-             name, dataSource: table(name), keys: ['id'],
-             fields: ['id', 'amount'].map(
-                 f => ({name: f, expression: f, stringForm: true})),
-           })),
-           metrics: [
-             metric('m1', 'MAX(DATE_TRUNC(month, Order.amount)) + ' +
-                        'COUNT("Gone"."id")', 'Order'),
-             metric('m2', 'COUNT("Order"."id")'),
-             metric('m3', 'COUNT("Order"."id") + COUNT(Customer.id)', 'Order'),
-           ],
-         });
-
-         expect(await pull()).toBe(0);
-         expect(messages(console.warn)).toBe('');
-       });
+       () => checkPull({
+         name: 'commerce', relationships: [],
+         entities: ['Order', 'Customer'].map(
+             name => onTable(name, `${SPANNER}/${name}`, ['id', 'amount'])),
+         metrics: [
+           metric('m1', 'MAX(DATE_TRUNC(month, Order.amount)) + ' +
+                      'COUNT("Gone"."id")', 'Order'),
+           metric('m2', 'COUNT("Order"."id")'),
+           metric('m3', 'COUNT("Order"."id") + COUNT(Customer.id)', 'Order'),
+         ],
+       }, ''));
 
   // Reading a table's SQL dialect calls Spanner or Knowledge Catalog, so pull
   // leaves the checks that need one to push.
-  test('reads no table\'s SQL dialect', async () => {
-    fs.writeFileSync(
-        path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\n');
+  test('reads no table\'s SQL dialect', () => {
     const [entity] = SECOND_GEN.entities;
     const [prod] = SECOND_GEN.profiles!;
-    pulled({
+    return checkPull({
       ...SECOND_GEN,
-      entities: [{
-        ...entity,
-        dataSource: 'spanner.googleapis.com/projects/test-project/instances/' +
-            'i/databases/db/tables/customer',
-      }],
-      profiles: [{
-        ...prod,
-        entities: [{
-          ...prod.entities[0],
-          source: 'cloudsql.googleapis.com/projects/test-project/locations/' +
-              'us-central1/instances/i/databases/shop/tables/customer',
-        }],
-      }],
-    });
-
-    expect(await pull()).toBe(0);
-    expect(messages(console.warn)).toBe('');
-    expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
-    expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
+      entities: [{...entity, dataSource: `${SPANNER}/customer`}],
+      profiles: [{...prod, entities: [
+        {...prod.entities[0], source: `${CLOUDSQL}/customer`},
+      ]}],
+    }, '');
   });
 
   test('under --dry-run nothing is written or deleted', async () => {
@@ -2179,12 +2102,9 @@ describe('a pull', () => {
   // file it has not written yet.
   test('under --dry-run gives no warning for text that holds U+FFFD',
        async () => {
-         fs.writeFileSync(
-             path.join(dir, 'catalog.yaml'),
-             'scope: semantic-model.test-project.us.commerce_eg\n');
-         pulled({...SECOND_GEN, description: 'Replaced \uFFFD char'});
-
-         expect(await pull({dryRun: true})).toBe(0);
+         expect(await pullModel(
+             {...SECOND_GEN, description: 'Replaced \uFFFD char'},
+             {dryRun: true})).toBe(0);
          expect(messages(console.warn)).not.toContain('push refuses');
        });
 
@@ -2192,15 +2112,11 @@ describe('a pull', () => {
   // --dry-run warns about one push rejects, as the real pull does.
   test('under --dry-run warns about a kept local sidecar push rejects',
        async () => {
-         fs.writeFileSync(
-             path.join(dir, 'catalog.yaml'),
-             'scope: semantic-model.test-project.us.commerce_eg\n');
          const sidecar = 'commerce/entities/Customer.overview.md';
          fs.mkdirSync(path.dirname(local(sidecar)), {recursive: true});
          fs.writeFileSync(local(sidecar), '---\nfoo: bar\n---\nOld.\n');
-         pulled();
 
-         expect(await pull({dryRun: true})).toBe(0);
+         expect(await pullModel(SECOND_GEN, {dryRun: true})).toBe(0);
          expect(messages(console.warn)).toBe(
              `Warning: local overview sidecar ${shown(sidecar)} is not in ` +
              `the catalog; delete it, or pull with --force-remove to delete ` +

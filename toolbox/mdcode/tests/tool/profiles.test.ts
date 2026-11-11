@@ -2626,16 +2626,14 @@ describe('kcmd profiles --print-store', () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
-    const other = 'spanner.googleapis.com/projects/acme-ops/instances/prod/' +
-        'databases/other/tables';
-    const bound = (name: string, table: string) => ({
-      name, source: `${other}/${table}`, primary_key: ['key'],
-      fields: [{name: 'key', expression: 'key'}],
-    });
+    const other = OPERATIONAL_GRAPH.replace('commerce/graphs/commerce', 'other/tables');
+    const tables = [['Customer', 'Customer'], ['Order', 'Orders']];
     const data = JSON.stringify({
       deployments: [{name: 'prod', target: OPERATIONAL_GRAPH, profile: 'p'}],
-      profiles: [{name: 'p', entities: [bound('Customer', 'Customer'),
-                                        bound('Order', 'Orders')]}],
+      profiles: [{name: 'p', entities: tables.map(([name, table]) => ({
+        name, source: `${other}/${table}`, primary_key: ['key'],
+        fields: [{name: 'key', expression: 'key'}],
+      }))}],
     });
     const dataset = (name: string) => `      - name: ${name}
         source: ${OPERATIONAL_GRAPH.replace('graphs/commerce', 'tables/' + name)}
@@ -2653,11 +2651,10 @@ semantic_model:
     datasets:
 ${dataset('Customer')}${dataset('Order')}`);
     expect(await profiles({printStore: true, profile: 'p'})).toBe(1);
-    expect(errs).toEqual([['Customer', 'Customer'], ['Order', 'Orders']].map(
-        ([entity, table]) => "Error: [orders] deployment 'prod' targets " +
-            "Spanner database 'acme-ops/prod/commerce', but profile 'p' " +
-            `binds entity '${entity}' to '${other}/${table}', which is not a ` +
-            'table in that database.'));
+    expect(errs).toEqual(tables.map(([entity, table]) =>
+        "Error: [orders] deployment 'prod' targets Spanner database " +
+        `'acme-ops/prod/commerce', but profile 'p' binds entity '${entity}' ` +
+        `to '${other}/${table}', which is not a table in that database.`));
   });
 
   test('a profile file has no store when no deployment names it', async () => {
