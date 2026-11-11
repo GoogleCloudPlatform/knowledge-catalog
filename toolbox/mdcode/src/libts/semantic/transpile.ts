@@ -2402,7 +2402,7 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     return formCall(`\`${name}\``, []);
   });
   if (!changed) return {sql};
-  const written = engine.generate([tree], read);
+  const written = engine.generate([commentsOnce(tree)], read);
   return written.success && written.sql?.length === 1 ? {sql: written.sql[0]} :
       {error: written.error ?? 'the text could not be written for the engine'};
 }
@@ -2427,6 +2427,23 @@ function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolea
 // The engine's EXTRACT field for `part`, a key of PARTS, such as `Year`.
 function extractField(part: string): string {
   return part[0].toUpperCase() + part.slice(1);
+}
+
+// `node`, an engine tree, with each comment once. The engine gives a comment
+// to each node that ends where it stands, which is the last node of each of
+// them, and to the operator after it as `left_comments`, and writes every
+// copy, so a placeholder call before a comment gets more copies with each
+// pass through the engine.
+function commentsOnce(node: any, held: string[] = []): any {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map((n, i) => commentsOnce(n, i === node.length - 1 ? held : []));
+  const list = (k: string): string[] => Array.isArray(node[k]) ? node[k] : [];
+  const nodes = Object.keys(node).filter(k => !k.endsWith('comments') && node[k] && typeof node[k] === 'object');
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k,
+    k === 'trailing_comments' ? [...new Set(list(k))].filter(c => !held.includes(c)) :
+    k === 'left_comments' ? [...new Set(list(k))] : k.endsWith('comments') ? v :
+    commentsOnce(v, [...(k === nodes.at(-1) ? [...held, ...list('trailing_comments')] : []),
+                     ...(k === 'left' ? list('left_comments') : [])])]));
 }
 
 // `node` with each node in it, children first, replaced by what `visit` gives
@@ -2477,7 +2494,7 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     return repaired;
   });
   if (!changed) return {sql};
-  const written = engine.generate([result], 'bigquery');
+  const written = engine.generate([commentsOnce(result)], 'bigquery');
   if (!written.success || written.sql?.length !== 1) {
     return {error: written.error ?? 'the repaired SQL could not be written'};
   }

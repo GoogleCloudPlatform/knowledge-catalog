@@ -566,6 +566,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', '7 + d::date', {sql: 'DATE_ADD(CAST(d AS DATE), INTERVAL 7 DAY)'}],
     ['DATABRICKS', "DATE '2024-01-01' - 7", {sql: "DATE_SUB(SAFE_CAST('2024-01-01' AS DATE), INTERVAL 7 DAY)"}],
     ['SNOWFLAKE', 'd + 30 < 7 + DATEADD(day, 1, d)', {sql: 'd + 30 < 7 + DATE_ADD(d, INTERVAL 1 DAY)'}],
+    ['SNOWFLAKE', 'DATEADD(day, 1, d) /* a */ + 1 < 7 + DATEADD(day, 1, d) -- b', {sql: 'DATE_ADD(d, INTERVAL 1 DAY) /* a */ + 1 < 7 + DATE_ADD(d, INTERVAL 1 DAY) /* b */'}],
     ['POSTGRES', "(d + INTERVAL '1 day') - 7", {error: 'kcmd does not translate - of a date'}],
     ['SNOWFLAKE', 'DATEADD(hour, 1, d) - 7', {error: 'kcmd does not translate - of a date'}],
     ['DATABRICKS', '(d + INTERVAL 1 DAY) - 7', {sql: '(DATE_ADD(d, INTERVAL 1 DAY)) - 7'}],
