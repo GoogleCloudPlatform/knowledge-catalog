@@ -416,7 +416,7 @@ Each rule and its reason:
   not it declares a `primary_key`.
 
 - **A BigQuery graph-bound relationship MUST join on its target's primary key.**
-  For a BigQuery target, a non-M:N relationship's `to_columns` MUST name
+  For a BigQuery target, a relationship's `to_columns` MUST name
   exactly the `primary_key` columns of the `to` dataset, in any order: not a
   unique key, and not a superset of the primary key. *Why:* BigQuery accepts the
   DDL, but treats an edge as ambiguous when querying measures unless it joins on

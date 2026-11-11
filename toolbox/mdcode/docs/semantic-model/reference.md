@@ -348,11 +348,11 @@ labels, …) lands in the graph and which is dropped, see
 A query reads a metric by flattening the graph with `GRAPH_EXPAND` and wrapping
 the measure in `AGG()`, as the
 [codelab](codelab.md#query-semantic-model-metrics) shows. `GRAPH_EXPAND` reads
-the graph from one root table, an entity that no relationship names as its `to`.
-It joins every other table to the root with LEFT JOINs, so it reads only the
-rows that some root row reaches. A metric on another entity counts only the
-rows of that entity the root reaches. A graph with more than one root needs a
-`start_node`.
+the graph from one root table, the node table of an entity that no relationship
+names as its `to`. It joins every other table to the root with LEFT JOINs, so it
+reads only the rows that some root row reaches. A metric on another entity
+counts only the rows of that entity the root reaches. A graph with more than one
+root needs a `start_node`.
 
 When the graph reaches one table by two paths, a query that names a column of
 that table as `<entity>_<field>`, measures included, fails with "Unrecognized
