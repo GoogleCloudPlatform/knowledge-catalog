@@ -251,8 +251,8 @@ function render(doc: Record<string, any>, opts: SerializeOptions): string {
 
 // An entity's `source` and each action statement are never folded onto a
 // second line, whatever their length. A table name can hold a space, and push
-// refuses a statement whose lines YAML joins when a line before the last
-// holds a SQL comment marker.
+// refuses a statement when a line YAML joins to the next one holds a SQL
+// comment marker.
 const ONE_LINE = 'ONE_LINE';
 const ONE_LINE_STRING: yaml.ScalarTag = {
   tag: 'tag:yaml.org,2002:str',

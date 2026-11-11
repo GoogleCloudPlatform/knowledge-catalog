@@ -1035,9 +1035,9 @@ function sqlExecutorErrors(
 //      line: in a block list one indented past the list's '-', in a block
 //      mapping one indented past its keys, and in a flow list any before the
 //      next ',' or ']'. YAML ends the statement there too.
-//   3. A statement whose YAML style joins its lines into one, with a SQL
-//      comment marker on a line before the last. Joined, a comment there also
-//      covers the lines after it.
+//   3. A statement whose YAML style joins its lines, with a SQL comment
+//      marker on a line YAML joins to the next one. Joined, a comment there
+//      also covers the lines after it.
 export function yamlChangedStatementErrors(
     base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
   const {document, model} = base;
