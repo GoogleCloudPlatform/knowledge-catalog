@@ -3,7 +3,6 @@
 // import --transpile` would write it, so that the advice names the problem
 // that command would stop on.
 
-import {googleDeploymentTargets} from './deployment_target';
 import {Entity, expressionForDialect, Field, isFieldBound, Metric, SemanticModel, SqlDialect} from './ir';
 import {inheritedNoSqlProblems, noSqlProblemOf, noSqlReason, OSSIE_VERSION, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
@@ -626,7 +625,9 @@ export function placementProblems(
 
 // The problems push reports about the SQL of `model`'s fields and metrics, in
 // `document`, once `kcmd import --transpile` has translated it, in the order
-// push reports them, kept by model and document.
+// push reports them, kept by model and document. Measure placement is left
+// out: push judges it on each graph deployment's model, which leaves out a
+// metric that cannot be a measure.
 const afterTranslation =
     new WeakMap<SemanticModel, Map<string, ExpressionProblem[]>>();
 function problemsAfterTranslation(
@@ -636,15 +637,9 @@ function problemsAfterTranslation(
   const cached = byDocument.get(document);
   if (cached) return cached;
   const translated = translatedModel(model);
-  const expression = expressionProblems(translated, document);
-  const flagged = new Set(expression.flatMap(
-      p => p.item && 'metric' in p.item ? [p.item.metric] : []));
   const problems = [
     ...inlineDialectProblems(translated, document),
-    ...expression,
-    ...googleDeploymentTargets(model).bigQuery.length ?
-        placementProblems(translated, document, flagged) :
-        [],
+    ...expressionProblems(translated, document),
   ];
   byDocument.set(document, problems);
   return problems;
