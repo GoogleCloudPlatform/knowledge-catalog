@@ -370,7 +370,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'd + 1 + INTERVAL 1 DAY', {error: 'kcmd does not translate + of a sum'}],
     ['MYSQL', 'd - 1 - INTERVAL 1 DAY', {error: 'kcmd does not translate - of a difference'}],
     ['MYSQL', 'COALESCE(d - 1, d) + INTERVAL 1 DAY', {error: 'kcmd does not translate + of COALESCE'}],
-    ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate + of an INTERVAL'}],
+    ['MYSQL', "INTERVAL 1 DAY + '2 day'", {error: 'kcmd does not translate INTERVAL 1 DAY first, which MySQL adds to all that follows it; write x + INTERVAL 1 DAY'}],
     ['MYSQL', 'INTERVAL 1 DAY - d', {error: 'kcmd does not translate - with INTERVAL 1 DAY first'}],
     ['MYSQL', 'd + INTERVAL n DAY', {error: 'kcmd does not translate INTERVAL of a column'}],
     ['MYSQL', 'd + INTERVAL -9223372036854775808 DAY', {error: 'kcmd does not translate the number 9223372036854775808'}],
@@ -531,6 +531,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', 'NOW() + INTERVAL 1 {U}', "CURRENT_DATETIME('UTC')", UNITS, []],
     ['POSTGRES', "d + INTERVAL '1 {u}'", 'd', [], [...SUB_DAY, 'DAY', 'WEEK']],
     ['POSTGRES', "d::date + INTERVAL '1 {u}'", 'CAST(d AS DATE)', [], UNITS.filter(u => u !== 'QUARTER')],
+    ['POSTGRES', "d::date + INTERVAL '1 hour' + INTERVAL '1 {u}'", 'CAST(d AS DATE) + INTERVAL 1 HOUR', [], UNITS.filter(u => u !== 'QUARTER')],
     ['POSTGRES', "NOW() + INTERVAL '1 {u}'", 'CURRENT_TIMESTAMP()', [], [...SUB_DAY, 'DAY', 'WEEK']],
     ['SNOWFLAKE', 'DATEADD({u}, 1, d)', 'd', ['DAY'], SUB_DAY],
     ['SNOWFLAKE', 'DATEADD({u}, 1, CURRENT_DATE)', "CURRENT_DATE('America/Los_Angeles')", DAY_OR_LONGER, SUB_DAY],
@@ -562,7 +563,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SNOWFLAKE', 'CURRENT_TIMESTAMP - 7', {error: 'kcmd does not translate - of a date'}],
     ['DATABRICKS', 'date_sub(t, 1)', {sql: 'DATE_SUB(CAST(CAST(t AS DATETIME) AS DATE), INTERVAL 1 DAY)'}],
     ['DATABRICKS', 'date_add(current_timestamp(), -1) - INTERVAL 1 MONTH', {sql: 'DATE_SUB(DATE_ADD(CAST(CAST(CURRENT_TIMESTAMP() AS DATETIME) AS DATE), INTERVAL -1 DAY), INTERVAL 1 MONTH)'}],
-    ['MYSQL', 'INTERVAL 30 MINUTE + DATE_SUB(CURDATE(), INTERVAL 1 YEAR)', {sql: 'INTERVAL 30 MINUTE + DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR)'}],
+    ['POSTGRES', "INTERVAL '30 minutes' + (CURRENT_DATE - 1)", {sql: 'INTERVAL 30 MINUTE + (DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY))'}],
     ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) - INTERVAL -2 MONTH', {sql: 'DATE_SUB((CURRENT_DATE + INTERVAL 1 HOUR), INTERVAL -2 MONTH)'}],
     ['POSTGRES', 'CURRENT_DATE - 7 - 1', {sql: 'DATE_SUB(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY), INTERVAL 1 DAY)'}],
     ['POSTGRES', "CURRENT_DATE + INTERVAL '1 day' + INTERVAL '2 hours'", {sql: 'CURRENT_DATE + INTERVAL 1 DAY + INTERVAL 2 HOUR'}],
@@ -585,8 +586,8 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', 'd + INTERVAL 0x10 DAY', {error: 'kcmd does not translate INTERVAL of a hex string literal'}],
     ['MYSQL', "DATE_SUB(d, INTERVAL b'101' DAY)", {error: 'kcmd does not translate DATE_SUB with INTERVAL of a bit string literal'}],
     ['SQLSERVER', "DATEADD('day', 1, d)", {error: "kcmd does not translate DATEADD with part 'day'"}],
-    ['SNOWFLAKE', 'DATEADD(constructor, 1, d)', {error: "kcmd does not translate DATEADD with part 'constructor'"}],
     ['POSTGRES', "DATE_TRUNC('constructor', d)", {error: "kcmd does not translate DATE_TRUNC with part 'constructor'"}],
+    ['POSTGRES', "DATE_PART('constructor', d)", {error: "kcmd does not translate DATE_PART with part 'constructor'"}],
     ['POSTGRES', 'CAST(d AS constructor)', {error: 'kcmd does not translate CAST to CONSTRUCTOR'}],
     // A value import can see is a date or a time, or a sum with an INTERVAL,
     // beside a number.
@@ -604,10 +605,27 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'MAX(current_date() - 1) < now()', {error: 'kcmd does not translate < on a DATE and a TIMESTAMP'}],
     ['ANSI_SQL', '"t" < CURRENT_TIMESTAMP OR "d" = CURRENT_DATE', {sql: '`t` < CURRENT_TIMESTAMP OR `d` = CURRENT_DATE'}],
     ['SQLSERVER', 'DATEADD(month, 1, CURRENT_DATE)', {sql: "DATE_ADD(CAST(CURRENT_DATETIME('UTC') AS DATE), INTERVAL 1 MONTH)"}],
-    // MySQL reads a comparison after a sum that names its INTERVAL first as
-    // part of the sum.
-    ['MYSQL', 'INTERVAL 1 MONTH + CURDATE() > d', {error: 'kcmd does not translate INTERVAL 1 MONTH + and > without parentheses, which databases group in different orders'}],
+    // MySQL adds a sum that names its INTERVAL first to all that follows it.
+    ['MYSQL', 'INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY', {error: 'kcmd does not translate INTERVAL 1 MONTH first, which MySQL adds to all that follows it; write x + INTERVAL 1 MONTH'}],
+    ['MYSQL', 'd = (INTERVAL 1 DAY) + CURDATE() IS NULL', {error: 'kcmd does not translate INTERVAL 1 DAY first, which MySQL adds to all that follows it; write x + INTERVAL 1 DAY'}],
     ['POSTGRES', "INTERVAL '1 month' + CURRENT_DATE > d", {sql: 'INTERVAL 1 MONTH + CURRENT_DATE > d'}],
+    ['DATABRICKS', 'INTERVAL 1 DAY + d', {sql: 'DATE_ADD(d, INTERVAL 1 DAY)'}],
+    // A date part written as a quoted name stays untranslated. NOW, CURDATE and
+    // GETDATE without parentheses are columns.
+    ['SQLSERVER', 'DATEADD([day], 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
+    ['SNOWFLAKE', 'DATEADD("day", 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
+    ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
+    ['DATABRICKS', 'curdate - 7', {sql: '`curdate` - 7'}],
+    ['MYSQL', 'CURDATE + INTERVAL 1 DAY', {sql: 'DATE_ADD(`CURDATE`, INTERVAL 1 DAY)'}],
+    ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {sql: 'DATE_ADD(`GETDATE`, INTERVAL 1 DAY)'}],
+    // NULLIF of two date and time types.
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a TIMESTAMP'}],
+    ['MYSQL', 'NULLIF(CURDATE(), NOW())', {error: 'kcmd does not translate NULLIF on a DATE and a DATETIME'}],
+    // A SPANNER INTERVAL other than a whole number or a column of days, hours or
+    // minutes.
+    ['SPANNER', "d + INTERVAL '1 day'", {error: "kcmd does not translate INTERVAL '1 day'"}],
+    ['SPANNER', 'd + (INTERVAL 1 MONTH)', {error: 'kcmd does not translate INTERVAL 1 MONTH'}],
+    ['SPANNER', 'd + INTERVAL TRUE DAY', {error: 'kcmd does not translate INTERVAL ? DAY'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
@@ -623,11 +641,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', "DATE_SUB(CURRENT_DATETIME('UTC'), INTERVAL 7 DAY)",
      ['NOW() - INTERVAL 7 DAY', 'DATE_SUB(NOW(), INTERVAL 7 DAY)', 'CURRENT_TIMESTAMP - INTERVAL 7 DAY', 'DATE_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)',
       'SUBDATE(LOCALTIMESTAMP, INTERVAL 7 DAY)', 'LOCALTIME() - INTERVAL 7 DAY', 'SUBDATE(NOW(), 7)']],
-    ['MYSQL', 'DATE_ADD(CURRENT_DATE, INTERVAL 1 WEEK)', ['CURDATE() + INTERVAL 1 WEEK', 'DATE_ADD(CURDATE(), INTERVAL 1 WEEK)', 'INTERVAL 1 WEEK + CURRENT_DATE', 'ADDDATE(CURDATE(), INTERVAL 1 WEEK)']],
+    ['MYSQL', 'DATE_ADD(CURRENT_DATE, INTERVAL 1 WEEK)', ['CURDATE() + INTERVAL 1 WEEK', 'DATE_ADD(CURDATE(), INTERVAL 1 WEEK)', 'CURRENT_DATE + INTERVAL 1 WEEK', 'ADDDATE(CURDATE(), INTERVAL 1 WEEK)']],
     ['MYSQL', 'DATE_ADD(d, INTERVAL 7 DAY)', ['d + INTERVAL 7 DAY', 'DATE_ADD(d, INTERVAL 7 DAY)', 'ADDDATE(d, INTERVAL 7 DAY)', 'ADDDATE(d, 7)']],
     ['MYSQL', 'd + INTERVAL 2 HOUR', ['d + INTERVAL 2 HOUR', 'DATE_ADD(d, INTERVAL 2 HOUR)']],
     ['MYSQL', 'DATE_ADD(DATE_ADD(d, INTERVAL 1 DAY), INTERVAL 1 DAY)',
-     ['DATE_ADD(d, INTERVAL 1 DAY) + INTERVAL 1 DAY', 'DATE_ADD(DATE_ADD(d, INTERVAL 1 DAY), INTERVAL 1 DAY)', '(d + INTERVAL 1 DAY) + INTERVAL 1 DAY', 'INTERVAL 1 DAY + (INTERVAL 1 DAY + d)']],
+     ['DATE_ADD(d, INTERVAL 1 DAY) + INTERVAL 1 DAY', 'DATE_ADD(DATE_ADD(d, INTERVAL 1 DAY), INTERVAL 1 DAY)', '(d + INTERVAL 1 DAY) + INTERVAL 1 DAY', 'ADDDATE(d + INTERVAL 1 DAY, 1)']],
     ['MYSQL', 'untranslated', ['d + INTERVAL 1 MONTH', 'DATE_ADD(d, INTERVAL 1 MONTH)', 'INTERVAL 1 MONTH + d']],
     ['POSTGRES', 'CURRENT_TIMESTAMP() - INTERVAL 30 DAY', ["NOW() - INTERVAL '30 days'", "NOW() - INTERVAL '30' DAY", "NOW() - '30 d'::interval", "NOW() - CAST('30 days' AS INTERVAL)"]],
     ['SNOWFLAKE', "DATE_ADD(CURRENT_DATETIME('America/Los_Angeles'), INTERVAL 7 DAY)", ["CURRENT_TIMESTAMP + INTERVAL '7 days'", 'DATEADD(day, 7, CURRENT_TIMESTAMP())', "INTERVAL '7 d' + CURRENT_TIMESTAMP"]],

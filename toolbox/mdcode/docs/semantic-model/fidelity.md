@@ -274,7 +274,9 @@ SQL that gives the same value in BigQuery for ordinary data, whatever the
 column types are. It translates aggregates, CASE, COALESCE and other NULL
 handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. Its warning about any other
-text names the first part it does not translate.
+text names the first part it does not translate. It names a function and a
+date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
+part `w`.
 
 It reads each database's SQL under that database's default settings:
 PostgreSQL, MySQL, SQL Server and Databricks in UTC, Snowflake in
@@ -320,8 +322,7 @@ SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and
 days, hours and minutes added with `+` or `-`, which BigQuery adds as Spanner
 does. Import leaves any other date arithmetic untranslated, such as a sum of
 two INTERVALs, an amount that is not a whole number, or a function such as MAX
-plus an INTERVAL. It names a function and a date part as the author wrote them,
-such as `CHAR_LENGTH` or `DATEPART` with part `w`.
+plus an INTERVAL.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
