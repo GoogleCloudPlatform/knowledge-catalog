@@ -833,14 +833,10 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
-  // The dialect of the model's tables, or else ALLOYDB for a model with an
-  // AlloyDB target. Null when neither gives one: when no lookup read the
-  // tables' dialect, as in pull, and when the model file binds no table. A
-  // deployment that applies a profile refuses a sql executor in the model
+  // A deployment that applies a profile refuses a sql executor in the model
   // file, and reads the profile's own statements in its tables' dialect.
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sourcesDialect(model) ??
-          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null) :
+      statementsDialect(model) :
       undefined;
   for (const action of actions) {
     const where =
@@ -964,6 +960,15 @@ export function validateActions(
   return errors;
 }
 
+// The dialect the statements of `model` are read in: that of its tables, or
+// else ALLOYDB for a model with an AlloyDB target. Null when neither gives
+// one: when no lookup read the tables' dialect, as in pull, and when the
+// model file binds no table.
+function statementsDialect(model: SemanticModel): string|null {
+  return sourcesDialect(model) ??
+      (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null);
+}
+
 // The errors in a SQL executor's statements. Nothing here for the other three
 // executor kinds: they name a system that performs the write, so the model has
 // no text to check.
@@ -1070,7 +1075,8 @@ function statementErrors(
 //      on into text from a later line. YAML joins the lines of every style
 //      but '|', so a comment there also covers the lines after it.
 export function yamlChangedStatementErrors(
-    base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
+    base: LoadedModel, text: string, profileDocs: ProfileFiles,
+    load: DialectLoad): string[] {
   const {document, model} = base;
   // What to do with `what` when it belongs to the statement and when it is a
   // YAML comment, where `holder` holds the statement. A flow list has no '-'
@@ -1091,7 +1097,7 @@ export function yamlChangedStatementErrors(
          {name: DEFAULT_PROFILE, text, fileName: document},
          ...profileDocs(document),
        ]) {
-    const dialects = statementDialects(model, file.name);
+    const dialects = statementDialects(model, file.name, file.text, load);
     const statements = writtenStatements(file.text);
     const markers = joinedLineMarkers(statements, file.text, dialects);
     for (const written of statements) {
@@ -1258,15 +1264,42 @@ function writtenStatements(text: string): WrittenStatement[] {
   });
 }
 
-// The dialects of the stores where binding profile `profile` runs
-// statements: one for each deployment that uses it, named after its engine.
-// Empty when no deployment uses it, or when a deployment's target is in no
-// accepted form, which localChecks reports.
-function statementDialects(model: SemanticModel, profile: string): string[] {
-  const deployments = resolveModelDeployments(model);
-  if ('error' in deployments) return [];
-  return [...new Set(deployments.deployments.filter(d => d.profile === profile)
-                         .map(d => d.engine.toUpperCase()))];
+// The dialects in which the statements of binding profile `profile` of
+// `model` run, where `text` is its file: the one validateActions reads them
+// in, with the profile's tables and the deployments that use it, and one for
+// each of those deployments, named after its engine. A deployment target in
+// no accepted form and a profile file that does not apply give none, which
+// localChecks reports. `load` is what the caller read of each table's
+// dialect.
+function statementDialects(
+    model: SemanticModel, profile: string, text: string,
+    load: DialectLoad): string[] {
+  const resolved = resolveModelDeployments(model);
+  const deployments = 'error' in resolved ?
+      [] :
+      resolved.deployments.filter(d => d.profile === profile);
+  let bound: SemanticModel|undefined = model;
+  if (profile !== DEFAULT_PROFILE) {
+    // Only the profile's tables matter here, so the model's actions, which
+    // a profile may not apply to, are left out.
+    try {
+      bound = applyProfile(
+          {...model, actions: []},
+          loadProfileFile(text, profile, {skipActions: true}), {load});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      bound = undefined;
+    }
+  }
+  const read = bound && statementsDialect({
+    ...bound,
+    deployments: (model.deployments ?? [])
+                     .filter(d => deployments.some(r => r.name === d.name)),
+  });
+  return [...new Set([
+    ...read ? [read] : [],
+    ...deployments.map(d => d.engine.toUpperCase()),
+  ])];
 }
 
 // The deployment dialects in which `#` starts a SQL comment. `--` and `/*`

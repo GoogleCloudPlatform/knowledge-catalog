@@ -1194,7 +1194,7 @@ async function checkBeforeWrites(
       if (error) return fail(error);
     }
     const changed =
-        yamlChangedStatementErrors(base, modelFile.text, profileDocs);
+        yamlChangedStatementErrors(base, modelFile.text, profileDocs, load);
     if (changed.length) return fail(...changed);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.

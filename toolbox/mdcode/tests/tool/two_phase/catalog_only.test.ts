@@ -246,6 +246,9 @@ const withStatementLines = (text: string, ...lines: string[]) => {
 const modelWriting = (lines: string[], scope: Scope = {}) => withStatementLines(
     modelFile({...scope, actions: [purge(ONE_STATEMENT)]}), ...lines);
 const COMMENTED = "UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
+// A scope whose model file binds Customer to an AlloyDB table.
+const ON_ALLOYDB =
+    {entities: [{...CUSTOMER, source: `${ALLOYDB}/schemas/public/tables/customer`}]};
 // A model file whose action purge has the description DESCRIPTION, written
 // before its one statement.
 const DESCRIBED = modelFile({actions: [{
@@ -464,6 +467,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         "- 'UPDATE customer SET doc = doc -- every row?", "  WHERE c_key = @k'",
         '- >', '  UPDATE customer SET doc = doc /* every row? */', '  WHERE c_key = @k',
         "- UPDATE customer SET note = 'a -- b'", '  WHERE c_key = @k',
+        // AlloyDB reads `#` as an operator.
         '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k',
         '- UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
         '- >', '  UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
@@ -504,7 +508,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row\\ue000 more"',
         // A comment that starts after an escaped line break is on the last line.
         '- "UPDATE customer SET doc = doc WHERE c_key = @k\\', '  -- one row"',
-      ])},
+      ], ON_ALLOYDB)},
       errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--'],
                [21, '--'], [22, '--'], [24, '--']].map(
           ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
@@ -535,10 +539,28 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       ], {deployments: ['g']})},
       errors: [1, 2].map(n => has(`statement ${n} has '#' on a line`)),
     }, {
+      // A Spanner deployment gives the dialect of a model file that binds no
+      // table.
       files: {'commerce.yaml': modelWriting(
           ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
-          {deployments: [{name: 's', target: spannerGraph('s')}]})},
+          {
+            entities: [{...CUSTOMER, source: undefined}],
+            deployments: [{name: 's', target: spannerGraph('s')}],
+          })},
       errors: [has("statement 1 has '#' on a line")],
+    }, {
+      // The tables give the dialect with no deployment, and a profile's
+      // tables give it for the profile file.
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'])},
+      errors: [has("statement 1 has '#' on a line")],
+    }, {
+      entities: [{...CUSTOMER, source: undefined}],
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': withStatementLines(
+          profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
+          '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
+      errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],
