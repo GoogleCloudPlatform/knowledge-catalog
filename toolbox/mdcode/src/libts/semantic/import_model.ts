@@ -1975,7 +1975,7 @@ async function validateOutputDocument(
     // checks the deployment targets.
     const changed = !withFiles || 'errors' in withFiles || doc.errors.length ?
         [] :
-        yamlChangedStatementErrors(withFiles, content, () => profiles!, load);
+        yamlChangedStatementErrors(base, content, () => profiles!, load);
     for (const error of changed) doc.warnOrError(error);
     if (!doc.errors.length) {
       for (const m of loaded.models) validateDeploymentTargets(m, doc);

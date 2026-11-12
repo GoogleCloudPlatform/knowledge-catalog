@@ -1111,8 +1111,7 @@ function statementErrors(
 
 // The errors for each `sql` executor statement that YAML reads differently
 // from how it is written, in the model file `text` of `base` and in each of
-// its profile files. `base` holds the profiles its profile files declare, as
-// withProfileFiles gives them:
+// its profile files:
 //   1. An unquoted statement with a comment on the same line. YAML ends an
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
@@ -1126,7 +1125,11 @@ function statementErrors(
 export function yamlChangedStatementErrors(
     base: LoadedModel, text: string, profileDocs: ProfileFiles,
     load: DialectLoad): string[] {
-  const {document, model} = base;
+  const {document} = base;
+  // The model with the profiles of its profile files, whose tables give the
+  // dialects of the statements.
+  const withFiles = withProfileFiles(base, profileDocs);
+  const model = 'errors' in withFiles ? base.model : withFiles.model;
   // What to do with `what` when it belongs to the statement and when it is a
   // YAML comment, where `holder` holds the statement. A flow list has no '-'
   // column and cannot hold a block scalar.
