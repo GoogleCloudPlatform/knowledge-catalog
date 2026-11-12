@@ -375,7 +375,9 @@ export class SemanticModelLayout implements CatalogLayout {
   // profileFileNamesBeside lists them, then the older `<model>.profiles/`
   // directory as _legacyLocalFiles lists it. Each profile file has its profile
   // name when that name is valid. A directory is left out; push rejects it,
-  // naming it.
+  // naming it. Each file is in the entry group directory, or in a
+  // `<model>.profiles` directory there that is no link, so no link puts it
+  // outside the entry group directory.
   modelFiles(model: string): {path: string; profileName?: string}[] {
     const dir = this._groupDir();
     const prefix = `${model}.profile.`;
@@ -532,11 +534,27 @@ export class SemanticModelLayout implements CatalogLayout {
     this.removeFile(this.profilePath(model, profileName));
   }
 
-  // Deletes `localPath`, a file this layout lists, for `pull --force-remove`:
-  // a link goes as a link, and a missing file is no error. Then it deletes
-  // each directory above it in the entry group directory that this leaves
-  // empty, up to the first one that is a link or lies below one.
-  removeFile(localPath: string): void {
+  // Whether a link puts `localPath` outside the entry group directory: the
+  // real path of the directory that holds it lies outside the real path of
+  // the entry group directory. A path whose directory is gone is not outside.
+  outsideGroup(localPath: string): boolean {
+    let real: string;
+    try {
+      real = fs.realpathSync(path.dirname(localPath));
+    } catch {
+      return false;
+    }
+    const top = fs.realpathSync(this._groupDir());
+    return real !== top && !real.startsWith(`${top}${path.sep}`);
+  }
+
+  // Deletes `localPath`, a file this layout lists, for `pull --force-remove`,
+  // unless a link puts it outside the entry group directory, and says whether
+  // it did. A link goes as a link, and a missing file is no error. Then it
+  // deletes each directory above it in the entry group directory that this
+  // leaves empty, up to the first one that is a link or lies below one.
+  removeFile(localPath: string): boolean {
+    if (this.outsideGroup(localPath)) return false;
     fs.rmSync(localPath, {force: true});
     const top = path.resolve(this._groupDir());
     let dir = path.dirname(path.resolve(localPath));
@@ -547,6 +565,7 @@ export class SemanticModelLayout implements CatalogLayout {
       fs.rmdirSync(dir);
       dir = path.dirname(dir);
     }
+    return true;
   }
 
   // Profile files with no model beside them, for push, `kcmd profiles` and

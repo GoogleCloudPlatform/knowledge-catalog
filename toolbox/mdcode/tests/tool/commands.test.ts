@@ -2947,14 +2947,16 @@ describe('a pull', () => {
      },
      notInCatalog('profile directory', 'commerce.profiles'), ['commerce.profiles'],
      ['outside/qa.yaml']],
-    ['a stale overview sidecar in a linked directory', SECOND_GEN,
-     (outside: string) => {
+    ['a stale overview sidecar a link puts outside the entry group',
+     SECOND_GEN, (outside: string) => {
        write(path.join(outside, 'entities', 'Old.overview.md'), 'Old.\n');
        fs.symlinkSync(outside, local('commerce'));
      },
-     notInCatalog('overview sidecar', 'commerce/entities/Old.overview.md'),
-     ['commerce/entities/Old.overview.md'], ['outside/entities']],
-    ['nothing at a directory with a profile file\'s name', SECOND_GEN,
+     `Warning: pull keeps local overview sidecar ${
+         shown('commerce/entities/Old.overview.md')}, which is not in the ` +
+         'catalog, because a link puts it outside the entry group directory.',
+     [], ['outside/entities/Old.overview.md']],
+    ['a directory at a profile file\'s name', SECOND_GEN,
      () => fs.mkdirSync(local('commerce.profile.dev.yaml')),
      `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
          "leaves it: Profile file 'commerce.profile.dev.yaml' is not a file.",
@@ -2981,7 +2983,8 @@ describe('a pull', () => {
      ['sales.yaml', 'sales.profile.prod.yaml', 'sales.profiles/qa.yaml'], []],
   ] as Array<[string, SemanticModel, (outside: string) => void, string,
               string[], string[]]>)(
-      '--force-remove deletes %s as it is on disk',
+      '--force-remove deletes the files the layout lists as they are on ' +
+          'disk: %s',
       async (_, model, setup, message, removed, kept) => {
         fs.writeFileSync(path.join(dir, 'catalog.yaml'),
                          'scope: semantic-model.test-project.us.commerce_eg\n');

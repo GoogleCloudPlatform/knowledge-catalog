@@ -2009,7 +2009,7 @@ async function pullSemanticModel(
       const left = unwrittenFiles(
                        layout, pulled.name,
                        [...pulledFiles, ...sidecars].map(f => f.fileName))
-                       .map(f => shown(f.path));
+                       .flatMap(f => f.outside ? [] : [shown(f.path)]);
       const deletedFiles = [
         ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
         ...left,
@@ -2174,7 +2174,8 @@ async function pullSemanticModel(
   const deleted = [
     ...removed,
     ...options.forceRemove ?
-        unwrittenFiles(layout, pulled.name, fileNames).map(f => f.path) :
+        unwrittenFiles(layout, pulled.name, fileNames)
+            .flatMap(f => f.outside ? [] : [f.path]) :
         [],
   ];
   const after = new SemanticModelLayout(
@@ -2476,11 +2477,13 @@ function localProfiles(
 
 
 // Each local profile file of `model` and each overview sidecar that a pull
-// writing the files `fileNames` leaves out. Pull writes each file to the path
-// push reads it from, so such a file is stale.
+// writing the files `fileNames` leaves out, and whether a link puts it
+// outside the entry group directory, where pull deletes nothing. Pull writes
+// each file to the path push reads it from, so such a file is stale.
 function unwrittenFiles(
     layout: SemanticModelLayout, model: string, fileNames: string[]):
-    Array<{path: string; profileName?: string; kind: string}> {
+    Array<
+        {path: string; profileName?: string; kind: string; outside: boolean}> {
   const written = writtenPaths(layout, model, fileNames);
   return [
     // The layout lists a linked older profile directory as the link.
@@ -2490,7 +2493,8 @@ function unwrittenFiles(
     })),
     ...layout.overviewSidecarPaths().map(
         f => ({path: f.path, kind: 'overview sidecar'})),
-  ].filter(f => !written.has(path.resolve(f.path)));
+  ].filter(f => !written.has(path.resolve(f.path)))
+      .map(f => ({...f, outside: layout.outsideGroup(f.path)}));
 }
 
 
@@ -2543,7 +2547,12 @@ function writePulledFiles(
 
   for (const stale of
            unwrittenFiles(layout, model, files.map(f => f.fileName))) {
-    if (!options.forceRemove) {
+    if (stale.outside) {
+      console.warn(
+          `Warning: pull keeps local ${stale.kind} ${stale.path}, which is ` +
+          'not in the catalog, because a link puts it outside the entry ' +
+          'group directory.');
+    } else if (!options.forceRemove) {
       console.warn(
           `Warning: local ${stale.kind} ${stale.path} is not in the ` +
           `catalog; delete it, or pull with --force-remove to delete it.`);
