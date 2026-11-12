@@ -800,6 +800,10 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "INTERVAL '1 day' * 1e2", {error: "kcmd does not translate INTERVAL '1 day' times the number 1e2"}],
     ['POSTGRES', '(CURRENT_DATE - NOW()) * 2', {sql: '(JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) * 2'}],
     ['POSTGRES', "AVG(CURRENT_DATE + INTERVAL '1 day')", {error: 'kcmd does not translate AVG of a date'}],
+    ['POSTGRES', "CASE x WHEN INTERVAL '1 day' THEN CURRENT_DATE ELSE NOW() END", {sql: 'CASE WHEN x = INTERVAL 1 DAY THEN TIMESTAMP(CURRENT_DATE) ELSE CURRENT_TIMESTAMP() END'}],
+    ['POSTGRES', '(CURRENT_DATE - NOW()) IN (x)', {sql: '((JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) = x)'}],
+    ['SPANNER', 'NULL IN (INTERVAL 1 MONTH)', {sql: '(CAST(NULL AS BOOLEAN))'}],
+    ['DATABRICKS', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: '(x = INTERVAL 1 MONTH OR CAST(NULL AS BOOLEAN))'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

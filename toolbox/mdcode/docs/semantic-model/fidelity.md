@@ -306,9 +306,9 @@ quarters and years to a column, which BigQuery rejects for a TIMESTAMP column.
 From MySQL, Snowflake, Databricks and SQL Server it adds a week to a column as
 7 days, which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks
 that is an expression becomes `7 * (n)` days. These are the units it adds, by
-database. Milliseconds and microseconds go wherever seconds go, where the
-database names them: PostgreSQL, Snowflake and Databricks name both, and MySQL
-names microseconds.
+database. Milliseconds and microseconds go wherever seconds go in PostgreSQL,
+Snowflake and Databricks, which name both, and in MySQL, which names
+microseconds.
 
 - MySQL: every unit from seconds to years to a column and to a value it can
   see is a DATE, such as the current date.
@@ -391,7 +391,7 @@ names microseconds.
   for a date. Seconds stay untranslated on a column, since SQL Server ignores
   -30 to 29 seconds added to a smalldatetime. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
-  and adds every unit to it. A number added to it counts days, as in SQL
+  and adds every unit from seconds to years to it. A number added to it counts days, as in SQL
   Server. Its fraction becomes the hours, minutes, seconds or milliseconds it
   holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that is not whole
   hundredths of a second stays untranslated, since SQL Server rounds it to

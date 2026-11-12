@@ -1165,7 +1165,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       },
       date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
       datetime: {
-        type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime'),
+        type: 'DATETIME', name: 'a datetime', units: adds(UNITS.filter(u => u !== 'MICROSECOND'), 'DATE_ADD', 'datetime'),
         days: {form: 'DATE_ADD', gives: 'datetime'}, fractionStep: 10000n,
       },
     },
@@ -2462,7 +2462,7 @@ function exactForm(node: any, read: string): any {
     forms.forEach((f, v) => swap.set(v, f));
   }
   const result = swap.size ? swapped(node, swap) : undefined;
-  return overInterval(node, read) ? equalities(kind, (result ?? node)[kind]) : result;
+  return overInterval(node, read) ? equalities(kind, (result ?? node)[kind], read) : result;
 }
 
 // Whether `node`, a source node in the engine's dialect `read`, is IN or a
@@ -2483,10 +2483,11 @@ function overInterval(node: any, read: string): boolean {
 // a` as `CASE WHEN x = a`. They give the same truth values, also when a value
 // is NULL. An equality with a literal NULL is NULL whatever the other value
 // is, and BigQuery's `=` takes no literal NULL, so it becomes
-// CAST(NULL AS BOOL).
-function equalities(kind: string, value: any): any {
-  const is = (a: any, b: any) =>
-      [a, b].some(n => bare(n)?.null !== undefined) ? sqlExpressionTree('CAST(NULL AS BOOL)', 'BIGQUERY') : equal(a, b);
+// CAST(NULL AS BOOL), which a SPANNER text writes directly (see
+// spannerForBigQuery) and another text as a form.
+function equalities(kind: string, value: any, read: string): any {
+  const nothing = () => read === 'spanner' ? sqlExpressionTree(NULL_BOOL, 'BIGQUERY') : formCall(NULL_BOOL, []);
+  const is = (a: any, b: any) => [a, b].some(n => bare(n)?.null !== undefined) ? nothing() : equal(a, b);
   if (kind === 'case') {
     return {case: {...value, operand: null, whens: value.whens.map(([w, r]: any[]) => [is(value.operand, w), r])}};
   }
@@ -2495,6 +2496,7 @@ function equalities(kind: string, value: any): any {
   const any = {paren: {this: value.expressions.map((e: any) => is(value.this, e)).reduce(or), trailing_comments: []}};
   return value.not ? {paren: {this: {not: {this: any}}, trailing_comments: []}} : any;
 }
+const NULL_BOOL = 'CAST(NULL AS BOOL)';
 
 // Whether `node`, a source value in the engine's dialect `read`, is a
 // difference the dialect gives as an INTERVAL of days and a time of day (see
@@ -3475,7 +3477,7 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
   const rewrite = (node: any): any => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(rewrite);
-    const zoned = (isNode(node) && overInterval(node, 'spanner') && equalities(kindOf(node)!, node[kindOf(node)!])) ||
+    const zoned = (isNode(node) && overInterval(node, 'spanner') && equalities(kindOf(node)!, node[kindOf(node)!], 'spanner')) ||
         (isNode(node) && spannerZone(node)) || node;
     return Object.fromEntries(Object.entries(zoned).map(([k, v]) => [k, rewrite(v)]));
   };
