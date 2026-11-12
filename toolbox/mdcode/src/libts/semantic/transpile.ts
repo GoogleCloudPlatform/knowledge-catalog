@@ -2428,8 +2428,7 @@ function exactForm(node: any, read: string): any {
     forms.forEach((f, v) => swap.set(v, f));
   }
   const result = swap.size ? swapped(node, swap) : undefined;
-  const nullInterval = () => formCall(NULL_INTERVAL, []);
-  return overInterval(node, read) ? equalities(kind, (result ?? node)[kind], nullInterval) : result;
+  return overInterval(node, read) ? equalities(kind, (result ?? node)[kind]) : result;
 }
 
 // Whether `node`, a source node in the engine's dialect `read`, is IN or a
@@ -2447,11 +2446,12 @@ function overInterval(node: any, read: string): boolean {
 // `value`, IN or a CASE with an operand, as the equalities it compares by:
 // `x IN (a, b)` as `(x = a OR x = b)`, NOT IN as NOT of them, and `CASE x WHEN
 // a` as `CASE WHEN x = a`. They give the same truth values, also when a value
-// is NULL. BigQuery's `=` takes no literal NULL, so each becomes what
-// `nullInterval` gives, a NULL of type INTERVAL.
-function equalities(kind: string, value: any, nullInterval: () => any): any {
-  const typed = (n: any) => bare(n)?.null !== undefined ? nullInterval() : n;
-  const is = (a: any, b: any) => equal(typed(a), typed(b));
+// is NULL. An equality with a literal NULL is NULL whatever the other value
+// is, and BigQuery's `=` takes no literal NULL, so it becomes
+// CAST(NULL AS BOOL).
+function equalities(kind: string, value: any): any {
+  const is = (a: any, b: any) =>
+      [a, b].some(n => bare(n)?.null !== undefined) ? sqlExpressionTree('CAST(NULL AS BOOL)', 'BIGQUERY') : equal(a, b);
   if (kind === 'case') {
     return {case: {...value, operand: null, whens: value.whens.map(([w, r]: any[]) => [is(value.operand, w), r])}};
   }
@@ -2460,7 +2460,6 @@ function equalities(kind: string, value: any, nullInterval: () => any): any {
   const any = {paren: {this: value.expressions.map((e: any) => is(value.this, e)).reduce(or), trailing_comments: []}};
   return value.not ? {paren: {this: {not: {this: any}}, trailing_comments: []}} : any;
 }
-const NULL_INTERVAL = 'CAST(NULL AS INTERVAL)';
 
 // Whether `node`, a source value in the engine's dialect `read`, is a
 // difference the dialect gives as an INTERVAL of days and a time of day (see
@@ -3472,9 +3471,7 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
   const rewrite = (node: any): any => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(rewrite);
-    const nullInterval = () => sqlExpressionTree(NULL_INTERVAL, 'BIGQUERY');
-    const zoned = (isNode(node) && overInterval(node, 'spanner') &&
-                   equalities(kindOf(node)!, node[kindOf(node)!], nullInterval)) ||
+    const zoned = (isNode(node) && overInterval(node, 'spanner') && equalities(kindOf(node)!, node[kindOf(node)!])) ||
         (isNode(node) && spannerZone(node)) || node;
     return Object.fromEntries(Object.entries(zoned).map(([k, v]) => [k, rewrite(v)]));
   };

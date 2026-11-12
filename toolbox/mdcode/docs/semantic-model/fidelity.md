@@ -484,8 +484,9 @@ BigQuery's IN and CASE compare no INTERVAL. From PostgreSQL, Databricks and
 Spanner, IN, NOT IN and a CASE with a value over an INTERVAL become the
 equalities they compare by: `x IN (a, b)` becomes `(x = a OR x = b)`, and
 `CASE x WHEN a` becomes `CASE WHEN x = a`. They give the same truth values,
-also for NULL. A NULL among them becomes `CAST(NULL AS INTERVAL)`, since
-BigQuery's `=` takes no literal NULL.
+also for NULL. An equality with a NULL is NULL whatever the other value is,
+and BigQuery's `=` takes no literal NULL, so it becomes `CAST(NULL AS
+BOOLEAN)`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's

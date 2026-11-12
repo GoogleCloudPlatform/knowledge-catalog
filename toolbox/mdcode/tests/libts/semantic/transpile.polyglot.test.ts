@@ -634,7 +634,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "x > INTERVAL '1 day'", {sql: 'x > INTERVAL 1 DAY'}],
     ['DATABRICKS', 'INTERVAL 1 MONTH > INTERVAL 30 DAYS', {error: 'kcmd does not translate > on a year-month INTERVAL and a day-time INTERVAL'}],
     // IN and a CASE with an operand over an INTERVAL compare with `=`.
-    ['POSTGRES', "x NOT IN (INTERVAL '1 day', NULL)", {sql: '(NOT (x = INTERVAL 1 DAY OR x = CAST(NULL AS INTERVAL)))'}],
+    ['POSTGRES', "x NOT IN (INTERVAL '1 day', NULL)", {sql: '(NOT (x = INTERVAL 1 DAY OR CAST(NULL AS BOOLEAN)))'}],
     ['DATABRICKS', 'CASE x WHEN INTERVAL 1 MONTH THEN 1 END', {sql: 'CASE WHEN x = INTERVAL 1 MONTH THEN 1 END'}],
     ['POSTGRES', "CURRENT_DATE > INTERVAL '1 day'", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
     ['POSTGRES', "INTERVAL '1 day' || 'x'", {error: 'kcmd does not translate || of a value that is not text'}],
@@ -749,7 +749,8 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SPANNER', 't + INTERVAL (1+1) DAY', {sql: 't + INTERVAL (1 + 1) DAY'}],
     ['SPANNER', 'EXTRACT(DAY FROM INTERVAL 1 YEAR)', {sql: "EXTRACT(DAY FROM INTERVAL '1' YEAR)"}],
     ['SPANNER', 't - s > INTERVAL 1 MONTH OR t - s BETWEEN INTERVAL 1 QUARTER AND INTERVAL 1 YEAR', {sql: "t - s > INTERVAL '1' MONTH OR t - s BETWEEN INTERVAL '1' QUARTER AND INTERVAL '1' YEAR"}],
-    ['SPANNER', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: "(x = INTERVAL '1' MONTH OR x = CAST(NULL AS INTERVAL))"}],
+    ['SPANNER', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: "(x = INTERVAL '1' MONTH OR CAST(NULL AS BOOLEAN))"}],
+    ['SPANNER', "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END", {sql: "CASE WHEN a - b = 1 THEN 'x' WHEN CAST(NULL AS BOOLEAN) THEN 'y' END"}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor an
     // expression, or one outside DATE_ADD, EXTRACT, a comparison and the like
     // with a unit other than weeks, days, hours or minutes.
