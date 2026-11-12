@@ -717,8 +717,14 @@ function scalarText(
     return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
   }
   const lines = flow && typeof value === 'string' && value.includes('\n');
+  // YAML allows DEL and the C1 controls only as escapes, and YAML 1.1 reads
+  // U+2028 and U+2029 as line breaks where YAML 1.2 does not, so a string
+  // that holds one is double-quoted and writes them as escapes.
+  const special =
+      typeof value === 'string' && /[\x7f-\x9f\u2028\u2029]/.test(value);
   const node = isObject(value) ? value : Object.assign(
-      new yaml.Scalar(value), {type: lines ? 'QUOTE_DOUBLE' : type});
+      new yaml.Scalar(value),
+      {type: lines || special ? 'QUOTE_DOUBLE' : type});
   const text = yaml.stringify(flow ? [node] : {_: node}, {
     ...YAML_OPTIONS,
     compat: 'yaml-1.1',
@@ -742,8 +748,14 @@ function scalarText(
   }
   // A block scalar's indentation indicator, which yaml writes as 2, is the
   // file's.
-  return (flow ? text.slice(1, -2) :
-                 text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`))
+  const written = flow ? text.slice(1, -2) :
+                         text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`);
+  const names: Record<string, string> =
+      {'\x85': 'N', '\u2028': 'L', '\u2029': 'P'};
+  return (special ? written.replace(
+                        /[\x7f-\x9f\u2028\u2029]/g,
+                        c => `\\${names[c] ?? `x${c.charCodeAt(0).toString(16)}`}`) :
+                    written)
       .split('\n')
       .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)
       .join(u.nl);

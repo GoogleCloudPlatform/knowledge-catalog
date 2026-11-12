@@ -40,6 +40,12 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: "p\\nq"  # c\nb: "p\n\n  q"\nd: "p\n\n  q"\n'
   ],
   [
+    'quoted strings on one line that gain DEL and a line separator',
+    'a: "Sales by region"\nb: \'Sales by region\'\n',
+    v => (v.a = 'Sales by\x7f region', v.b = 'Sales by\u2028 region'),
+    'a: "Sales by\\x7f region"\nb: "Sales by\\L region"\n'
+  ],
+  [
     'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
     v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
   ],
