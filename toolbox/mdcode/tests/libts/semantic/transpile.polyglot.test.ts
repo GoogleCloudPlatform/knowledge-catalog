@@ -745,7 +745,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SPANNER', 'EXTRACT(DAY FROM INTERVAL 1 YEAR)', {sql: "EXTRACT(DAY FROM INTERVAL '1' YEAR)"}],
     ['SPANNER', 't - s > INTERVAL 1 MONTH OR t - s BETWEEN INTERVAL 1 QUARTER AND INTERVAL 1 YEAR', {sql: "t - s > INTERVAL '1' MONTH OR t - s BETWEEN INTERVAL '1' QUARTER AND INTERVAL '1' YEAR"}],
     ['SPANNER', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: "(x = INTERVAL '1' MONTH OR CAST(NULL AS BOOLEAN))"}],
-    ['SPANNER', "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END", {sql: "CASE WHEN a - b = 1 THEN 'x' WHEN CAST(NULL AS BOOLEAN) THEN 'y' END"}],
+    ['SPANNER', "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END", {sql: "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END"}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor an
     // expression, or one outside DATE_ADD, EXTRACT, a comparison and the like
     // with a unit other than weeks, days, hours or minutes.
@@ -782,11 +782,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'COALESCE(CURRENT_DATE, NOW()) + 1', {error: 'kcmd does not translate + of a date'}],
     ['DATABRICKS', 'year(d) < 2024 AND month(d) > 1 -- c', {sql: 'EXTRACT(YEAR FROM d) < 2024 AND EXTRACT(MONTH FROM d) > 1 /* c */'}],
     ['SNOWFLAKE', 'DATEADD(day, 1, CAST(d AS TIMESTAMP_NTZ))', {sql: 'DATE_ADD(CAST(d AS DATETIME), INTERVAL 1 DAY)'}],
-    ['POSTGRES', "x IN (INTERVAL '1 day' * 2)", {sql: '(x = INTERVAL 1 DAY * 2)'}],
+    ['POSTGRES', "x IN (INTERVAL '1 day' * 2)", {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
     // MySQL values by kind: a date beside a number or text, NULLIF and
     // negation stay untranslated, and a value of no visible kind does not count.
     ['MYSQL', 'CURDATE() = YEAR(d)', {error: 'kcmd does not translate = on a DATE and a number, which MySQL compares by the digits of the date'}],
-    ['MYSQL', "COALESCE(CURDATE(), 'none')", {error: 'kcmd does not translate COALESCE on a DATE and a string, which MySQL gives as text'}],
+    ['MYSQL', "COALESCE(CURDATE(), '2024-01-01')", {error: 'kcmd does not translate COALESCE on a DATE and a string, which MySQL gives as text'}],
     ['MYSQL', 'NULLIF(DATE_ADD(d, INTERVAL 1 DAY), e)', {error: 'kcmd does not translate NULLIF of a date first, which MySQL gives as text'}],
     ['MYSQL', 'NULLIF(e, DATE_ADD(d, INTERVAL 1 DAY))', {error: 'kcmd does not translate NULLIF on a date and a value that may be another type'}],
     ['MYSQL', '-DATE_ADD(d, INTERVAL 1 DAY)', {error: 'kcmd does not translate - on a date, which MySQL turns into its digits'}],
@@ -796,20 +796,25 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', "CURDATE() BETWEEN '2024-01-01' AND '2024-12-31'", {sql: "CURRENT_DATE BETWEEN '2024-01-01' AND '2024-12-31'"}],
     ['MYSQL', "NOW() < '2024-01-05 10:00:00.5'", {sql: "DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND) < '2024-01-05 10:00:00.5'"}],
     ['MYSQL', "CURDATE() < '2024-01-05 10:00:00'", {error: 'kcmd does not translate < on a DATE and a string, which MySQL compares by reading the string as a date by its own rules'}],
-    ['MYSQL', "DATE_ADD(d, INTERVAL 1 DAY) IN ('2024-01-01', '20240102')", {error: 'kcmd does not translate IN on a date and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', "DATE_ADD(d, INTERVAL 1 DAY) IN ('2024-01-01')", {error: 'kcmd does not translate IN on a date and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', "CURDATE() >= '2024-02-30'", {error: 'kcmd does not translate >= on a DATE and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', "NOW() BETWEEN CURDATE() AND '2024-01-05 10:00:00'", {error: 'kcmd does not translate BETWEEN on a DATETIME and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', "'2024-01-05' BETWEEN CURDATE() AND NOW()", {error: 'kcmd does not translate BETWEEN on a DATE and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', 'NULLIF(1, DATE_ADD(d, INTERVAL 1 DAY))', {error: 'kcmd does not translate NULLIF on a date and a number, which MySQL compares by the digits of the date'}],
+    ['MYSQL', "NULLIF('2024-01-01', CURDATE())", {error: 'kcmd does not translate NULLIF on a DATE and a string, which MySQL gives as text'}],
+    ['MYSQL', '--CURDATE()', {error: 'kcmd does not translate - on a DATE, which MySQL turns into its digits'}],
     ['MYSQL', '-NULL', {error: 'kcmd does not translate - on NULL'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NULL)', {sql: '(CURRENT_DATE)'}],
-    ['POSTGRES', 'NULLIF(NULL, CURRENT_DATE)', {sql: 'NULLIF(NULL, CURRENT_DATE)'}],
+    ['POSTGRES', 'NULLIF(NULL, CURRENT_DATE)', {error: 'kcmd does not translate NULLIF of NULL'}],
     // An INTERVAL times an amount, wherever the INTERVAL comes from, and a date
     // that AVG or / reads.
     ['POSTGRES', "(-INTERVAL '1 day') * 1.5", {error: 'kcmd does not translate an INTERVAL times a decimal number'}],
     ['POSTGRES', "INTERVAL '1 day' * 1e2", {error: "kcmd does not translate INTERVAL '1 day' times the number 1e2"}],
-    ['POSTGRES', '(CURRENT_DATE - NOW()) * 2', {sql: '(JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) * 2'}],
+    ['POSTGRES', '(CURRENT_DATE - NOW()) * 2', {error: 'kcmd does not translate * of an INTERVAL'}],
     ['POSTGRES', "AVG(CURRENT_DATE + INTERVAL '1 day')", {error: 'kcmd does not translate AVG of a date'}],
     ['POSTGRES', "CASE x WHEN INTERVAL '1 day' THEN CURRENT_DATE ELSE NOW() END", {sql: 'CASE WHEN x = INTERVAL 1 DAY THEN TIMESTAMP(CURRENT_DATE) ELSE CURRENT_TIMESTAMP() END'}],
-    ['POSTGRES', '(CURRENT_DATE - NOW()) IN (x)', {sql: '((JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) = x)'}],
+    ['POSTGRES', '(CURRENT_DATE - NOW()) IN (x)', {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
     ['SPANNER', 'NULL IN (INTERVAL 1 MONTH)', {sql: '(CAST(NULL AS BOOLEAN))'}],
-    ['DATABRICKS', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: '(x = INTERVAL 1 MONTH OR CAST(NULL AS BOOLEAN))'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

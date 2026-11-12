@@ -314,20 +314,24 @@ microseconds.
   see is a DATE, such as the current date.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
-  as in MySQL, and adds every unit to it.
+  as in MySQL, and adds every unit from seconds to years to it.
   A date or a time it can see, such as the current date, a date function or
   date arithmetic on any value, stays untranslated where MySQL uses it as a
   number or as text. That is in `+`, `-` or `*`, such as `CURDATE() + 1`,
   negated, or compared with a number or text, also in BETWEEN, IN and CASE,
   such as `CURDATE() = YEAR(d)` or `CURDATE() = '20240105'`. MySQL turns the
   date into its digits beside a number, such as 20240101, and reads text
-  beside it as a date by its own rules. A string written YYYY-MM-DD beside a
-  date, or YYYY-MM-DD HH:MM:SS with up to six digits of a fraction beside a
-  DATETIME, reads as the same value in BigQuery, so `CURDATE() >=
-  '2024-01-01'` is translated as written. NULLIF with a date, a date among
-  number or text results of one COALESCE, IFNULL, IF or CASE, and a string
-  beside an INTERVAL, such as `'2024-01-31' + INTERVAL 1 DAY`, stay
-  untranslated too, since MySQL gives text there. A value whose type import
+  beside it as a date by its own rules. With `=`, `<` and the like, and as
+  the bounds of a date in BETWEEN, a string of a date that exists, written
+  YYYY-MM-DD beside a date, or with HH:MM:SS and up to six digits of a
+  fraction beside only DATETIME values, reads as the same value in BigQuery,
+  so `CURDATE() >= '2024-01-01'` is translated as written. IN and CASE stay
+  untranslated with such a string, since MySQL matches strings with each
+  other as text. NULLIF with a date first, a date among number or text
+  results of one COALESCE, IFNULL, IF or CASE, and a string beside an
+  INTERVAL, such as `'2024-01-31' + INTERVAL 1 DAY`, stay untranslated too,
+  since MySQL gives text there. So does NULLIF with a date second, since the
+  first value may be a date, a number or text. A value whose type import
   cannot see, such as a column or `d + 1`, does not count, so `IF(flag,
   CURDATE(), d + 1)` is translated as written.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
@@ -469,6 +473,7 @@ into days as those databases do. `CURRENT_DATE - NOW()` becomes
 `JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))`. A
 difference with a column stays untranslated, since the column's type is not
 visible: a PostgreSQL date column minus a date is a number of days.
+Arithmetic on such a difference stays untranslated too.
 
 PostgreSQL's EXTRACT of an INTERVAL that import can see, such as
 `INTERVAL '25 hours'` or such a difference, gives each part as a numeric, and
@@ -486,10 +491,13 @@ are 1 there and 25 in BigQuery.
 BigQuery rejects IN and a CASE with a value over an INTERVAL when the query
 runs, though a dry run accepts them. From PostgreSQL, Databricks and Spanner,
 IN, NOT IN and a CASE with a value over an INTERVAL become the equalities they
-compare by: `x IN (a, b)` becomes `(x = a OR x = b)`, and `CASE x WHEN a`
-becomes `CASE WHEN x = a`. They give the same truth values, also for NULL. An
-equality with a NULL is NULL whatever the other value is, and BigQuery's `=`
-takes no literal NULL, so it becomes `CAST(NULL AS BOOLEAN)`.
+compare by, where each value is an INTERVAL literal, a sum of them, a column or
+NULL: `x IN (a, b)` becomes `(x = a OR x = b)`, and `CASE x WHEN a` becomes
+`CASE WHEN x = a`. They give the same truth values, also for NULL. With any
+other value, such as `INTERVAL '1 day' * 2` or a difference of dates, they stay
+untranslated. An equality with a NULL is NULL whatever the other value is, and
+BigQuery's `=` takes no literal NULL, so it becomes a NULL of type BOOL, such
+as `CAST(NULL AS BOOLEAN)`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
