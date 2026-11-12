@@ -1581,6 +1581,19 @@ function dateValued(node: any, read: string): boolean {
       [b?.add, b?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) || dated(v.left) || dated(v.right)));
 }
 
+// Whether `node` is a string literal that MySQL and BigQuery read as the same
+// DATE beside a date, or as the same DATETIME beside DATETIME values when
+// `datetime`: a date written YYYY-MM-DD that exists, and beside a DATETIME also
+// one with a time written HH:MM:SS and up to six digits of a fraction.
+function canonicalDate(node: any, datetime: boolean): boolean {
+  const text = bare(node)?.literal?.literal_type === 'string' ? literalText(bare(node).literal) : undefined;
+  const m = /^(\d{4})-(\d\d)-(\d\d)(?: (\d\d):(\d\d):(\d\d)(?:\.\d{1,6})?)?$/.exec(text ?? '');
+  if (!m || (m[4] !== undefined && !datetime)) return false;
+  const [y, mo, d, h = 0, mi = 0, se = 0] = m.slice(1, 7).filter(p => p !== undefined).map(Number);
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return y >= 1 && mo >= 1 && mo <= 12 && d >= 1 && d <= days && h <= 23 && mi <= 59 && se <= 59;
+}
+
 // The kind of `node`, a MySQL value: a date or a time, a number, text, or
 // undefined where import cannot see it, as for a column. MySQL turns a date or
 // a time beside a number into its digits, compares one beside text by reading
@@ -2570,7 +2583,11 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
   const date = numbers ? values.find(v => v && mysqlKind(v, read) === 'date') : undefined;
   if (date) {
     const name = timeType(date, read) ?? 'date';
-    const other = values.map(v => v && mysqlKind(v, read)).find(k => k === 'number' || k === 'text');
+    // A string MySQL and BigQuery read as the same date or DATETIME compares
+    // alike in both.
+    const datetime = values.every(v => !v || mysqlKind(v, read) !== 'date' || timeType(v, read) === 'DATETIME');
+    const plain = (v: any) => use === 'compared' && canonicalDate(v, datetime);
+    const other = values.map(v => v && !plain(v) && mysqlKind(v, read)).find(k => k === 'number' || k === 'text');
     const why = use === 'results' ? 'gives as text' : other === 'number' ? 'compares by the digits of the date' :
         'compares by reading the string as a date by its own rules';
     if (use === 'negated') return `${article(name)} ${name}, which ${DIGITS_NOTE}`;

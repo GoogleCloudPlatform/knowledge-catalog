@@ -791,6 +791,12 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', 'NULLIF(e, DATE_ADD(d, INTERVAL 1 DAY))', {error: 'kcmd does not translate NULLIF on a date and a value that may be another type'}],
     ['MYSQL', '-DATE_ADD(d, INTERVAL 1 DAY)', {error: 'kcmd does not translate - on a date, which MySQL turns into its digits'}],
     ['MYSQL', 'IF(flag, CURDATE(), d + 1)', {sql: 'IF(flag, CURRENT_DATE, d + 1)'}],
+    // A string MySQL and BigQuery read as the same date or DATETIME compares
+    // as written. Any other string stays untranslated.
+    ['MYSQL', "CURDATE() BETWEEN '2024-01-01' AND '2024-12-31'", {sql: "CURRENT_DATE BETWEEN '2024-01-01' AND '2024-12-31'"}],
+    ['MYSQL', "NOW() < '2024-01-05 10:00:00.5'", {sql: "DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND) < '2024-01-05 10:00:00.5'"}],
+    ['MYSQL', "CURDATE() < '2024-01-05 10:00:00'", {error: 'kcmd does not translate < on a DATE and a string, which MySQL compares by reading the string as a date by its own rules'}],
+    ['MYSQL', "DATE_ADD(d, INTERVAL 1 DAY) IN ('2024-01-01', '20240102')", {error: 'kcmd does not translate IN on a date and a string, which MySQL compares by reading the string as a date by its own rules'}],
     ['MYSQL', '-NULL', {error: 'kcmd does not translate - on NULL'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NULL)', {sql: '(CURRENT_DATE)'}],
     ['POSTGRES', 'NULLIF(NULL, CURRENT_DATE)', {sql: 'NULLIF(NULL, CURRENT_DATE)'}],
