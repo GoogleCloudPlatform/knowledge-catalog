@@ -9,7 +9,12 @@ To get started contributing:
 1. Fork the repo, develop and test your code changes.
 1. Ensure that your code adheres to the existing style.
 1. Ensure that your code has an appropriate set of unit tests which all pass.
-1. Ensure that all tests pass (e.g., by running `npm run test` in the TypeScript package directories).
+1. Ensure all tests pass:
+   - **TypeScript packages** (`agents/mdcode/`, `toolbox/mdcode/`, `toolbox/enrichment/`):
+     `npm run test`
+   - **Python packages** (`okf/`): `python -m pytest`
+1. If contributing Python code, run a style check (the repo follows [PEP 8](https://peps.python.org/pep-0008/)):
+   `pip install ruff && ruff check .`
 1. Submit a pull request.
 
 ## Contributor License Agreement
