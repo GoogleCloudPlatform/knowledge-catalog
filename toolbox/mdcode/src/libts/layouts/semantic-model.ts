@@ -550,15 +550,16 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // Deletes `localPath`, a file this layout lists, for `pull --force-remove`,
   // unless a link puts it outside the entry group directory, and says whether
-  // it did. A link goes as a link, and a missing file is no error. Then it
-  // deletes each directory above it in the entry group directory that this
-  // leaves empty, up to the first one that is a link or lies below one.
+  // it did. A link goes as a link, and a missing file is no error, as when an
+  // earlier deletion removed its directory. Then it deletes each directory
+  // above it in the entry group directory that this leaves empty, up to the
+  // first one that is a link or lies below one.
   removeFile(localPath: string): boolean {
     if (this.outsideGroup(localPath)) return false;
     fs.rmSync(localPath, {force: true});
     const top = path.resolve(this._groupDir());
     let dir = path.dirname(path.resolve(localPath));
-    while (dir.startsWith(`${top}${path.sep}`) &&
+    while (dir.startsWith(`${top}${path.sep}`) && fs.existsSync(dir) &&
            fs.realpathSync(dir) ===
                path.join(fs.realpathSync(top), path.relative(top, dir)) &&
            !fs.readdirSync(dir).length) {

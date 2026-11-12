@@ -2956,6 +2956,14 @@ describe('a pull', () => {
          shown('commerce/entities/Old.overview.md')}, which is not in the ` +
          'catalog, because a link puts it outside the entry group directory.',
      [], ['outside/entities/Old.overview.md']],
+    ['a stale overview sidecar a link inside the entry group also leads to',
+     SECOND_GEN, () => {
+       write(local('a_old/entities/Old.overview.md'), 'Old.\n');
+       fs.symlinkSync('a_old', local('z_link'));
+     },
+     notInCatalog('overview sidecar', 'z_link/entities/Old.overview.md'),
+     ['a_old/entities/Old.overview.md', 'z_link/entities/Old.overview.md'],
+     []],
     ['a directory at a profile file\'s name', SECOND_GEN,
      () => fs.mkdirSync(local('commerce.profile.dev.yaml')),
      `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
