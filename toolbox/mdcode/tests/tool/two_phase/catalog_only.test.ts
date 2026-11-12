@@ -554,7 +554,8 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       errors: [has("statement 1 has '#' on a line")],
     }, {
       // The tables give the dialect with no deployment, and a profile's
-      // tables give it for the profile file.
+      // tables, here a Spanner table whose GoogleSQL dialect push looks up,
+      // give it for the profile file.
       files: {'commerce.yaml': modelWriting(
           ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'])},
       errors: [has("statement 1 has '#' on a line")],
@@ -562,7 +563,7 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       entities: [{...CUSTOMER, source: undefined}],
       actions: [purge()],
       files: {'commerce.profile.p.yaml': withStatementLines(
-          profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
+          profileFile('p', {...boundAt(SPANNER_CUSTOMER), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
           '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
     }, {
