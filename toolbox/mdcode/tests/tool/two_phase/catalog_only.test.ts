@@ -502,6 +502,8 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         '- "UPDATE customer SET a = 1 /* closed */\\n  , doc = doc -- every row?', '  WHERE c_key = @k"',
         // An escaped private-use character is text.
         '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row\\ue000 more"',
+        // A comment that starts after an escaped line break is on the last line.
+        '- "UPDATE customer SET doc = doc WHERE c_key = @k\\', '  -- one row"',
       ])},
       errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--'],
                [21, '--'], [22, '--'], [24, '--']].map(
