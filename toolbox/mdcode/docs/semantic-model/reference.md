@@ -88,9 +88,10 @@ holds keeps its bytes, whatever its line endings. When push's checks that call
 no service would refuse a file the entry group holds after the pull, pull
 warns, names the file push's first error is in, and gives that error. Those
 files are the model file, profile files and overview sidecars pull writes, and
-the local ones it keeps. Under `--dry-run` pull makes its writes and deletions
-in a temporary copy of the entry group directory, runs the checks on the copy
-and deletes it. When that error suggests `kcmd import --transpile`, pull runs
+the local ones it keeps. Under `--dry-run` the checks read the text pull would
+write for each file it writes, find no file it would delete, and read every
+other file on disk, so the dry run writes nothing.
+When that error suggests `kcmd import --transpile`, pull runs
 that import as push does, writing nothing, on the same files. When that import
 would stop, the error also names the
 first error it would stop on that pull can find without reading a table's SQL

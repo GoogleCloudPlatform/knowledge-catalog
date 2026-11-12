@@ -40,12 +40,134 @@ function profileFileName(fileName: string):
   return m ? {model: m[1], profile: m[2]} : undefined;
 }
 
-// Each `<model>.profile.<name>.yaml` in `dir`, by profile name.
-export function profileFilesBeside(dir: string, model: string):
-    {name: string; path: string}[] {
-  if (!fs.existsSync(dir)) return [];
+// The files and directories a layout reads, and how it reads them.
+export interface LayoutFiles {
+  // Whether a file or directory is at `p`, as fs.existsSync says.
+  exists(p: string): boolean;
+  // The names in the directory `dir`, as fs.readdirSync gives them.
+  list(dir: string): string[];
+  // What is at `p`, following links, as fs.statSync says. Undefined when
+  // nothing is there and `throwIfNoEntry` is false.
+  stat(p: string, throwIfNoEntry?: boolean):
+      {isFile(): boolean; isDirectory(): boolean}|undefined;
+  // The bytes of the file at `p`, as fs.readFileSync gives them.
+  read(p: string): Buffer;
+  // Each file under the directory `dir` that one of the glob `patterns`
+  // matches, as a POSIX path relative to `dir`.
+  glob(dir: string, patterns: string[]): string[];
+}
+
+// Reads the files on disk.
+export const diskFiles: LayoutFiles = {
+  exists: p => fs.existsSync(p),
+  list: dir => fs.readdirSync(dir),
+  stat: (p, throwIfNoEntry = true) => fs.statSync(p, {throwIfNoEntry}),
+  read: p => fs.readFileSync(p),
+  glob: (dir, patterns) =>
+      glob.globSync(patterns, {cwd: dir, nodir: true, posix: true}),
+};
+
+// A written file, and a directory that holds one, as filesAfter shows them.
+// glob reads only these two members of an entry it lists or stats.
+const WRITTEN_FILE = {isFile: () => true, isDirectory: () => false};
+const WRITTEN_DIR = {isFile: () => false, isDirectory: () => true};
+
+// Reads the files on disk as they are once each path in `written` holds its
+// text and each path in `deleted` is gone, and writes nothing. Every other
+// file reads as on disk, with the same errors. A directory that holds a
+// written file exists. Paths are compared once resolved.
+export function filesAfter(
+    written: Map<string, string>, deleted: string[]): LayoutFiles {
+  const texts =
+      new Map([...written].map(([p, text]) => [path.resolve(p), text]));
+  const gone = new Set(deleted.map(p => path.resolve(p)));
+  // Each entry of the directory `dir` that is a written file or holds one,
+  // by name, and whether it is the file.
+  const writtenIn = (dir: string) => {
+    const names = new Map<string, boolean>();
+    for (const p of texts.keys()) {
+      const relative = path.relative(path.resolve(dir), p);
+      const [name, ...rest] = relative.split(path.sep);
+      if (!name || name === '..' || path.isAbsolute(relative)) continue;
+      names.set(name, !rest.length);
+    }
+    return names;
+  };
+  // What is at `p` once the files are written: a written file, a directory
+  // that is not on disk and holds one, null for a deleted file, or undefined
+  // when the disk tells.
+  const after = (p: string) => {
+    const resolved = path.resolve(p);
+    if (texts.has(resolved)) return WRITTEN_FILE;
+    if (gone.has(resolved)) return null;
+    return writtenIn(p).size && !fs.existsSync(p) ? WRITTEN_DIR : undefined;
+  };
+  const missing = (p: string, syscall: string) => Object.assign(
+      new Error(`ENOENT: no such file or directory, ${syscall} '${p}'`),
+      {code: 'ENOENT', syscall, path: p});
+  // The entries of the directory `dir`: those on disk but the deleted ones,
+  // then each written file, or directory that holds one, not on disk.
+  const entries = (dir: string): fs.Dirent[] => {
+    const added = writtenIn(dir);
+    let onDisk: fs.Dirent[] = [];
+    try {
+      onDisk = fs.readdirSync(dir, {withFileTypes: true});
+    } catch (err) {
+      if (!added.size) throw err;
+    }
+    const kept = onDisk.filter(e => !gone.has(path.resolve(dir, e.name)));
+    for (const [name, isFile] of added) {
+      if (kept.some(e => e.name === name)) continue;
+      const entry = {name, ...isFile ? WRITTEN_FILE : WRITTEN_DIR};
+      kept.push(entry as unknown as fs.Dirent);
+    }
+    return kept;
+  };
+  return {
+    exists: p => {
+      const at = after(p);
+      return at === undefined ? fs.existsSync(p) : at !== null;
+    },
+    list: dir => entries(dir).map(e => e.name),
+    stat: (p, throwIfNoEntry = true) => {
+      const at = after(p);
+      if (at === undefined) return fs.statSync(p, {throwIfNoEntry});
+      if (at === null && throwIfNoEntry) throw missing(p, 'stat');
+      return at ?? undefined;
+    },
+    read: p => {
+      const text = texts.get(path.resolve(p));
+      if (text !== undefined) return Buffer.from(text);
+      if (gone.has(path.resolve(p))) throw missing(p, 'open');
+      return fs.readFileSync(p);
+    },
+    // glob lists each directory through `entries`, and stats the directory
+    // it starts in.
+    glob: (dir, patterns) => glob.globSync(patterns, {
+      cwd: dir,
+      nodir: true,
+      posix: true,
+      fs: {
+        readdirSync: entries,
+        lstatSync: (p: string) => {
+          const at = after(p);
+          if (at === undefined) return fs.lstatSync(p);
+          if (at === null) throw missing(p, 'lstat');
+          return at as unknown as fs.Stats;
+        },
+      },
+    }),
+  };
+}
+
+// Each `<model>.profile.<name>.yaml` in `dir`, by profile name, read with
+// `files`.
+export function profileFilesBeside(
+    dir: string, model: string,
+    files = diskFiles): {name: string; path: string}[] {
+  if (!files.exists(dir)) return [];
   const out: {name: string; path: string}[] = [];
-  for (const f of fs.readdirSync(dir)) {
+  for (const f of files.list(dir)) {
     const named = profileFileName(f);
     if (named?.model === model) {
       out.push({name: named.profile, path: path.join(dir, f)});
@@ -56,16 +178,18 @@ export function profileFilesBeside(dir: string, model: string):
 
 // Each `<model>.profile.*.yaml` in `dir`, whatever its profile name: the
 // nameless file first, then those whose profile name is empty or has a dot, by
-// file name, then the rest by profile name.
-export function profileFileNamesBeside(dir: string, model: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  const named = profileFilesBeside(dir, model).map(p => path.basename(p.path));
+// file name, then the rest by profile name. Reads with `files`.
+export function profileFileNamesBeside(
+    dir: string, model: string, files = diskFiles): string[] {
+  if (!files.exists(dir)) return [];
+  const named =
+      profileFilesBeside(dir, model, files).map(p => path.basename(p.path));
   const nameless = `${model}.profile.yaml`;
-  const others = fs.readdirSync(dir).filter(
+  const others = files.list(dir).filter(
       f => f.startsWith(`${model}.profile.`) && f.endsWith('.yaml') &&
           f !== nameless && !named.includes(f));
   return [
-    ...(fs.existsSync(path.join(dir, nameless)) ? [nameless] : []),
+    ...(files.exists(path.join(dir, nameless)) ? [nameless] : []),
     ...others.sort(),
     ...named,
   ];
@@ -102,15 +226,17 @@ export function vanillaSiblingError(file: string, modelFile: string): string {
 // The profile files in the older `<model>.profiles/` directory in `dir`, each
 // named by its file basename. The directory is looked up by its name as `dir`
 // lists it, so that on a case-insensitive file system, as on macOS and
-// Windows, two model names that differ only in case do not share it.
-export function legacyProfileFiles(dir: string, model: string):
-    {name: string; path: string}[] {
+// Windows, two model names that differ only in case do not share it. Reads
+// with `files`.
+export function legacyProfileFiles(
+    dir: string, model: string,
+    files = diskFiles): {name: string; path: string}[] {
   const sub = `${model}.profiles`;
-  if (!fs.existsSync(dir) || !fs.readdirSync(dir).includes(sub)) return [];
+  if (!files.exists(dir) || !files.list(dir).includes(sub)) return [];
   const legacy = path.join(dir, sub);
-  if (!fs.statSync(legacy, {throwIfNoEntry: false})?.isDirectory()) return [];
+  if (!files.stat(legacy, false)?.isDirectory()) return [];
   const out: {name: string; path: string}[] = [];
-  for (const entry of fs.readdirSync(legacy)) {
+  for (const entry of files.list(legacy)) {
     if (!entry.endsWith('.yaml')) continue;
     if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
     out.push(
@@ -129,19 +255,22 @@ export function legacyProfileDirError(model: string): string {
 export class SemanticModelLayout implements CatalogLayout {
   private readonly _catalogPath: string;
   private readonly _entryGroup?: string;
+  // What the layout reads its files with.
+  readonly files: LayoutFiles;
 
   // Maps a model handle (the document's file basename) to its absolute path.
   private readonly _index = new Map<string, string>();
 
-  constructor(catalogPath: string, entryGroup?: string) {
+  constructor(catalogPath: string, entryGroup?: string, files = diskFiles) {
     this._catalogPath = catalogPath;
     this._entryGroup = entryGroup;
+    this.files = files;
   }
 
   async init(): Promise<void> {
     this._index.clear();
 
-    if (!fs.existsSync(this._catalogPath)) {
+    if (!this.files.exists(this._catalogPath)) {
       return;
     }
 
@@ -154,11 +283,8 @@ export class SemanticModelLayout implements CatalogLayout {
     const pattern = this._entryGroup ?
         `EntryGroups/${this._entryGroup}/*.yaml` :
         'EntryGroups/*/*.yaml';
-    const matches = await glob.glob(pattern, {
-      cwd: this._catalogPath,
-      absolute: true,
-      nodir: true,
-    });
+    const matches = this.files.glob(this._catalogPath, [pattern])
+                        .map(f => path.resolve(this._catalogPath, f));
 
     // glob returns files in directory order, which differs between
     // filesystems. Sorted, push and `kcmd profiles` visit models in the same
@@ -199,7 +325,7 @@ export class SemanticModelLayout implements CatalogLayout {
   modelDocuments(): {name: string; text: string}[] {
     const docs: {name: string; text: string}[] = [];
     for (const [name, localPath] of this._index) {
-      docs.push({name, text: fs.readFileSync(localPath, 'utf8')});
+      docs.push({name, text: this.files.read(localPath).toString('utf8')});
     }
     return docs;
   }
@@ -226,7 +352,8 @@ export class SemanticModelLayout implements CatalogLayout {
     if (!this._entryGroup) return [];
     const dir = this._groupDir();
     return [
-      ...profileFileNamesBeside(dir, model).map(f => path.join(dir, f)),
+      ...profileFileNamesBeside(dir, model, this.files)
+          .map(f => path.join(dir, f)),
       ...this._legacyProfilePaths(model).map(p => p.path),
     ];
   }
@@ -240,7 +367,8 @@ export class SemanticModelLayout implements CatalogLayout {
         ({entryId, path: p}) => [
           entryId,
           parseOverviewSidecar(
-              fs.readFileSync(p, 'utf8'), path.relative(this._groupDir(), p)),
+              this.files.read(p).toString('utf8'),
+              path.relative(this._groupDir(), p)),
         ]));
   }
 
@@ -249,12 +377,10 @@ export class SemanticModelLayout implements CatalogLayout {
   overviewSidecarPaths(): {entryId: string; path: string}[] {
     if (!this._entryGroup) return [];
     const dir = this._groupDir();
-    const files = glob.globSync(
-        [
-          `*${OVERVIEW_SIDECAR}`,
-          `*/{entities,metrics,relationships}/*${OVERVIEW_SIDECAR}`,
-        ],
-        {cwd: dir, nodir: true, posix: true});
+    const files = this.files.glob(dir, [
+      `*${OVERVIEW_SIDECAR}`,
+      `*/{entities,metrics,relationships}/*${OVERVIEW_SIDECAR}`,
+    ]);
     return files.sort().map(f => ({
                              entryId: f.slice(0, -OVERVIEW_SIDECAR.length),
                              path: path.join(dir, f),
@@ -277,12 +403,12 @@ export class SemanticModelLayout implements CatalogLayout {
     const nameless = this._entryGroup ?
         path.join(this._groupDir(), `${model}.profile.yaml`) :
         undefined;
-    if (nameless && fs.existsSync(nameless)) {
+    if (nameless && this.files.exists(nameless)) {
       throw new Error(profileNameError(path.basename(nameless), '')!);
     }
     const prefix = `${model}.profile.`;
-    const badName = this._entryGroup && fs.existsSync(this._groupDir()) ?
-        fs.readdirSync(this._groupDir()).find(f => {
+    const badName = this._entryGroup && this.files.exists(this._groupDir()) ?
+        this.files.list(this._groupDir()).find(f => {
           if (!f.startsWith(prefix) || !f.endsWith('.yaml')) return false;
           const n = f.slice(prefix.length, -'.yaml'.length);
           return f !== `${model}.profile.yaml` &&
@@ -312,13 +438,13 @@ export class SemanticModelLayout implements CatalogLayout {
     const seen = new Map<string, string>();
     for (const {name, path: p} of siblings) {
       const file = path.basename(p);
-      if (!fs.statSync(p).isFile()) {
+      if (!this.files.stat(p)?.isFile()) {
         throw new Error(`Profile file '${file}' is not a file.`);
       }
       if (version === VANILLA_VERSION) {
         throw new Error(vanillaSiblingError(file, modelFile));
       }
-      const text = fs.readFileSync(p, 'utf8');
+      const text = this.files.read(p).toString('utf8');
       checkProfileFileName(modelFile, file, name, text, seen);
       docs.push({name, text, path: p});
     }
@@ -371,12 +497,12 @@ export class SemanticModelLayout implements CatalogLayout {
   // `<prefix>.yaml` does not exist.
   orphanProfilePaths(): string[] {
     const dir = this._entryGroup ? this._groupDir() : undefined;
-    if (!dir || !fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir)
+    if (!dir || !this.files.exists(dir)) return [];
+    return this.files.list(dir)
         .filter(f => {
           if (f.startsWith('.') || !ANY_PROFILE_FILE.test(f)) return false;
           const prefix = f.slice(0, f.indexOf('.profile.'));
-          return !fs.existsSync(path.join(dir, `${prefix}.yaml`));
+          return !this.files.exists(path.join(dir, `${prefix}.yaml`));
         })
         .sort()
         .map(f => path.join(dir, f));
@@ -387,11 +513,10 @@ export class SemanticModelLayout implements CatalogLayout {
   // reject.
   legacyProfileDirs(): string[] {
     const dir = this._entryGroup ? this._groupDir() : undefined;
-    if (!dir || !fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir)
+    if (!dir || !this.files.exists(dir)) return [];
+    return this.files.list(dir)
         .filter(f => f.endsWith('.profiles') &&
-                    fs.statSync(path.join(dir, f), {throwIfNoEntry: false})
-                        ?.isDirectory() &&
+                    this.files.stat(path.join(dir, f), false)?.isDirectory() &&
                     this._legacyProfilePaths(f.slice(0, -'.profiles'.length))
                             .length > 0)
         .sort()
@@ -407,7 +532,9 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 
   private _siblingProfilePaths(model: string): {name: string; path: string}[] {
-    return this._entryGroup ? profileFilesBeside(this._groupDir(), model) : [];
+    return this._entryGroup ?
+        profileFilesBeside(this._groupDir(), model, this.files) :
+        [];
   }
 
   // `<model>.profiles/*.yaml`, each named by its file basename, for pull to
@@ -416,7 +543,7 @@ export class SemanticModelLayout implements CatalogLayout {
   // `..` segment, so such a name has no directory here.
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
     if (!this._entryGroup || /[\\/]/.test(model)) return [];
-    return legacyProfileFiles(this._groupDir(), model);
+    return legacyProfileFiles(this._groupDir(), model, this.files);
   }
 
   // The model name the model document with this handle declares, or undefined
@@ -435,7 +562,7 @@ export class SemanticModelLayout implements CatalogLayout {
     const localPath = this._index.get(model);
     if (!localPath) return {};
     try {
-      const text = fs.readFileSync(localPath, 'utf8');
+      const text = this.files.read(localPath).toString('utf8');
       let doc: any;
       try {
         doc = yaml.parse(text, YAML_OPTIONS);

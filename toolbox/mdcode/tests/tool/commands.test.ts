@@ -2097,6 +2097,24 @@ describe('a pull', () => {
       ({name, expression, stringForm: true,
         ...(entity ? {entity, authoredEntity: entity} : {})});
 
+  // A model whose metric reads an entity it lacks, and push's error.
+  const GONE_ENTITY: [SemanticModel, string] = [
+    {...SECOND_GEN, metrics: [{name: 'm', expression: 'COUNT(Gone.id)'}]},
+    "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
+        "'Gone', which is not a declared entity in model 'commerce'; write " +
+        "'entity.field' starting with a declared entity.",
+  ];
+  // A model whose profile prod has a field reading a field Customer lacks, on
+  // a Spanner table, and push's error.
+  const GONE_FIELD: [SemanticModel, string] = [
+    {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
+      name: 'Customer', source: `${SPANNER}/customer`,
+      fields: [{name: 'id', expression: 'Customer.gone * 2', stringForm: true}],
+    }]}]},
+    "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
+        "'Customer.gone', which is not a field of 'Customer'.",
+  ];
+
   // Another writer may delete an entry the model needs, such as an entity
   // another one extends or a metric reads. Pull still writes the model file,
   // and warns with push's first error, naming the file it is in.
@@ -2106,20 +2124,10 @@ describe('a pull', () => {
      "model 'commerce' (commerce): entity 'Customer' extends unknown entity " +
          "'Named'; it is not defined in the model. Checks that need the " +
          'resolved model are skipped until this is fixed.'],
-    ['an entity a metric reads',
-     {...SECOND_GEN, metrics: [{name: 'm', expression: 'COUNT(Gone.id)'}]},
-     "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
-         "'Gone', which is not a declared entity in model 'commerce'; write " +
-         "'entity.field' starting with a declared entity."],
+    ['an entity a metric reads', ...GONE_ENTITY],
     // Pull reads no Spanner table's dialect, and still checks the fields a
     // profile field reads.
-    ['a field a profile field reads',
-     {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
-       name: 'Customer', source: `${SPANNER}/customer`,
-       fields: [{name: 'id', expression: 'Customer.gone * 2', stringForm: true}],
-     }]}]},
-     "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
-         "'Customer.gone', which is not a field of 'Customer'.",
+    ['a field a profile field reads', ...GONE_FIELD,
      'commerce.profile.prod.yaml'],
     // The catalog lists its profiles in its own order. Push lists them by
     // name.
@@ -2176,10 +2184,18 @@ describe('a pull', () => {
 
   // Push reads every file in the entry group after the pull, those pull writes
   // and those it leaves, and the warning names the file push's first error is
-  // in. A dry run reads a copy of the entry group directory with the pull's
-  // writes and deletions made, so it warns as the real pull does.
+  // in. A dry run reads the text pull writes for each file it writes, and
+  // every other file on disk, so it warns as the real pull does.
   const SIDECAR = 'commerce/entities/Customer.overview.md';
   for (const [what, files, model, overviews, file, verb, error] of [
+    ['the model file pull writes over one push accepts',
+     {'commerce.yaml': serializedFiles()['commerce.yaml']}, GONE_ENTITY[0],
+     undefined, 'commerce.yaml', 'writes', GONE_ENTITY[1]],
+    ['a profile file pull writes over one push accepts',
+     {'commerce.profile.prod.yaml':
+          serializedFiles()['commerce.profile.prod.yaml']},
+     GONE_FIELD[0], undefined, 'commerce.profile.prod.yaml', 'writes',
+     GONE_FIELD[1]],
     ['a profile file pull leaves', {'commerce.profile.dev.yaml': 'name: dev\n'},
      SECOND_GEN, undefined, 'commerce.profile.dev.yaml', 'leaves',
      "[commerce.profile.dev.yaml] profile 'dev': entity 'Customer' has no " +
@@ -2234,40 +2250,46 @@ describe('a pull', () => {
     }
   }
 
-  // A dry run's copy holds each linked file's content and each file it can
-  // read, whatever its mode, so the dry run changes nothing a link leads to,
-  // and it deletes the copy. It names TMPDIR when it cannot make the copy.
-  test('under --dry-run changes nothing a link leads to, and deletes its copy',
-       async () => {
-         const outside = path.join(dir, 'outside.yaml');
-         fs.writeFileSync(outside, 'old: true\n');
-         const entities = path.dirname(local(SIDECAR));
-         fs.mkdirSync(entities, {recursive: true});
-         fs.symlinkSync(outside, local('commerce.yaml'));
-         fs.symlinkSync(path.join(dir, 'missing'), local('notes.link'));
-         fs.chmodSync(entities, 0o555);
-         const tmp = fs.mkdtempSync(path.join(dir, 'tmp-'));
-         const tmpdir = process.env.TMPDIR;
-         const dryRun = (overviews?: Map<string, OverviewSidecar>) =>
-             pullModel(SECOND_GEN, {dryRun: true}, overviews);
-         try {
-           process.env.TMPDIR = tmp;
-           expect(await dryRun(new Map([['commerce/entities/Customer',
-                                         {content: 'New.\n', contentType: 'MARKDOWN'}]])))
-               .toBe(0);
-           process.env.TMPDIR = path.join(dir, 'missing');
-           await expect(dryRun()).rejects.toThrow(
-               'pull --dry-run checks a copy of the entry group in a temporary ' +
-               `directory, and cannot create one in '${path.join(dir, 'missing')}' ` +
-               '(ENOENT); set TMPDIR to a directory you can write to.');
-         } finally {
-           if (tmpdir === undefined) delete process.env.TMPDIR;
-           else process.env.TMPDIR = tmpdir;
-           fs.chmodSync(entities, 0o755);
-         }
-         expect(fs.readFileSync(outside, 'utf8')).toBe('old: true\n');
-         expect(fs.readdirSync(tmp)).toEqual([]);
-       });
+  // A dry run reads pull's writes and deletions from memory, so it writes
+  // nothing: no temporary directory, no file in the entry group, and no file a
+  // link there leads to, whether a model file linked to a file outside or a
+  // link to the directory above the entry group.
+  test('under --dry-run writes nothing, through a link either', async () => {
+    const outside = path.join(dir, 'outside.yaml');
+    fs.writeFileSync(outside, 'old: true\n');
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.symlinkSync(outside, local('commerce.yaml'));
+    fs.symlinkSync('../..', local('up'));
+    const tmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(dir, 'missing');
+    try {
+      expect(await pullModel(SECOND_GEN, {dryRun: true}, new Map([[
+               'commerce/entities/Customer', {content: 'New.\n'},
+             ]]))).toBe(0);
+    } finally {
+      if (tmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = tmpdir;
+    }
+    expect(fs.readFileSync(outside, 'utf8')).toBe('old: true\n');
+    expect(fs.readdirSync(entryGroupDir()).sort()).toEqual(['commerce.yaml', 'up']);
+    expect(fs.existsSync(path.join(dir, 'missing'))).toBe(false);
+  });
+
+  // Push cannot read a sidecar pull leaves that is a link to no file, and the
+  // warning gives push's error. A dry run reads that link on disk as well.
+  for (const dryRun of [false, true]) {
+    test(`gives push's error for a sidecar pull leaves that links to no file${
+             dryRun ? ', under --dry-run' : ''}`,
+         async () => {
+           fs.mkdirSync(path.dirname(local(SIDECAR)), {recursive: true});
+           fs.symlinkSync('missing.md', local(SIDECAR));
+           expect(await pullModel(SECOND_GEN, {dryRun})).toBe(0);
+           expect(messages(console.warn)).toEndWith(
+               `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
+               `writes it: ENOENT: no such file or directory, open '${
+                   shown(SIDECAR)}'.`);
+         });
+  }
 
   // On a table whose dialect pull does not read, that import reads an
   // ANSI_SQL text as pull's own checks do, so the warning names the error it

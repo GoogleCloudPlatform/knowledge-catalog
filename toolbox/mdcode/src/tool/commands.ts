@@ -2,7 +2,6 @@
 //
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
@@ -14,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, diskFiles, fileNameOf, filesAfter, formatOverviewSidecar, LayoutFiles, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -585,6 +584,7 @@ async function transpileOutcomes(
           readDialects: async () => dialects,
           api: () => ctx,
           readWithoutDialect: pull,
+          files: layout.files,
         });
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
@@ -637,12 +637,14 @@ function declaredProfilesReader(profileDocs: ProfileDocs): DeclaredProfiles {
 // The error naming the file at `localPath` when it is not valid UTF-8, or
 // undefined when it is. A file read as UTF-8 has each invalid byte replaced by
 // U+FFFD, which the catalog would store and the next pull would write into the
-// file, so only a text holding U+FFFD needs its bytes checked.
+// file, so only a text holding U+FFFD needs its bytes checked, which it reads
+// with `files`.
 function checkUtf8(
-    localPath: string, fileName: string, text: string): string|undefined {
+    localPath: string, fileName: string, text: string,
+    files = diskFiles): string|undefined {
   if (!text.includes('\uFFFD')) return undefined;
   try {
-    new TextDecoder('utf-8', {fatal: true}).decode(fs.readFileSync(localPath));
+    new TextDecoder('utf-8', {fatal: true}).decode(files.read(localPath));
     return undefined;
   } catch {
     return `File '${fileName}' is not valid UTF-8; save it as UTF-8.`;
@@ -1294,7 +1296,8 @@ async function checkBeforeWrites(
       text: docs.find(d => d.name === base.document)!.text,
     };
     for (const file of [modelFile, ...profileDocs(base.document)]) {
-      const error = checkUtf8(file.path, file.fileName, file.text);
+      const error =
+          checkUtf8(file.path, file.fileName, file.text, layout.files);
       if (error) return fail(error);
     }
     const changed =
@@ -1309,7 +1312,7 @@ async function checkBeforeWrites(
       for (const {path: sidecar} of local) {
         const error = checkUtf8(
             sidecar, fileNameOf(layout, docs[0].name, sidecar),
-            fs.readFileSync(sidecar, 'utf8'));
+            layout.files.read(sidecar).toString('utf8'), layout.files);
         if (error) return fail(error);
       }
       overviews = layout.overviewSidecars(local);
@@ -2162,23 +2165,25 @@ async function pullSemanticModel(
       writePulledFiles(layout, pulled.name, updated, options, removed.length);
   // Push's checks read the files the entry group holds after the pull. Under
   // --dry-run those on disk are not the ones pull leaves, so the checks read
-  // a copy of the entry group directory with the pull's writes and deletions
-  // made.
+  // the text pull writes for each file it writes, find no file it deletes,
+  // and read every other file on disk.
   const groupDir = path.dirname(layout.modelPath(pulled.name));
   const fileNames = updated.map(f => f.fileName);
-  const refusal = await afterPull(
-      groupDir, after => pushRefusal(ctx, after, source),
-      options.dryRun ? {
-        model: pulled.name,
-        written: updated,
-        deleted: [
-          ...removed,
-          ...options.forceRemove ?
-              unwrittenFiles(layout, pulled.name, fileNames).map(f => f.path) :
-              [],
-        ],
-      } :
-                       undefined);
+  const written = new Map(updated.flatMap(({fileName, content}) => {
+    const target = pulledFileTarget(layout, pulled.name, fileName, true);
+    return target ? [[target.path, content] as const] : [];
+  }));
+  const deleted = [
+    ...removed,
+    ...options.forceRemove ?
+        unwrittenFiles(layout, pulled.name, fileNames).map(f => f.path) :
+        [],
+  ];
+  const after = new SemanticModelLayout(
+      path.join(groupDir, '..', '..'), path.basename(groupDir),
+      options.dryRun ? filesAfter(written, deleted) : undefined);
+  await after.init();
+  const refusal = await pushRefusal(ctx, after, source);
   if (refusal) {
     const file = path.join(groupDir, refusal.file);
     const writes = writtenPaths(layout, pulled.name, fileNames)
@@ -2191,99 +2196,6 @@ async function pullSemanticModel(
             /[.!?]$/.test(error) ? error : `${error}.`}`);
   }
   return code;
-}
-
-
-// Runs `check` on the layout push reads in the entry group directory
-// `groupDir` once pull has written its files. Given `dryRun`, it reads a copy
-// of that directory in a new temporary directory instead, with
-// `dryRun.deleted` removed and the files `dryRun.written` of model
-// `dryRun.model` written where pull writes them, and deletes the copy
-// afterwards.
-async function afterPull<T>(
-    groupDir: string, check: (layout: SemanticModelLayout) => Promise<T>,
-    dryRun?: {model: string; written: SerializedFile[]; deleted: string[]}):
-    Promise<T> {
-  const root = dryRun ? temporaryDir() : path.join(groupDir, '..', '..');
-  const layout = new SemanticModelLayout(root, path.basename(groupDir));
-  try {
-    if (dryRun) {
-      const copy = path.join(root, 'EntryGroups', path.basename(groupDir));
-      if (fs.existsSync(groupDir)) {
-        // The copy holds each linked file's content, so a write to it changes
-        // nothing outside the copy. It holds each file and directory push
-        // can read, and no directory a link leads back to.
-        fs.cpSync(groupDir, copy, {
-          recursive: true,
-          dereference: true,
-          filter: src => copied(groupDir, src),
-        });
-        writable(copy);
-      }
-      for (const p of dryRun.deleted) {
-        fs.rmSync(path.join(copy, path.relative(groupDir, p)), {force: true});
-      }
-      for (const {fileName, content} of dryRun.written) {
-        pulledFileTarget(layout, dryRun.model, fileName, true)?.write(content);
-      }
-    }
-    await layout.init();
-    return await check(layout);
-  } finally {
-    if (dryRun) {
-      writable(root);
-      fs.rmSync(root, {recursive: true, force: true});
-    }
-  }
-}
-
-
-// A new directory in the system's temporary directory for a dry run's copy of
-// the entry group directory. Throws naming TMPDIR when it cannot be made.
-function temporaryDir(): string {
-  try {
-    return fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-pull-'));
-  } catch (err: any) {
-    throw new Error(
-        `pull --dry-run checks a copy of the entry group in a temporary ` +
-        `directory, and cannot create one in '${os.tmpdir()}' (${
-            err.code ?? err.message}); set TMPDIR to a directory you can ` +
-        `write to.`);
-  }
-}
-
-
-// Whether a dry run's copy of the entry group directory `groupDir` holds
-// `src`, a path under it: a file or directory it can read, other than a
-// directory a link leads back to, which would copy without end.
-function copied(groupDir: string, src: string): boolean {
-  try {
-    const real = fs.realpathSync(src);
-    const stat = fs.statSync(real);
-    fs.accessSync(
-        real,
-        stat.isDirectory() ? fs.constants.R_OK | fs.constants.X_OK :
-                             fs.constants.R_OK);
-    if (!stat.isDirectory()) return stat.isFile();
-    for (let up = src; up !== groupDir && path.dirname(up) !== up;) {
-      up = path.dirname(up);
-      if (fs.realpathSync(up) === real) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-
-// Makes `p`, and each file and directory under it, writable by its owner.
-function writable(p: string): void {
-  const stat = fs.lstatSync(p, {throwIfNoEntry: false});
-  if (!stat || stat.isSymbolicLink()) return;
-  fs.chmodSync(p, stat.mode | (stat.isDirectory() ? 0o700 : 0o600));
-  if (stat.isDirectory()) {
-    for (const entry of fs.readdirSync(p)) writable(path.join(p, entry));
-  }
 }
 
 
@@ -2877,6 +2789,9 @@ interface ImportSource {
 // BigQuery text.
 interface ImportIo {
   source?: ImportSource;
+  // What the import reads its input and the files beside it with, by default
+  // the disk.
+  files?: LayoutFiles;
   // Set for an import that reads no table's dialect, as pull's run does (see
   // ImportSemanticModelOptions.readWithoutDialect).
   readWithoutDialect?: boolean;
@@ -2958,7 +2873,8 @@ async function planOneImport(
         `--input '${input}' is not supported; use 'third-party' or ` +
         `'first-party'.`);
   }
-  if (!io.source && !fs.existsSync(file)) return fail(`file not found: ${file}`);
+  const files = io.files ?? diskFiles;
+  if (!io.source && !files.exists(file)) return fail(`file not found: ${file}`);
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
@@ -2968,15 +2884,15 @@ async function planOneImport(
   const stem = path.basename(file).replace(YAML_FILE, '');
   // Push refuses the older `<model>.profiles/` directory, which import does
   // not read.
-  if (legacyProfileFiles(dir, stem).length) {
+  if (legacyProfileFiles(dir, stem, files).length) {
     if (input === 'first-party') return fail(legacyProfileDirError(stem));
     warnings.push(legacyProfileDirError(stem));
   }
   const profileFiles = io.source?.profileFiles ??
-      profileFileNamesBeside(dir, stem)
+      profileFileNamesBeside(dir, stem, files)
           .map(f => ({
                  fileName: f,
-                 content: fs.readFileSync(path.join(dir, f), 'utf8'),
+                 content: files.read(path.join(dir, f)).toString('utf8'),
                }));
   // The workspace's layout, read once, when the files go into it.
   let layoutRead: Promise<SemanticModelLayout|string>|undefined;
@@ -3071,7 +2987,7 @@ async function planOneImport(
     ...written.filter(w => !profileFiles.some(f => f.fileName === w.fileName)),
   ];
   const result = await importSemanticModelYaml(
-      io.source?.text ?? fs.readFileSync(file, 'utf8'), {
+      io.source?.text ?? files.read(file).toString('utf8'), {
         flavor: flavor as 'ossie' | 'google',
         sourcePrefix: options.sourcePrefix,
         transpile: !!options.transpile,
