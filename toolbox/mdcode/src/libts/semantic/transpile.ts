@@ -1603,9 +1603,7 @@ function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined 
 // needs one amount, so the INTERVALs must add up to one amount of their
 // smallest unit (see folded). A `+` keeps the value as the source writes it,
 // which BigQuery adds months first, then days, then time, as the sources do.
-// Each unit must then be one that the row the addition gives adds, where
-// BigQuery's `+` and DATE_ADD agree. A function, such as MySQL's DATE_ADD, has
-// its `interval` added with `+`.
+// A function, such as MySQL's DATE_ADD, has its `interval` added with `+`.
 function valueOn(table: DateTable, read: string, sum: {
   operand: any; joined: IntervalValue; subtract: boolean; first?: boolean; op: string; call?: boolean;
   interval?: any;
@@ -1628,9 +1626,6 @@ function valueOn(table: DateTable, read: string, sum: {
     if (!one) return `${spelled(finest)} on ${found.name}`;
     return {operand, amount: fold.amount, unit: fold.unit, subtract, first, call, addition: one, values: joined.values};
   }
-  const gives = table.rows[addition.gives];
-  const other = joined.parts.find(p => !gives.units[p.unit]);
-  if (other) return `${spelled(other)} on ${found.name}`;
   // A month added in UTC (see Addition) puts the whole value there.
   const utc = joined.parts.some(p => row.units[p.unit]?.utc);
   return {
@@ -2387,9 +2382,8 @@ function swapped(node: any, swap: Map<any, any>): any {
 // `read`, with a FORM_CALL for each form it needs; a message when import does
 // not translate it; or undefined to translate it as it is. PostgreSQL
 // truncates a DATE as a timestamp with time zone at midnight UTC, which a unit
-// of a day or less leaves at the date. A comparison, the operands of `+` or
-// `-`, and the results of one COALESCE, NVL, IF or CASE, get the forms
-// valueForms gives.
+// of a day or less leaves at the date. A comparison, a negated value, and the
+// results of one COALESCE, NVL, IF or CASE, get the forms valueForms gives.
 function exactForm(node: any, read: string): any {
   const kind = kindOf(node) ?? '';
   const value = node[kind];
@@ -2417,10 +2411,8 @@ function exactForm(node: any, read: string): any {
   const part = extracted.length ? intervalPart(extracted[0], extracted[1], read) : undefined;
   if (part) return formCall(kind === 'extract' ? part : `CAST(${part} AS FLOAT64)`, [extracted[1]]);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
-  // Date arithmetic gets its forms from DATE_TABLES (see dateSum).
-  const computed = ['add', 'sub', 'mul'].includes(kind) && !dateSum(node, read) ? [value.left, value.right] : [];
   const pairs: [any[], string, Use][] = [
-    [comparedValues(kind, value) ?? [], OPERATORS[kind], 'compared'], [computed, OPERATORS[kind], 'computed'],
+    [comparedValues(kind, value) ?? [], OPERATORS[kind], 'compared'],
     [kind === 'neg' ? [value.this] : [], OPERATORS[kind], 'negated'],
     [merged, valueName(node), 'results'],
   ];
@@ -2512,9 +2504,9 @@ function intervalPart(part: unknown, node: any, read: string): string|undefined 
       INTERVAL_PARTS[String(part).toLowerCase()] : undefined;
 }
 
-// How a node uses the values valueForms gets: it compares them, computes
-// with them in `+`, `-` or `*`, negates one, or gives them as its results.
-type Use = 'compared'|'computed'|'negated'|'results';
+// How a node uses the values valueForms gets: it compares them, negates one,
+// or gives them as its results.
+type Use = 'compared'|'negated'|'results';
 
 // Why a MySQL date or time used as a number stays untranslated, for a
 // message.
