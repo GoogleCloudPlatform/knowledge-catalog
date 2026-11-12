@@ -2202,7 +2202,8 @@ async function pullSemanticModel(
 // Push's first error for the model, profile and overview sidecar files in the
 // entry group of `layout`, with the name push gives the file it is in, or
 // undefined when push accepts them. It runs push's checks of those files that
-// call no service, as push runs them. It reads no table's SQL
+// call no service, as push runs them, the size of each aspect the catalog
+// stores included. It reads no table's SQL
 // dialect, since that calls a service, so only push runs the checks that need
 // one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
 // SQL for the checks of which fields and entities an expression reads, and
@@ -2226,7 +2227,12 @@ async function pushRefusal(
   };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load}, true);
-  const first = 'errors' in checked ? checked.errors[0] : undefined;
+  let first = 'errors' in checked ? checked.errors[0] : undefined;
+  // Once those pass, push checks the size of each aspect the catalog stores.
+  if ('kcModels' in checked) {
+    const {error} = catalogAspects(checked.kcModels, source, checked.overviews);
+    if (error) first = {error, document: checked.kcModels[0]?.document};
+  }
   if (!first) return undefined;
   // The error is in the file a label in it names, when push reads that file:
   // a leading `[<file>] ...` or `<Kind> '<file>' ...`, or the `(<file>)` after

@@ -2226,6 +2226,13 @@ describe('a pull', () => {
      SECOND_GEN, undefined, SIDECAR, 'leaves',
      `Overview sidecar '${SIDECAR}': its frontmatter holds only contentType ` +
          "and links, not 'foo'."],
+    ['an overview sidecar pull leaves that is too large to store',
+     {[SIDECAR]: `${'x'.repeat(125_000)}\n`}, SECOND_GEN, undefined,
+     'commerce.yaml', 'writes',
+     "aspect 'dataplex-types.global.overview' of entry " +
+         "'commerce/entities/Customer' is too large to store in Knowledge " +
+         'Catalog: its data takes 125014 bytes, and one aspect holds at most ' +
+         '122880.'],
     ['an overview sidecar pull writes', {}, SECOND_GEN,
      new Map([['commerce', {content: 'Text.\n', contentType: 'TEXT'}]]),
      'commerce.overview.md', 'writes',
