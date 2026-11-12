@@ -496,13 +496,19 @@ describe('profile translation', () => {
     expect(res.files[0].content).toBe(ossieDoc({extra: extra(`${SF_JSON},\n${' '.repeat(18)}${BQ_JSON}`)}));
   });
 
-  test('writes a GOOGLE block written as a double-quoted string wrapped with `\\` line ends as one line of compact JSON', async () => {
-    const extra = (data: string) => `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: ${data}\n`;
-    const wrapped = prodJson(SF_JSON).replace(/"/g, '\\"').replace(/\n( *)/g, (_, sp) => `\\n\\\n${' '.repeat(10)}${sp && `\\${sp}`}`);
-    const res = await importSemanticModelYaml(ossieDoc({extra: extra(`"${wrapped}"`)}), ossie);
+  // [the GOOGLE block's `data` as written, as import writes it] A quoted string
+  // over several lines is written on one line. yaml reads JSON that holds a lone
+  // carriage return as other text, so it is written again whole.
+  const wrapped = prodJson(SF_JSON).replace(/"/g, '\\"').replace(/\n( *)/g, (_, sp) => `\\n\\\n${' '.repeat(10)}${sp && `\\${sp}`}`);
+  const compact = JSON.stringify(JSON.parse(prodJson(`${SF_JSON}, ${BQ_JSON}`)));
+  test.each([
+    ['a double-quoted string wrapped with `\\` line ends', `"${wrapped}"`, `'${compact}'`],
+    ['JSON that holds a lone carriage return', JSON.stringify(prodJson(SF_JSON).replace('"profiles":', '"profiles": \r')), JSON.stringify(compact)],
+  ])('writes a GOOGLE block written as %s as one line of compact JSON', async (_, data, want) => {
+    const extra = (text: string) => `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: ${text}\n`;
+    const res = await importSemanticModelYaml(ossieDoc({extra: extra(data)}), ossie);
     expect(res.errors).toEqual([]);
-    const json = JSON.stringify(JSON.parse(prodJson(`${SF_JSON}, ${BQ_JSON}`)));
-    expect(res.files[0].content).toBe(ossieDoc({extra: extra(`'${json}'`)}));
+    expect(res.files[0].content).toBe(ossieDoc({extra: extra(want)}));
   });
 
   // A profile file that changes is written as YAML, as a model file is. One

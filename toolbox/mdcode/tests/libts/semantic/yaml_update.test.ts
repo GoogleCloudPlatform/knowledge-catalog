@@ -40,10 +40,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: "p\\nq"  # c\nb: "p\n\n  q"\nd: "p\n\n  q"\n'
   ],
   [
-    'quoted strings on one line that gain DEL and a line separator',
-    'a: "Sales by region"\nb: \'Sales by region\'\n',
-    v => (v.a = 'Sales by\x7f region', v.b = 'Sales by\u2028 region'),
-    'a: "Sales by\\x7f region"\nb: "Sales by\\L region"\n'
+    'strings on one line that gain DEL, a line separator, a paragraph separator and C1 controls',
+    'a: "Sales by region"\nb: \'Sales by region\'\nc: Sales by region\nd: "Sales by region"\n',
+    v => (v.a = 'Sales by\x7f region', v.b = 'Sales by\u2028 region',
+          v.c = 'Sales by\u2029 region', v.d = 'Sales\x85 by\x9b region'),
+    'a: "Sales by\\x7f region"\nb: "Sales by\\L region"\nc: "Sales by\\P region"\nd: "Sales\\N by\\x9b region"\n'
   ],
   [
     'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
@@ -70,10 +71,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: |\n    \t\n      y\n', v => (v.a = '\t\n  z\n'), 'a: |\n    \t\n      z\n'
   ],
   [
-    'block scalars more than 9 columns deeper than their key, one that comes to start with a blank',
-    'a:\n  k: |\n              x\n              y\n  q: 1\nb:\n  k: |-\n            x\n',
-    v => (v.a.k = 'x\nz\n', v.b.k = '  y\nz'),
-    'a:\n  k: |\n              x\n              z\n  q: 1\nb:\n  k: "  y\n\n            z"\n'
+    'block scalars 9 and more than 9 columns deeper than their key, two that come to start with a blank',
+    'a:\n  k: |\n              x\n              y\n  q: 1\nb:\n  k: |-\n            x\nc:\n  k: |-\n           x\n',
+    v => (v.a.k = 'x\nz\n', v.b.k = v.c.k = '  y\nz'),
+    'a:\n  k: |\n              x\n              z\n  q: 1\nb:\n  k: "  y\n\n            z"\nc:\n  k: |9-\n             y\n           z\n'
   ],
   [
     'block scalars whose header sets their indentation, before or after the chomping indicator, one that comes to keep its last line break',
