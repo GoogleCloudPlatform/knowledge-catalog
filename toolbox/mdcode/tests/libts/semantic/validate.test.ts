@@ -3,7 +3,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {Action, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Action, Entity, Field, Metric, ProfileSpec, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {listed, LoadedModel, LoadOptions, loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
@@ -2676,33 +2676,87 @@ ${extraMetric}`;
     // An inherited text is read in its tables' dialect: `#>>` is an operator
     // in PostgreSQL, and `#` starts a comment in BigQuery, Spanner and MySQL.
     const CLOUDSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/d';
-    test.each([
-      ['AlloyDB', (t: string) => `alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/${t}`, undefined, 2],
-      ['PostgreSQL Cloud SQL', (t: string) => `${CLOUDSQL}/schemas/public/tables/${t}`, 'POSTGRES', 2],
-      ['MySQL Cloud SQL', (t: string) => `${CLOUDSQL}/tables/${t}`, 'MYSQL', 0],
-      ['PostgreSQL-dialect Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'POSTGRES', 2],
-      ['GoogleSQL Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'SPANNER', 0],
-      ['BigQuery', (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`, undefined, 0],
-    ])('reads an inherited text with #>> on %s tables in their dialect', (_, table, sourceDialect, cycles) => {
+    const ALLOYDB = (t: string) => `alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/${t}`;
+    const POSTGRES_CLOUDSQL = (t: string) => `${CLOUDSQL}/schemas/public/tables/${t}`;
+    const SPANNER = (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`;
+    const BIGQUERY = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    // Party, with `label`, and Customer, which inherits it and binds `code`.
+    const inheriting = (
+        table: (t: string) => string, sourceDialect: string|undefined,
+        label: Partial<Field>, code: Partial<Field>) => {
       const entity = (name: string, fields: Field[], extended?: string[]) => ({
         name, authoredSource: table(name), dataSource: table(name),
         ...(sourceDialect ? {sourceDialect} : {}), keys: ['id'],
         ...(extended ? {extends: extended} : {}),
         fields: [{name: 'id', expression: 'id'}, ...fields],
       });
-      const m = model({
+      return model({
         entities: [
           entity('party', [
             {name: 'data', expression: 'data'},
             {name: 'code', expression: 'code'},
-            {name: 'label', expression: "party.data #>> '{tier}' || party.code"},
+            {name: 'label', ...label},
           ]),
-          entity('customer', [{name: 'code', expression: 'customer.label'}], ['party']),
+          entity('customer', [{name: 'code', ...code}], ['party']),
         ],
       });
-      expect(validatePushRequirements([loaded(m)])
-                 .filter(e => e.includes('names itself through')))
-          .toHaveLength(cycles);
+    };
+    const cycles = (m: SemanticModel) =>
+        validatePushRequirements([loaded(m)])
+            .filter(e => e.includes('names itself'))
+            .map(e => e.slice(0, e.indexOf(';')));
+    test.each([
+      ['AlloyDB', ALLOYDB, undefined, 2],
+      ['PostgreSQL Cloud SQL', POSTGRES_CLOUDSQL, 'POSTGRES', 2],
+      ['MySQL Cloud SQL', (t: string) => `${CLOUDSQL}/tables/${t}`, 'MYSQL', 0],
+      ['PostgreSQL-dialect Spanner', SPANNER, 'POSTGRES', 2],
+      ['GoogleSQL Spanner', SPANNER, 'SPANNER', 0],
+      ['BigQuery', BIGQUERY, undefined, 0],
+    ])('reads an inherited text with #>> on %s tables in their dialect', (_, table, sourceDialect, count) => {
+      const m = inheriting(
+          table, sourceDialect,
+          {expression: "party.data #>> '{tier}' || party.code"},
+          {expression: 'customer.label'});
+      expect(cycles(m)).toHaveLength(count);
+    });
+
+    // A field gives the text its tables' database runs: its entry for their
+    // dialect, else its ANSI_SQL one. Here only the ANSI_SQL entries name
+    // each other, and only when read as PostgreSQL.
+    test('reads no ANSI_SQL entry that an AlloyDB entry overrides on AlloyDB tables', () => {
+      const m = inheriting(
+          ALLOYDB, undefined,
+          {dialects: [
+            {dialect: 'ALLOYDB', expression: "'ok'"},
+            {dialect: 'ANSI_SQL', expression: 'party.data # GoogleSQL comment: was party.code'},
+          ]},
+          {dialects: [
+            {dialect: 'ALLOYDB', expression: 'c_code'},
+            {dialect: 'ANSI_SQL', expression: 'customer.label'},
+          ]});
+      expect(cycles(m)).toEqual([]);
+    });
+
+    // The running entries form the cycle. The other entry of `code` names
+    // `code` itself when read as PostgreSQL, but no database of these tables
+    // runs it.
+    test.each<[string, (t: string) => string, string|undefined, SqlDialect, SqlDialect]>([
+      ['AlloyDB', ALLOYDB, undefined, 'ALLOYDB', 'ANSI_SQL'],
+      ['PostgreSQL Cloud SQL', POSTGRES_CLOUDSQL, 'POSTGRES', 'POSTGRES', 'ANSI_SQL'],
+      ['PostgreSQL-dialect Spanner', SPANNER, 'POSTGRES', 'POSTGRES', 'ANSI_SQL'],
+      ['BigQuery', BIGQUERY, undefined, 'ANSI_SQL', 'ALLOYDB'],
+    ])('reads only the text that runs on %s tables', (_, table, sourceDialect, runs, other) => {
+      const m = inheriting(
+          table, sourceDialect,
+          {dialects: [{dialect: runs, expression: "party.code || 'x'"}]},
+          {dialects: [
+            {dialect: runs, expression: 'customer.label'},
+            {dialect: other, expression: 'customer.data # customer.code'},
+          ]});
+      expect(cycles(m)).toEqual([
+        "field 'customer.code' in model 'm' (doc) names itself through 'customer.label'",
+        "field 'customer.label' in model 'm' (doc) names itself through 'customer.code'",
+      ]);
     });
 
     test('accepts an inherited field that names its supertype\'s siblings', () => {

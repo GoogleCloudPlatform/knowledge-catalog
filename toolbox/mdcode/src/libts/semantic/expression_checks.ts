@@ -411,9 +411,12 @@ function fieldNoSqlProblems(
 // sibling as `<entity>.<field>` from that sibling's own SQL, so a field that
 // reaches itself that way has no SQL to render. A field expression that writes
 // its own column as `<entity>.<field>` names itself too: write the bare column
-// instead. Each dialect is read on its own, from the text an engine of that
-// dialect renders (its entry, else the ANSI_SQL one), so two texts that no one
-// engine reads together do not form a cycle.
+// instead. With the dialect the sources imply, each field gives the text a
+// database of that dialect runs, picked as the runtime picks it: its entry for
+// that dialect, else its ANSI_SQL one. A text no database of that dialect runs
+// forms no cycle. With no dialect known, each dialect is read on its own, from
+// the text an engine of that dialect renders, so two texts that no one engine
+// reads together do not form a cycle.
 //
 // `resolved` is `entity` with the fields it inherits, which name its fields
 // as the graph renders them (see resolve_inheritance.localizeInheritedField),
@@ -432,22 +435,26 @@ function selfReferenceProblems(
   ];
   const bound = new Set(own.filter(f => isFieldBound(f)).map(f => f.name));
   const names = new Set(fields.map(f => f.name));
-  const dialects = new Set<string>(['ANSI_SQL']);
-  for (const f of fields) {
-    for (const d of f.dialects ?? []) dialects.add(d.dialect);
-    if (f.importedDialect) dialects.add(f.importedDialect);
+  // The dialects read, each on its own. With the sources' dialect known, it is
+  // that dialect alone. Otherwise it is every dialect a field writes, and
+  // ANSI_SQL, read as BigQuery as the graph generators read it, unless the
+  // sources' dialect is null, which no lookup read.
+  const dialects = new Set<string>();
+  if (impliedDialect) {
+    dialects.add(impliedDialect);
+  } else {
+    if (impliedDialect === undefined) dialects.add('ANSI_SQL');
+    for (const f of fields) {
+      for (const d of f.dialects ?? []) dialects.add(d.dialect);
+      if (f.importedDialect) dialects.add(f.importedDialect);
+    }
   }
   // Each message, with the field it names first.
   const errors = new Map<string, string>();
   for (const dialect of dialects) {
     // The fields of `entity` each field names, in this dialect, read as the
     // graph generators read them (see graph_ddl.siblingsRead), so a qualifier
-    // the parser reserves, such as `Date` in `Date.days`, names them too. An
-    // ANSI_SQL text is read in the dialect the sources imply, as
-    // columnsForSource reads it, and not at all when their dialect is null.
-    if (dialect === 'ANSI_SQL' && impliedDialect === null) continue;
-    const readIn =
-        dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
+    // the parser reserves, such as `Date` in `Date.days`, names them too.
     const reads = new Map<string, string[]>();
     for (const f of fields) {
       const text = expressionForDialect(f, dialect as SqlDialect);
@@ -457,7 +464,7 @@ function selfReferenceProblems(
       }
       reads.set(
           f.name,
-          [...new Set(qualifiedColumns(text, entity.name, readIn) ?? [])]
+          [...new Set(qualifiedColumns(text, entity.name, dialect) ?? [])]
               .filter(n => names.has(n)));
     }
     for (const f of fields) {
