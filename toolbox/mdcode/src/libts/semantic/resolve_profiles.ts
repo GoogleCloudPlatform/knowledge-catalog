@@ -1794,19 +1794,22 @@ export function validateProfileCompleteness(
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
     // as the profile's own SQL. When no lookup read its dialect, it is read
     // with `readWithoutDialect` as columnsWithoutDialect reads it in the
-    // dialects the profile's tables may have, and not at all without.
+    // dialects the profile's tables may have, and not at all without. With
+    // the profile's dialect known, a field names itself only in the text its
+    // database runs (see textsFor), as push reads a model file's fields.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
+      const running = dialect ? textsFor(pf, dialect)[0]?.text : undefined;
       // A text with no SQL is reported above, and has nothing to read.
       const readable = expressionSources(pf).filter(
           s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
               !(s.dialect === 'ANSI_SQL' && dialect === null &&
                 !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
+        const read = written === 'ANSI_SQL' && dialect ? dialect : written;
         const columns = written === 'ANSI_SQL' && dialect === null ?
             columnsWithoutDialect(text, candidates)?.columns :
-            columnReferences(
-                text, written === 'ANSI_SQL' && dialect ? dialect : written);
+            columnReferences(text, read);
         if (!columns) {
           unreadable.add(fieldLabel(pe.name, pf.name));
           continue;
@@ -1826,7 +1829,8 @@ export function validateProfileCompleteness(
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
-          } else if (ref === pf.name) {
+          } else if (ref === pf.name &&
+                     (!dialect || (read === dialect && text === running))) {
             errors.push(`${at}: ${selfReferenceMessage(pe.name, [pf.name])}`);
           }
         }

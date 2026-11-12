@@ -2056,6 +2056,40 @@ describe('profile rules', () => {
         "without the qualifier: 'lifetimeValue'");
   });
 
+  // A field names itself only in the text the profile's database runs: its
+  // entry for the profile's dialect, else its ANSI_SQL one. Read as
+  // PostgreSQL, the ANSI_SQL entry here names `party.code`, but no AlloyDB
+  // table runs it.
+  test.each([
+    ['c_code', 0],
+    ["party.code || 'x'", 1],
+  ])('a profile field on AlloyDB tables names itself only in its ALLOYDB entry: %s', (alloydb, count) => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{name: 'party', dataSource: '', keys: ['id'],
+                  fields: [{name: 'id'}, {name: 'data'}, {name: 'code'}]}],
+      relationships: [],
+      metrics: [],
+    };
+    const errors = validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [{
+        name: 'party', primaryKey: ['id'],
+        source: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/party',
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'data', expression: 'data'},
+          {name: 'code', dialects: [
+            {dialect: 'ALLOYDB', expression: alloydb},
+            {dialect: 'ANSI_SQL', expression: 'party.data # party.code'},
+          ]},
+        ],
+      }],
+      relationships: [],
+    });
+    expect(errors.filter(e => e.includes('names itself'))).toHaveLength(count);
+  });
+
   // Only the allowlisted dialects, each once.
   test('a profile expression may use only allowlisted dialects, each once', () => {
     const file = (dialects: string) =>
