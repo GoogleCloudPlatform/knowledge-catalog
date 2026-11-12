@@ -875,6 +875,9 @@ interface DateTable {
   // them a timestamp, as an INTERVAL of days and a time of day (see
   // timeDifference).
   differences?: true;
+  // True when the dialect's EXTRACT gives each part of an INTERVAL as a
+  // numeric, and its DATE_PART as a double (see INTERVAL_PARTS).
+  intervalParts?: true;
   // The units an INTERVAL may name, when the dialect has fewer than UNITS or
   // than its function names.
   intervals?: Unit[];
@@ -1016,7 +1019,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       [10n, ['decade', 'decades', 'dec', 'decs']], [100n, ['century', 'centuries', 'c', 'cent']],
       [1000n, ['millennium', 'millennia', 'mil', 'mils']],
     ] as [bigint, string[]][]).flatMap(([n, words]) => words.map(w => [w, ['YEAR', n]]))),
-    severalUnits: true, fields: true, sums: {INTERVAL: [...UNITS]}, stamps: true, differences: true,
+    severalUnits: true, fields: true, sums: {INTERVAL: [...UNITS]}, stamps: true, differences: true, intervalParts: true,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'column')},
       date: {
@@ -2099,8 +2102,8 @@ function nextNodes(kind: string, value: any, read: string):
   }
   if (kind === 'extract') {
     const part = String(partName(value.field));
-    return PARTS[part.toLowerCase()] ? dateValue('EXTRACT', value.this) :
-                                       `EXTRACT with part '${part.toUpperCase()}'`;
+    return intervalPart(part, value.this, read) ? [value.this] : PARTS[part.toLowerCase()] ?
+        dateValue('EXTRACT', value.this) : `EXTRACT with part '${part.toUpperCase()}'`;
   }
   if (PARTS[kind]) return dateValue(kind.toUpperCase(), value.this);
   return Object.values(value);
@@ -2373,6 +2376,12 @@ function exactForm(node: any, read: string): any {
   if (DATE_TABLES[read]?.dayDiffs?.includes(name) && args.length === 2) return dayDiffForm(name, args, read);
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   if (kind === 'sub' && timeDifference(node, read)) return formCall(DIFFERENCE, [value.left, value.right]);
+  // EXTRACT and DATE_PART of an INTERVAL (see INTERVAL_PARTS). PostgreSQL's
+  // DATE_PART gives a double.
+  const extracted = kind === 'extract' ? [partName(value.field), value.this] :
+      name === 'DATE_PART' && args.length === 2 ? [partName(args[0]), args[1]] : [];
+  const part = extracted.length ? intervalPart(extracted[0], extracted[1], read) : undefined;
+  if (part) return formCall(kind === 'extract' ? part : `CAST(${part} AS FLOAT64)`, [extracted[1]]);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   // Date arithmetic gets its forms from DATE_TABLES (see dateSum).
   const computed = ['add', 'sub', 'mul'].includes(kind) && !dateSum(node, read) ? [value.left, value.right] : [];
@@ -2405,6 +2414,38 @@ function timeDifference(node: any, read: string): boolean {
   return types.every(t => WIDER.includes(t!)) && types.some(t => t !== 'DATE');
 }
 const DIFFERENCE = 'JUSTIFY_HOURS(TIMESTAMP(_1) - TIMESTAMP(_2))';
+
+// BigQuery's SQL for each part of an INTERVAL _1 that PostgreSQL's EXTRACT
+// gives, by its name in lower case, as an exact NUMERIC. Both keep an
+// INTERVAL's months, days and time of day apart, and give each field with
+// its own sign: the years of its months toward zero and the rest of the
+// months, its days, the hours of its time of day and the minutes and seconds
+// below them. BigQuery gives the seconds whole and their fraction as
+// MICROSECOND. PostgreSQL's quarter is the rest of the months divided by 3,
+// toward zero, plus 1. Its epoch counts a year as 365.25 days and a month as
+// 30.
+const MICROS_OF_SECONDS = 'EXTRACT(SECOND FROM _1) * 1000000 + EXTRACT(MICROSECOND FROM _1)';
+const INTERVAL_PARTS = lookup({
+  ...Object.fromEntries(['year', 'month', 'day', 'hour', 'minute'].map(
+      p => [p, `CAST(EXTRACT(${p.toUpperCase()} FROM _1) AS NUMERIC)`])),
+  quarter: 'CAST(DIV(EXTRACT(MONTH FROM _1), 3) + 1 AS NUMERIC)',
+  ...Object.fromEntries(([['decade', 10], ['century', 100], ['millennium', 1000]] as const).map(
+      ([p, n]) => [p, `CAST(DIV(EXTRACT(YEAR FROM _1), ${n}) AS NUMERIC)`])),
+  second: `(CAST(${MICROS_OF_SECONDS} AS NUMERIC) / 1000000)`,
+  millisecond: `(CAST(${MICROS_OF_SECONDS} AS NUMERIC) / 1000)`,
+  microsecond: `CAST(${MICROS_OF_SECONDS} AS NUMERIC)`,
+  epoch: '(CAST(EXTRACT(YEAR FROM _1) * 31557600000000 + EXTRACT(MONTH FROM _1) * 2592000000000 + ' +
+      `EXTRACT(DAY FROM _1) * 86400000000 + EXTRACT(HOUR FROM _1) * 3600000000 + ` +
+      `EXTRACT(MINUTE FROM _1) * 60000000 + ${MICROS_OF_SECONDS} AS NUMERIC) / 1000000)`,
+});
+
+// The SQL in INTERVAL_PARTS for EXTRACT or DATE_PART of `part` from `node`, a
+// source value in the engine's dialect `read`, when the dialect has
+// `intervalParts` and `node` is visibly an INTERVAL value, or undefined.
+function intervalPart(part: unknown, node: any, read: string): string|undefined {
+  return DATE_TABLES[read]?.intervalParts && intervalType(node, read) ?
+      INTERVAL_PARTS[String(part).toLowerCase()] : undefined;
+}
 
 // How a node uses the values valueForms gets: it compares them, computes
 // with them in `+`, `-` or `*`, negates one, or gives them as its results.
@@ -2568,6 +2609,7 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return typeof exact === 'string' ? exact : args;
   }
   const part = (arg: any) => String(partName(arg) ?? '?');
+  if (name === 'DATE_PART' && intervalPart(part(args[0]), args[1], read)) return [args[1]];
   if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'DATE_DIFF', 'TIMESTAMPDIFF'].includes(name)) {
     const unit = table.diffs?.includes(name) ? diffSql(args[0]) :
         name === 'DATE_TRUNC' ? truncUnit(args[0], read) : PARTS[part(args[0]).toLowerCase()];

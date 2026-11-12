@@ -187,6 +187,13 @@ describe('polyglotTranspiler (transformations)', () => {
         expect(bq.sql).toBe('SAFE_CAST(x AS FLOAT64)');
       });
 
+  // PostgreSQL's epoch of the INTERVAL `i`, in seconds.
+  const epochOf = (i: string) => '(CAST(' + ([
+    ['YEAR', 31557600000000], ['MONTH', 2592000000000], ['DAY', 86400000000], ['HOUR', 3600000000],
+    ['MINUTE', 60000000], ['SECOND', 1000000],
+  ] as const).map(([p, n]) => `EXTRACT(${p} FROM ${i}) * ${n} + `).join('') +
+      `EXTRACT(MICROSECOND FROM ${i}) AS NUMERIC) / 1000000)`;
+
   // Each construct import translates, with the BigQuery SQL it writes, and
   // constructs it leaves untranslated. Every construct a `sql` row uses gives
   // the source dialect's value in BigQuery for ordinary data, and every `sql`
@@ -353,6 +360,13 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DOW'"}],
     ['POSTGRES', 'EXTRACT(week(monday) FROM d)', {error: "kcmd does not translate EXTRACT with part 'week(monday)'"}],
     ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd does not translate EXTRACT of a difference'}],
+    // PostgreSQL's EXTRACT of an INTERVAL gives a numeric, and its DATE_PART a
+    // double.
+    ['POSTGRES', "EXTRACT(HOUR FROM INTERVAL '25 hours')", {sql: 'CAST(EXTRACT(HOUR FROM INTERVAL 25 HOUR) AS NUMERIC)'}],
+    ['POSTGRES', "EXTRACT(QUARTER FROM INTERVAL '5 months')", {sql: 'CAST(DIV(EXTRACT(MONTH FROM INTERVAL 5 MONTH), 3) + 1 AS NUMERIC)'}],
+    ['POSTGRES', "EXTRACT(CENTURY FROM '1 year 2 months'::interval)", {sql: 'CAST(DIV(EXTRACT(YEAR FROM (INTERVAL 1 YEAR + INTERVAL 2 MONTH)), 100) AS NUMERIC)'}],
+    ['POSTGRES', "DATE_PART('millisecond', INTERVAL '1 day' * 2)", {sql: 'CAST((CAST(EXTRACT(SECOND FROM INTERVAL 1 DAY * 2) * 1000000 + EXTRACT(MICROSECOND FROM INTERVAL 1 DAY * 2) AS NUMERIC) / 1000) AS FLOAT64)'}],
+    ['POSTGRES', 'EXTRACT(EPOCH FROM CURRENT_DATE - NOW())', {sql: epochOf('JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))')}],
     ['MYSQL', 'YEAR(COALESCE(d + 1, d))', {error: 'kcmd does not translate YEAR of COALESCE'}],
     ['MYSQL', "YEAR('2024-01-31')", {error: 'kcmd does not translate YEAR of a string'}],
     ['SQLSERVER', 'YEAR(DATEADD(day, 1, d))', {error: 'kcmd does not translate YEAR of DATEADD'}],

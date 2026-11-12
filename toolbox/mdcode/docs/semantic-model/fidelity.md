@@ -449,6 +449,16 @@ into days as PostgreSQL does. `CURRENT_DATE - NOW()` becomes
 difference with a column stays untranslated, since a date column minus a date
 is a number of days.
 
+PostgreSQL's EXTRACT of an INTERVAL that import can see, such as
+`INTERVAL '25 hours'` or such a difference, gives each part as a numeric, and
+its DATE_PART gives a double. BigQuery's EXTRACT gives the same parts, since
+both keep the months, days and time of an INTERVAL apart: the hours of
+`INTERVAL '25 hours'` are 25 in both. Import casts the part to NUMERIC, or to
+FLOAT64 for DATE_PART. It writes seconds, milliseconds and microseconds from
+BigQuery's whole seconds and their microseconds, and a quarter, decade, century
+or millennium from the months or years. It writes the epoch with a year of
+365.25 days and a month of 30 days, as PostgreSQL counts it.
+
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
 NOW(), a TIMESTAMP column compared with MySQL's NOW(), or a TIMESTAMP column
