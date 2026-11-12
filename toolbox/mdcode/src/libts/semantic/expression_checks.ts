@@ -1,10 +1,10 @@
 // Push's checks of the SQL of each field and metric.
 
-import {Entity, expressionForDialect, Field, isFieldBound, Metric, SemanticModel, SqlDialect} from './ir';
+import {Entity, expressionForDialect, Field, isFieldBound, Metric, SemanticModel} from './ir';
 import {inheritedNoSqlProblems, noSqlProblemOf, noSqlReason, OSSIE_VERSION, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, resolveInheritance} from './resolve_inheritance';
-import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect} from './resolve_profiles';
+import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect, textsFor} from './resolve_profiles';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {hashStartsComment} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -116,7 +116,9 @@ export function expressionProblems(
   const sourcesRead = sourcesDialect(model);
   const dialectless = sourcesRead === null && !!load.readWithoutDialect;
   const impliedDialect = dialectless ? undefined : sourcesRead;
-  const cycles = selfReferences(model, impliedDialect);
+  // The text a database runs depends on its dialect, which `readWithoutDialect`
+  // does not give, so the cycle check reads the sources' dialect as read.
+  const cycles = selfReferences(model, sourcesRead);
   const candidates =
       dialectless ? possibleDialects(model.entities ?? []) : [];
   // The columns `text` reads, and whether the read left a name out.
@@ -401,13 +403,14 @@ function fieldNoSqlProblems(
 }
 
 // Each field of each entity of `model` that names itself, with the fields it
-// names itself through (see selfReferenceCycles). Each entity's fields are
-// read as the graph renders them, with an inherited text read in
-// `impliedDialect`, as the runtime reads it. A dialect in which `#` starts a
-// comment is read with BigQuery's rules, which also start a comment at `#`.
+// names itself through and the texts read (see selfReferenceCycles). Each
+// entity's fields are read as the graph renders them, with an inherited text
+// read in `impliedDialect`, as the runtime reads it. A dialect in which `#`
+// starts a comment is read with BigQuery's rules, which also start a comment
+// at `#`.
 export function selfReferences(
     model: SemanticModel, impliedDialect: string|null|undefined):
-    Array<{entity: string; cycle: string[]}> {
+    Array<{entity: string; cycle: string[]; texts: string[]}> {
   const inheritedReading =
       impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
                                                              undefined;
@@ -420,21 +423,21 @@ export function selfReferences(
   return (model.entities ?? []).flatMap(
       e => selfReferenceCycles(
                e, resolvedByName.get(e.name) ?? e, impliedDialect)
-               .map(cycle => ({entity: e.name, cycle})));
+               .map(c => ({entity: e.name, ...c})));
 }
 
 // The fields of `entity` that name themselves, directly or through other
 // fields of `entity`, each as the cycle it starts: the field, then the fields
-// it names itself through. The graph renders a field that names a
-// sibling as `<entity>.<field>` from that sibling's own SQL, so a field that
-// reaches itself that way has no SQL to render. A field expression that writes
-// its own column as `<entity>.<field>` names itself too: write the bare column
-// instead. With the dialect the sources imply, each field gives the text a
-// database of that dialect runs, picked as the runtime picks it: its entry for
-// that dialect, else its ANSI_SQL one. A text no database of that dialect runs
-// forms no cycle. With no dialect known, each dialect is read on its own, from
-// the text an engine of that dialect renders, so two texts that no one engine
-// reads together do not form a cycle.
+// it names itself through, with the text read for each. The graph renders a
+// field that names a sibling as `<entity>.<field>` from that sibling's own
+// SQL, so a field that reaches itself that way has no SQL to render. A field
+// expression that writes its own column as `<entity>.<field>` names itself
+// too: write the bare column instead. Each field gives the text a database of the sources' dialect runs
+// (see textsFor), so a text no such database runs forms no cycle. With no
+// dialect known, each dialect a text is written in is read on its own, from the
+// text a database of that dialect runs, so two texts that no one database runs
+// together do not form a cycle. With a null dialect, which no lookup read, no
+// text is read.
 //
 // `resolved` is `entity` with the fields it inherits, which name its fields
 // as the graph renders them (see resolve_inheritance.localizeInheritedField),
@@ -443,7 +446,8 @@ export function selfReferences(
 // its own is reported on that ancestor alone.
 function selfReferenceCycles(
     entity: Entity, resolved: Entity,
-    impliedDialect: string|null|undefined): string[][] {
+    impliedDialect: string|null|undefined):
+    Array<{cycle: string[]; texts: string[]}> {
   const own = entity.fields ?? [];
   const inherited = resolved.fields ?? [];
   // A field a profile excludes is left off `resolved`, but still checked.
@@ -453,34 +457,24 @@ function selfReferenceCycles(
   ];
   const bound = new Set(own.filter(f => isFieldBound(f)).map(f => f.name));
   const names = new Set(fields.map(f => f.name));
-  // The dialects read, each on its own. With the sources' dialect known, it is
-  // that dialect alone. Otherwise it is every dialect a field writes, and
-  // ANSI_SQL, read as BigQuery as the graph generators read it, unless the
-  // sources' dialect is null, which no lookup read.
-  const dialects = new Set<string>();
-  if (impliedDialect) {
-    dialects.add(impliedDialect);
-  } else {
-    dialects.add('ANSI_SQL');
-    for (const f of fields) {
-      for (const d of f.dialects ?? []) dialects.add(d.dialect);
-      if (f.importedDialect) dialects.add(f.importedDialect);
-    }
-    if (impliedDialect === null) dialects.delete('ANSI_SQL');
-  }
+  // The dialects read, each on its own: those of the texts textsFor gives.
+  const dialects = new Set(
+      fields.flatMap(f => textsFor(f, impliedDialect).map(t => t.dialect)));
   // Each cycle, by its fields.
-  const cycles = new Map<string, string[]>();
+  const cycles = new Map<string, {cycle: string[]; texts: string[]}>();
   for (const dialect of dialects) {
     // The fields of `entity` each field names, in this dialect, read as the
     // graph generators read them (see graph_ddl.siblingsRead), so a qualifier
     // the parser reserves, such as `Date` in `Date.days`, names them too.
     const reads = new Map<string, string[]>();
+    const textOf = new Map<string, string>();
     for (const f of fields) {
-      const text = expressionForDialect(f, dialect as SqlDialect);
+      const text = textsFor(f, dialect)[0]?.text;
       if (text === undefined ||
           noSqlReason(text, dialect, entity.name) !== undefined) {
         continue;
       }
+      textOf.set(f.name, text);
       reads.set(
           f.name,
           [...new Set(qualifiedColumns(text, entity.name, dialect) ?? [])]
@@ -490,7 +484,10 @@ function selfReferenceCycles(
       const through = pathBack(f.name, reads);
       if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
       const cycle = [f.name, ...through];
-      cycles.set(JSON.stringify(cycle), cycle);
+      const key = JSON.stringify(cycle);
+      if (!cycles.has(key)) {
+        cycles.set(key, {cycle, texts: cycle.map(n => textOf.get(n)!)});
+      }
     }
   }
   return [...cycles.values()];

@@ -1363,15 +1363,15 @@ export function expressionSources(
   return out;
 }
 
-// The texts a profile of `dialect` evaluates for a field or metric, each with
-// the dialect to read it in. A profile has one dialect, so it evaluates the
-// entry for that dialect, or the ANSI_SQL entry when there is none, and its
+// The texts a database of tables whose sources imply `dialect` runs for a field
+// or metric, each with the dialect to read it in. Tables of one dialect run the
+// entry for that dialect, or the ANSI_SQL entry when there is none, and their
 // database runs an ANSI_SQL text as its own SQL. A field held without a
-// dialect list offers its imported text when that is in the profile's dialect,
-// and otherwise the text the loader picked. With no known dialect, every text
+// dialect list offers its imported text when that is in `dialect`, and
+// otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in. With a null dialect, which
 // no lookup read, the text the database runs is not known, and none counts.
-function textsFor(
+export function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
@@ -1837,15 +1837,14 @@ export function validateProfileCompleteness(
   // A field that names itself, among the fields the profile restates and
   // those it inherits from the model file, read in the text the profile's
   // database runs, as push reads a model file's fields (see selfReferences).
-  // A cycle the caller reports in the model file is left out.
-  const readIn = (d: string|null|undefined) =>
-      d === null && opts.readWithoutDialect ? undefined : d;
+  // A cycle the caller reports in the model file, through the same texts, is
+  // left out.
   const callerReports = new Set(
       opts.ownSqlOnly ?
-          selfReferences(baseModel, readIn(opts.ownSqlOnly.dialect))
+          selfReferences(baseModel, opts.ownSqlOnly.dialect)
               .map(c => JSON.stringify(c)) :
           []);
-  for (const c of selfReferences(profiled, readIn(dialect))) {
+  for (const c of selfReferences(profiled, dialect)) {
     if (!callerReports.has(JSON.stringify(c))) {
       errors.push(`${at}: ${selfReferenceMessage(c.entity, c.cycle)}`);
     }

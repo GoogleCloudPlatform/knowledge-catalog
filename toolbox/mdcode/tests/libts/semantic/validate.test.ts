@@ -2701,8 +2701,8 @@ ${extraMetric}`;
         ],
       });
     };
-    const cycles = (m: SemanticModel) =>
-        validatePushRequirements([loaded(m)])
+    const cycles = (m: SemanticModel, load = {}) =>
+        validatePushRequirements([loaded(m)], {load})
             .filter(e => e.includes('names itself'))
             .map(e => e.slice(0, e.indexOf(';')));
     test.each([
@@ -2738,15 +2738,17 @@ ${extraMetric}`;
     });
 
     // A Spanner database runs the SPANNER or the POSTGRES entry. With no
-    // lookup of the tables' dialect, no ANSI_SQL text is read.
-    test('reads no ANSI_SQL entry on Spanner tables whose dialect no lookup read', () => {
+    // lookup of the tables' dialect, the text it runs is not known, so no
+    // text is read, also when push reads an ANSI_SQL text without the dialect.
+    test.each([{}, {readWithoutDialect: true}])('reads no text on Spanner tables whose dialect no lookup read: %o', load => {
       const m = inheriting(
-          SPANNER, undefined, {expression: 'label'},
+          SPANNER, undefined,
+          {dialects: [{dialect: 'POSTGRES', expression: 'label'}]},
           {dialects: [
             {dialect: 'SPANNER', expression: 'c_code'},
             {dialect: 'ANSI_SQL', expression: 'customer.code + 1'},
           ]});
-      expect(cycles(m)).toEqual([]);
+      expect(cycles(m, load)).toEqual([]);
     });
 
     // The running entries form the cycle. The other entry of `code` names

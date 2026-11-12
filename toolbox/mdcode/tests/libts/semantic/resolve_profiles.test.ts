@@ -2092,18 +2092,28 @@ describe('profile rules', () => {
 
   // The fields the profile restates and those it inherits from the model file
   // are read together, in the text the profile's database runs. A cycle the
-  // caller reports in the model file is left out.
-  test.each<[string, Partial<Field>, string, string, string[]]>([
+  // caller reports in the model file, through the same texts, is left out.
+  // With no lookup of the tables' dialect, no text is read.
+  const AD = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/party';
+  const SP = 'spanner.googleapis.com/projects/p/instances/i/databases/d/tables/party';
+  test.each<[string, Partial<Field>, Field, string, string[], CompletenessOptions]>([
     ['an inherited ALLOYDB entry', {dialects: [
       {dialect: 'BIGQUERY', expression: 'party.data'},
       {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
-    ]}, 'data', 'alloydb', ["field 'party.code' names itself"]],
-    ['through a restated field', {expression: 'party.data'}, 'party.code', 'alloydb', [
+    ]}, {name: 'data', expression: 'data'}, AD, ["field 'party.code' names itself"], {}],
+    ['through a restated field', {expression: 'party.data'}, {name: 'data', expression: 'party.code'}, AD, [
       "field 'party.data' names itself through 'party.code'",
       "field 'party.code' names itself through 'party.data'",
-    ]],
-    ['a model file cycle the caller reports', {expression: 'party.code'}, 'data', 'bigquery', []],
-  ])('a field names itself under a profile: %s', (_, code, data, system, expected) => {
+    ], {}],
+    ['a model file cycle the caller reports', {expression: 'party.code'}, {name: 'data', expression: 'data'}, BQ('party'), [], {}],
+    ['a restated text beside the cycle the caller reports', {expression: 'party.code'}, {name: 'code', expression: 'party.code * 2'}, BQ('party'), [
+      "field 'party.code' names itself",
+    ], {}],
+    ['tables whose dialect no lookup read', {dialects: [
+      {dialect: 'SPANNER', expression: 'c_code'},
+      {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
+    ]}, {name: 'data', expression: 'data'}, SP, [], {readWithoutDialect: true, ownSqlOnly: {dialect: 'SPANNER'}}],
+  ])('a field names itself under a profile: %s', (_, code, restated, source, expected, opts) => {
     const model: SemanticModel = {
       name: 'm',
       entities: [{name: 'party', dataSource: '', keys: ['id'], fields: [
@@ -2114,17 +2124,14 @@ describe('profile rules', () => {
       relationships: [],
       metrics: [],
     };
-    const source = system === 'alloydb' ?
-        'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/party' :
-        BQ('party');
     const errors = validateProfileCompleteness(model, {
       name: 'prod',
       entities: [{name: 'party', primaryKey: ['id'], source, fields: [
         {name: 'id', expression: 'id'},
-        {name: 'data', expression: data},
+        restated,
       ]}],
       relationships: [],
-    }, [], {ownSqlOnly: {dialect: 'BIGQUERY'}});
+    }, [], {ownSqlOnly: {dialect: 'BIGQUERY'}, ...opts});
     expect(errors.filter(e => e.includes('names itself'))
                .map(e => e.slice(0, e.indexOf(';'))))
         .toEqual(expected.map(e => `profile 'prod': ${e}`));
