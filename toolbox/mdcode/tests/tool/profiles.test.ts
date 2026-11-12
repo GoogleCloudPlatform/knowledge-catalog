@@ -286,14 +286,19 @@ relationships:
   });
 
   // A named profile binds every concrete entity, whether or not a push
-  // deploys it, so `kcmd profiles` shows the entity unbound and rejects it.
-  test('a concrete entity with a source in neither file is rejected beside a model with no graph target', async () => {
-    writeModel(`version: "0.2.0.dev0/google"
+  // deploys it, so `kcmd profiles` shows the entity unbound and rejects it,
+  // also when the model file binds it.
+  for (const [where, source] of [
+         ['neither file', ''],
+         ['only the model file', `        source: ${BQ('customer')}\n`],
+       ]) {
+    test(`a concrete entity with a source in ${where} is rejected beside a model with no graph target`, async () => {
+      writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        primary_key: [key]
+${source}        primary_key: [key]
         fields:
           - { name: key, expression: c_key }
 `, `name: prod
@@ -303,15 +308,99 @@ entities:
     fields:
       - { name: key, expression: cust_key }
 `);
-    const error = "[commerce.profile.prod.yaml] profile 'prod': entity " +
-        "'Customer' has no source in this profile";
-    expect(await profiles()).toBe(1);
-    expect(logs).toContain('      Customer -> (unbound)');
-    expect(errs).toContain(`      ${error}`);
-    errs.length = 0;
-    expect(await push({validateOnly: true})).toBe(1);
-    expect(errs).toEqual([`Error: ${error}`]);
-  });
+      const error = "[commerce.profile.prod.yaml] profile 'prod': entity " +
+          "'Customer' has no source in this profile";
+      expect(await profiles()).toBe(1);
+      expect(logs.slice(logs.indexOf("  profile 'prod'"))).toEqual([
+        "  profile 'prod'",
+        '    target: (none; no deployment names this profile)',
+        '    sources:',
+        '      Customer -> (unbound)',
+        '    cannot answer:',
+        '      entity Customer (unbound)',
+        '    push rejects:',
+        `      ${error}`,
+      ]);
+      errs.length = 0;
+      expect(await push({validateOnly: true})).toBe(1);
+      expect(errs).toEqual([`Error: ${error}`]);
+    });
+  }
+
+  // The report prunes in the dialect push's profile check reads, which only
+  // the sources the profile states decide. Metric total_credit reads the field
+  // the profile excludes in its `reads` entry only.
+  const credit = (reads: string, other: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: ${BQ('customer')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: c_key }
+          - { name: credit, expression: c_credit }
+      - name: Order
+        source: ${BQ('orders')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+    metrics:
+      - name: total_credit
+        expression:
+          dialects:
+            - { dialect: ${reads}, expression: SUM(Customer.credit) }
+            - { dialect: ${other}, expression: COUNT(Customer.key) }
+`;
+  const creditProfile = (source: string) => `name: prod
+entities:
+  - name: Customer
+${source}    primary_key: [key]
+    fields:
+      - { name: key, expression: c_key }
+    fields_exclude: [credit]
+`;
+  const ALLOY = 'alloydb.googleapis.com/projects/acme/locations/us/clusters/' +
+      'c/databases/db/schemas/public/tables/customer';
+  const noSource = (entity: string) => "      [commerce.profile.prod.yaml] " +
+      `profile 'prod': entity '${entity}' has no source in this profile`;
+  for (const [label, model, profile, block] of [
+         ['an AlloyDB profile leaves out a BigQuery entity',
+          credit('BIGQUERY', 'ALLOYDB'),
+          creditProfile(`    source: ${ALLOY}\n`), [
+            '    sources:',
+            `      Customer -> ${ALLOY}`,
+            '      Order -> (unbound)',
+            '    cannot answer:',
+            '      entity Order (unbound)',
+            '      field Customer.credit (excluded)',
+            '    push rejects:',
+            noSource('Order'),
+          ]],
+         ['a profile states no source over BigQuery entities',
+          credit('ALLOYDB', 'BIGQUERY'), creditProfile(''), [
+            '    sources:',
+            '      Customer -> (unbound)',
+            '      Order -> (unbound)',
+            '    cannot answer:',
+            '      entity Customer (unbound)',
+            '      entity Order (unbound)',
+            '      field Customer.credit (excluded)',
+            '      metric total_credit (field Customer.credit is unbound)',
+            '    push rejects:',
+            noSource('Customer'),
+            noSource('Order'),
+            "      [commerce.profile.prod.yaml] profile 'prod': metric " +
+                "'total_credit' reaches 'Customer.credit', which this " +
+                "profile excludes; add 'total_credit' to 'metrics_exclude'",
+          ]],
+       ] as [string, string, string, string[]][]) {
+    test(`prunes in push's dialect when ${label}`, async () => {
+      writeModel(model, profile);
+      expect(await profiles()).toBe(1);
+      expect(logs.slice(logs.indexOf('    sources:'))).toEqual(block);
+    });
+  }
 });
 
 
