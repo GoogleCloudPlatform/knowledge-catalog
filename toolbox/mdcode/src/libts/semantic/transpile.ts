@@ -1297,7 +1297,7 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   const byDays = how === 'days' || (how === 'days or part' && !byPart);
   const added = !byPart && args.length === 2 ? bare(args[1])?.interval : undefined;
   if (added && !byDays) {
-    const parsed = readInterval(added, table);
+    const parsed = readInterval(added, table, read);
     const spelling = `${name} with INTERVAL ${intervalText(added, table)}`;
     if (typeof parsed === 'string') return `${name} with ${parsed}`;
     if (parsed.length > 1) {
@@ -1351,13 +1351,14 @@ function intRange(text: string, table: DateTable): string|undefined {
 }
 
 // The amount and the unit of each INTERVAL in `added`, an engine interval, in
-// `table`'s dialect, or a message. An amount is a whole number, or an
-// expression where the dialect's INTERVAL takes one. A string such as '1 day'
+// `table`, the table of the engine's dialect `read`, or a message. An amount
+// is a whole number, or an expression where the dialect's INTERVAL takes one
+// that may be an INT64 (see notWhole). A string such as '1 day'
 // names one unit, or several in a dialect with `severalUnits`. With `fields`,
 // a string with its unit outside, such as INTERVAL '90 minutes' HOUR, is
 // restricted to that unit (see restricted), as is a PostgreSQL cast with
 // fields, such as '90 minutes'::interval hour.
-function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}[]|string {
+function readInterval(added: any, table: DateTable, read: string): {amount: any; unit: Unit}[]|string {
   const text = `INTERVAL ${intervalText(added, table)}`;
   // A number, or a string such as '1' or '1 day'. A hex, bit, national or
   // triple-quoted string is refused, since the sources read some of them as
@@ -1367,7 +1368,10 @@ function readInterval(added: any, table: DateTable): {amount: any; unit: Unit}[]
       (literal?.literal_type === 'string' && typeof literal.value === 'string' ? literal.value : undefined);
   const unit = String(added.unit?.unit).toUpperCase() as Unit;
   const simple = added.unit?.type === 'simple' && UNITS.includes(unit);
-  if (written === undefined && table.expressions && !literal && simple) return [{amount: added.this, unit}];
+  if (written === undefined && table.expressions && !literal && simple) {
+    const other = notWhole(added.this, read);
+    return other ? `INTERVAL of ${other}` : [{amount: added.this, unit}];
+  }
   if (written === undefined) return `INTERVAL of ${valueName(bare(added.this))}`;
   const span = added.unit?.type === 'span' ? `${unitName(added.unit.this)}_${unitName(added.unit.expression)}` : '';
   const compound = table.compounds?.[span];
@@ -1502,7 +1506,7 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
   const b = bare(node);
   const added = intervalOf(b, read);
   if (added) {
-    const parsed = readInterval(added, table);
+    const parsed = readInterval(added, table, read);
     const text = `INTERVAL ${intervalText(added, table)}`;
     return typeof parsed === 'string' ? parsed : {parts: parsed.map(p => ({...p, text, negative: false})), values: []};
   }
@@ -1513,14 +1517,8 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
     if (!left === !right) return undefined;
     const [joined, times] = left ? [left, b.mul.right] : [right!, b.mul.left];
     if (typeof joined === 'string') return joined;
-    // BigQuery multiplies an INTERVAL only by an INT64, so a literal other
-    // than a whole number, such as 1.5, '2' or NULL, stays untranslated.
-    const n = bare(times);
-    const literal = n?.literal || bare(n?.neg?.this)?.literal || n?.null !== undefined;
-    if (literal && !/^-?\d+$/.test(numberText(n) ?? '')) {
-      const what = numberText(n) !== undefined ? 'a decimal number' : n?.null !== undefined ? 'NULL' : valueName(n);
-      return `${joined.parts[0].text} times ${what}`;
-    }
+    const other = notWhole(times, read);
+    if (other) return `${joined.parts[0].text} times ${other}`;
     return {parts: joined.parts.map(p => ({...p, times: [...p.times ?? [], times]})), values: [...joined.values, times]};
   }
   if (!left || !right) return undefined;
@@ -1531,6 +1529,24 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
   const other = parts.find(p => !group.includes(p.unit));
   if (other) return `${OPERATORS[kind]} of ${parts[0].text} and ${other.text}`;
   return {parts, values: [...left.values, ...right.values]};
+}
+
+// What `node`, an amount an INTERVAL holds or is multiplied by, in the engine's
+// dialect `read`, is, for a message, when it may not be an INT64, the only
+// amount BigQuery takes there. A whole number, a column, COUNT, a date part
+// such as DAY(d), SUM of such an amount, and a sign, a sum, a difference or a
+// product of them may be one. PostgreSQL's EXTRACT of an INTERVAL is a NUMERIC.
+function notWhole(node: any, read: string): string|undefined {
+  const b = bare(node);
+  const kind = kindOf(b) ?? '';
+  if (b?.column || b?.count || PARTS[kind]) return undefined;
+  if (b?.extract) return intervalPart(partName(b.extract.field), b.extract.this, read) ? 'EXTRACT of an INTERVAL' : undefined;
+  if (b?.sum) return notWhole(b.sum.this, read);
+  if (kind === 'neg') return notWhole(b.neg.this, read);
+  if (['add', 'sub', 'mul'].includes(kind)) return notWhole(b[kind].left, read) ?? notWhole(b[kind].right, read);
+  const text = numberText(b);
+  if (text !== undefined) return /^\d+$/.test(text) ? undefined : 'a decimal number';
+  return b?.null !== undefined ? 'NULL' : valueName(b);
 }
 
 // Whether `node`, a source value in the engine's dialect `read`, is visibly an
@@ -2047,7 +2063,7 @@ function nextNodes(kind: string, value: any, read: string):
   const table = DATE_TABLES[read];
   const added = table?.sums && isNode(node) ? intervalOf(node, read) : undefined;
   if (added) {
-    const parsed = readInterval(added, table);
+    const parsed = readInterval(added, table, read);
     return typeof parsed === 'string' ? parsed : parsed.map(p => p.amount);
   }
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
@@ -2831,7 +2847,7 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     // value, is BigQuery's INTERVAL of each of its units.
     const table = DATE_TABLES[read];
     const added = table && isNode(node) && intervalOf(node, read);
-    const parsed = added && readInterval(added, table);
+    const parsed = added && readInterval(added, table, read);
     if (parsed && typeof parsed === 'object') {
       changed = true;
       // Months first, then days, then time, as the sources add them.

@@ -295,7 +295,8 @@ ADDDATE, DATEADD or TIMESTAMPADD with any unit name the database documents, or
 a whole number of days. The amount is a whole number. In a function and in
 MySQL's INTERVAL it can also be an expression, such as a column, which import
 writes as it is. BigQuery rejects an amount that is not an INT64, where the
-database may round it. An amount
+database may round it. In MySQL's INTERVAL, an expression that may not be a
+whole number, such as `n * 1.5` or AVG(n), stays untranslated. An amount
 that is visibly an INTERVAL, such as `3 * INTERVAL 1 DAY` in Databricks'
 date_add, stays untranslated, as the database rejects it. SQL Server's
 DATEADD reads a string of a whole number, such as '1', as the number. A column
@@ -429,11 +430,11 @@ Where that form is DATE_ADD, the INTERVALs must add up to one amount of their
 smallest unit, so they must all be months and years, or all be weeks and
 smaller units. An INTERVAL times a whole number adds the product. Times
 another amount n, the sum is an expression of n, such as `(-36 + (n))` months,
-which BigQuery rejects unless n is an INT64. A literal amount that is not a
-whole number, such as 1.5, '2' or NULL, stays untranslated, since BigQuery
-multiplies an INTERVAL only by an INT64. Databricks multiplies weeks and
-smaller units into seconds, so `current_date() + 3 * INTERVAL 1 DAY` gives a
-TIMESTAMP and becomes `TIMESTAMP(CURRENT_DATE) + 3 * INTERVAL 1 DAY`.
+which BigQuery rejects unless n is an INT64. An amount that may not be a
+whole number, such as 1.5, '2', NULL, AVG(n) or n / 2, stays untranslated,
+since BigQuery multiplies an INTERVAL only by an INT64. Databricks multiplies
+weeks and smaller units into seconds, so `current_date() + 3 * INTERVAL 1 DAY`
+gives a TIMESTAMP and becomes `TIMESTAMP(CURRENT_DATE) + 3 * INTERVAL 1 DAY`.
 Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
 `DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
 years, or weeks and smaller units, as Databricks does. A single INTERVAL,
