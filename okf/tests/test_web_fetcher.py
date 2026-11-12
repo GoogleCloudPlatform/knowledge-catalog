@@ -67,3 +67,29 @@ def test_fetch_and_parse_wraps_network_errors():
         with pytest.raises(FetchError) as exc:
             fetch_and_parse("https://example.com/dead")
         assert "connection refused" in str(exc.value)
+
+
+# --- #170: HTML entities in href must be decoded --------------------------
+
+from reference_agent.web.fetcher import _extract_links
+
+
+def test_extract_links_decodes_encoded_ampersands():
+    # Valid HTML encodes `&` as `&amp;`; the extracted URL must use a real `&`.
+    html = '<a href="https://example.com/search?q=foo&amp;lang=en&amp;page=2">x</a>'
+    links = _extract_links(html, "https://example.com/")
+    assert "https://example.com/search?q=foo&lang=en&page=2" in links
+    assert not any("&amp;" in link for link in links)
+
+
+def test_extract_links_preserves_entity_like_query_params():
+    # `&amp;copy=`/`&amp;reg=` must decode to `&copy=`/`&reg=`, never to © / ®.
+    html = '<a href="https://example.com/s?a=1&amp;copy=2&amp;reg=3">x</a>'
+    links = _extract_links(html, "https://example.com/")
+    assert "https://example.com/s?a=1&copy=2&reg=3" in links
+
+
+def test_extract_links_decodes_numeric_entities():
+    html = '<a href="https://example.com/s?q=a&#38;b">x</a>'
+    links = _extract_links(html, "https://example.com/")
+    assert "https://example.com/s?q=a&b" in links
