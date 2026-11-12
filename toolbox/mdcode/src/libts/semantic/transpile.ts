@@ -2652,11 +2652,12 @@ function valueName(node: any): string {
 }
 
 // Whether import keeps `value`, an engine interval in a SPANNER text outside
-// DATE_ADD and the other functions of SPANNER_ADDS: an amount of weeks, days,
-// hours or minutes. A week is 7 days, as in BigQuery, since Spanner's
-// INTERVAL has no part for weeks. BigQuery adds no month or year to a
-// TIMESTAMP, and such an INTERVAL can reach `+` or `-` through COALESCE, a
-// product or any other expression.
+// DATE_ADD, the other functions of SPANNER_ADDS and a comparison: an amount
+// of weeks, days, hours or minutes. A week is 7 days, as in BigQuery, since
+// Spanner's INTERVAL has no part for weeks. Spanner adds a month or a year to
+// no TIMESTAMP and an INTERVAL to no DATE, where BigQuery adds one to a DATE,
+// and such an INTERVAL can reach `+` or `-` through COALESCE, a product or any
+// other expression.
 function spannerInterval(value: any): boolean {
   return spannerAmount(value) &&
       ['WEEK', 'DAY', 'HOUR', 'MINUTE'].includes(String(value.unit.unit).toUpperCase());
@@ -3285,6 +3286,12 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     return compared!.every(v => ['string', 'date'].includes(spannerType(v)!)) ? rest(...strings) :
         `${prefix}${OPERATORS[kind]} of a date string and a value that may be a TIMESTAMP`;
   }
+  // Spanner and BigQuery compare INTERVALs with a month as 30 days and a day
+  // as 24 hours, so a comparison or BETWEEN takes an INTERVAL of any unit.
+  // BigQuery's IN and CASE take no INTERVAL.
+  const intervals = COMPARISONS.has(kind) || kind === 'between' ?
+      compared!.filter(v => spannerAmount(bare(v)?.interval)) : [];
+  if (intervals.length) return [...rest(...intervals), ...intervals.map(v => bare(v).interval.this)];
   if (kind === 'timestamp') {
     if (stringLiteral(value.this)) return rest(value.this);
     return value.zone || spannerType(value.this) === 'date' ? rest() :

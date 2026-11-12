@@ -397,7 +397,10 @@ DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and
 minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 7 days in both. The amount is a whole number or an expression, such as
 `INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
-BigQuery give its parts the same way. From the other databases, import leaves
+BigQuery give its parts the same way. So do a comparison and BETWEEN, since
+both compare a month as 30 days and a day as 24 hours. Months, quarters and
+years added with `+` or `-` stay untranslated, since Spanner adds them to no
+TIMESTAMP and adds no INTERVAL to a DATE. From the other databases, import leaves
 any other date arithmetic untranslated, such as an INTERVAL of a fraction.
 PostgreSQL's DATE_TRUNC of a column plus an INTERVAL stays untranslated, since
 DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
