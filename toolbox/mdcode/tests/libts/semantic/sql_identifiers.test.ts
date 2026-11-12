@@ -254,13 +254,14 @@ describe('referencedParameters', () => {
        });
 
   // GoogleSQL reads a parameter's name after any spaces or comments, and in
-  // backticks.
+  // backticks, but not after a string.
   test.each([
     'UPDATE t SET a = @ note',
     'UPDATE t SET a = @\n  note',
     'UPDATE t SET a = @ -- c\n note',
     'UPDATE t SET a = @`note`',
     'UPDATE t SET a = @ /* c */ `note`',
+    "UPDATE t SET a = @'x' WHERE b = @note",
   ])('reads %p as binding note', sql => {
     expect(referencedParameters(sql)).toEqual(['note']);
   });

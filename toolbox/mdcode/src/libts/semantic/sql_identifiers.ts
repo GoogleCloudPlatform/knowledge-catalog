@@ -261,7 +261,9 @@ function readsPostgres(dialect?: string|null): boolean {
 // `text` with each comment and each quoted string or identifier replaced by a
 // space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
 // `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).
-// With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept.
+// With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept, and
+// each quoted string is replaced by `''`, so an `@` before a string reads no
+// name after it.
 function sqlCode(
     text: string, dialect?: string|null, quotedNames = false): string {
   const postgres = readsPostgres(dialect);
@@ -269,11 +271,12 @@ function sqlCode(
       postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   let out = '';
   let start = 0;
-  const skip = (from: number, to: number): number => {
-    out += `${text.slice(start, from)} `;
+  const skip = (from: number, to: number, by = ' '): number => {
+    out += `${text.slice(start, from)}${by}`;
     start = to;
     return to - 1;
   };
+  const string = quotedNames ? "''" : ' ';
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === '-' && text[i + 1] === '-') {
@@ -285,9 +288,9 @@ function sqlCode(
     } else if (
         !postgres && (c === '\'' || c === '"') && text[i + 1] === c &&
         text[i + 2] === c) {
-      i = skip(i, endOfTripleQuoted(text, i));
+      i = skip(i, endOfTripleQuoted(text, i), string);
     } else if (c === '\'' || c === '"') {
-      i = skip(i, endOfQuoted(text, i, !postgres, postgres));
+      i = skip(i, endOfQuoted(text, i, !postgres, postgres), string);
     } else if (!postgres && c === '`') {
       const end = endOfQuoted(text, i, true, false);
       i = quotedNames ? end - 1 : skip(i, end);
