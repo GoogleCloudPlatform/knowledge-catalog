@@ -816,6 +816,31 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "CASE x WHEN INTERVAL '1 day' THEN CURRENT_DATE ELSE NOW() END", {sql: 'CASE WHEN x = INTERVAL 1 DAY THEN TIMESTAMP(CURRENT_DATE) ELSE CURRENT_TIMESTAMP() END'}],
     ['POSTGRES', '(CURRENT_DATE - NOW()) IN (x)', {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
     ['SPANNER', 'NULL IN (INTERVAL 1 MONTH)', {sql: '(CAST(NULL AS BOOLEAN))'}],
+    // An INTERVAL that a negation, a sum or COALESCE gives keeps its type in a
+    // comparison, in EXTRACT and in NULLIF. BigQuery's NULLIF takes no INTERVAL.
+    ['DATABRICKS', '(-INTERVAL 1 MONTH) < INTERVAL 1 DAY', {error: 'kcmd does not translate < on a year-month INTERVAL and a day-time INTERVAL'}],
+    ['DATABRICKS', 'COALESCE(i, INTERVAL 1 MONTH) < INTERVAL 1 DAY', {error: 'kcmd does not translate < on a year-month INTERVAL and a day-time INTERVAL'}],
+    ['POSTGRES', "CURRENT_DATE > -INTERVAL '1 day'", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
+    ['POSTGRES', "CURRENT_DATE > COALESCE(i, INTERVAL '1 day')", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
+    ['DATABRICKS', "CURRENT_DATE > -INTERVAL '1 day'", {error: 'kcmd does not translate > on a day-time INTERVAL and a DATE'}],
+    ['DATABRICKS', "CURRENT_DATE > COALESCE(i, INTERVAL '1 day')", {error: 'kcmd does not translate > on a day-time INTERVAL and a DATE'}],
+    ['POSTGRES', "EXTRACT(HOUR FROM -INTERVAL '25 hours')", {sql: 'CAST(EXTRACT(HOUR FROM -INTERVAL 25 HOUR) AS NUMERIC)'}],
+    ['ANSI_SQL', 'NULLIF(CAST("d" AS DATE), NULL)', {error: 'kcmd does not translate NULLIF of a DATE'}],
+    ['ANSI_SQL', 'NULLIF(CAST("d" AS DATE), CURRENT_DATE)', {error: 'kcmd does not translate NULLIF of a DATE'}],
+    ['DATABRICKS', 'NULLIF(INTERVAL 1 MONTH, INTERVAL 30 DAYS)', {error: 'kcmd does not translate NULLIF on a year-month INTERVAL and a day-time INTERVAL'}],
+    ['POSTGRES', "NULLIF(1, INTERVAL '1 day')", {error: 'kcmd does not translate NULLIF on an INTERVAL and a number'}],
+    ['POSTGRES', "NULLIF(INTERVAL '1 day', i)", {sql: 'IF(INTERVAL 1 DAY = i, NULL, INTERVAL 1 DAY)'}],
+    ['DATABRICKS', 'NULLIF(INTERVAL 1 DAY, NULL)', {sql: '(INTERVAL 1 DAY)'}],
+    ['POSTGRES', "COALESCE(i, INTERVAL '1 day') + SUM(x)", {error: 'kcmd does not translate + of an INTERVAL'}],
+    ['SPANNER', 'EXTRACT(HOUR FROM INTERVAL 1 DAY + INTERVAL 2 HOUR)', {sql: "EXTRACT(HOUR FROM INTERVAL '1' DAY + INTERVAL '2' HOUR)"}],
+    ['SPANNER', 'EXTRACT(HOUR FROM -INTERVAL 1 HOUR)', {sql: "EXTRACT(HOUR FROM -INTERVAL '1' HOUR)"}],
+    ['SPANNER', 'EXTRACT(DAY FROM INTERVAL 1 DAY + INTERVAL 2 HOUR)', {sql: "EXTRACT(DAY FROM INTERVAL '1' DAY + INTERVAL '2' HOUR)"}],
+    ['SPANNER', 'x IN (INTERVAL 1 YEAR + INTERVAL 2 MONTH)', {sql: "(x = INTERVAL '1' YEAR + INTERVAL '2' MONTH)"}],
+    ['SPANNER', 'x = INTERVAL 1 YEAR + INTERVAL 2 MONTH', {sql: "x = INTERVAL '1' YEAR + INTERVAL '2' MONTH"}],
+    ['SPANNER', 'EXTRACT(MONTH FROM INTERVAL 1 YEAR + INTERVAL 2 MONTH)', {sql: "EXTRACT(MONTH FROM INTERVAL '1' YEAR + INTERVAL '2' MONTH)"}],
+    ['SPANNER', 'CURRENT_TIMESTAMP() = INTERVAL 1 YEAR + INTERVAL 1 MONTH', {error: 'kcmd does not translate = on an INTERVAL and a TIMESTAMP'}],
+    ['SPANNER', 'CURRENT_DATE() > CURRENT_DATE() - d', {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
+    ['SPANNER', 'x IN (CURRENT_TIMESTAMP() - INTERVAL 1 DAY)', {sql: "x IN (CURRENT_TIMESTAMP() - INTERVAL '1' DAY)"}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

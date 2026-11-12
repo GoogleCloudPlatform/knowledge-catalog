@@ -1525,10 +1525,14 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
   if (typeof left === 'string') return left;
   if (typeof right === 'string') return right;
   const parts = [...left.parts, ...right.parts.map(p => ({...p, negative: p.negative !== (kind === 'sub')}))];
-  const group = Object.values(table.sums).find(g => g.includes(parts[0].unit))!;
-  const other = parts.find(p => !group.includes(p.unit));
+  const other = parts.find(p => sumType(p.unit, table) !== sumType(parts[0].unit, table));
   if (other) return `${OPERATORS[kind]} of ${parts[0].text} and ${other.text}`;
   return {parts, values: [...left.values, ...right.values]};
+}
+
+// The name in `table`'s `sums` of the type of an INTERVAL of `unit`.
+function sumType(unit: Unit, table: DateTable): string|undefined {
+  return Object.keys(table.sums ?? {}).find(name => table.sums![name].includes(unit));
 }
 
 // What `node`, an amount an INTERVAL holds or is multiplied by, in the engine's
@@ -1551,33 +1555,67 @@ function notWhole(node: any, read: string): string|undefined {
 }
 
 // Whether `node`, a source value in the engine's dialect `read`, is visibly an
-// INTERVAL: an INTERVAL value, a difference of dates or times (see
-// timeDifference), a negation, product, sum or difference of one, or one that
-// MAX, COALESCE or a similar function returns.
+// INTERVAL (see intervalKind), or a negation, product, sum or difference with
+// one, or one that MAX, COALESCE or a similar function returns.
 function intervalTyped(node: any, read: string): boolean {
-  const table = DATE_TABLES[read];
   const b = bare(node);
-  if (!table?.sums) return false;
-  if (typeof intervalValue(b, read, table) === 'object' || timeDifference(b, read)) return true;
+  if (!DATE_TABLES[read]?.sums) return false;
+  if (intervalKind(b, read)) return true;
   const kind = kindOf(b) ?? '';
   const operands = kind === 'neg' ? [b.neg.this] : ['add', 'sub', 'mul'].includes(kind) ?
       [b[kind].left, b[kind].right] : returned(b);
   return operands.some(o => intervalTyped(o, read));
 }
 
-// Whether `node`, a source value in the engine's dialect `read`, is an
-// INTERVAL: an INTERVAL value, a difference of dates or times (see
-// timeDifference), a negation or product of one, or one that MAX, COALESCE or a
-// similar function returns. intervalTyped also counts a value plus an INTERVAL,
-// which is a date or a time.
+// Whether `node`, a source value in the engine's dialect `read`, is visibly an
+// INTERVAL (see intervalKind). intervalTyped also counts a value plus an
+// INTERVAL, which is a date or a time.
 function isInterval(node: any, read: string): boolean {
+  return !!intervalKind(node, read);
+}
+
+// The type of INTERVAL `node`, a source value in the engine's dialect `read`,
+// visibly is, or undefined: its name in the dialect's `sums`, or INTERVAL in a
+// SPANNER text, which has one type of INTERVAL. Such a value is an INTERVAL
+// (see intervalOf), whose first unit gives its type, a difference of dates or
+// times (see timeDifference and spannerDifference), which is of days, a
+// negation of one, a sum or difference of two of one type, a product with one,
+// or one that MIN, MAX, COALESCE or a similar function returns. `literals`
+// holds its INTERVALs when it is only INTERVALs, negated, added or subtracted.
+// An INTERVAL import does not read has the dialect's type when it has only one.
+interface IntervalKind {
+  type: string;
+  literals?: any[];
+}
+function intervalKind(node: any, read: string): IntervalKind|undefined {
+  const spanner = read === 'spanner';
   const table = DATE_TABLES[read];
+  if (!spanner && !table?.sums) return undefined;
   const b = bare(node);
-  if (!table?.sums) return false;
-  if (typeof intervalValue(b, read, table) === 'object' || timeDifference(b, read)) return true;
+  const added = intervalOf(b, read);
+  if (added) {
+    const parsed = spanner ? undefined : readInterval(added, table, read);
+    const names = Object.keys(table?.sums ?? {});
+    const type = spanner ? 'INTERVAL' : typeof parsed === 'object' ? sumType(parsed[0].unit, table) :
+        names.length === 1 ? names[0] : undefined;
+    return type ? {type, literals: [added]} : undefined;
+  }
+  if (spanner ? spannerDifference(b) : timeDifference(b, read)) {
+    return {type: spanner ? 'INTERVAL' : sumType('DAY', table)!};
+  }
   const kind = kindOf(b) ?? '';
-  const operands = kind === 'neg' ? [b.neg.this] : kind === 'mul' ? [b.mul.left, b.mul.right] : returned(b);
-  return operands.some(o => isInterval(o, read));
+  if (kind === 'neg') return intervalKind(b.neg.this, read);
+  if (kind === 'add' || kind === 'sub') {
+    const left = intervalKind(b[kind].left, read);
+    const right = left && intervalKind(b[kind].right, read);
+    if (!left || right?.type !== left.type) return undefined;
+    return {type: left.type, literals: left.literals && right.literals && [...left.literals, ...right.literals]};
+  }
+  for (const operand of kind === 'mul' ? [b.mul.left, b.mul.right] : returned(b)) {
+    const found = intervalKind(operand, read);
+    if (found) return {type: found.type};
+  }
+  return undefined;
 }
 
 // Whether `node`, a source value in the engine's dialect `read`, is visibly a
@@ -2294,12 +2332,14 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   if (sum) return typeof sum === 'string' ? sum : [sum.operand, ...(sum.values ?? [sum.amount])];
   if (timeDifference({[kind]: value}, read)) return sides;
   // An INTERVAL times an amount that may not be an INT64 (see notWhole).
-  const interval = kind === 'mul' ? sides.findIndex(s => isInterval(s, read)) : -1;
+  const interval = kind === 'mul' && read !== 'spanner' ? sides.findIndex(s => isInterval(s, read)) : -1;
   const factor = interval >= 0 ? notWhole(sides[1 - interval], read) : undefined;
   if (factor) return `an INTERVAL times ${factor}`;
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
-  const dated = sides.find(s => dateValued(s, read));
+  // A `+` or `-` with an INTERVAL that the steps above do not translate, such
+  // as an INTERVAL plus a number, which the sources and BigQuery reject.
+  const dated = sides.find(s => dateValued(s, read) || (kind !== 'mul' && isInterval(s, read)));
   if (dated) return `${op} of ${isInterval(dated, read) ? 'an INTERVAL' : `a date${table?.numbers ? `, which ${DIGITS_NOTE}` : ''}`}`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
@@ -2512,37 +2552,16 @@ function exactForm(node: any, read: string): any {
 // CASE with an operand that compares an INTERVAL, or a message. BigQuery
 // rejects IN and CASE over an INTERVAL when the query runs, though a dry run
 // accepts them, so import writes the equalities they compare by (see
-// equalities), where each value is an INTERVAL literal, a sum of them, a
-// column or NULL. Any other value stays untranslated.
+// equalities), where each value is an INTERVAL literal, a sum, difference or
+// negation of them, a column or NULL. Any other value stays untranslated.
 function overInterval(node: any, read: string): boolean|string {
   const kind = kindOf(node) ?? '';
   const value = node[kind];
   if (kind !== 'in' && !(kind === 'case' && value.operand)) return false;
   const values = comparedValues(kind, value)!;
-  if (!values.some(v => read === 'spanner' ? spannerIntervalValue(v) : isInterval(v, read))) return false;
-  const literal = (v: any): boolean => {
-    const b = bare(v);
-    return !!(b?.interval || (read !== 'spanner' && intervalOf(b, read)) ||
-              ((b?.add || b?.sub) && literal((b.add ?? b.sub).left) && literal((b.add ?? b.sub).right)));
-  };
-  const plain = (v: any) => !bare(v) || bare(v).null !== undefined || bare(v).column || literal(v);
+  if (!values.some(v => intervalKind(v, read))) return false;
+  const plain = (v: any) => !bare(v) || bare(v).null !== undefined || bare(v).column || intervalKind(v, read)?.literals;
   return values.every(plain) || `${kind === 'in' ? 'IN' : 'CASE'} over an INTERVAL other than a literal, a sum of literals or a column`;
-}
-
-// Whether `node`, a SPANNER value, is visibly an INTERVAL: an INTERVAL literal,
-// a sum or difference of two, a negation or product of one, one that COALESCE
-// or a similar function returns, or a difference with a date or a timestamp.
-// A difference of two columns may be a number.
-function spannerIntervalValue(node: any): boolean {
-  const b = bare(node);
-  const kind = kindOf(b) ?? '';
-  const value = b?.[kind];
-  const dated = (n: any) => ['timestamp', 'date'].includes(spannerType(n)!);
-  return !!b?.interval || ((kind === 'add' || kind === 'sub') &&
-      (spannerIntervalValue(value.left) && spannerIntervalValue(value.right) ||
-       kind === 'sub' && (dated(value.left) || dated(value.right)))) ||
-      (kind === 'neg' && spannerIntervalValue(value.this)) ||
-      (kind === 'mul' && [value.left, value.right].some(spannerIntervalValue)) || returned(b).some(spannerIntervalValue);
 }
 
 // `value`, IN or a CASE with an operand, as the equalities it compares by:
@@ -2607,7 +2626,7 @@ const INTERVAL_PARTS = lookup({
 // source value in the engine's dialect `read`, when the dialect has
 // `intervalParts` and `node` is visibly an INTERVAL value, or undefined.
 function intervalPart(part: unknown, node: any, read: string): string|undefined {
-  return DATE_TABLES[read]?.intervalParts && intervalType(node, read) ?
+  return DATE_TABLES[read]?.intervalParts && intervalKind(node, read) ?
       INTERVAL_PARTS[String(part).toLowerCase()] : undefined;
 }
 
@@ -2630,7 +2649,7 @@ const DIGITS_NOTE = 'MySQL turns into its digits';
 // into text, which import leaves untranslated (see mysqlKind).
 function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
-  const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
+  const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalKind(v, read)?.type);
   const numbers = DATE_TABLES[read]?.numbers;
   if (use === 'negated' && bare(values[0])?.null !== undefined) return 'NULL';
   const date = numbers ? values.find(v => v && mysqlKind(v, read) === 'date') : undefined;
@@ -2661,25 +2680,17 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
   return problem;
 }
 
-// The name in `sums` of the type of `node`, a source value in the engine's
-// dialect `read`, when it is visibly an INTERVAL value, or undefined. A
-// difference of dates or times is of days (see timeDifference).
-function intervalType(node: any, read: string): string|undefined {
-  const table = DATE_TABLES[read];
-  const joined = table?.sums && intervalValue(bare(node), read, table);
-  const unit = typeof joined === 'object' ? joined.parts[0].unit : timeDifference(node, read) ? 'DAY' : undefined;
-  return unit && Object.keys(table.sums!).find(name => table.sums![name].includes(unit));
-}
-
 // The node to write in place of NULLIF(a, b), whose arguments are `args`, in
 // the engine's dialect `read`; a message; or undefined to translate it as it
 // is. BigQuery's NULLIF gives the common type of its values, PostgreSQL's,
 // Databricks', SQL Server's and Snowflake's the type of a, and MySQL's a date
-// or a time as text, which import leaves untranslated. IF(a = b, NULL, a)
+// or a time as text, which import leaves untranslated, as it does a date or a
+// time in an ANSI_SQL text, which may run on MySQL. BigQuery's NULLIF takes no
+// INTERVAL when the query runs, though a dry run accepts it. IF(a = b, NULL, a)
 // gives the type of a, with TIMESTAMP(x) around a DATE or a DATETIME compared
 // with a TIMESTAMP, which the sources read as midnight UTC. A value with no
-// visible type, such as a column, may be any type. NULLIF(a, NULL) of a date or
-// a time a is a, and NULLIF(NULL, b) stays untranslated.
+// visible type, such as a column, may be any type. NULLIF(a, NULL) of a date, a
+// time or an INTERVAL a is a, and NULLIF(NULL, b) stays untranslated.
 function nullifForm(args: any[], read: string): any {
   const [a, b] = args;
   if (bare(a)?.null !== undefined) return 'NULLIF of NULL';
@@ -2691,16 +2702,19 @@ function nullifForm(args: any[], read: string): any {
     return `NULLIF on ${article(name)} ${name} and ${first === 'number' ? 'a number, which MySQL compares by the digits of the date' :
         first === 'text' ? 'a string, which MySQL gives as text' : 'a value that may be another type'}`;
   }
+  const forms = valueForms([a, b], read, 'compared');
+  if (typeof forms === 'string') return `NULLIF on ${forms}`;
   const types = [...new Set(args.flatMap(givenValues).map(v => timeType(v, read)))];
   const time = types.find(t => t);
-  if (bare(b)?.null !== undefined && timeType(a, read)) return formCall('(_1)', [a]);
-  if (types.length === 1) return undefined;
-  if (NULLIF_FIRST.has(read)) {
-    const forms = valueForms([a, b], read, 'compared');
-    return typeof forms === 'string' ? `NULLIF on ${forms}` : formCall('IF(_1, NULL, _2)', [equal(a, b), a]);
+  if (time && !NULLIF_FIRST.has(read)) {
+    const other = types.find(t => t && t !== time) ??
+        (types.includes(undefined) && bare(b)?.null === undefined ? 'value that may be another type' : undefined);
+    return other ? `NULLIF on a ${time} and a ${other}` : `NULLIF of a ${time}`;
   }
-  const other = types.find(t => t && t !== time);
-  return `NULLIF on a ${time} and ${other ? `a ${other}` : 'a value that may be another type'}`;
+  const interval = args.some(v => isInterval(v, read));
+  if (bare(b)?.null !== undefined && (timeType(a, read) || interval)) return formCall('(_1)', [a]);
+  if (types.length === 1 && !interval) return undefined;
+  return formCall('IF(_1, NULL, _2)', [equal(a, b), a]);
 }
 
 // The FORM_CALL for `name`(end, start), a function of `dayDiffs` whose
@@ -3391,19 +3405,37 @@ function zoned(node: any): boolean {
 }
 
 // What `node`, a SPANNER value, visibly is: the engine's literal type,
-// 'column', 'interval', a type a cast gives, 'date' or 'timestamp'. A
-// difference of two dates, timestamps or columns is an interval.
+// 'column', a type a cast gives, 'date', 'timestamp', or 'interval' for an
+// INTERVAL (see intervalKind) and a difference of two dates, timestamps or
+// columns.
 function spannerType(node: any): string|undefined {
+  const b = bare(node);
+  const sub: (string|undefined)[] = b?.sub ? [b.sub.left, b.sub.right].map(spannerTime) : [];
+  return spannerTime(b) ?? (intervalKind(b, 'spanner') ||
+      (sub.length && sub.every(t => ['timestamp', 'date', 'column'].includes(t!))) ? 'interval' : undefined);
+}
+
+// What `node`, a SPANNER value, visibly is when that is not an INTERVAL: the
+// engine's literal type, 'column', a type a cast gives, 'date' or 'timestamp'.
+function spannerTime(node: any): string|undefined {
   const b = bare(node);
   const kind = kindOf(b) ?? '';
   const value = b?.[kind];
   const name = String(value?.name).toUpperCase();
-  const timeOrColumn = (n: any) => ['timestamp', 'date', 'column'].includes(spannerType(n)!);
   return kind === 'literal' ? value.literal_type : kind === 'column' ? 'column' :
-      kind === 'interval' || (kind === 'sub' && timeOrColumn(value.left) && timeOrColumn(value.right)) ?
-      'interval' : kind === 'cast' || kind === 'safe_cast' ? value.to.data_type :
+      kind === 'cast' || kind === 'safe_cast' ? value.to.data_type :
       kind === 'timestamp' || SPANNER_TIMESTAMPS.has(name) ? 'timestamp' :
       SPANNER_DATES.has(name) ? 'date' : undefined;
+}
+
+// Whether `node`, a SPANNER value, is a difference of two dates, timestamps or
+// columns, one of them a date or a timestamp. Spanner has no INTERVAL column
+// and subtracts no number from a date, so it is an INTERVAL. A difference of
+// two columns may be a number.
+function spannerDifference(node: any): boolean {
+  const types = node?.sub ? [node.sub.left, node.sub.right].map(spannerTime) : [];
+  return types.length === 2 && types.every(t => ['timestamp', 'date', 'column'].includes(t!)) &&
+      types.some(t => t !== 'column');
 }
 
 // The parts of a SPANNER node of `kind` that import still has to check, the
@@ -3431,8 +3463,12 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
   // IN and CASE, which compare with `=` (see equalities).
   const over = overInterval({[kind]: value}, 'spanner');
   if (typeof over === 'string') return `${prefix}${over}`;
-  const intervals = compared?.filter(v => spannerAmount(bare(v)?.interval)) ?? [];
-  if (intervals.length) return [...rest(...intervals), ...intervals.map(v => bare(v).interval.this)];
+  const intervals = compared?.filter(v => spannerAmounts(v)) ?? [];
+  if (intervals.length) {
+    const forms = valueForms(compared!, 'spanner', 'compared');
+    if (typeof forms === 'string') return `${prefix}${OPERATORS[kind]} on ${forms}`;
+    return [...rest(...intervals), ...intervals.flatMap(v => spannerAmounts(v)!)];
+  }
   if (kind === 'timestamp') {
     if (stringLiteral(value.this)) return rest(value.this);
     return value.zone || spannerType(value.this) === 'date' ? rest() :
@@ -3448,8 +3484,7 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     }
     // Spanner and BigQuery give an INTERVAL's parts as Y-M D H:M:S, so EXTRACT
     // takes an INTERVAL of any unit, as DATE_ADD does.
-    const interval = bare(value.this)?.interval;
-    return interval && spannerAmount(interval) ? [interval.this] : [value.this];
+    return spannerAmounts(value.this) ?? [value.this];
   }
   if (kind === 'interval') return spannerInterval(value) ? [value.this] : `INTERVAL ${intervalText(value)}`;
   if (kind === 'cast' || kind === 'safe_cast') {
@@ -3471,6 +3506,14 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
     return [value.this];
   }
   return undefined;
+}
+
+// The amounts of the INTERVALs in `node`, a SPANNER value, when it is only
+// INTERVALs, negated, added or subtracted (see intervalKind), each of one unit
+// and a whole number or an expression (see spannerAmount), or undefined.
+function spannerAmounts(node: any): unknown[]|undefined {
+  const literals = intervalKind(node, 'spanner')?.literals;
+  return literals?.every(spannerAmount) ? literals.map(l => l.this) : undefined;
 }
 
 // The arguments of a SPANNER call of `name` that import still has to check,

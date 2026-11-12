@@ -412,12 +412,15 @@ number, such as `(d + 1) + INTERVAL '1 day'`, gets an INTERVAL as a DATE does.
 None of the three adds an INTERVAL to a number or a whole number to a
 timestamp, and BigQuery does neither. Import translates no date arithmetic
 from ANSI_SQL, since the databases an ANSI_SQL
-text runs on add a unit as different types. From a SPANNER text it keeps
-DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and
+text runs on add a unit as different types. It also leaves NULLIF of a date
+or a time in an ANSI_SQL text untranslated, since MySQL gives it as text. From
+a SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB,
+and weeks, days, hours and
 minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 7 days in both. The amount is a whole number or an expression, such as
-`INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
-BigQuery give its parts the same way. So do a comparison, BETWEEN, IN and a
+`INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, or a sum,
+difference or negation of them, since Spanner and BigQuery give its parts the
+same way. So do a comparison, BETWEEN, IN and a
 CASE with a value, since both compare a month as 30 days and a day as 24
 hours. Months, quarters and years added with `+` or `-` stay untranslated,
 since Spanner adds them to no TIMESTAMP and adds no INTERVAL to a DATE. From
@@ -456,7 +459,9 @@ INTERVAL of months or years with one of smaller units, so that comparison
 stays untranslated. So does AVG of an INTERVAL and an INTERVAL divided
 by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
 and Databricks round to the nearest microsecond, and Databricks gives a
-year-month INTERVAL in whole months.
+year-month INTERVAL in whole months. BigQuery's NULLIF takes no INTERVAL when
+the query runs, though a dry run accepts it, so NULLIF with an INTERVAL
+becomes `IF(a = b, NULL, a)`.
 
 From PostgreSQL and Databricks, a DATE or a DATETIME that import can see
 beside a TIMESTAMP, compared with it or as a result of one COALESCE, IF or
@@ -491,9 +496,10 @@ are 1 there and 25 in BigQuery.
 BigQuery rejects IN and a CASE with a value over an INTERVAL when the query
 runs, though a dry run accepts them. From PostgreSQL, Databricks and Spanner,
 IN, NOT IN and a CASE with a value over an INTERVAL become the equalities they
-compare by, where each value is an INTERVAL literal, a sum of them, a column or
-NULL: `x IN (a, b)` becomes `(x = a OR x = b)`, and `CASE x WHEN a` becomes
-`CASE WHEN x = a`. They give the same truth values, also for NULL. With any
+compare by, where each value is an INTERVAL literal, a sum, difference or
+negation of them, a column or NULL: `x IN (a, b)` becomes `(x = a OR x = b)`,
+and `CASE x WHEN a` becomes `CASE WHEN x = a`. They give the same truth values,
+also for NULL. With any
 other value, such as `INTERVAL '1 day' * 2` or a difference of dates, they stay
 untranslated. An equality with a NULL is NULL whatever the other value is, and
 BigQuery's `=` takes no literal NULL, so it becomes a NULL of type BOOL, such
