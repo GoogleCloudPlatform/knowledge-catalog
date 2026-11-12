@@ -2237,26 +2237,34 @@ async function pushRefusal(
   // The error is in the file a label in it names, when push reads that file:
   // a leading `[<file>] ...` or `<Kind> '<file>' ...`, or the `(<file>)` after
   // the model's name in `... in model '<name>' (<file>)`, which names a
-  // profile file there. For an error with no such label, the file is that of
-  // the named profile push reports the error under, as for a deployment that
-  // uses the profile, when push reads one, and else the model file.
+  // profile file there. An entry's overview aspect too large to store is in
+  // that entry's overview sidecar, when push reads one. For any other error
+  // with no such label, the file is that of the named profile push reports
+  // the error under, as for a deployment that uses the profile, when push
+  // reads one, and else the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
+  const sidecars = layout.overviewSidecarPaths();
   const files = [
     ...docs.flatMap(
         d => [layout.modelPath(d.name), ...layout.profileFilePaths(d.name)]),
-    ...layout.overviewSidecarPaths().map(s => s.path),
+    ...sidecars.map(s => s.path),
   ].map(name);
   const label = /^(?:\[([^\]]+)\]|[A-Z][a-z]*(?: [a-z]+)* '([^']+)')/.exec(
       first.error);
   const inModel = / in model '[^']*' \(([^)]+)\)/.exec(first.error);
+  const overviewOf = /^aspect '[^'@]*\.overview(?:@[^']*)?' of entry '([^']+)'/
+                         .exec(first.error)?.[1];
+  const sidecar = sidecars.find(s => s.entryId === overviewOf);
   const doc = docs.find(d => d.name === first.document) ?? docs[0];
   const profileFile =
       first.profile === undefined || first.profile === DEFAULT_PROFILE ?
       undefined :
       `${doc.name}.profile.${first.profile}.yaml`;
-  const named = [label?.[1], label?.[2], inModel?.[1], profileFile]
-                    .map(n => n?.split(path.sep).join('/'))
-                    .find(n => n !== undefined && files.includes(n));
+  const named = [
+    label?.[1], label?.[2], inModel?.[1], sidecar && name(sidecar.path),
+    profileFile,
+  ].map(n => n?.split(path.sep).join('/'))
+      .find(n => n !== undefined && files.includes(n));
   return {
     error: first.error,
     file: named ?? name(layout.modelPath(doc.name)),

@@ -88,9 +88,10 @@ holds keeps its bytes, whatever its line endings. When push's checks that call
 no service would refuse a file the entry group holds after the pull, pull
 warns, names the file push's first error is in, and gives that error. Those
 files are the model file, profile files and overview sidecars pull writes, and
-the local ones it keeps. When the error does not name its file, the warning
-names the profile file of the named profile push reports the error under, such
-as the profile a deployment uses, or else the model file. Under `--dry-run` the
+the local ones it keeps. When an entry's overview is too large to store, the
+warning names its overview sidecar. When another error does not name its file,
+the warning names the profile file of the named profile push reports the error
+under, such as the profile a deployment uses, or else the model file. Under `--dry-run` the
 checks read the text pull would write for each file it writes, find no file it
 would delete, and read every other file on disk, so the dry run writes nothing.
 When that error suggests `kcmd import --transpile`, pull runs
