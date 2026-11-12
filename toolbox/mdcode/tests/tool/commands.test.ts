@@ -2926,8 +2926,9 @@ describe('a pull', () => {
              .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
        });
 
-  // --force-remove deletes each file the layout lists, by its name on disk.
-  // A link goes as a link, and pull deletes no directory through a link. The
+  // --force-remove deletes each file the layout lists, by its name on disk,
+  // once for each real location, and nothing below a file it removes. A link
+  // goes as a link, and pull deletes no directory through a link. The
   // message without the flag names the same files.
   const notInCatalog = (kind: string, file: string) =>
       `Warning: local ${kind} ${shown(file)} is not in the catalog; delete ` +
@@ -2945,9 +2946,15 @@ describe('a pull', () => {
       write(local(file), ROUND_TRIP_MODEL.replace('name: commerce', 'name: sales'));
   const dangling = () =>
       fs.symlinkSync('missing.yaml', local('commerce.profile.dev.yaml'));
+  // A folder outside the entry group with a profile file and a sidecar.
+  const sharedFolder = (folder: string) => {
+    write(path.join(folder, 'qa.yaml'));
+    write(path.join(folder, 'entities', 'Old.overview.md'), 'Old.\n');
+  };
   // [label, the catalog's model, makes the local files beside a directory
-  // `outside` the entry group, the message without --force-remove, the files
-  // it removes, the paths in the workspace that stay]
+  // `outside` the entry group and gives the catalog's overviews, the message
+  // without --force-remove, the files it removes, the paths in the workspace
+  // that stay]
   test.each([
     ['a link to no file beside a Google-flavor model', SECOND_GEN, dangling,
      `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
@@ -2958,11 +2965,38 @@ describe('a pull', () => {
      notInCatalog('profile file', 'commerce.profile.dev.yaml'),
      ['commerce.profile.dev.yaml'], []],
     ['a linked older profile directory', SECOND_GEN, (outside: string) => {
-       write(path.join(outside, 'qa.yaml'));
+       sharedFolder(outside);
        fs.symlinkSync(outside, local('commerce.profiles'));
      },
      notInCatalog('profile directory', 'commerce.profiles'), ['commerce.profiles'],
-     ['outside/qa.yaml']],
+     ['outside/qa.yaml', 'outside/entities/Old.overview.md']],
+    ['an older profile directory that links into the entry group', SECOND_GEN,
+     () => {
+       sharedFolder(local('nested/deep'));
+       fs.symlinkSync('nested/deep', local('commerce.profiles'));
+     },
+     notInCatalog('profile directory', 'commerce.profiles'),
+     ['commerce.profiles'],
+     [shown('nested/deep/qa.yaml'),
+      shown('nested/deep/entities/Old.overview.md')]],
+    ['a stale model\'s linked older profile directory', SECOND_GEN,
+     (outside: string) => {
+       sales('sales.yaml');
+       sharedFolder(outside);
+       fs.symlinkSync(outside, local('sales.profiles'));
+     },
+     stale("'sales'", "'sales.yaml' and 'sales.profiles'"),
+     ['sales.yaml', 'sales.profiles'],
+     ['outside/qa.yaml', 'outside/entities/Old.overview.md']],
+    ['a linked older profile directory a stale model\'s deletion empties',
+     SECOND_GEN, () => {
+       sales('a_sales.yaml');
+       write(local('a_sales.profiles/qa.yaml'));
+       fs.symlinkSync('a_sales.profiles', local('commerce.profiles'));
+     },
+     stale("'sales' in 'a_sales.yaml'", "'a_sales.yaml', " +
+           "'a_sales.profiles/qa.yaml' and 'commerce.profiles'"),
+     ['a_sales.yaml', 'a_sales.profiles/qa.yaml', 'commerce.profiles'], []],
     ['a stale overview sidecar a link puts outside the entry group',
      SECOND_GEN, (outside: string) => {
        write(path.join(outside, 'entities', 'Old.overview.md'), 'Old.\n');
@@ -2977,9 +3011,16 @@ describe('a pull', () => {
        write(local('a_old/entities/Old.overview.md'), 'Old.\n');
        fs.symlinkSync('a_old', local('z_link'));
      },
-     notInCatalog('overview sidecar', 'z_link/entities/Old.overview.md'),
-     ['a_old/entities/Old.overview.md', 'z_link/entities/Old.overview.md'],
-     []],
+     notInCatalog('overview sidecar', 'a_old/entities/Old.overview.md'),
+     ['a_old/entities/Old.overview.md'], []],
+    ['a written sidecar a link inside the entry group also leads to',
+     SECOND_GEN, () => {
+       write(local('commerce/entities/Customer.overview.md'), 'Old.\n');
+       fs.symlinkSync('commerce', local('alias'));
+       return new Map([['commerce/entities/Customer', {content: 'New.\n'}]]);
+     },
+     `  updated ${shown('commerce/entities/Customer.overview.md')}`, [],
+     [shown('commerce/entities/Customer.overview.md')]],
     ['a directory at a profile file\'s name', SECOND_GEN,
      () => fs.mkdirSync(local('commerce.profile.dev.yaml')),
      `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
@@ -3004,7 +3045,8 @@ describe('a pull', () => {
      },
      stale("'sales'", "'sales.yaml'"), ['sales.yaml'],
      [shown('sales.profile.x.yaml')]],
-  ] as Array<[string, SemanticModel, (outside: string) => void, string,
+  ] as Array<[string, SemanticModel,
+              (outside: string) => Map<string, OverviewSidecar>|void, string,
               string[], string[]]>)(
       '--force-remove deletes the files the layout lists as they are on ' +
           'disk: %s',
@@ -3013,25 +3055,30 @@ describe('a pull', () => {
                          'scope: semantic-model.test-project.us.commerce_eg\n');
         fs.mkdirSync(entryGroupDir(), {recursive: true});
         const outside = path.join(dir, 'outside');
-        setup(outside);
-        pulled(model);
+        pulled(model, setup(outside) || undefined);
         const logSpy = console.log as Mock<any>;
+        const warnSpy = console.warn as Mock<any>;
 
         expect(await pull()).toBe(message.startsWith('Error') ? 1 : 0);
-        expect(messages(console.warn) + messages(console.error))
+        expect([logSpy, warnSpy, console.error].map(messages).join('\n'))
             .toContain(message);
-        // The dry run warns as the real run does.
-        const warnSpy = console.warn as Mock<any>;
-        warnSpy.mockClear();
-        expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
-        const dryRunWarnings = messages(warnSpy);
-        warnSpy.mockClear();
-        expect(await pull({forceRemove: true})).toBe(0);
-        expect(messages(warnSpy)).toBe(dryRunWarnings);
+        // The dry run and the real run remove the same files, each once, and
+        // warn alike.
+        const run = async (dryRun: boolean) => {
+          logSpy.mockClear();
+          warnSpy.mockClear();
+          expect(await pull({dryRun, forceRemove: true})).toBe(0);
+          const verb = dryRun ? 'would remove' : 'removed';
+          expect(messages(logSpy).split('\n').filter(
+                     l => l.startsWith(`  ${verb} `)))
+              .toEqual(removed.map(f => `  ${verb} ${shown(f)}`));
+          return messages(warnSpy);
+        };
+        const warnings = await run(true);
+        expect(await run(false)).toBe(warnings);
         for (const file of removed) {
-          for (const verb of ['would remove', 'removed']) {
-            expect(messages(logSpy)).toContain(`  ${verb} ${shown(file)}\n`);
-          }
+          // No warning names a path below a file pull removes.
+          expect(warnings).not.toContain(`${shown(file)}/`);
           expect(fs.lstatSync(local(file), {throwIfNoEntry: false}))
               .toBeUndefined();
         }

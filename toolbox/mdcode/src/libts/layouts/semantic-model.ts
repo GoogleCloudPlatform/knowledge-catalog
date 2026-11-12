@@ -72,6 +72,26 @@ export const diskFiles: LayoutFiles = {
 const WRITTEN_FILE = {isFile: () => true, isDirectory: () => false};
 const WRITTEN_DIR = {isFile: () => false, isDirectory: () => true};
 
+// Whether `p`, or a directory above it, is one of `paths`, each resolved.
+export function atOrBelow(paths: Set<string>, p: string): boolean {
+  for (let q = path.resolve(p);; q = path.dirname(q)) {
+    if (paths.has(q)) return true;
+    if (path.dirname(q) === q) return false;
+  }
+}
+
+// Where `p` is on disk: the real path of the nearest directory above it that
+// exists, joined with the rest of `p`. A link at `p` itself is not followed,
+// so it is a location of its own.
+export function realLocation(p: string): string {
+  const full = path.resolve(p);
+  let dir = path.dirname(full);
+  while (!fs.existsSync(dir) && path.dirname(dir) !== dir) {
+    dir = path.dirname(dir);
+  }
+  return path.join(fs.realpathSync(dir), path.relative(dir, full));
+}
+
 // Reads the files on disk as they are once each path in `written` holds its
 // text and each path in `deleted`, with everything below it, is gone, and
 // writes nothing. Every other file reads as on disk, with the same errors. A
@@ -84,12 +104,7 @@ export function filesAfter(
   const gone = new Set(deleted.map(p => path.resolve(p)));
   // Whether `p` is deleted or lies below a deleted path, as a file in a
   // linked directory that pull deletes as the link does.
-  const isGone = (p: string) => {
-    for (let q = path.resolve(p);; q = path.dirname(q)) {
-      if (gone.has(q)) return true;
-      if (path.dirname(q) === q) return false;
-    }
-  };
+  const isGone = (p: string) => atOrBelow(gone, p);
   // Each entry of the directory `dir` that is a written file or holds one,
   // by name, and whether it is the file.
   const writtenIn = (dir: string) => {
@@ -540,9 +555,9 @@ export class SemanticModelLayout implements CatalogLayout {
   // that pull neither writes nor deletes it. A deletion removes a link at
   // `localPath` as the link, so only the directories above it count. A write,
   // with `write`, also follows a link at `localPath`, even one to no file.
-  // The nearest of those directories that exists decides, by its real path,
-  // so a path whose directory is gone is not outside. Before the entry group
-  // directory exists, nothing is outside it.
+  // The path's real location decides, so a path whose directory is gone is
+  // not outside. Before the entry group directory exists, nothing is outside
+  // it.
   outsideGroup(localPath: string, write = false): boolean {
     const group = this._groupDir();
     if (!fs.existsSync(group)) return false;
@@ -552,27 +567,21 @@ export class SemanticModelLayout implements CatalogLayout {
          hops++) {
       p = path.resolve(path.dirname(p), fs.readlinkSync(p));
     }
-    let dir = path.dirname(p);
-    while (!fs.existsSync(dir) && path.dirname(dir) !== dir) {
-      dir = path.dirname(dir);
-    }
-    const real = fs.realpathSync(dir);
-    const top = fs.realpathSync(group);
-    return real !== top && !real.startsWith(`${top}${path.sep}`);
+    const rest = path.relative(fs.realpathSync(group), realLocation(p));
+    return rest.split(path.sep)[0] === '..' || path.isAbsolute(rest);
   }
 
   // Deletes `localPath`, a file this layout lists, for `pull --force-remove`,
   // unless a link puts it outside the entry group directory, and says whether
-  // it did. A link goes as a link, and a missing file is no error, as when an
-  // earlier deletion removed its directory. Then it deletes each directory
-  // above it in the entry group directory that this leaves empty, up to the
-  // first one that is a link or lies below one.
+  // it did. A link goes as a link, and a missing file is no error. Then it
+  // deletes each directory above it in the entry group directory that this
+  // leaves empty, up to the first one that is a link or lies below one.
   removeFile(localPath: string): boolean {
     if (this.outsideGroup(localPath)) return false;
     fs.rmSync(localPath, {force: true});
     const top = path.resolve(this._groupDir());
     let dir = path.dirname(path.resolve(localPath));
-    while (dir.startsWith(`${top}${path.sep}`) && fs.existsSync(dir) &&
+    while (dir.startsWith(`${top}${path.sep}`) &&
            fs.realpathSync(dir) ===
                path.join(fs.realpathSync(top), path.relative(top, dir)) &&
            !fs.readdirSync(dir).length) {

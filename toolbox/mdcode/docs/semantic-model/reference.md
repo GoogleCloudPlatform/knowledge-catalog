@@ -115,7 +115,7 @@ link, the link's target counts; a deletion removes such a link as the link.
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. It deletes each file by its name on disk. A link goes as the link, and a linked `<model>.profiles` directory goes as the link too. A directory a deletion leaves empty stays when it is a link or lies below one. A directory at a profile file's name stays too, and push refuses it. The summary counts the files it deletes. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. It deletes each file by its name on disk, once whatever names links give it, and nothing below a file it deletes. A link goes as the link, and a linked `<model>.profiles` directory goes as the link too. A directory a deletion leaves empty stays when it is a link or lies below one. A directory at a profile file's name stays too, and push refuses it. The summary counts the files it deletes. |
 
 When pull refuses a local model file, the refusal names what you can do with
 that file. On macOS and Windows, file names that differ only in letter case

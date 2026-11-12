@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, diskFiles, fileNameOf, filesAfter, formatOverviewSidecar, LayoutFiles, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {atOrBelow, checkProfileFileName, diskFiles, fileNameOf, filesAfter, formatOverviewSidecar, LayoutFiles, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, realLocation, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -1971,13 +1971,22 @@ async function pullSemanticModel(
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
                          .filter(n => !catalogPaths.has(layout.modelFile(n)));
+  // Every file --force-remove deletes, listed before pull writes or deletes
+  // anything: each stale model's files, then the local profile files and
+  // overview sidecars this pull does not write.
+  const toDelete = deletions(
+      layout, staleLocal, pulled.name,
+      [...pulledFiles, ...sidecars].map(f => f.fileName));
+  const unwritten = toDelete.filter(f => f.model === undefined);
   // Each file of a stale local model that pull removes.
   const removed: string[] = [];
   if (staleLocal.length) {
-    // A local model's files, the model file first, as the layout lists them.
-    // --force-remove deletes these files for a stale model, and the advice
-    // below names the same files.
-    const localFiles = (name: string) => layout.modelFiles(name);
+    // A local model's files, the model file first: those --force-remove
+    // deletes for a stale model, which the advice below names too, and else
+    // those the layout lists.
+    const localFiles = (name: string) => staleLocal.includes(name) ?
+        toDelete.filter(f => f.model === name) :
+        layout.modelFiles(name);
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
       // kept by renaming it and its profile files to the files pull writes.
@@ -2001,15 +2010,12 @@ async function pullSemanticModel(
       const shown = (p: string) => path.relative(groupDir, p);
       const file = (name: string) => shown(layout.modelPath(name));
       // The model file of the local model `name`, as it is named on disk.
-      const localFile = (name: string) => shown(localFiles(name)[0].path);
+      const localFile = (name: string) => shown(layout.modelFile(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
       // Every file --force-remove deletes: each stale model's files, then each
       // local profile file of the catalog's model and each overview sidecar
       // that this pull leaves out.
-      const left = unwrittenFiles(
-                       layout, pulled.name,
-                       [...pulledFiles, ...sidecars].map(f => f.fileName))
-                       .flatMap(f => f.outside ? [] : [shown(f.path)]);
+      const left = unwritten.flatMap(f => f.outside ? [] : [shown(f.path)]);
       const deletedFiles = [
         ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
         ...left,
@@ -2159,15 +2165,14 @@ async function pullSemanticModel(
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
   const updated = updatedFiles(layout, source, pulled.name, pulledFiles);
   updated.push(...sidecars);
-  const code =
-      writePulledFiles(layout, pulled.name, updated, options, removed.length);
+  const code = writePulledFiles(
+      layout, pulled.name, updated, options, unwritten, removed.length);
   // Push's checks read the files the entry group holds after the pull. Under
   // --dry-run those on disk are not the ones pull leaves, so the checks read
   // the text pull writes for each file it writes, find no file it deletes,
   // and read every other file on disk. Pull writes no file that a link puts
   // outside the entry group directory.
   const groupDir = path.dirname(layout.modelPath(pulled.name));
-  const fileNames = updated.map(f => f.fileName);
   const written = new Map(updated.flatMap(({fileName, content}) => {
     const target = pulledFileTarget(layout, pulled.name, fileName, true);
     return target && !layout.outsideGroup(target.path, true) ?
@@ -2177,8 +2182,7 @@ async function pullSemanticModel(
   const deleted = [
     ...removed,
     ...options.forceRemove ?
-        unwrittenFiles(layout, pulled.name, fileNames)
-            .flatMap(f => f.outside ? [] : [f.path]) :
+        unwritten.flatMap(f => f.outside ? [] : [f.path]) :
         [],
   ];
   const after = new SemanticModelLayout(
@@ -2484,16 +2488,35 @@ function localProfiles(
 }
 
 
-// Each local profile file of `model` and each overview sidecar that a pull
-// writing the files `fileNames` leaves out, and whether a link puts it
-// outside the entry group directory, where pull deletes nothing. Pull writes
-// each file to the path push reads it from, so such a file is stale.
-function unwrittenFiles(
-    layout: SemanticModelLayout, model: string, fileNames: string[]):
-    Array<
-        {path: string; profileName?: string; kind: string; outside: boolean}> {
-  const written = writtenPaths(layout, model, fileNames);
-  return [
+// A local file a pull with --force-remove deletes: its kind, the stale model
+// it belongs to, if any, and whether a link puts it outside the entry group
+// directory, where pull deletes nothing.
+type Deletion = {
+  path: string; profileName?: string; kind: string; model?: string;
+  outside: boolean;
+};
+
+// The local files a pull with --force-remove deletes, listed once before it
+// writes or deletes anything, for the refusal, the dry run and the real run
+// alike: each file of each stale model in `stale`, then each local profile
+// file of `model` and each overview sidecar. A path's real location, the
+// real path of its directory joined with its name, tells two names of one
+// file apart from two files, and a link at the path is a location of its
+// own. The list leaves out a path at the location of a file the pull writes
+// as `fileNames`, keeps the first path of each location, and leaves out a
+// path below another listed path, such as a file in a linked
+// `<model>.profiles` directory.
+function deletions(
+    layout: SemanticModelLayout, stale: string[], model: string,
+    fileNames: string[]): Deletion[] {
+  const written = new Set(fileNames.flatMap(fileName => {
+    const target = pulledFileTarget(layout, model, fileName, true);
+    return target ? [realLocation(target.path)] : [];
+  }));
+  const files = [
+    ...stale.flatMap(
+        name => layout.modelFiles(name).map(
+            f => ({...f, model: name, kind: 'file'}))),
     // The layout lists a linked older profile directory as the link.
     ...layout.localProfileFiles(model).map(f => ({
       ...f,
@@ -2501,32 +2524,30 @@ function unwrittenFiles(
     })),
     ...layout.overviewSidecarPaths().map(
         f => ({path: f.path, kind: 'overview sidecar'})),
-  ].filter(f => !written.has(path.resolve(f.path)))
-      .map(f => ({...f, outside: layout.outsideGroup(f.path)}));
-}
-
-
-// The resolved path of each of the files `fileNames` of `model` that pull
-// writes.
-function writtenPaths(
-    layout: SemanticModelLayout, model: string,
-    fileNames: string[]): Set<string> {
-  return new Set(fileNames.flatMap(fileName => {
-    const target = pulledFileTarget(layout, model, fileName, true);
-    return target ? [path.resolve(target.path)] : [];
-  }));
+  ];
+  const paths = new Set(files.map(f => path.resolve(f.path)));
+  const seen = new Set<string>();
+  return files.flatMap(f => {
+    const at = realLocation(f.path);
+    if (written.has(at) || seen.has(at) ||
+        atOrBelow(paths, path.dirname(path.resolve(f.path)))) {
+      return [];
+    }
+    seen.add(at);
+    return [{...f, outside: layout.outsideGroup(f.path)}];
+  });
 }
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
 // read and a file that a link puts outside the entry group directory, with a
-// warning. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove with each directory
-// that leaves empty. The summary counts the files it removes, and `removed`
-// more that the pull removed before.
+// warning. Then it names each file of `unwritten`, the local profile files
+// and overview sidecars the pull does not write, or deletes it under
+// --force-remove with each directory that leaves empty. The summary counts
+// the files it removes, and `removed` more that the pull removed before.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions, removed = 0): number {
+    options: PullOptions, unwritten: Deletion[], removed = 0): number {
   const counts = {created: 0, updated: 0, unchanged: 0, removed};
   for (const {fileName, content} of files) {
     const target = pulledFileTarget(layout, model, fileName, true);
@@ -2560,23 +2581,22 @@ function writePulledFiles(
     }
   }
 
-  for (const stale of
-           unwrittenFiles(layout, model, files.map(f => f.fileName))) {
-    if (stale.outside) {
+  for (const file of unwritten) {
+    if (file.outside) {
       console.warn(
-          `Warning: pull keeps local ${stale.kind} ${stale.path}, which is ` +
+          `Warning: pull keeps local ${file.kind} ${file.path}, which is ` +
           'not in the catalog, because a link puts it outside the entry ' +
           'group directory.');
     } else if (!options.forceRemove) {
       console.warn(
-          `Warning: local ${stale.kind} ${stale.path} is not in the ` +
+          `Warning: local ${file.kind} ${file.path} is not in the ` +
           `catalog; delete it, or pull with --force-remove to delete it.`);
     } else if (options.dryRun) {
-      console.log(`  would remove ${stale.path}`);
+      console.log(`  would remove ${file.path}`);
       counts.removed++;
     } else {
-      layout.removeFile(stale.path);
-      console.log(`  removed ${stale.path}`);
+      layout.removeFile(file.path);
+      console.log(`  removed ${file.path}`);
       counts.removed++;
     }
   }
