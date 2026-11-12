@@ -774,15 +774,13 @@ type Unit = typeof UNITS[number];
 // of a TIMESTAMP, and reads the result back with TIMESTAMP(y, 'UTC'), as a
 // source adds a month to a timestamp in its time zone, UTC. With `inDays`,
 // BigQuery adds each week as 7 days, which its DATE_ADD also adds to a
-// TIMESTAMP. With `text`, the source gives the sum as text, which BigQuery
-// writes with CAST(x AS STRING).
+// TIMESTAMP.
 interface Addition {
   form: 'DATE_ADD'|'+';
   gives: string;
   timestamp?: true;
   utc?: true;
   inDays?: true;
-  text?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
@@ -816,9 +814,9 @@ interface DateTable {
   date: string;
   // The row of a cast to each other type that has one, by castType's name.
   casts?: Record<string, string>;
-  // The rows of a string beside an INTERVAL, which the dialect reads as a DATE
-  // or a DATETIME by its text, by that type (see stringDate).
-  strings?: Record<string, string>;
+  // Why a string beside an INTERVAL stays untranslated, for a message, where
+  // the dialect gives the sum as text.
+  stringNote?: string;
   // The functions whose value has the type of their last argument, such as
   // Snowflake's DATE_TRUNC, and so its row. MIN and MAX have the type of their
   // operand in every dialect.
@@ -870,8 +868,9 @@ interface DateTable {
   // it, so a number outside the range stays untranslated, and so does an
   // amount of these units that is not a number (see intRange).
   intAmounts?: Unit[];
-  // True when the dialect reads a DATE or a DATETIME as the number of its
-  // digits in arithmetic and beside a number (see valueForms).
+  // True when the dialect turns a DATE or a DATETIME into the number of its
+  // digits in arithmetic, negated or compared with a number, and into text
+  // among number results, which import leaves untranslated (see valueForms).
   numbers?: true;
   // True when the dialect compares a DATE or a timestamp without time zone
   // with a TIMESTAMP, and gives them as results of one COALESCE, IF or CASE,
@@ -920,11 +919,6 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
   return Object.fromEntries(units.map(u => [u, {form, gives}]));
 }
 
-// `units`, each added in `form` as text (see Addition), giving the row `text`.
-function asText(units: readonly Unit[], form: 'DATE_ADD'|'+'): Partial<Record<Unit, Addition>> {
-  return Object.fromEntries(units.map(u => [u, {form, gives: 'text', text: true}]));
-}
-
 // Weeks added with DATE_ADD as days (see Addition), giving the row `gives`.
 function weeksAsDays(gives: string): Partial<Record<Unit, Addition>> {
   return {WEEK: {form: 'DATE_ADD', gives, inDays: true}};
@@ -966,11 +960,9 @@ const DATE_TABLES: Record<string, DateTable> = {
   // add days. Its current timestamp is a DATETIME in whole seconds, which the
   // repairs write as DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND). It reads a
   // date plus a number as a number. It reads a string beside an INTERVAL as a
-  // DATE or a DATETIME by its text and gives the sum as text, which BigQuery's
-  // CAST to STRING writes as MySQL does, without a fraction of a second.
+  // date and gives the sum as text.
   mysql: {
-    date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
-    strings: {DATE: 'DATE text', DATETIME: 'DATETIME text'}, numbers: true,
+    date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], numbers: true, stringNote: 'whose sum MySQL gives as text',
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
     words: {}, expressions: true, intervals: UNITS.filter(u => u !== 'MILLISECOND'),
@@ -995,11 +987,6 @@ const DATE_TABLES: Record<string, DateTable> = {
         units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'DATETIME')},
       },
       DATETIME: {type: 'DATETIME', name: 'a DATETIME', units: adds(UNITS, 'DATE_ADD', 'DATETIME')},
-      'DATE text': {
-        name: 'a string', units: {...asText(DAY_OR_LONGER, 'DATE_ADD'), ...asText(['SECOND', 'MINUTE', 'HOUR'], '+')},
-      },
-      'DATETIME text': {name: 'a string', units: asText(['SECOND', 'MINUTE', 'HOUR', ...DAY_OR_LONGER], 'DATE_ADD')},
-      text: {name: 'a string', units: {}},
     },
   },
   // PostgreSQL gives a timestamp without time zone for a date or a timestamp
@@ -1604,7 +1591,7 @@ function valueOn(table: DateTable, read: string, sum: {
   const {operand, joined, subtract, first, op, call, interval} = sum;
   const found = operandRow(operand, read, table) ?? daysRow(operand, table);
   if (typeof found === 'string') return found;
-  if (!found) return `${op} of ${valueName(bare(operand))}`;
+  if (!found) return `${op} of ${operandName(operand, table)}`;
   const finest = joined.parts.reduce((a, p) => UNITS.indexOf(p.unit) < UNITS.indexOf(a.unit) ? p : a);
   const spelled = (p: IntervalPart) => `${op}${call ? ' with' : ''} ${p.text}${p.times ? ' times an amount' : ''}`;
   const row = table.rows[found.row];
@@ -1659,7 +1646,7 @@ function sumOn(table: DateTable, read: string, sum: {
   }
   const found = operandRow(sum.operand, read, table) ?? daysRow(sum.operand, table);
   if (typeof found === 'string') return found;
-  if (!found) return `${sum.name} of ${valueName(bare(sum.operand))}`;
+  if (!found) return `${sum.name} of ${operandName(sum.operand, table)}`;
   // A function that reads its operand as another row first, such as
   // Databricks' date_add(x, n), which reads x as a DATE, reads the rows `as`
   // names.
@@ -1670,6 +1657,13 @@ function sumOn(table: DateTable, read: string, sum: {
   if (!addition) return note ? `${sum.spelling}, ${note}` : `${sum.spelling} on ${found.name}`;
   const {operand, amount, unit, subtract, first, call} = sum;
   return {operand, amount, unit, subtract, first, call, reads, addition};
+}
+
+// What `node`, an operand of date arithmetic that `table` has no row for, is,
+// for a message, with the table's `stringNote` for a string.
+function operandName(node: any, table: DateTable): string {
+  const b = bare(node);
+  return b?.literal?.literal_type === 'string' && table.stringNote ? `a string, ${table.stringNote}` : valueName(b);
 }
 
 // The row in `table`, the table of the engine's dialect `read`, of `node`, a
@@ -1684,8 +1678,6 @@ function operandRow(node: any, read: string, table: DateTable):
   const b = bare(node);
   if (b?.column) return {row: 'column', name: table.rows.column.name};
   if (isDate(b)) return {row: table.date, name: valueName(b)};
-  const typed = table.strings && stringDate(b);
-  if (typed) return {row: table.strings![typed.type], name: 'a string'};
   const cast = table.casts?.[castType((b?.cast ?? b?.try_cast)?.to)];
   if (cast) return {row: cast, name: valueName(b)};
   const name = String(b?.function?.name).toUpperCase();
@@ -1699,24 +1691,16 @@ function operandRow(node: any, read: string, table: DateTable):
   return {row: sum.addition.gives, name: table.rows[sum.addition.gives].name};
 }
 
-// The type and BigQuery's literal of `node`, a string literal, as MySQL reads
-// it as a date beside an INTERVAL, or undefined: a date as YYYY-M-D or
-// YYYYMMDD, and a DATETIME with a time as H:M:S after a space or a T, or as
-// YYYYMMDDHHMMSS. Import reads no other form, no fraction of a second, no
-// year before 1000, and no date or time that does not exist, which MySQL reads
-// as NULL.
-function stringDate(node: any): {type: 'DATE'|'DATETIME'; sql: string}|undefined {
+// Whether `node` is a string literal of a date written YYYY-M-D, perhaps with
+// a time of whole seconds written H:M:S after a space or a T, that exists, in
+// a year from 1000. Databricks and BigQuery's CAST to DATETIME read it alike.
+function dateText(node: any): boolean {
   const text = node?.literal?.literal_type === 'string' ? literalText(node.literal) : undefined;
-  const parts = /^(\d{4})-(\d\d?)-(\d\d?)(?:[ T](\d\d?):(\d\d?):(\d\d?))?$/.exec(text ?? '') ??
-      /^(\d{4})(\d\d)(\d\d)(?:(\d\d)(\d\d)(\d\d))?$/.exec(text ?? '');
-  if (!parts) return undefined;
+  const parts = /^(\d{4})-(\d\d?)-(\d\d?)(?:[ T](\d\d?):(\d\d?):(\d\d?))?$/.exec(text ?? '');
+  if (!parts) return false;
   const [y, mo, d, h = 0, mi = 0, se = 0] = parts.slice(1).filter(p => p !== undefined).map(Number);
   const days = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-  if (y < 1000 || mo < 1 || mo > 12 || d < 1 || d > days || h > 23 || mi > 59 || se > 59) return undefined;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const date = `${y}-${pad(mo)}-${pad(d)}`;
-  return parts[4] === undefined ? {type: 'DATE', sql: `DATE '${date}'`} :
-      {type: 'DATETIME', sql: `DATETIME '${date} ${pad(h)}:${pad(mi)}:${pad(se)}'`};
+  return y >= 1000 && mo >= 1 && mo <= 12 && d >= 1 && d <= days && h <= 23 && mi <= 59 && se <= 59;
 }
 
 // The row in `table` of `node`, a source value beside an INTERVAL, when it is
@@ -2196,8 +2180,8 @@ function article(noun: string): string {
 // DATE_TABLES holds. MySQL and SQL Server read a date beside a number as a
 // number or a count of days, and every source reads a string beside a number as
 // a number. So import refuses a value it can see is a date or a time in any
-// other arithmetic, also when MAX, COALESCE or a similar function returns it,
-// except where it writes MySQL's number of its digits (see valueForms). A
+// other arithmetic, also when MAX, COALESCE or a similar function returns it.
+// MySQL turns such a value into the number of its digits. A
 // date column is not visible, so a date column plus a number is translated as
 // written, which in BigQuery adds days to a DATE. MySQL gives a number there.
 // SPANNER arithmetic is BigQuery's.
@@ -2218,11 +2202,8 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const date = (s: any): boolean => !!timeType(s, read) || returned(s).some(date) ||
       [...CURRENT, ...DATE_FUNCTIONS, 'DATE_TRUNC'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) ||
-                                                   (!table?.numbers && (date(v.left) || date(v.right)))));
-  // MySQL reads a date or a time in arithmetic as the number of its digits.
-  const digits = valueForms(sides, read, 'computed');
-  if (typeof digits === 'object' && digits.size) return sides;
-  if (sides.some(date)) return `${op} of a date`;
+                                                   date(v.left) || date(v.right)));
+  if (sides.some(date)) return `${op} of a date${table?.numbers ? `, which ${DIGITS_NOTE}` : ''}`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
@@ -2513,44 +2494,23 @@ function intervalPart(part: unknown, node: any, read: string): string|undefined 
 // with them in `+`, `-` or `*`, negates one, or gives them as its results.
 type Use = 'compared'|'computed'|'negated'|'results';
 
-// The number of the digits of a DATE and of a DATETIME, by its type.
-const DIGITS: Record<string, string> = {
-  DATE: "CAST(FORMAT_DATE('%Y%m%d', _1) AS INT64)", DATETIME: "CAST(FORMAT_DATETIME('%Y%m%d%H%M%S', _1) AS INT64)",
-};
+// Why a MySQL date or time used as a number stays untranslated, for a
+// message.
+const DIGITS_NOTE = 'MySQL turns into its digits';
 
 // The FORM_CALL in place of each of `values`, the values a node uses as `use`
 // says, by value, or the types BigQuery does not compare, for a message.
 // BigQuery compares the visible types of one group of COMPARED. A dialect that
 // `stamps` compares a DATE or a DATETIME with a TIMESTAMP, and gives them as
-// results, as TIMESTAMP(x). A dialect that reads `numbers`, MySQL, computes
-// with a DATE or a DATETIME, and compares it with a number, as the number of
-// its digits, such as 20240101 or 20240101093000, and gives it among numbers
-// as its text, as it gives each number written. It negates one as a DOUBLE,
-// and gives a DOUBLE for one beside NULL in `+`, `-` or `*`. BigQuery takes no
-// literal NULL there, so that NULL becomes CAST(NULL AS FLOAT64).
+// results, as TIMESTAMP(x). A dialect that reads `numbers`, MySQL, turns a
+// DATE or a DATETIME negated or compared with a number into the number of its
+// digits, and one among number results into text.
 function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
   const numbers = DATE_TABLES[read]?.numbers;
-  // The digits and the text need each value COALESCE or a similar function
-  // gives to be visibly of the one type `type`. A column may be a DATETIME,
-  // which BigQuery's FORMAT_DATE also reads, and MySQL gives the digits of a
-  // DATE beside a DATETIME one way in a sum and another in a comparison.
-  const visible = (v: any, type: string) =>
-      givenValues(v).every(g => !g || bare(g).null !== undefined || timeType(g, read) === type);
-  if (numbers && (use === 'computed' || use === 'negated')) {
-    const swap = new Map();
-    const nulls = values.filter(v => bare(v)?.null !== undefined);
-    for (const v of values) {
-      const type = typeOf(v)!;
-      if (!DIGITS[type]) continue;
-      if (!visible(v, type)) return `${article(type)} ${type} that may be another type`;
-      swap.set(v, formCall(use === 'negated' ? DIGITS[type].replace('INT64', 'FLOAT64') : DIGITS[type], [v]));
-    }
-    if (nulls.length && !swap.size) return 'NULL';
-    nulls.forEach(v => swap.set(v, formCall('CAST(NULL AS FLOAT64)', [])));
-    return swap;
-  }
+  const negated = use === 'negated' && typeOf(values[0]);
+  if (numbers && negated && WIDER.includes(negated)) return `${article(negated)} ${negated}, which ${DIGITS_NOTE}`;
   const types = [...new Set(values.map(typeOf))]
       .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const group = COMPARED.find(g => g.includes(types[0])) ?? [types[0]];
@@ -2561,22 +2521,8 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
     const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
     return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
   }
-  if (!numbers || types.length !== 2 || other !== 'number') return problem;
-  const results = use === 'results';
-  const swap = new Map();
-  for (const v of values) {
-    if (v === null || v === undefined || bare(v)?.null !== undefined) continue;
-    const text = numberText(v);
-    if (typeOf(v) === types[0] && !visible(v, types[0])) return problem;
-    if (typeOf(v) === types[0]) {
-      swap.set(v, formCall(results ? 'CAST(_1 AS STRING)' : DIGITS[types[0]], [v]));
-    } else if (results && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(text ?? '')) {
-      swap.set(v, formCall(`'${text}'`, []));
-    } else if (results || typeOf(v) !== 'number') {
-      return problem;
-    }
-  }
-  return swap;
+  if (!numbers || other !== 'number') return problem;
+  return `${problem}, which MySQL ${use === 'results' ? 'gives as text' : 'compares by the digits of the date'}`;
 }
 
 // The name in `sums` of the type of `node`, a source value in the engine's
@@ -2593,22 +2539,17 @@ function intervalType(node: any, read: string): string|undefined {
 // the engine's dialect `read`; a message; or undefined to translate it as it
 // is. BigQuery's NULLIF gives the common type of its values, PostgreSQL's,
 // Databricks', SQL Server's and Snowflake's the type of a, and MySQL's a date
-// or a time as text. IF(a = b, NULL, a) gives the type of a, with TIMESTAMP(x)
-// around a DATE or a DATETIME compared with a TIMESTAMP, which the sources
-// read as midnight UTC. MySQL's text needs a to be visibly a date or a time; a
-// DATETIME column, which MySQL writes with its own fraction digits, has no
-// form. A value with no visible type, such as a column, may be any type.
+// or a time as text, which import leaves untranslated. IF(a = b, NULL, a)
+// gives the type of a, with TIMESTAMP(x) around a DATE or a DATETIME compared
+// with a TIMESTAMP, which the sources read as midnight UTC. A value with no
+// visible type, such as a column, may be any type.
 function nullifForm(args: any[], read: string): any {
   const [a, b] = args;
   const types = [...new Set(args.flatMap(givenValues).map(v => timeType(v, read)))];
   const time = types.find(t => t);
-  if (types.length === 1 && !(read === 'mysql' && time)) return undefined;
-  const times = givenValues(a).map(v => timeType(v, read));
-  if (read === 'mysql' && times.every(t => t === 'DATE' || t === 'DATETIME')) {
-    const forms = valueForms([a, b], read, 'compared');
-    return typeof forms === 'string' ? `NULLIF on ${forms}` :
-        formCall('CAST(IF(_1, NULL, _2) AS STRING)', [equal(a, b), a]);
-  }
+  const first = givenValues(a).map(v => timeType(v, read)).find(t => t);
+  if (read === 'mysql' && first) return `NULLIF of ${article(first)} ${first} first, which MySQL gives as text`;
+  if (types.length === 1) return undefined;
   if (NULLIF_FIRST.has(read)) {
     const forms = valueForms([a, b], read, 'compared');
     return typeof forms === 'string' ? `NULLIF on ${forms}` : formCall('IF(_1, NULL, _2)', [equal(a, b), a]);
@@ -2632,8 +2573,7 @@ function dayDiffForm(name: string, args: any[], read: string): any {
     const b = bare(arg);
     const found = operandRow(b, read, table);
     if (typeof found === 'string') return found;
-    const text = b?.literal?.literal_type === 'string' ? literalText(b.literal) : undefined;
-    const dated = /^\d{4}-/.test(text ?? '') && stringDate(b);
+    const dated = dateText(b);
     if (!found && !dated && b?.null === undefined) return `${name} of ${valueName(b)}`;
     const date = b?.null !== undefined || found?.row === table.date;
     sql.push(date ? `_${i + 1}` : READS.DATE.replace('_1', `_${i + 1}`));
@@ -2879,11 +2819,7 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       while ((sum.addition.form === 'DATE_ADD' || readsOf(sum).length) && operand?.paren) {
         operand = operand.paren.this;
       }
-      // A string the source reads as a date is BigQuery's literal of it, and
-      // a sum the source gives as text is cast to text.
-      const typed = DATE_TABLES[read].strings && stringDate(bare(operand));
-      const call = dateCall(sum, typed ? formCall(typed.sql, []) : rewrite(operand), rewrite(sum.amount), whole, dialect);
-      return sum.addition.text ? formCall('CAST(_1 AS STRING)', [call]) : call;
+      return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
     // An INTERVAL that import keeps as the source writes it, in an INTERVAL
     // value, is BigQuery's INTERVAL of each of its units.

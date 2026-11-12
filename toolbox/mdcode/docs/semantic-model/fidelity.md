@@ -314,19 +314,13 @@ names microseconds.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
   as in MySQL, and adds every unit to it.
-  A date or a time it can see, in `+`, `-` or `*` or compared with a number,
-  counts as the number of its digits, as in MySQL: `CURDATE() + 1` becomes
-  `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. Negated, it is a
-  FLOAT64, as MySQL gives a DOUBLE. A literal NULL beside it in `+`, `-` or
-  `*` becomes `CAST(NULL AS FLOAT64)`, since MySQL gives a DOUBLE there and
-  BigQuery takes no literal NULL in arithmetic. A
-  COALESCE, IF or CASE counts so only when each value it can give is visibly a
-  DATE, or each a DATETIME. A string beside an INTERVAL is read as MySQL reads
-  it, as a date written YYYY-M-D or YYYYMMDD, or a date and a time of whole
-  seconds. The sum becomes text, as in MySQL: `'2024-01-31' + INTERVAL 1 DAY`
-  becomes `CAST(DATE_ADD(CAST('2024-01-31' AS DATE), INTERVAL 1 DAY) AS
-  STRING)`. Units smaller than a second stay untranslated there, since MySQL
-  then writes six digits of a fraction of a second.
+  A date or a time it can see stays untranslated where MySQL uses it as a
+  number: in `+`, `-` or `*`, such as `CURDATE() + 1`, compared with a
+  number, also in BETWEEN, IN and CASE, negated, or beside a literal NULL.
+  MySQL turns the date into its digits there, such as 20240101. NULLIF with a
+  date first, a date among number results of one COALESCE, IFNULL, IF or
+  CASE, and a string beside an INTERVAL, such as `'2024-01-31' + INTERVAL 1
+  DAY`, stay untranslated too, since MySQL gives text there.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
@@ -420,10 +414,7 @@ DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
 timestamp column. COALESCE, IF or CASE of a column and a DATE plus an INTERVAL
 stays untranslated, since the column can give it another type. A Databricks
 TIMESTAMP_NTZ column, for one, keeps its type where a DATE plus hours becomes
-a TIMESTAMP. MySQL's `CURDATE() - INTERVAL 1 DAY + 1` stays untranslated,
-since the engine reads it as `CURDATE() - (INTERVAL 1 DAY + 1)`, where MySQL
-subtracts the INTERVAL first. Written `(CURDATE() - INTERVAL 1 DAY) + 1`, it
-translates.
+a TIMESTAMP.
 
 From PostgreSQL and Databricks, import also translates a sum or difference of
 INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
