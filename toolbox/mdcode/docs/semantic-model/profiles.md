@@ -190,8 +190,9 @@ an action the profile does not mention keeps the default. A field's column is
 the exception, because it belongs to the table the model file's expression was
 written for. A named profile restates each field whose expression reads a
 column, or names it in `fields_exclude`. A column is any reference that no
-entity name qualifies. Push rejects a profile that does neither, naming the
-field, the profile and the column. A field whose expression reads only other
+entity name qualifies, in the text the profile's database runs: the entry for
+its dialect, or the ANSI_SQL one. Push rejects a profile that does neither,
+naming the field, the profile and the column. A field whose expression reads only other
 fields, such as `Order.gross - Order.discount`, carries over. A field that
 names itself, such as `amount: Order.amount`, is rejected. Write its column
 without the qualifier: `amount: amount`. To withdraw an inherited executor — a

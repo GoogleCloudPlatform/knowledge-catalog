@@ -4171,3 +4171,23 @@ ${order}`, {sourceDialects: new Map(looked)});
           "expression for this entity's table."]});
   }
 });
+
+// The tables' database runs the inherited field's entry for its dialect, so
+// only that text's column counts: here Spanner's, beside a BIGQUERY text that
+// reads p_name.
+test.each([
+  ["'x'", []],
+  ['p_sp', ["entity 'Customer' in model 'shop' (shop): field 'label' is inherited from " +
+            "'Party', whose expression reads column 'p_sp' of that entity's table; " +
+            "restate it with an expression for this entity's table."]],
+])('validateInheritedColumns on Spanner tables reads the SPANNER text %s', (text, errors) => {
+  const spanner = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const label = `{dialects: [{dialect: BIGQUERY, expression: p_name}, {dialect: SPANNER, expression: "${text}"}]}`;
+  const m = loadOne('shop', `    entities:
+      - {name: Party, source: ${spanner}/tables/party, primary_key: [id],
+         fields: [{name: id, expression: id}, {name: label, expression: ${label}}]}
+      - {name: Customer, extends: [Party], source: ${spanner}/tables/customer,
+         primary_key: [id], fields: [{name: id, expression: id}]}
+`, {sourceDialects: new Map([[spanner, 'SPANNER']])});
+  expect(validateInheritedColumns(m, 'shop')).toEqual(errors);
+});

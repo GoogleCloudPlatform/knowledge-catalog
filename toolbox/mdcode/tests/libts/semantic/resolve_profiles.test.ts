@@ -2885,6 +2885,25 @@ describe('profile completeness: dialects and struct paths', () => {
   const atSource = (source: string): ProfileSpec =>
       ({name: 'p', entities: [keyedById('orders', source)], relationships: []});
 
+  // A profile restates a field whose text for the profile's dialect reads a
+  // column. amount reads amt in BigQuery and the text given in Spanner and
+  // AlloyDB.
+  const AD = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/public/tables/orders';
+  test.each([
+    ['Spanner', "'0'", SP('orders'), undefined],
+    ['AlloyDB', "'0'", AD, undefined],
+    ['Spanner', 'amt_sp', SP('orders'), 'amt_sp'],
+    ['BigQuery', "'0'", BQ('orders'), 'amt'],
+  ])('a %s profile judges the column rule by its own text, here %s', (_, text, source, column) => {
+    const amount = shop({expression: 'amt', dialects: [
+      {dialect: 'BIGQUERY', expression: 'amt'}, {dialect: 'SPANNER', expression: text},
+      {dialect: 'ALLOYDB', expression: text}]});
+    expect(validateProfileCompleteness(amount, atSource(source), [], READ)).toEqual(
+        column ? [`profile 'p': field 'orders.amount' reads column '${column}' through ` +
+                  "its model file expression; bind it in 'fields' for this profile, or " +
+                  "leave it out in 'fields_exclude'"] : []);
+  });
+
   // A Cloud SQL table written as its resource name takes the dialect its
   // catalog entry's type names, which a command looks up before it loads.
   // Without a lookup the source implies no dialect, so every text counts.
