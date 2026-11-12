@@ -2227,6 +2227,41 @@ describe('a pull', () => {
     }
   }
 
+  // A dry run's copy holds each linked file's content and each file it can
+  // read, whatever its mode, so the dry run changes nothing a link leads to,
+  // and it deletes the copy. It names TMPDIR when it cannot make the copy.
+  test('under --dry-run changes nothing a link leads to, and deletes its copy',
+       async () => {
+         const outside = path.join(dir, 'outside.yaml');
+         fs.writeFileSync(outside, 'old: true\n');
+         const entities = path.dirname(local(SIDECAR));
+         fs.mkdirSync(entities, {recursive: true});
+         fs.symlinkSync(outside, local('commerce.yaml'));
+         fs.symlinkSync(path.join(dir, 'missing'), local('notes.link'));
+         fs.chmodSync(entities, 0o555);
+         const tmp = fs.mkdtempSync(path.join(dir, 'tmp-'));
+         const tmpdir = process.env.TMPDIR;
+         const dryRun = (overviews?: Map<string, OverviewSidecar>) =>
+             pullModel(SECOND_GEN, {dryRun: true}, overviews);
+         try {
+           process.env.TMPDIR = tmp;
+           expect(await dryRun(new Map([['commerce/entities/Customer',
+                                         {content: 'New.\n', contentType: 'MARKDOWN'}]])))
+               .toBe(0);
+           process.env.TMPDIR = path.join(dir, 'missing');
+           await expect(dryRun()).rejects.toThrow(
+               'pull --dry-run checks a copy of the entry group in a temporary ' +
+               `directory, and cannot create one in '${path.join(dir, 'missing')}' ` +
+               '(ENOENT); set TMPDIR to a directory you can write to.');
+         } finally {
+           if (tmpdir === undefined) delete process.env.TMPDIR;
+           else process.env.TMPDIR = tmpdir;
+           fs.chmodSync(entities, 0o755);
+         }
+         expect(fs.readFileSync(outside, 'utf8')).toBe('old: true\n');
+         expect(fs.readdirSync(tmp)).toEqual([]);
+       });
+
   // On a table whose dialect pull does not read, that import reads an
   // ANSI_SQL text as pull's own checks do, so the warning names the error it
   // stops on, as the import after the pull does.

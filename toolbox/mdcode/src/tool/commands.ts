@@ -2204,16 +2204,21 @@ async function afterPull<T>(
     groupDir: string, check: (layout: SemanticModelLayout) => Promise<T>,
     dryRun?: {model: string; written: SerializedFile[]; deleted: string[]}):
     Promise<T> {
-  const root = dryRun ? fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-pull-')) :
-                        path.join(groupDir, '..', '..');
+  const root = dryRun ? temporaryDir() : path.join(groupDir, '..', '..');
   const layout = new SemanticModelLayout(root, path.basename(groupDir));
   try {
     if (dryRun) {
       const copy = path.join(root, 'EntryGroups', path.basename(groupDir));
-      // The copy holds each linked file's content, so a write to it changes
-      // nothing outside the copy.
       if (fs.existsSync(groupDir)) {
-        fs.cpSync(groupDir, copy, {recursive: true, dereference: true});
+        // The copy holds each linked file's content, so a write to it changes
+        // nothing outside the copy. It holds each file and directory push
+        // can read, and no directory a link leads back to.
+        fs.cpSync(groupDir, copy, {
+          recursive: true,
+          dereference: true,
+          filter: src => copied(groupDir, src),
+        });
+        writable(copy);
       }
       for (const p of dryRun.deleted) {
         fs.rmSync(path.join(copy, path.relative(groupDir, p)), {force: true});
@@ -2225,7 +2230,59 @@ async function afterPull<T>(
     await layout.init();
     return await check(layout);
   } finally {
-    if (dryRun) fs.rmSync(root, {recursive: true, force: true});
+    if (dryRun) {
+      writable(root);
+      fs.rmSync(root, {recursive: true, force: true});
+    }
+  }
+}
+
+
+// A new directory in the system's temporary directory for a dry run's copy of
+// the entry group directory. Throws naming TMPDIR when it cannot be made.
+function temporaryDir(): string {
+  try {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-pull-'));
+  } catch (err: any) {
+    throw new Error(
+        `pull --dry-run checks a copy of the entry group in a temporary ` +
+        `directory, and cannot create one in '${os.tmpdir()}' (${
+            err.code ?? err.message}); set TMPDIR to a directory you can ` +
+        `write to.`);
+  }
+}
+
+
+// Whether a dry run's copy of the entry group directory `groupDir` holds
+// `src`, a path under it: a file or directory it can read, other than a
+// directory a link leads back to, which would copy without end.
+function copied(groupDir: string, src: string): boolean {
+  try {
+    const real = fs.realpathSync(src);
+    const stat = fs.statSync(real);
+    fs.accessSync(
+        real,
+        stat.isDirectory() ? fs.constants.R_OK | fs.constants.X_OK :
+                             fs.constants.R_OK);
+    if (!stat.isDirectory()) return stat.isFile();
+    for (let up = src; up !== groupDir && path.dirname(up) !== up;) {
+      up = path.dirname(up);
+      if (fs.realpathSync(up) === real) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+
+// Makes `p`, and each file and directory under it, writable by its owner.
+function writable(p: string): void {
+  const stat = fs.lstatSync(p, {throwIfNoEntry: false});
+  if (!stat || stat.isSymbolicLink()) return;
+  fs.chmodSync(p, stat.mode | (stat.isDirectory() ? 0o700 : 0o600));
+  if (stat.isDirectory()) {
+    for (const entry of fs.readdirSync(p)) writable(path.join(p, entry));
   }
 }
 
