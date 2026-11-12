@@ -353,6 +353,10 @@ names microseconds.
   names at most days, and DATEADD names any unit. A cast to TIMESTAMP or
   TIMESTAMP_NTZ, and a value plus hours, minutes or seconds, is a
   TIMESTAMP_NTZ, a DATETIME in BigQuery, and gets every unit.
+  TRY_CAST to TIMESTAMP stays untranslated. Snowflake's TRY_CAST reads date
+  and time formats that BigQuery's SAFE_CAST does not, such as '05-Mar-2016',
+  '03/05/2016 10:00:00' or a number of seconds since 1970, so BigQuery would
+  give NULL where Snowflake gives a value.
 - Databricks: days, weeks, months and years to a column and to a DATE.
   date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
   timestampadd, and three-argument dateadd and date_add, such as
