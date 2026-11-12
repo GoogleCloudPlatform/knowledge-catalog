@@ -299,24 +299,51 @@ const DIALECT_ALIASES:
 };
 
 // The dialect the vendor label `upper` names on the tables `sources`, as push
-// reads their dialects, or undefined when it is no vendor label.
+// reads their dialects with the lookups in `load`, or undefined when it is no
+// vendor label.
 function aliasedDialect(
-    upper: string, sources: string[]): SqlDialect|undefined {
+    upper: string, sources: string[], load: DialectLoad): SqlDialect|undefined {
   const alias = DIALECT_ALIASES[upper];
   if (!alias) return undefined;
   const [usual, own] = alias;
-  const runs = (source: string) => !!own &&
-      !!tableDialects(
-            {abstract: false, authoredSource: source, dataSource: ''}, true)
-            ?.dialects.includes(own);
+  const runs = (source: string) => {
+    const key = dialectLookupKey(source.trim());
+    const sourceDialect = key ? load.sourceDialects?.get(key) : undefined;
+    return !!own &&
+        !!tableDialects(
+              {abstract: false, authoredSource: source, dataSource: '',
+               sourceDialect},
+              true)
+              ?.dialects.includes(own);
+  };
   return sources.length && sources.every(runs) ? own! : usual;
 }
 
-// The tables of the model's datasets, which decide a vendor label on a metric
-// or on a dataset with no table of its own.
-function modelSources(doc: ImportDocument): string[] {
-  return doc.datasets.map(ds => ds.source)
+// The tables push reads for the fields of `ds`, or for a metric when `ds` is
+// unset: the dataset's own table, or else the model file's tables, or else,
+// when the model file binds none, the tables of its named profiles.
+function labelSources(
+    doc: ImportDocument, profileFiles: SerializedFile[],
+    ds?: Record<string, any>): string[] {
+  const named = (records: unknown) => asRecords(records)
+      .map(r => r.source)
       .filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+  const own = named(ds ? [ds] : []);
+  if (own.length) return own;
+  const model = named(doc.datasets);
+  if (model.length) return model;
+  const profiles = [
+    ...profileFiles.map(pf => {
+      try {
+        return yaml.parse(pf.content, YAML_OPTIONS);
+      } catch {
+        return undefined;
+      }
+    }),
+    ...parseGoogleBlocks(doc.model.custom_extensions)
+        .flatMap(b => asRecords(b.profiles)),
+  ];
+  return profiles.flatMap(p => isRecord(p) ? named(p.entities) : []);
 }
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
@@ -894,13 +921,14 @@ function normalizeDatatype(
 }
 
 /**
- * Maps dialect aliases onto the 9 allowed SQL dialects, as the tables
- * `sources` read them, and drops unsupported non-SQL dialects on a field or
- * metric, returning `'empty'` if all dialect entries were dropped.
+ * Maps each dialect onto the 9 allowed SQL dialects and drops unsupported
+ * non-SQL dialects on a field or metric, returning `'empty'` if all dialect
+ * entries were dropped. A vendor label stays as written for
+ * `relabelVendorDialects`.
  */
 function normalizeExpressionDialects(
-    obj: Record<string, any>, label: string, doc: ImportDocument,
-    sources: string[]): 'ok'|'empty' {
+    obj: Record<string, any>, label: string, doc: ImportDocument): 'ok'|
+    'empty' {
   if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects) ||
       obj.expression.dialects.length === 0) {
     return 'ok';
@@ -912,8 +940,12 @@ function normalizeExpressionDialects(
       continue;
     }
     const upper = entry.dialect.trim().toUpperCase();
-    const mapped = aliasedDialect(upper, sources) ??
-        (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
+    if (DIALECT_ALIASES[upper]) {
+      kept.push(entry);
+      continue;
+    }
+    const mapped =
+        ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined;
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
         doc.repair(
@@ -933,6 +965,29 @@ function normalizeExpressionDialects(
   }
   obj.expression.dialects = kept;
   return kept.length === 0 ? 'empty' : 'ok';
+}
+
+/**
+ * Rewrites each vendor dialect label on a field or metric as the dialect it
+ * names on the tables `sources`, read with the lookups in `load`.
+ */
+function relabelVendorDialects(
+    obj: Record<string, any>, label: string, doc: ImportDocument,
+    sources: string[], load: DialectLoad): void {
+  if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects)) {
+    return;
+  }
+  for (const entry of obj.expression.dialects) {
+    if (!isRecord(entry) || typeof entry.dialect !== 'string') continue;
+    const mapped =
+        aliasedDialect(entry.dialect.trim().toUpperCase(), sources, load);
+    if (mapped === undefined || entry.dialect === mapped) continue;
+    doc.repair(
+        `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`,
+        `${label}: write dialect '${entry.dialect}' as '${mapped}'.`);
+    entry.dialect = mapped;
+    doc.modified = true;
+  }
 }
 
 /**
@@ -1021,10 +1076,10 @@ function truncateDescription(
  */
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument,
-    sources: string[], abstract = false): void {
+    abstract = false): void {
   const fLabel = `field '${dsName}.${f.name}'`;
   normalizeDatatype(f, fLabel, doc);
-  if (normalizeExpressionDialects(f, fLabel, doc, sources) === 'empty') {
+  if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
           `${fLabel}: 'expression' has no entry in a supported SQL dialect, ` +
@@ -1142,27 +1197,25 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 2. Cap the dataset's `description` at 2,000 characters and repair each of
   // its `fields`.
   truncateDescription(ds, dsLabel, doc);
-  const sources = typeof ds.source === 'string' && ds.source.trim() ?
-      [ds.source] :
-      modelSources(doc);
   for (const f of asRecords(ds.fields)) {
-    repairField(f, String(ds.name ?? ''), doc, sources, abstract);
+    repairField(f, String(ds.name ?? ''), doc, abstract);
   }
 }
 
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
  * `false` when the metric is unanchored and reaches 0 or >1 entities so the
- * caller prunes it from `doc.metrics`. `translatesLater` is as for
- * `unanchoredMetricProblem`.
+ * caller prunes it from `doc.metrics`. A vendor label names its dialect on the
+ * tables `sources`, read with the lookups in `load`. `translatesLater` is as
+ * for `unanchoredMetricProblem`.
  */
 function repairMetric(
-    mt: Record<string, any>, doc: ImportDocument,
-    translatesLater = false): boolean {
+    mt: Record<string, any>, doc: ImportDocument, sources: string[],
+    load: DialectLoad, translatesLater = false): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
-  if (normalizeExpressionDialects(mt, mtLabel, doc, modelSources(doc)) ===
-      'empty') {
+  relabelVendorDialects(mt, mtLabel, doc, sources, load);
+  if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
         `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
         `add one.`);
@@ -1310,6 +1363,16 @@ async function repairDocument(
   // metric check runs again after translation, or push's checks in strict
   // mode.
   const load = await readSourceDialects(doc, opts);
+  // A vendor label names its dialect on the tables push reads for it, once
+  // every source is complete and its dialect read.
+  const profileFiles = opts.profileFiles ?? [];
+  for (const ds of doc.datasets) {
+    const sources = labelSources(doc, profileFiles, ds);
+    for (const f of asRecords(ds.fields)) {
+      relabelVendorDialects(
+          f, `field '${ds.name ?? ''}.${f.name}'`, doc, sources, load);
+    }
+  }
   doc.impliedDialect = sourcesDialect({
     entities: doc.datasets.map(ds => {
       const source = typeof ds.source === 'string' ? ds.source : undefined;
@@ -1322,7 +1385,10 @@ async function repairDocument(
       };
     }),
   });
-  filterMetrics(doc, (mt, d) => repairMetric(mt, d, !!opts.transpile));
+  const metricSources = labelSources(doc, profileFiles);
+  filterMetrics(
+      doc,
+      (mt, d) => repairMetric(mt, d, metricSources, load, !!opts.transpile));
 
   // 4. Cap each relationship's `description`. A `GOOGLE` block comes only in
   // strict mode, which writes nothing, so its description is only reported.

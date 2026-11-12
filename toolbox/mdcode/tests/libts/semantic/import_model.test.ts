@@ -917,6 +917,34 @@ describe('profile checks', () => {
     ]);
   });
 
+  // A vendor label names its dialect on the tables push reads for the field:
+  // its entity's table once '--source-prefix' completes every source and the
+  // lookup reads its dialect, or the profile's tables when the model file
+  // binds none.
+  const ALLOYDB_TABLE = `${ALLOYDB_DB}/schemas/public/tables/orders`;
+  test.each([
+    ['an entity bound only through a profile file',
+     model(AMOUNT('{dialects: [{dialect: PostgreSQL, expression: amount}]}'))
+         .replace(/ +source: .*\n/, ''),
+     {profileFiles: [{fileName: 'sales.profile.prod.yaml', content:
+         `name: prod\nentities:\n  - name: orders\n    source: ${ALLOYDB_TABLE}\n${KEYED}`}]},
+     "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['an entity with no table listed before one whose source --source-prefix completes',
+     model('', 'orders').replace('    entities:\n', '    entities:\n      - name: party\n' +
+         "        fields: [{name: amount, expression: {dialects: [{dialect: PostgreSQL, expression: amount}]}}]\n"),
+     {sourcePrefix: `${ALLOYDB_DB}/schemas/public`},
+     "field 'party.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['a PostgreSQL-dialect Spanner table',
+     model(AMOUNT('{dialects: [{dialect: GoogleSQL, expression: amount}]}'), SPANNER_TABLE),
+     {readDialects: lookup({spanner: 'POSTGRESQL'})},
+     "field 'orders.amount': write dialect 'GoogleSQL' as 'BIGQUERY'."],
+  ] as Array<[string, string, object, string]>)(
+      'reads a vendor label on %s', async (_, input, opts, needed) => {
+        const res = await importSemanticModelYaml(
+            input, {...strict, flavor: 'google', ...opts});
+        expect(res.errors).toContain(needed);
+      });
+
   // The repair step removes a metric with no entity whose expression reaches
   // several entities. A GoogleSQL database reads "customers" as text, so the
   // metric reaches orders alone.
