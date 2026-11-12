@@ -1266,11 +1266,10 @@ function writtenStatements(text: string): WrittenStatement[] {
 
 // The dialects in which the statements of binding profile `profile` of
 // `model` run, where `text` is its file: the one validateActions reads them
-// in, with the profile's tables and the deployments that use it, and one for
-// each of those deployments, named after its engine. A deployment target in
-// no accepted form and a profile file that does not apply give none, which
-// localChecks reports. `load` is what the caller read of each table's
-// dialect.
+// in, with the profile's tables and the deployments that use it. A deployment
+// target in no accepted form and a profile file that does not apply give
+// none, which localChecks reports. `load` is what the caller read of each
+// table's dialect.
 function statementDialects(
     model: SemanticModel, profile: string, text: string,
     load: DialectLoad): string[] {
@@ -1296,10 +1295,7 @@ function statementDialects(
     deployments: (model.deployments ?? [])
                      .filter(d => deployments.some(r => r.name === d.name)),
   });
-  return [...new Set([
-    ...read ? [read] : [],
-    ...deployments.map(d => d.engine.toUpperCase()),
-  ])];
+  return read ? [read] : [];
 }
 
 // For each of `statements` in the model or profile file `text`, the first SQL

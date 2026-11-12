@@ -543,15 +543,16 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       ], {deployments: ['g']})},
       errors: [1, 2].map(n => has(`statement ${n} has '#' on a line`)),
     }, {
-      // A Spanner deployment gives the dialect of a model file that binds no
-      // table.
+      // A Spanner deployment on a PostgreSQL-dialect database reads '#' as an
+      // operator, so push reports the deployment itself.
+      services: {getDatabase: {status: 200, result: {databaseDialect: 'POSTGRESQL'}}},
       files: {'commerce.yaml': modelWriting(
-          ['- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k'],
+          ['- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k'],
           {
-            entities: [{...CUSTOMER, source: undefined}],
+            entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
             deployments: [{name: 's', target: spannerGraph('s')}],
           })},
-      errors: [has("statement 1 has '#' on a line")],
+      errors: [has('has the PostgreSQL dialect, and Spanner creates no property graph')],
     }, {
       // The tables give the dialect with no deployment, and a profile's
       // tables, here a Spanner table whose GoogleSQL dialect push looks up,
