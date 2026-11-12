@@ -1,0 +1,9 @@
+# Repository CODEOWNERS file ownership (KC team)
+/.github/CODEOWNERS @nikhilk @libei
+
+# Normative Semantic Model specification (OSI & OSI/G) and OSI/G JSON Schema
+/toolbox/mdcode/docs/semantic-model/model_spec.md @libei @dlychagin-gg @feixufeixu
+/toolbox/mdcode/docs/semantic-model/osi-google-schema.json @libei @dlychagin-gg @feixufeixu
+
+# Vendored vanilla Apache OSI (0.2.0.dev0) core JSON Schema
+/toolbox/mdcode/tests/libts/semantic/fixtures/ossie/osi-schema.json @libei @dlychagin-gg @feixufeixu
