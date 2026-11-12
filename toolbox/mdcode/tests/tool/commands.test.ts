@@ -2192,12 +2192,14 @@ describe('a pull', () => {
        });
 
   // Under --dry-run --force-remove, that import leaves out the files the pull
-  // would delete: another model's file and the older profile directory.
+  // would delete: another model's file, the older profile directory and a
+  // local profile file the catalog lacks.
   test('under --dry-run --force-remove runs that import without the files ' +
            'pull deletes',
        async () => {
          fs.mkdirSync(local('commerce.profiles'), {recursive: true});
          fs.writeFileSync(local('commerce.profiles/dev.yaml'), 'name: dev\n');
+         fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
          fs.writeFileSync(local('sales.yaml'), MODEL_YAML.replace('commerce', 'sales'));
          fs.writeFileSync(path.join(dir, 'catalog.yaml'),
                           'scope: semantic-model.test-project.us.commerce_eg\n');
