@@ -357,7 +357,9 @@ characters written as escapes.
 When the catalog reorders a list whose order counts, such as an entity's fields,
 an item that moves, or an item it moves past, can be written in pull's form too.
 The JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
-profiles, changes the same way and keeps its layout. When that `data` would
+profiles, changes the same way and keeps its layout. DEL, the C1 controls and
+the line and paragraph separators in it are written as JSON escapes, such as
+`\u2028`. When that `data` would
 then not hold what the catalog holds, it comes back as the catalog holds it,
 and the rest of the file still changes only where it differs. A `data`
 written as a quoted string over several lines that changes is written as one

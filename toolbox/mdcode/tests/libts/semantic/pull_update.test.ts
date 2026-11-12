@@ -458,6 +458,16 @@ ${text.replace(/^/gm, '      ')}
         .toBe(inline('{"a":2}', 'ACME'));
   });
 
+  test('writes DEL, a C1 control and the line and paragraph separators in a ' +
+           'changed value as JSON escapes, so the block stays a block',
+       () => {
+         const data = changed(
+             d => d.deployments[0].target = 'g/\x7f\x85\u2028\u2029');
+         expect(updatedText(block(indented(DATA)), BASE, pulled(data)))
+             .toBe(block(indented(DATA).replace(
+                 'g/main', 'g/\\u007f\\u0085\\u2028\\u2029')));
+       });
+
   test('matches a GOOGLE block whatever the case of its vendor_name', () => {
     const local = block(indented(DATA)).replace('GOOGLE', 'Google');
     const data = changed(d => d.deployments[0].target = 'g/prod');

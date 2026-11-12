@@ -118,8 +118,13 @@ function jsonIn(value: unknown): object|undefined {
 export function updatedData(data: string, value: unknown): string|undefined {
   // A string that ends in a blank line is written double-quoted, since a
   // `|+` block would take the blank lines after it, so a changed `data`
-  // ends in one line break and stays a block.
-  return updatedJson(data, value)?.replace(/\n\s*$/, '\n');
+  // ends in one line break and stays a block. DEL, the C1 controls and the
+  // line and paragraph separators are written as JSON escapes, since a string
+  // that holds one is double-quoted.
+  return updatedJson(data, value)
+      ?.replace(/\n\s*$/, '\n')
+      .replace(/[\x7f-\x9f\u2028\u2029]/g,
+               c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 // `text`, a JSON object or list, changed to hold `value`, or undefined when
