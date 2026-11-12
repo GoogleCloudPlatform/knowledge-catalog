@@ -2164,12 +2164,15 @@ async function pullSemanticModel(
   // Push's checks read the files the entry group holds after the pull. Under
   // --dry-run those on disk are not the ones pull leaves, so the checks read
   // the text pull writes for each file it writes, find no file it deletes,
-  // and read every other file on disk.
+  // and read every other file on disk. Pull writes no file that a link puts
+  // outside the entry group directory.
   const groupDir = path.dirname(layout.modelPath(pulled.name));
   const fileNames = updated.map(f => f.fileName);
   const written = new Map(updated.flatMap(({fileName, content}) => {
     const target = pulledFileTarget(layout, pulled.name, fileName, true);
-    return target ? [[target.path, content] as const] : [];
+    return target && !layout.outsideGroup(target.path, true) ?
+        [[path.resolve(target.path), content] as const] :
+        [];
   }));
   const deleted = [
     ...removed,
@@ -2185,8 +2188,7 @@ async function pullSemanticModel(
   const refusal = await pushRefusal(ctx, after, source);
   if (refusal) {
     const file = path.join(groupDir, refusal.file);
-    const writes = writtenPaths(layout, pulled.name, fileNames)
-                       .has(path.resolve(file));
+    const writes = written.has(path.resolve(file));
     // An error of several lines ends the warning at its last line.
     const error = refusal.error.trimEnd();
     console.warn(
@@ -2517,7 +2519,8 @@ function writtenPaths(
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
-// read. Then it names each local profile file and overview sidecar that the
+// read and a file that a link puts outside the entry group directory, with a
+// warning. Then it names each local profile file and overview sidecar that the
 // pull did not write, or deletes it under --force-remove with each directory
 // that leaves empty. The summary counts the files it removes, and `removed`
 // more that the pull removed before.
@@ -2539,6 +2542,12 @@ function writePulledFiles(
     const state = !before                   ? 'created' :
         before.equals(Buffer.from(content)) ? 'unchanged' :
                                               'updated';
+    if (state !== 'unchanged' && layout.outsideGroup(target.path, true)) {
+      console.warn(
+          `Warning: pull does not write ${target.path}, because a link puts ` +
+          'it outside the entry group directory.');
+      continue;
+    }
     counts[state]++;
     if (state === 'unchanged') {
       console.log(`  unchanged ${target.path}`);

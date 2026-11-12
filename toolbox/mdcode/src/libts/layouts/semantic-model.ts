@@ -536,17 +536,28 @@ export class SemanticModelLayout implements CatalogLayout {
     this.removeFile(this.profilePath(model, profileName));
   }
 
-  // Whether a link puts `localPath` outside the entry group directory: the
-  // real path of the directory that holds it lies outside the real path of
-  // the entry group directory. A path whose directory is gone is not outside.
-  outsideGroup(localPath: string): boolean {
-    let real: string;
-    try {
-      real = fs.realpathSync(path.dirname(localPath));
-    } catch {
-      return false;
+  // Whether a link puts `localPath` outside the entry group directory, so
+  // that pull neither writes nor deletes it. A deletion removes a link at
+  // `localPath` as the link, so only the directories above it count. A write,
+  // with `write`, also follows a link at `localPath`, even one to no file.
+  // The nearest of those directories that exists decides, by its real path,
+  // so a path whose directory is gone is not outside. Before the entry group
+  // directory exists, nothing is outside it.
+  outsideGroup(localPath: string, write = false): boolean {
+    const group = this._groupDir();
+    if (!fs.existsSync(group)) return false;
+    let p = path.resolve(localPath);
+    for (let hops = 0; write && hops < 40 &&
+         fs.lstatSync(p, {throwIfNoEntry: false})?.isSymbolicLink();
+         hops++) {
+      p = path.resolve(path.dirname(p), fs.readlinkSync(p));
     }
-    const top = fs.realpathSync(this._groupDir());
+    let dir = path.dirname(p);
+    while (!fs.existsSync(dir) && path.dirname(dir) !== dir) {
+      dir = path.dirname(dir);
+    }
+    const real = fs.realpathSync(dir);
+    const top = fs.realpathSync(group);
     return real !== top && !real.startsWith(`${top}${path.sep}`);
   }
 

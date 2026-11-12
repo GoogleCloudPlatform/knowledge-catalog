@@ -3038,6 +3038,37 @@ describe('a pull', () => {
         for (const p of kept) expect(fs.existsSync(path.join(dir, p))).toBe(true);
       });
 
+  // Pull writes nothing that a link puts outside the entry group directory.
+  // It keeps such a file as it is and warns, naming it, and a dry run gives
+  // the same warning. [label, the link in the entry group, the file pull
+  // writes through it]
+  test.each([
+    ['the model file', 'commerce.yaml', 'commerce.yaml'],
+    ['a profile file', 'commerce.profile.prod.yaml',
+     'commerce.profile.prod.yaml'],
+    ['a sidecar in a linked folder', 'commerce',
+     'commerce/entities/Customer.overview.md'],
+  ])('writes nothing a link puts outside the entry group: %s',
+     async (_, link, file) => {
+       fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                        'scope: semantic-model.test-project.us.commerce_eg\n');
+       fs.mkdirSync(entryGroupDir(), {recursive: true});
+       const outside = path.join(dir, 'outside');
+       const target = path.join(outside, path.relative(link, file) || file);
+       write(target, 'Old.\n');
+       fs.symlinkSync(link === file ? target : outside, local(link));
+       pulled(SECOND_GEN,
+              new Map([['commerce/entities/Customer', {content: 'New.\n'}]]));
+       for (const dryRun of [true, false]) {
+         (console.warn as Mock<any>).mockClear();
+         expect(await pull({dryRun})).toBe(0);
+         expect(messages(console.warn)).toContain(
+             `Warning: pull does not write ${shown(file)}, because a link ` +
+             'puts it outside the entry group directory.');
+         expect(fs.readFileSync(target, 'utf8')).toBe('Old.\n');
+       }
+     });
+
   test('the summary counts new, updated and unchanged files apart, and an ' +
            'unchanged file is not rewritten',
        async () => {
