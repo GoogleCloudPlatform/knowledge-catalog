@@ -409,6 +409,12 @@ by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
 and Databricks round to the nearest microsecond, and Databricks gives a
 year-month INTERVAL in whole months.
 
+From PostgreSQL and Databricks, a DATE or a DATETIME that import can see
+beside a TIMESTAMP, compared with it or as a result of one COALESCE, IF or
+CASE, gets TIMESTAMP(x), its midnight or wall-clock time in UTC, as those
+databases read it: `CURRENT_DATE - 7 < NOW()` becomes
+`TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY)) < CURRENT_TIMESTAMP()`.
+
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
 NOW(), a TIMESTAMP column compared with MySQL's NOW(), or a TIMESTAMP column

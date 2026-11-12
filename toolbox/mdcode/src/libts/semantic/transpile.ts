@@ -836,6 +836,11 @@ interface DateTable {
   // True when DATEADD reads a string of a whole number, such as '1', as the
   // number.
   stringAmounts?: true;
+  // True when the dialect compares a DATE or a timestamp without time zone
+  // with a TIMESTAMP, and gives them as results of one COALESCE, IF or CASE,
+  // as the TIMESTAMP at its midnight or wall-clock time in UTC, as BigQuery's
+  // TIMESTAMP(x) reads it (see valueForms).
+  stamps?: true;
   // The units an INTERVAL may name, when the dialect has fewer than UNITS or
   // than its function names.
   intervals?: Unit[];
@@ -961,7 +966,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       [10n, ['decade', 'decades', 'dec', 'decs']], [100n, ['century', 'centuries', 'c', 'cent']],
       [1000n, ['millennium', 'millennia', 'mil', 'mils']],
     ] as [bigint, string[]][]).flatMap(([n, words]) => words.map(w => [w, ['YEAR', n]]))),
-    severalUnits: true, fields: true, sums: [[...UNITS]],
+    severalUnits: true, fields: true, sums: [[...UNITS]], stamps: true,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'column')},
       date: {
@@ -1057,7 +1062,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     partReads: {row: 'TIMESTAMP', rows: ['DATE', 'TIMESTAMP']},
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
-    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']], products: 'SECOND',
+    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']], products: 'SECOND', stamps: true,
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
@@ -2299,10 +2304,11 @@ function exactForm(node: any, read: string): any {
 // The FORM_CALL in place of each of `values`, the values a node compares or
 // adds or, with `results`, its results, by value, or the types BigQuery does
 // not compare, for a message. BigQuery compares the visible types of one group
-// of COMPARED. MySQL compares a DATE or a DATETIME with a number, and adds a
-// number to it, as the number of its digits, such as 20240101 or
-// 20240101093000, and gives it among numbers as its text, as it gives each
-// number written.
+// of COMPARED. A dialect that `stamps` compares a DATE or a DATETIME with a
+// TIMESTAMP as TIMESTAMP(x). MySQL compares a DATE or a DATETIME with a
+// number, and adds a number to it, as the number of its digits, such as
+// 20240101 or 20240101093000, and gives it among numbers as its text, as it
+// gives each number written.
 function valueForms(values: any[], read: string, results: boolean): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined);
@@ -2312,6 +2318,10 @@ function valueForms(values: any[], read: string, results: boolean): Map<any, any
   const other = types.find(t => !group.includes(t));
   if (!other) return new Map();
   const problem = `a ${types[0]} and a ${other}`;
+  if (DATE_TABLES[read]?.stamps && types.every(t => WIDER.includes(t))) {
+    const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
+    return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
+  }
   if (read !== 'mysql' || types.length !== 2 || other !== 'number') return problem;
   const digits = types[0] === 'DATE' ? "FORMAT_DATE('%Y%m%d', _1)" : "FORMAT_DATETIME('%Y%m%d%H%M%S', _1)";
   // The digits and the text need each value COALESCE or a similar function
