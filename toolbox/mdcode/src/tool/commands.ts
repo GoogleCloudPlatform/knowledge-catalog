@@ -559,15 +559,13 @@ async function scopeTranspileOutcomes(
 // table's dialect from `dialects`, read with `load` for the same files, and
 // calls services with `ctx`. The caller has loaded the SQL parser.
 //
-// `pull` is set for pull's run, which writes nothing. That run names the
-// entry group directory in --out, so it skips the checks of where the files
-// go and the second read of the catalog's types they make. Pull needs none
-// of those checks: it refuses or deletes another model's file, and the
-// engine reads each profile file beside the model. With `pull.texts`, the
-// import reads the texts of `docs` and of their profile files in place of
-// the files on disk, with each other profile file on disk that pull leaves.
-// With `pull.forceRemove`, pull deletes the older profile directory beside
-// the model and each profile file push reads that it does not write.
+// `pull` is set for pull's run. That run names the entry group directory in
+// --out, which skips the checks of where the files go. Pull makes those
+// checks itself. With `pull.texts`, the import reads the texts of `docs` and
+// their profile files, and each other profile file on disk that pull leaves.
+// With `pull.forceRemove`, it leaves out what pull --force-remove deletes:
+// the older profile directory and each profile file push reads that pull
+// does not write.
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
