@@ -782,7 +782,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', 'COALESCE(CURRENT_DATE, NOW()) + 1', {error: 'kcmd does not translate + of a date'}],
     ['DATABRICKS', 'year(d) < 2024 AND month(d) > 1 -- c', {sql: 'EXTRACT(YEAR FROM d) < 2024 AND EXTRACT(MONTH FROM d) > 1 /* c */'}],
     ['SNOWFLAKE', 'DATEADD(day, 1, CAST(d AS TIMESTAMP_NTZ))', {sql: 'DATE_ADD(CAST(d AS DATETIME), INTERVAL 1 DAY)'}],
-    ['POSTGRES', "(CURRENT_DATE - NOW()) IN (INTERVAL '1 day')", {sql: '((JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) = INTERVAL 1 DAY)'}],
+    ['POSTGRES', "x IN (INTERVAL '1 day' * 2)", {sql: '(x = INTERVAL 1 DAY * 2)'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
