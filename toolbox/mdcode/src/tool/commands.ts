@@ -2231,7 +2231,9 @@ async function pushRefusal(
   // The error is in the file a label in it names, when push reads that file:
   // a leading `[<file>] ...` or `<Kind> '<file>' ...`, or the `(<file>)` after
   // the model's name in `... in model '<name>' (<file>)`, which names a
-  // profile file there. Otherwise it is in the model file.
+  // profile file there. For an error with no such label, the file is that of
+  // the named profile push reports the error under, as for a deployment that
+  // uses the profile, when push reads one, and else the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
   const files = [
     ...docs.flatMap(
@@ -2241,10 +2243,14 @@ async function pushRefusal(
   const label = /^(?:\[([^\]]+)\]|[A-Z][a-z]*(?: [a-z]+)* '([^']+)')/.exec(
       first.error);
   const inModel = / in model '[^']*' \(([^)]+)\)/.exec(first.error);
-  const named = [label?.[1], label?.[2], inModel?.[1]]
+  const doc = docs.find(d => d.name === first.document) ?? docs[0];
+  const profileFile =
+      first.profile === undefined || first.profile === DEFAULT_PROFILE ?
+      undefined :
+      `${doc.name}.profile.${first.profile}.yaml`;
+  const named = [label?.[1], label?.[2], inModel?.[1], profileFile]
                     .map(n => n?.split(path.sep).join('/'))
                     .find(n => n !== undefined && files.includes(n));
-  const doc = docs.find(d => d.name === first.document) ?? docs[0];
   return {
     error: first.error,
     file: named ?? name(layout.modelPath(doc.name)),

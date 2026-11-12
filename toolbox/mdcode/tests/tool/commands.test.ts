@@ -2339,6 +2339,29 @@ describe('a pull', () => {
              'has a sql executor whose statement 1 has a comment on the same line');
        });
 
+  // Push reports a deployment's errors under the profile it uses, so the
+  // warning names that profile's file, here one that keeps its local action.
+  test('names the profile file of the deployment push refuses', async () => {
+    const prod = SECOND_GEN.profiles![0];
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.writeFileSync(
+        local('commerce.profile.prod.yaml'),
+        'name: prod\nactions:\n  - name: purge\n    executor:\n      sql:\n' +
+            '        statements:\n          - DELETE FROM customer WHERE c_id = @old_k\n');
+    expect(await pullModel({
+      ...SECOND_GEN,
+      profiles: [{...prod, entities: [{...prod.entities[0], primaryKey: ['c_id']}]}],
+      deployments: [{name: 'prod_bq', profile: 'prod', target:
+                         'bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g'}],
+      actions: [{name: 'purge', parameters: [{name: 'k', type: 'Integer'}]}],
+    } as SemanticModel)).toBe(0);
+    expect(messages(console.warn)).toBe(
+        `Warning: push refuses ${shown('commerce.profile.prod.yaml')} as pull ` +
+        "writes it: action 'purge' in model 'commerce' (commerce, deployment " +
+        "'prod_bq') has a sql executor whose statement 1 binds '@old_k', but " +
+        "action 'purge' declares no parameter of that name.");
+  });
+
   // An error of several lines, such as a parse error with its code frame,
   // ends the warning at its last line.
   test('ends the warning at the last line of an error of several lines',
