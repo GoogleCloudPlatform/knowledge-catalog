@@ -2373,7 +2373,9 @@ function boundDeclaration(
 // The first column `entityName`'s binding of `field` reads, as written, and
 // the entity that declares it (see boundDeclaration), or undefined when that
 // entity is abstract. A column is a reference no entity name qualifies, read
-// in the texts a database of `dialect` runs (see textsFor).
+// in the texts a database of `dialect` runs (see textsFor). With no dialect
+// known, an ANSI_SQL text gives only the columns BigQuery reads in it too
+// (see columnsForSource).
 export function columnBinding(
     model: SemanticModel, entityName: string, field: string,
     dialect?: string|null): {owner: string; column: string}|undefined {
@@ -2381,7 +2383,7 @@ export function columnBinding(
   const bound = boundDeclaration(model, entityName, field);
   if (!bound || byName.get(bound.owner)?.abstract) return undefined;
   for (const {text, dialect: read} of textsFor(bound.field, dialect)) {
-    const c = columnReferences(text, read)
+    const c = columnsForSource(text, read, dialect)
                   ?.find(c => !byName.has(c.qualifier ?? ''));
     if (c) {
       return {

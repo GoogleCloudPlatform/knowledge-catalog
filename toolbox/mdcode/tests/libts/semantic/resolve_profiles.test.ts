@@ -2904,6 +2904,17 @@ describe('profile completeness: dialects and struct paths', () => {
                   "leave it out in 'fields_exclude'"] : []);
   });
 
+  // With no single dialect known, as for an entity the profile gives no
+  // source, an ANSI_SQL text gives only the columns BigQuery reads in it too,
+  // so a keyword or a double-quoted string reads no column.
+  test.each(['DATE_TRUNC(orders.id, MONTH)', 'CONCAT("x", orders.id)'])(
+      'with no dialect known, %s reads no column', text => {
+        expect(validateProfileCompleteness(
+                   shop({expression: text, dialects: [{dialect: 'ANSI_SQL', expression: text}]}),
+                   atSource(undefined as any), [], READ))
+            .toEqual(["profile 'p': entity 'orders' has no source in this profile"]);
+      });
+
   // A Cloud SQL table written as its resource name takes the dialect its
   // catalog entry's type names, which a command looks up before it loads.
   // Without a lookup the source implies no dialect, so every text counts.
