@@ -2572,6 +2572,13 @@ describe('a pull', () => {
          "'commerce.profile.prod.yaml' to keep them, or " + force('them'),
      [[rename('mysales.yaml', 'commerce.yaml'),
        rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the deletion of a profile file with no valid profile name',
+     ['mysales.yaml', 'mysales.profile.1x.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Delete " +
+         "'mysales.profile.1x.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profile.1x.yaml'"),
+     [['-mysales.profile.1x.yaml', rename('mysales.yaml', 'commerce.yaml')], ['force']]],
     ['one profile in both forms',
      ['mysales.yaml', 'mysales.profile.prod.yaml', 'mysales.profiles/prod.yaml'], 'commerce',
      holds + "and its profile 'prod' is in both 'mysales.profile.prod.yaml' " +
@@ -2830,14 +2837,14 @@ describe('a pull', () => {
   test('profile files are written and deleted through the layout', async () => {
     withStaleProfile();
     const write = spyOn(SemanticModelLayout.prototype, 'writeProfileDocument');
-    const remove = spyOn(SemanticModelLayout.prototype, 'removeProfileDocument');
+    const remove = spyOn(SemanticModelLayout.prototype, 'removeFile');
     pulled();
 
     expect(await pull({forceRemove: true})).toBe(0);
     expect(write.mock.calls).toEqual([
       ['commerce', 'prod', serializedFiles()['commerce.profile.prod.yaml']],
     ]);
-    expect(remove.mock.calls).toEqual([['commerce', 'dev']]);
+    expect(remove.mock.calls).toEqual([[shown('commerce.profile.dev.yaml')]]);
   });
 
   // A teammate converts the model to the vanilla flavor, whose profiles sit in
@@ -2903,6 +2910,97 @@ describe('a pull', () => {
          expect(fs.readdirSync(entryGroupDir()).sort())
              .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
        });
+
+  // --force-remove deletes each file the layout lists, by its name on disk.
+  // A link goes as a link, and pull deletes no directory through a link. The
+  // message without the flag names the same files.
+  const notInCatalog = (kind: string, file: string) =>
+      `Warning: local ${kind} ${shown(file)} is not in the catalog; delete ` +
+      'it, or pull with --force-remove to delete it.';
+  const stale = (models: string, files: string) =>
+      `Error: local model(s) ${models} do not match the catalog model ` +
+      "'commerce' in this entry group. An entry group holds one model, so " +
+      'pull will not leave two behind. Re-run with --force-remove to delete ' +
+      `${files} and pull the catalog's.`;
+  const write = (file: string, text = 'name: x\n') => {
+    fs.mkdirSync(path.dirname(file), {recursive: true});
+    fs.writeFileSync(file, text);
+  };
+  const sales = (file: string) =>
+      write(local(file), ROUND_TRIP_MODEL.replace('name: commerce', 'name: sales'));
+  const dangling = () =>
+      fs.symlinkSync('missing.yaml', local('commerce.profile.dev.yaml'));
+  // [label, the catalog's model, makes the local files beside a directory
+  // `outside` the entry group, the message without --force-remove, the files
+  // it removes, the paths under `outside` that stay]
+  test.each([
+    ['a link to no file beside a Google-flavor model', SECOND_GEN, dangling,
+     notInCatalog('profile file', 'commerce.profile.dev.yaml'),
+     ['commerce.profile.dev.yaml'], []],
+    ['a link to no file beside a plain model',
+     {...SECOND_GEN, version: '0.2.0.dev0'}, dangling,
+     notInCatalog('profile file', 'commerce.profile.dev.yaml'),
+     ['commerce.profile.dev.yaml'], []],
+    ['a linked older profile directory', SECOND_GEN, (outside: string) => {
+       write(path.join(outside, 'qa.yaml'));
+       fs.symlinkSync(outside, local('commerce.profiles'));
+     },
+     notInCatalog('profile file', 'commerce.profiles'), ['commerce.profiles'],
+     ['qa.yaml']],
+    ['a stale overview sidecar in a linked directory', SECOND_GEN,
+     (outside: string) => {
+       write(path.join(outside, 'entities', 'Old.overview.md'), 'Old.\n');
+       fs.symlinkSync(outside, local('commerce'));
+     },
+     notInCatalog('overview sidecar', 'commerce/entities/Old.overview.md'),
+     ['commerce/entities/Old.overview.md'], ['entities']],
+    ['a stale model\'s profile file with no valid profile name', SECOND_GEN,
+     () => {
+       sales('sales.yaml');
+       write(local('sales.profile.1x.yaml'));
+     },
+     stale("'sales'", "'sales.yaml' and 'sales.profile.1x.yaml'"),
+     ['sales.yaml', 'sales.profile.1x.yaml'], []],
+    ['a stale model file whose name holds a backslash', SECOND_GEN,
+     () => sales('a\\b.yaml'), stale("'sales' in 'a\\b.yaml'", "'a\\b.yaml'"),
+     ['a\\b.yaml'], []],
+    ['a stale model with a profile file and the older directory', SECOND_GEN,
+     () => {
+       sales('sales.yaml');
+       write(local('sales.profile.prod.yaml'));
+       write(local('sales.profiles/qa.yaml'));
+     },
+     stale("'sales'", "'sales.yaml', 'sales.profile.prod.yaml' and " +
+           "'sales.profiles/qa.yaml'"),
+     ['sales.yaml', 'sales.profile.prod.yaml', 'sales.profiles/qa.yaml'], []],
+  ] as Array<[string, SemanticModel, (outside: string) => void, string,
+              string[], string[]]>)(
+      '--force-remove deletes %s as it is on disk',
+      async (_, model, setup, message, removed, kept) => {
+        fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                         'scope: semantic-model.test-project.us.commerce_eg\n');
+        fs.mkdirSync(entryGroupDir(), {recursive: true});
+        const outside = path.join(dir, 'outside');
+        setup(outside);
+        pulled(model);
+        const logSpy = console.log as Mock<any>;
+
+        expect(await pull()).toBe(message.startsWith('Error') ? 1 : 0);
+        expect(messages(console.warn) + messages(console.error))
+            .toContain(message);
+        expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
+        expect(await pull({forceRemove: true})).toBe(0);
+        for (const file of removed) {
+          for (const verb of ['would remove', 'removed']) {
+            expect(messages(logSpy)).toContain(`  ${verb} ${shown(file)}\n`);
+          }
+          expect(fs.lstatSync(local(file), {throwIfNoEntry: false}))
+              .toBeUndefined();
+        }
+        for (const p of kept) {
+          expect(fs.existsSync(path.join(outside, p))).toBe(true);
+        }
+      });
 
   test('the summary counts new, updated and unchanged files apart, and an ' +
            'unchanged file is not rewritten',

@@ -73,14 +73,23 @@ const WRITTEN_FILE = {isFile: () => true, isDirectory: () => false};
 const WRITTEN_DIR = {isFile: () => false, isDirectory: () => true};
 
 // Reads the files on disk as they are once each path in `written` holds its
-// text and each path in `deleted` is gone, and writes nothing. Every other
-// file reads as on disk, with the same errors. A directory that holds a
-// written file exists. Paths are compared once resolved.
+// text and each path in `deleted`, with everything below it, is gone, and
+// writes nothing. Every other file reads as on disk, with the same errors. A
+// directory that holds a written file exists. Paths are compared once
+// resolved.
 export function filesAfter(
     written: Map<string, string>, deleted: string[]): LayoutFiles {
   const texts =
       new Map([...written].map(([p, text]) => [path.resolve(p), text]));
   const gone = new Set(deleted.map(p => path.resolve(p)));
+  // Whether `p` is deleted or lies below a deleted path, as a file in a
+  // linked directory that pull deletes as the link does.
+  const isGone = (p: string) => {
+    for (let q = path.resolve(p);; q = path.dirname(q)) {
+      if (gone.has(q)) return true;
+      if (path.dirname(q) === q) return false;
+    }
+  };
   // Each entry of the directory `dir` that is a written file or holds one,
   // by name, and whether it is the file.
   const writtenIn = (dir: string) => {
@@ -99,7 +108,7 @@ export function filesAfter(
   const after = (p: string) => {
     const resolved = path.resolve(p);
     if (texts.has(resolved)) return WRITTEN_FILE;
-    if (gone.has(resolved)) return null;
+    if (isGone(resolved)) return null;
     return writtenIn(p).size && !fs.existsSync(p) ? WRITTEN_DIR : undefined;
   };
   const missing = (p: string, syscall: string) => Object.assign(
@@ -108,6 +117,7 @@ export function filesAfter(
   // The entries of the directory `dir`: those on disk but the deleted ones,
   // then each written file, or directory that holds one, not on disk.
   const entries = (dir: string): fs.Dirent[] => {
+    if (isGone(dir)) throw missing(dir, 'scandir');
     const added = writtenIn(dir);
     let onDisk: fs.Dirent[] = [];
     try {
@@ -138,7 +148,7 @@ export function filesAfter(
     read: p => {
       const text = texts.get(path.resolve(p));
       if (text !== undefined) return Buffer.from(text);
-      if (gone.has(path.resolve(p))) throw missing(p, 'open');
+      if (isGone(p)) throw missing(p, 'open');
       return fs.readFileSync(p);
     },
     // glob lists each directory through `entries`, and stats the directory
@@ -158,6 +168,14 @@ export function filesAfter(
       },
     }),
   };
+}
+
+// The file at `localPath`, with `name` as its profile name when that is a
+// valid profile name.
+function named(localPath: string, name: string):
+    {path: string; profileName?: string} {
+  return nameProblem('profile', name) ? {path: localPath} :
+                                        {path: localPath, profileName: name};
 }
 
 // Each `<model>.profile.<name>.yaml` in `dir`, by profile name, read with
@@ -332,16 +350,34 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // Every local profile file of a model, for pull to find the ones the
   // catalog did not return: each sibling file whose name is a valid profile
-  // name, with that name, then each file in the older `<model>.profiles/`
-  // directory, which push no longer reads. It applies no flavor check. A
-  // sibling file with an invalid profile name is left out; push rejects it,
-  // naming it.
+  // name, then the older `<model>.profiles/` directory as _legacyLocalFiles
+  // lists it. Each file has its profile name when that name is valid. It
+  // applies no flavor check. A sibling file with an invalid profile name is
+  // left out; push rejects it, naming it.
   localProfileFiles(model: string): {path: string; profileName?: string}[] {
     return [
       ...this._siblingProfilePaths(model)
           .filter(p => !nameProblem('profile', p.name))
           .map(p => ({path: p.path, profileName: p.name})),
-      ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
+      ...this._legacyLocalFiles(model),
+    ];
+  }
+
+  // Every file on disk that holds the model with this handle, for pull to
+  // name and delete when the catalog no longer holds the model: the model
+  // file the layout read, then each `<model>.profile.*.yaml` as
+  // profileFileNamesBeside lists them, then the older `<model>.profiles/`
+  // directory as _legacyLocalFiles lists it. Each profile file has its profile
+  // name when that name is valid.
+  modelFiles(model: string): {path: string; profileName?: string}[] {
+    const dir = this._groupDir();
+    const prefix = `${model}.profile.`;
+    return [
+      {path: this._modelFile(model)},
+      ...profileFileNamesBeside(dir, model, this.files)
+          .map(f => named(
+              path.join(dir, f), f.slice(prefix.length, -'.yaml'.length))),
+      ...this._legacyLocalFiles(model),
     ];
   }
 
@@ -484,11 +520,26 @@ export class SemanticModelLayout implements CatalogLayout {
     fs.writeFileSync(localPath, text);
   }
 
-  // Deletes a profile file, for `pull --force-remove` to drop a local profile
-  // the catalog no longer has.
+  // Deletes a profile file, as removeFile does.
   removeProfileDocument(model: string, profileName: string): void {
-    const localPath = this.profilePath(model, profileName);
-    if (fs.existsSync(localPath)) fs.rmSync(localPath);
+    this.removeFile(this.profilePath(model, profileName));
+  }
+
+  // Deletes `localPath`, a file this layout lists, for `pull --force-remove`:
+  // a link goes as a link, and a missing file is no error. Then it deletes
+  // each directory above it in the entry group directory that this leaves
+  // empty, up to the first one that is a link or lies below one.
+  removeFile(localPath: string): void {
+    fs.rmSync(localPath, {force: true});
+    const top = path.resolve(this._groupDir());
+    let dir = path.dirname(path.resolve(localPath));
+    while (dir.startsWith(`${top}${path.sep}`) &&
+           fs.realpathSync(dir) ===
+               path.join(fs.realpathSync(top), path.relative(top, dir)) &&
+           !fs.readdirSync(dir).length) {
+      fs.rmdirSync(dir);
+      dir = path.dirname(dir);
+    }
   }
 
   // Profile files with no model beside them, for push, `kcmd profiles` and
@@ -544,6 +595,25 @@ export class SemanticModelLayout implements CatalogLayout {
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
     if (!this._entryGroup || /[\\/]/.test(model)) return [];
     return legacyProfileFiles(this._groupDir(), model, this.files);
+  }
+
+  // The files of the older `<model>.profiles/` directory for pull, each with
+  // its file name's profile name when that name is valid. A linked directory
+  // is listed as the link, so that pull never deletes through it.
+  private _legacyLocalFiles(model: string):
+      {path: string; profileName?: string}[] {
+    const files = this._legacyProfilePaths(model);
+    const dir = files.length ? path.dirname(files[0].path) : undefined;
+    if (dir && fs.lstatSync(dir).isSymbolicLink()) return [{path: dir}];
+    return files.map(f => named(f.path, f.name));
+  }
+
+  // The model file the layout read for this handle, by its name in the entry
+  // group directory, else the path modelPath maps the handle to.
+  private _modelFile(name: string): string {
+    const read = this._index.get(name);
+    return read ? path.join(this._groupDir(), path.basename(read)) :
+                  this.modelPath(name);
   }
 
   // The model name the model document with this handle declares, or undefined
@@ -609,10 +679,7 @@ export class SemanticModelLayout implements CatalogLayout {
   // uses it to drop a local model the catalog no longer names before writing
   // the catalog's, so the entry group is never left holding two models.
   removeModelDocument(name: string): void {
-    const localPath = this.modelPath(name);
-    if (fs.existsSync(localPath)) {
-      fs.rmSync(localPath);
-    }
+    this.removeFile(this._modelFile(name));
     this._index.delete(name);
   }
 
