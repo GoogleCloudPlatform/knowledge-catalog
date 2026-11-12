@@ -286,14 +286,19 @@ relationships:
   });
 
   // A named profile binds every concrete entity, whether or not a push
-  // deploys it, so `kcmd profiles` shows the entity unbound and rejects it.
-  test('a concrete entity with a source in neither file is rejected beside a model with no graph target', async () => {
-    writeModel(`version: "0.2.0.dev0/google"
+  // deploys it, so `kcmd profiles` shows the entity unbound and rejects it,
+  // also when the model file binds it.
+  for (const [where, source] of [
+         ['neither file', ''],
+         ['only the model file', `        source: ${BQ('customer')}\n`],
+       ]) {
+    test(`a concrete entity with a source in ${where} is rejected beside a model with no graph target`, async () => {
+      writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        primary_key: [key]
+${source}        primary_key: [key]
         fields:
           - { name: key, expression: c_key }
 `, `name: prod
@@ -303,15 +308,24 @@ entities:
     fields:
       - { name: key, expression: cust_key }
 `);
-    const error = "[commerce.profile.prod.yaml] profile 'prod': entity " +
-        "'Customer' has no source in this profile";
-    expect(await profiles()).toBe(1);
-    expect(logs).toContain('      Customer -> (unbound)');
-    expect(errs).toContain(`      ${error}`);
-    errs.length = 0;
-    expect(await push({validateOnly: true})).toBe(1);
-    expect(errs).toEqual([`Error: ${error}`]);
-  });
+      const error = "[commerce.profile.prod.yaml] profile 'prod': entity " +
+          "'Customer' has no source in this profile";
+      expect(await profiles()).toBe(1);
+      expect(logs.slice(logs.indexOf("  profile 'prod'"))).toEqual([
+        "  profile 'prod'",
+        '    target: (none; no deployment names this profile)',
+        '    sources:',
+        '      Customer -> (unbound)',
+        '    cannot answer:',
+        '      entity Customer (unbound)',
+        '    push rejects:',
+        `      ${error}`,
+      ]);
+      errs.length = 0;
+      expect(await push({validateOnly: true})).toBe(1);
+      expect(errs).toEqual([`Error: ${error}`]);
+    });
+  }
 });
 
 

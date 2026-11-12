@@ -31,7 +31,7 @@ import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_convert
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, profileSources, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1497,8 +1497,9 @@ async function printStore(
 
 // Prints a profile's report under its header: the deployment target, the
 // source each entity binds to, and what the profile cannot answer or cannot
-// run.
-function printProfileReport(model: SemanticModel, name: string): void {
+// run. `model` is the model file with `profile` applied.
+function printProfileReport(
+    model: SemanticModel, name: string, profile: ProfileSpec): void {
   // The targets the profile's deployments name, as --print-store reads them.
   const targets = profileTargets(model, name);
   // Pruned for the graphs this profile's own deployments name.
@@ -1509,12 +1510,19 @@ function printProfileReport(model: SemanticModel, name: string): void {
       targets.length ? targets.join(', ') :
                        '(none; no deployment names this profile)'}`);
   console.log('    sources:');
-  // No profile binds an abstract entity, since it has no table.
-  for (const e of (model.entities ?? []).filter(e => !e.abstract)) {
-    console.log(`      ${e.name} -> ${writtenSource(e) || '(unbound)'}`);
+  // No profile binds an abstract entity, since it has no table. As push reads
+  // a named profile, an entity it gives no source is unbound, though the model
+  // file names a table for it.
+  const concrete = (model.entities ?? []).filter(e => !e.abstract);
+  const sourceIn = profileSources(profile);
+  const unbound = concrete.filter(
+      e => sourceIn(e) === undefined || !writtenSource(e));
+  for (const e of concrete) {
+    console.log(`      ${e.name} -> ${
+        unbound.includes(e) ? '(unbound)' : writtenSource(e)}`);
   }
 
-  const withheld: string[] = [];
+  const withheld = unbound.map(e => `entity ${e.name} (unbound)`);
   const excluded = new Set(report.excludedFields);
   for (const f of report.unboundFields) {
     withheld.push(`field ${f} (${excluded.has(f) ? 'excluded' : 'unbound'})`);
@@ -1708,7 +1716,8 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       printRejects('    ', pushErrorsOf(doc.name, DEFAULT_PROFILE));
       continue;
     }
-    for (const {name} of available) {
+    for (const declaredProfile of available) {
+      const {name} = declaredProfile;
       const res = profileForDocument(doc, available, name, load);
       // Narrows the type; `name` comes from `available`, so it is found.
       if (res.kind === 'missing') continue;
@@ -1740,7 +1749,10 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         }
       }
       if (model) {
-        printProfileReport(model, name);
+        // loadProfileFile does not throw, since the profile applied.
+        const spec = 'spec' in declaredProfile ? declaredProfile.spec :
+            loadProfileFile(declaredProfile.text, name, {skipActions: true});
+        printProfileReport(model, name, spec);
       } else if (applyError !== undefined && !pushErrors.length) {
         // Push accepts a profile it does not apply, such as one no deployment
         // uses. When push gives no error, say why nothing is shown.
