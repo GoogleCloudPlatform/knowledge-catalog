@@ -663,17 +663,29 @@ describe('validatePushRequirements gates actions', () => {
 
   // How each table's dialect reads a statement's parameters. SQL Server reads
   // `#staging` as a temporary table, where GoogleSQL would start a comment.
+  // MySQL reads a parameter's name only right after the `@`, and matches it
+  // exactly.
   test.each<[string, string, string, string, string[], string[]]>([
     ['SQL Server',
      'cloudsql.googleapis.com/projects/p/locations/us-central1/instances/ss/' +
          'databases/shop/schemas/dbo/tables/orders',
      'SQLSERVER', 'UPDATE #staging SET tier = @tier WHERE id = @id', ['id'],
      ["binds '@tier'"]],
+    ...[
+      ['UPDATE orders SET tier = @ID WHERE id = @id', ['id'], ["binds '@ID'"]],
+      ['UPDATE orders SET tier = @ tier WHERE id = @id', ['id'], []],
+      ['DELETE FROM orders WHERE id = @id OR id = @ID', ['id', 'ID'], []],
+    ].map(([statement, names, errors]) => [
+      'MySQL',
+      'cloudsql.googleapis.com/projects/p/locations/us-central1/instances/my/' +
+          'databases/shop/tables/orders',
+      'MYSQL', statement, names, errors,
+    ] as [string, string, string, string, string[], string[]]),
   ])('on %s reads the parameters of a statement', (_, source, dialect, statement, names, errors) => {
     const {document, model} = loaded([{
       name: 'A',
       executor: {kind: 'sql', sql: {statements: [statement]}},
-      parameters: names.map(name => ({name, type: 'Integer'})),
+      parameters: names.map((name, i) => ({name, type: i ? 'String' : 'Integer'})),
     }]);
     const entity = {
       ...model.entities[0], authoredSource: source, dataSource: source,

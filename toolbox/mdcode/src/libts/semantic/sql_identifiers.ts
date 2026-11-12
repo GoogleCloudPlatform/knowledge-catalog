@@ -247,10 +247,12 @@ function endOfTripleQuoted(text: string, from: number): number {
   return text.length;
 }
 
-// One dialect for each way sqlCode reads a statement: SPANNER for GoogleSQL,
-// SQLSERVER for a dialect in which `#` starts no comment, and POSTGRES for
-// PostgreSQL.
-export const SQL_CODE_DIALECTS = ['SPANNER', 'SQLSERVER', 'POSTGRES'] as const;
+// One dialect for each way a statement's comments and parameters are read:
+// SPANNER for GoogleSQL, MYSQL for a dialect in which `#` starts a comment
+// and a parameter's name follows the `@`, SQLSERVER for one in which `#`
+// starts no comment, and POSTGRES for PostgreSQL.
+export const SQL_CODE_DIALECTS =
+    ['SPANNER', 'MYSQL', 'SQLSERVER', 'POSTGRES'] as const;
 
 // Whether a statement in `dialect` is read as PostgreSQL. Any other is read as
 // GoogleSQL.
@@ -268,6 +270,15 @@ const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER', 'MYSQL']);
 // read as GoogleSQL, where it does.
 export function hashStartsComment(dialect?: string|null): boolean {
   return !dialect || HASH_COMMENT_DIALECTS.has(dialect);
+}
+
+// Whether `dialect` reads parameters as GoogleSQL does, as BigQuery and
+// GoogleSQL Spanner do: `@ name` and `` @`name` `` are the parameter `name`,
+// and names match without regard to case. A statement given no dialect is
+// read as GoogleSQL. Every other dialect reads a name only right after the
+// `@`, and matches it exactly.
+function readsGoogleSqlParameters(dialect?: string|null): boolean {
+  return !dialect || dialect === 'BIGQUERY' || dialect === 'SPANNER';
 }
 
 // `text` with each comment and each quoted string or identifier replaced by a
@@ -338,22 +349,23 @@ function sqlCode(
 // `@` inside it is not read.
 const GOOGLE_SQL_PARAMETER =
     /`(?:[^`\\]|\\.)*`?|@@+|@\s*(?:([A-Za-z_]\w*)|`((?:[^`\\]|\\.)*)`)/g;
-// A PostgreSQL parameter: `@` and a name, with nothing between them.
-const POSTGRES_PARAMETER = /@@+|@([A-Za-z_]\w*)/g;
+// Any other dialect's parameter: `@` and a name, with nothing between them.
+const PLAIN_PARAMETER = /@@+|@([A-Za-z_]\w*)/g;
 
 // The distinct `@name` references in a SQL statement, ignoring comments and
 // quoted strings or identifiers so prose or a literal containing an '@' is not
 // read as a binding. `#` starts a line comment where hashStartsComment says
-// so, and is an operator such as `#>` or `#-` on PostgreSQL. GoogleSQL also
-// reads `@ name` and `` @`name` `` as the parameter `name`. Used to check that
-// every parameter a statement reads is one the caller will bind, and to bind
-// only the parameters a statement actually reads.
+// so, and is an operator such as `#>` or `#-` on PostgreSQL. BigQuery and
+// Spanner also read `@ name` and `` @`name` `` as the parameter `name` (see
+// readsGoogleSqlParameters). Used to check that every parameter a statement
+// reads is one the caller will bind, and to bind only the parameters a
+// statement actually reads.
 export function referencedParameters(
     text: string, dialect?: string|null): string[] {
-  const googleSql = !readsPostgres(dialect);
+  const googleSql = readsGoogleSqlParameters(dialect);
   const names = new Set<string>();
   for (const m of sqlCode(text, dialect, googleSql)
-           .matchAll(googleSql ? GOOGLE_SQL_PARAMETER : POSTGRES_PARAMETER)) {
+           .matchAll(googleSql ? GOOGLE_SQL_PARAMETER : PLAIN_PARAMETER)) {
     const name = m[1] ?? m[2];
     if (name) names.add(name);
   }
@@ -361,14 +373,15 @@ export function referencedParameters(
 }
 
 // The parameter of `declared` that `@name` binds in `dialect`, or undefined
-// when none does. GoogleSQL matches parameter names without regard to case,
-// so a name binds the parameter written the same way, or else the one
-// parameter written in another case. PostgreSQL matches them exactly.
+// when none does. BigQuery and Spanner match parameter names without regard
+// to case, so a name binds the parameter written the same way, or else the
+// one parameter written in another case. Every other dialect matches them
+// exactly (see readsGoogleSqlParameters).
 export function boundParameter(
     name: string, declared: readonly string[],
     dialect?: string|null): string|undefined {
   if (declared.includes(name)) return name;
-  if (readsPostgres(dialect)) return undefined;
+  if (!readsGoogleSqlParameters(dialect)) return undefined;
   const same = declared.filter(d => d.toLowerCase() === name.toLowerCase());
   return same.length === 1 ? same[0] : undefined;
 }
