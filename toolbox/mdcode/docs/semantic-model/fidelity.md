@@ -347,6 +347,13 @@ only one of the normal forms below changes nothing. Each value the catalog holds
 as the file says keeps its text, comments, key order and formatting, and a file
 that holds what the catalog holds stays byte for byte. A changed string keeps
 its quoting or block style, and other changed values are written in pull's form.
+A changed block scalar keeps the indentation of its lines and its indentation
+indicator. A block more than 9 columns deeper than its key that comes to need an
+indicator is double-quoted, since the indicator stops at 9. A double-quoted
+string that yaml would write over several lines so that it reads back as other
+text, such as a line of one space, is written on one line. A string that comes
+to hold DEL, a C1 control or a line separator is double-quoted, with those
+characters written as escapes.
 When the catalog reorders a list whose order counts, such as an entity's fields,
 an item that moves, or an item it moves past, can be written in pull's form too.
 The JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
