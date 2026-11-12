@@ -6,6 +6,7 @@ import {qualifierCaseError} from './names';
 import {declaredConceptFields, resolveInheritance} from './resolve_inheritance';
 import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
+import {hashStartsComment} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
 // A field of an entity, or a metric.
@@ -112,16 +113,22 @@ export function expressionProblems(
     return errors;
   }
   const entityNames = [...fieldsByEntity.keys()];
-  // Each entity's fields as the graph renders them (see selfReferenceProblems).
-  const resolvedByName = new Map(
-      (ifResolvable(
-           () => resolveInheritance(model, undefined, {requalify: true})
-                     .model.entities) ??
-       model.entities ?? [])
-          .map(e => [e.name, e]));
   const sourcesRead = sourcesDialect(model);
   const dialectless = sourcesRead === null && !!load.readWithoutDialect;
   const impliedDialect = dialectless ? undefined : sourcesRead;
+  // Each entity's fields as the graph renders them (see selfReferenceProblems),
+  // with an inherited text read in the sources' dialect, as the runtime
+  // reads it. The SQL parser reads `#` in MySQL as an operator, so a dialect
+  // in which `#` starts a comment is read with BigQuery's rules.
+  const inheritedReading =
+      impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
+                                                             undefined;
+  const resolvedByName = new Map(
+      (ifResolvable(
+           () => resolveInheritance(model, inheritedReading, {requalify: true})
+                     .model.entities) ??
+       model.entities ?? [])
+          .map(e => [e.name, e]));
   const candidates =
       dialectless ? possibleDialects(model.entities ?? []) : [];
   // The columns `text` reads, and whether the read left a name out.

@@ -2673,6 +2673,38 @@ ${extraMetric}`;
       ]);
     });
 
+    // An inherited text is read in its tables' dialect: `#>>` is an operator
+    // in PostgreSQL, and `#` starts a comment in BigQuery, Spanner and MySQL.
+    const CLOUDSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/d';
+    test.each([
+      ['AlloyDB', (t: string) => `alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/${t}`, undefined, 2],
+      ['PostgreSQL Cloud SQL', (t: string) => `${CLOUDSQL}/schemas/public/tables/${t}`, 'POSTGRES', 2],
+      ['MySQL Cloud SQL', (t: string) => `${CLOUDSQL}/tables/${t}`, 'MYSQL', 0],
+      ['PostgreSQL-dialect Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'POSTGRES', 2],
+      ['GoogleSQL Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'SPANNER', 0],
+      ['BigQuery', (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`, undefined, 0],
+    ])('reads an inherited text with #>> on %s tables in their dialect', (_, table, sourceDialect, cycles) => {
+      const entity = (name: string, fields: Field[], extended?: string[]) => ({
+        name, authoredSource: table(name), dataSource: table(name),
+        ...(sourceDialect ? {sourceDialect} : {}), keys: ['id'],
+        ...(extended ? {extends: extended} : {}),
+        fields: [{name: 'id', expression: 'id'}, ...fields],
+      });
+      const m = model({
+        entities: [
+          entity('party', [
+            {name: 'data', expression: 'data'},
+            {name: 'code', expression: 'code'},
+            {name: 'label', expression: "party.data #>> '{tier}' || party.code"},
+          ]),
+          entity('customer', [{name: 'code', expression: 'customer.label'}], ['party']),
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)])
+                 .filter(e => e.includes('names itself through')))
+          .toHaveLength(cycles);
+    });
+
     test('accepts an inherited field that names its supertype\'s siblings', () => {
       const m = model({
         entities: [
