@@ -546,11 +546,6 @@ export class SemanticModelLayout implements CatalogLayout {
     fs.writeFileSync(localPath, text);
   }
 
-  // Deletes a profile file, as removeFile does.
-  removeProfileDocument(model: string, profileName: string): void {
-    this.removeFile(this.profilePath(model, profileName));
-  }
-
   // Whether a link puts `localPath` outside the entry group directory, so
   // that pull neither writes nor deletes it. A deletion removes a link at
   // `localPath` as the link, so only the directories above it count. A write,

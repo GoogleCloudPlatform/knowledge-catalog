@@ -310,7 +310,7 @@ describe('SemanticModelLayout sibling profile files', () => {
              [path.join(groupDir(), 'retail.profiles')]);
        });
 
-  test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
+  test('profilePath and writeProfileDocument', async () => {
     write('retail.yaml', GOOGLE);
     const l = await layout('eg');
     const p = l.profilePath('retail', 'prod');
@@ -320,9 +320,6 @@ describe('SemanticModelLayout sibling profile files', () => {
     expect(fs.readFileSync(p, 'utf8')).toBe('name: prod\n');
     expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
 
-    l.removeProfileDocument('retail', 'prod');
-    expect(fs.existsSync(p)).toBe(false);
-    l.removeProfileDocument('retail', 'prod');  // a no-op the second time
     expect(() => l.profilePath('retail', 'x/../../y')).toThrow(
         "Profile name 'x/../../y' is not valid");
     expect(() => l.profilePath('../x', 'prod')).toThrow(
