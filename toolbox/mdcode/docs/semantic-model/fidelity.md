@@ -503,9 +503,9 @@ The BigQuery value can differ from the source's value in these cases:
   its default time zone, America/Los_Angeles, where BigQuery adds 24 hours.
 - A MySQL TIMESTAMP column plus or minus a unit of a week or less gives a
   DATETIME in MySQL and a TIMESTAMP in BigQuery, with the same value in UTC.
-- MySQL's NOW() counts whole seconds and SQL Server's GETDATE() counts 1/300 of
-  a second, where CURRENT_DATETIME counts microseconds. A comparison with a time
-  in the same second can then give the other result.
+- SQL Server's GETDATE() counts 1/300 of a second, where CURRENT_DATETIME
+  counts microseconds. A comparison with a time less than 1/300 of a second away
+  can then give the other result.
 - MySQL, SQL Server and PostgreSQL compare text by a collation. Text that
   differs only in letter case, accents or trailing spaces can give another
   value. PostgreSQL also ignores spaces and punctuation when it sorts text.
