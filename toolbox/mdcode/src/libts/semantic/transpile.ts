@@ -1580,9 +1580,10 @@ function isInterval(node: any, read: string): boolean {
 // (see intervalOf), whose first unit gives its type, a difference of dates or
 // times (see timeDifference and spannerDifference), which is of days, a
 // negation of one, a sum or difference of two of one type, a product with one,
-// or one that MIN, MAX, COALESCE or a similar function returns. `literals`
-// holds its INTERVALs when it is only INTERVALs, negated, added or subtracted.
-// An INTERVAL import does not read has the dialect's type when it has only one.
+// a NULLIF with one, or one that MIN, MAX, COALESCE or a similar function
+// returns. `literals` holds its INTERVALs when it is only INTERVALs, negated,
+// added or subtracted. An INTERVAL import does not read has the dialect's type
+// when it has only one.
 interface IntervalKind {
   type: string;
   literals?: any[];
@@ -1611,7 +1612,11 @@ function intervalKind(node: any, read: string): IntervalKind|undefined {
     if (!left || right?.type !== left.type) return undefined;
     return {type: left.type, literals: left.literals && right.literals && [...left.literals, ...right.literals]};
   }
-  for (const operand of kind === 'mul' ? [b.mul.left, b.mul.right] : returned(b)) {
+  // NULLIF compares an INTERVAL only with one of its type, so either argument
+  // gives it.
+  const nullif = String(b?.function?.name).toUpperCase() === 'NULLIF';
+  const operands = kind === 'mul' ? [b.mul.left, b.mul.right] : nullif ? b.function.args ?? [] : returned(b);
+  for (const operand of operands) {
     const found = intervalKind(operand, read);
     if (found) return {type: found.type};
   }

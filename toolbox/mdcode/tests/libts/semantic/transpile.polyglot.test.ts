@@ -842,6 +842,18 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SPANNER', 'CURRENT_TIMESTAMP() = INTERVAL 1 YEAR + INTERVAL 1 MONTH', {error: 'kcmd does not translate = on an INTERVAL and a TIMESTAMP'}],
     ['SPANNER', 'CURRENT_DATE() > CURRENT_DATE() - d', {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
     ['SPANNER', 'x IN (CURRENT_TIMESTAMP() - INTERVAL 1 DAY)', {sql: "x IN (CURRENT_TIMESTAMP() - INTERVAL '1' DAY)"}],
+    // NULLIF with an INTERVAL second is an INTERVAL too.
+    ['POSTGRES', "AVG(NULLIF(y, INTERVAL '0 seconds'))", {error: 'kcmd does not translate AVG of an INTERVAL'}],
+    ['DATABRICKS', 'AVG(NULLIF(y, INTERVAL 0 MONTH))', {error: 'kcmd does not translate AVG of an INTERVAL'}],
+    ['POSTGRES', "NULLIF(NULLIF(y, INTERVAL '1 day'), z)", {sql: 'IF(IF(y = INTERVAL 1 DAY, NULL, y) = z, NULL, IF(y = INTERVAL 1 DAY, NULL, y))'}],
+    ['DATABRICKS', 'NULLIF(NULLIF(y, INTERVAL 1 DAY), z)', {sql: 'IF(IF(y = INTERVAL 1 DAY, NULL, y) = z, NULL, IF(y = INTERVAL 1 DAY, NULL, y))'}],
+    ['SPANNER', 'NULLIF(NULLIF(y, INTERVAL 1 DAY), z)', {sql: "IF(IF(y = INTERVAL '1' DAY, NULL, y) = z, NULL, IF(y = INTERVAL '1' DAY, NULL, y))"}],
+    ['POSTGRES', "x IN (NULLIF(y, INTERVAL '1 day'))", {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
+    ['DATABRICKS', 'x IN (NULLIF(y, INTERVAL 1 DAY))', {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
+    ['SPANNER', 'x IN (NULLIF(y, INTERVAL 1 DAY))', {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
+    ['DATABRICKS', 'NULLIF(y, INTERVAL 1 MONTH) < INTERVAL 1 DAY', {error: 'kcmd does not translate < on a year-month INTERVAL and a day-time INTERVAL'}],
+    ['POSTGRES', "CURRENT_DATE > NULLIF(y, INTERVAL '1 day')", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
+    ['SPANNER', 'EXTRACT(HOUR FROM NULLIF(d1 - d2, INTERVAL 0 HOUR))', {sql: "EXTRACT(HOUR FROM IF(d1 - d2 = INTERVAL '0' HOUR, NULL, d1 - d2))"}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
