@@ -381,6 +381,18 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           "If the comment line is part of the statement, write it as a block scalar " +
           "with '|'. If it is a YAML comment, move it to the column of 'description'.")],
     }, {
+      // An anchor before a key does not move the column of the keys.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED.replace('- name: purge', '- &act name: purge')
+              .replace('description: DESCRIPTION',
+                       "&d description: &cut UPDATE customer SET doc = doc\n          #- '{draft}' WHERE c_key = @k"),
+          '- *cut')},
+      errors: [has(
+          "statement 1, written at '&cut', is followed by a comment line indented " +
+          "under it, so YAML reads the statement as 'UPDATE customer SET doc = doc'. " +
+          "If the comment line is part of the statement, write it as a block scalar " +
+          "with '|'. If it is a YAML comment, move it to the column of '&d description'.")],
+    }, {
       files: {'commerce.yaml': withStatementLines(
           DESCRIBED
               .replace('description: DESCRIPTION',

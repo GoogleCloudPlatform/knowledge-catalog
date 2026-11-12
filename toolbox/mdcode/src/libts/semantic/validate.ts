@@ -1116,8 +1116,9 @@ export function yamlChangedStatementErrors(
 }
 
 // The collection a statement is written in: a block list with the column of
-// its '-', a block mapping with the column of its keys and the statement's
-// key, or a flow list.
+// its '-', a block mapping with the column of its keys and what the
+// statement's key line holds from that column to the key's end, or a flow
+// list.
 type Holder = {kind: 'block list'; column: number}|
     {kind: 'block mapping'; column: number; key: string}|{kind: 'flow list'};
 
@@ -1138,7 +1139,7 @@ interface WrittenStatement {
 // file lists actions under each model, and a profile file at its top level.
 // Empty for text with a YAML error, which the load reports.
 function writtenStatements(text: string): WrittenStatement[] {
-  const doc = yaml.parseDocument(text, YAML_OPTIONS);
+  const doc = yaml.parseDocument(text, {...YAML_OPTIONS, keepSourceTokens: true});
   if (doc.errors.length) return [];
   const resolved = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
   // The node at `path` under `n`, following aliases.
@@ -1157,10 +1158,12 @@ function writtenStatements(text: string): WrittenStatement[] {
         .flatMap(m => listAt(m, 'actions')),
     ...listAt(doc.contents, 'actions'),
   ];
-  // The collection that holds each node.
+  // The collection that holds each node. A block collection's column is its
+  // indent as the yaml library reads it, which an anchor or tag on its first
+  // item does not move.
   const holders = new Map<unknown, Holder>();
-  const column = (node: yaml.Node) =>
-      node.range![0] - text.lastIndexOf('\n', node.range![0] - 1) - 1;
+  const column = (node: yaml.YAMLMap|yaml.YAMLSeq) =>
+      (node.srcToken as yaml.CST.BlockMap|yaml.CST.BlockSequence).indent;
   yaml.visit(doc, {
     Seq(_, seq) {
       const holder: Holder = seq.flow ? {kind: 'flow list'} :
@@ -1170,10 +1173,16 @@ function writtenStatements(text: string): WrittenStatement[] {
     Map(_, map) {
       if (map.flow) return;
       for (const pair of map.items) {
+        // What the key's line holds from that column to the key's end, with
+        // the key's anchor or tag.
+        const key = yaml.isNode(pair.key) ? pair.key.range! : undefined;
         holders.set(pair.value, {
           kind: 'block mapping',
           column: column(map),
-          key: yaml.isScalar(pair.key) ? String(pair.key.value) : '',
+          key: key ? text.slice(
+                         text.lastIndexOf('\n', key[0] - 1) + 1 + column(map),
+                         key[1]) :
+                     '',
         });
       }
     },
