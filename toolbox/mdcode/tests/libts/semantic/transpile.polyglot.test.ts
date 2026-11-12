@@ -794,6 +794,12 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['MYSQL', '-NULL', {error: 'kcmd does not translate - on NULL'}],
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NULL)', {sql: '(CURRENT_DATE)'}],
     ['POSTGRES', 'NULLIF(NULL, CURRENT_DATE)', {sql: 'NULLIF(NULL, CURRENT_DATE)'}],
+    // An INTERVAL times an amount, wherever the INTERVAL comes from, and a date
+    // that AVG or / reads.
+    ['POSTGRES', "(-INTERVAL '1 day') * 1.5", {error: 'kcmd does not translate an INTERVAL times a decimal number'}],
+    ['POSTGRES', "INTERVAL '1 day' * 1e2", {error: "kcmd does not translate INTERVAL '1 day' times the number 1e2"}],
+    ['POSTGRES', '(CURRENT_DATE - NOW()) * 2', {sql: '(JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))) * 2'}],
+    ['POSTGRES', "AVG(CURRENT_DATE + INTERVAL '1 day')", {error: 'kcmd does not translate AVG of a date'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

@@ -1545,22 +1545,23 @@ function notWhole(node: any, read: string): string|undefined {
   if (kind === 'neg') return notWhole(b.neg.this, read);
   if (['add', 'sub', 'mul'].includes(kind)) return notWhole(b[kind].left, read) ?? notWhole(b[kind].right, read);
   const text = numberText(b);
-  if (text !== undefined) return /^\d+$/.test(text) ? undefined : 'a decimal number';
+  if (text !== undefined) return /^\d+$/.test(text) ? undefined : /^\d*\.\d*$/.test(text) ? 'a decimal number' : `the number ${text}`;
   return b?.null !== undefined ? 'NULL' : valueName(b);
 }
 
 // Whether `node`, a source value in the engine's dialect `read`, is visibly an
 // INTERVAL: an INTERVAL value, a difference of dates or times (see
-// timeDifference), a negation, product, sum or difference of one, or one that
-// MAX, COALESCE or a similar function returns.
+// timeDifference), a negation or product of one, a sum or difference of two,
+// or one that MAX, COALESCE or a similar function returns. A value plus an
+// INTERVAL is a date or a time.
 function intervalTyped(node: any, read: string): boolean {
   const table = DATE_TABLES[read];
   const b = bare(node);
   if (!table?.sums) return false;
   if (typeof intervalValue(b, read, table) === 'object' || timeDifference(b, read)) return true;
   const kind = kindOf(b) ?? '';
-  const operands = kind === 'neg' ? [b.neg.this] : ['add', 'sub', 'mul'].includes(kind) ?
-      [b[kind].left, b[kind].right] : returned(b);
+  if (kind === 'add' || kind === 'sub') return intervalTyped(b[kind].left, read) && intervalTyped(b[kind].right, read);
+  const operands = kind === 'neg' ? [b.neg.this] : kind === 'mul' ? [b.mul.left, b.mul.right] : returned(b);
   return operands.some(o => intervalTyped(o, read));
 }
 
@@ -2142,9 +2143,11 @@ function nextNodes(kind: string, value: any, read: string):
   // BigQuery averages and divides an INTERVAL to whole microseconds, rounding
   // down. PostgreSQL and Databricks round to the nearest microsecond, and
   // Databricks gives a year-month INTERVAL in whole months.
-  const timed = (n: any) => intervalTyped(n, read);
-  if ((kind === 'avg' && timed(value.this)) || (kind === 'div' && (timed(value.left) || timed(value.right)))) {
-    return `${kind === 'avg' ? 'AVG' : '/'} of an INTERVAL`;
+  const averaged = kind === 'avg' ? [value.this] : kind === 'div' ? [value.left, value.right] : [];
+  const what = kind === 'avg' ? 'AVG' : '/';
+  if (averaged.some(n => intervalTyped(n, read))) return `${what} of an INTERVAL`;
+  if (averaged.some(n => dateValued(n, read))) {
+    return `${what} of a date${DATE_TABLES[read]?.numbers ? `, which ${DIGITS_NOTE}` : ''}`;
   }
   if (kind === 'add' || kind === 'sub' || kind === 'mul') return arithmetic(kind, value, read);
   // The sources read a string beside AND, OR or NOT as a truth value or a
@@ -2250,6 +2253,10 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
   if (sum) return typeof sum === 'string' ? sum : [sum.operand, ...(sum.values ?? [sum.amount])];
   if (timeDifference({[kind]: value}, read)) return sides;
+  // An INTERVAL times an amount that may not be an INT64 (see notWhole).
+  const interval = kind === 'mul' ? sides.findIndex(s => intervalTyped(s, read)) : -1;
+  const factor = interval >= 0 ? notWhole(sides[1 - interval], read) : undefined;
+  if (factor) return `an INTERVAL times ${factor}`;
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
   if (sides.some(s => dateValued(s, read))) return `${op} of a date${table?.numbers ? `, which ${DIGITS_NOTE}` : ''}`;
