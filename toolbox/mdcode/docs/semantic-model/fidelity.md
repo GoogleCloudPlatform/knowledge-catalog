@@ -461,7 +461,7 @@ by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
 and Databricks round to the nearest microsecond, and Databricks gives a
 year-month INTERVAL in whole months. BigQuery's NULLIF takes no INTERVAL when
 the query runs, though a dry run accepts it, so NULLIF with an INTERVAL
-becomes `IF(a = b, NULL, a)`.
+becomes `IF(a = b, NULL, a)`, also from Spanner.
 
 From PostgreSQL and Databricks, a DATE or a DATETIME that import can see
 beside a TIMESTAMP, compared with it or as a result of one COALESCE, IF or

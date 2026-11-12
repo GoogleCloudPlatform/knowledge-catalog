@@ -830,6 +830,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'NULLIF(INTERVAL 1 MONTH, INTERVAL 30 DAYS)', {error: 'kcmd does not translate NULLIF on a year-month INTERVAL and a day-time INTERVAL'}],
     ['POSTGRES', "NULLIF(1, INTERVAL '1 day')", {error: 'kcmd does not translate NULLIF on an INTERVAL and a number'}],
     ['POSTGRES', "NULLIF(INTERVAL '1 day', i)", {sql: 'IF(INTERVAL 1 DAY = i, NULL, INTERVAL 1 DAY)'}],
+    ['SPANNER', 'NULLIF(INTERVAL 1 DAY, x)', {sql: "IF(INTERVAL '1' DAY = x, NULL, INTERVAL '1' DAY)"}],
     ['DATABRICKS', 'NULLIF(INTERVAL 1 DAY, NULL)', {sql: '(INTERVAL 1 DAY)'}],
     ['POSTGRES', "COALESCE(i, INTERVAL '1 day') + SUM(x)", {error: 'kcmd does not translate + of an INTERVAL'}],
     ['SPANNER', 'EXTRACT(HOUR FROM INTERVAL 1 DAY + INTERVAL 2 HOUR)', {sql: "EXTRACT(HOUR FROM INTERVAL '1' DAY + INTERVAL '2' HOUR)"}],

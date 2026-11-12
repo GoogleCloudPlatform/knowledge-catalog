@@ -2475,8 +2475,10 @@ function givenValues(node: any): any[] {
 // function on the lists.
 const FORM_CALL = 'KCMD_BIGQUERY_FORM';
 
-// The dialects whose NULLIF gives the type of its first value.
+// The dialects whose NULLIF gives the type of its first value, and those
+// whose NULLIF is BigQuery's.
 const NULLIF_FIRST = new Set(['postgresql', 'databricks', 'tsql', 'snowflake']);
+const NULLIF_BIGQUERY = new Set(['spanner']);
 
 // A FORM_CALL of `sql`, BigQuery SQL that names `operands`, source values, _1,
 // _2 and so on.
@@ -2682,17 +2684,21 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
 
 // The node to write in place of NULLIF(a, b), whose arguments are `args`, in
 // the engine's dialect `read`; a message; or undefined to translate it as it
-// is. BigQuery's NULLIF gives the common type of its values, PostgreSQL's,
-// Databricks', SQL Server's and Snowflake's the type of a, and MySQL's a date
-// or a time as text, which import leaves untranslated, as it does a date or a
-// time in an ANSI_SQL text, which may run on MySQL. BigQuery's NULLIF takes no
-// INTERVAL when the query runs, though a dry run accepts it. IF(a = b, NULL, a)
-// gives the type of a, with TIMESTAMP(x) around a DATE or a DATETIME compared
-// with a TIMESTAMP, which the sources read as midnight UTC. A value with no
-// visible type, such as a column, may be any type. NULLIF(a, NULL) of a date, a
-// time or an INTERVAL a is a, and NULLIF(NULL, b) stays untranslated.
+// is. BigQuery's NULLIF gives the common type of its values, as Spanner's
+// does, PostgreSQL's, Databricks', SQL Server's and Snowflake's the type of a,
+// and MySQL's a date or a time as text, which import leaves untranslated, as
+// it does a date or a time in an ANSI_SQL text, which may run on MySQL.
+// IF(a = b, NULL, a) gives the type of a, with TIMESTAMP(x) around a DATE or a
+// DATETIME compared with a TIMESTAMP, which the sources read as midnight UTC.
+// BigQuery's NULLIF takes no INTERVAL when the query runs, though a dry run
+// accepts it, so NULLIF with an INTERVAL gets that form from every dialect. A
+// value with no visible type, such as a column, may be any type. NULLIF(a,
+// NULL) of a date, a time or an INTERVAL a is a, and NULLIF(NULL, b) stays
+// untranslated.
 function nullifForm(args: any[], read: string): any {
   const [a, b] = args;
+  const interval = args.some(v => isInterval(v, read));
+  if (NULLIF_BIGQUERY.has(read) && !interval) return undefined;
   if (bare(a)?.null !== undefined) return 'NULLIF of NULL';
   const dated = read === 'mysql' ? args.findIndex(v => mysqlKind(v, read) === 'date') : -1;
   if (dated >= 0) {
@@ -2711,7 +2717,6 @@ function nullifForm(args: any[], read: string): any {
         (types.includes(undefined) && bare(b)?.null === undefined ? 'value that may be another type' : undefined);
     return other ? `NULLIF on a ${time} and a ${other}` : `NULLIF of a ${time}`;
   }
-  const interval = args.some(v => isInterval(v, read));
   if (bare(b)?.null !== undefined && (timeType(a, read) || interval)) return formCall('(_1)', [a]);
   if (types.length === 1 && !interval) return undefined;
   return formCall('IF(_1, NULL, _2)', [equal(a, b), a]);
@@ -2746,6 +2751,8 @@ function dayDiffForm(name: string, args: any[], read: string): any {
 function functionArgs(fn: any, read: string): unknown[]|string|undefined {
   const name = String(fn.name).toUpperCase();
   const args: any[] = fn.args ?? [];
+  const nullif = name === 'NULLIF' && args.length === 2 ? nullifForm(args, read) : undefined;
+  if (typeof nullif === 'string') return nullif;
   if (read === 'spanner') return spannerArgs(name, args);
   // The current date and timestamp, DATEADD(day, 1, d), MySQL's DATE_ADD(d,
   // INTERVAL 1 DAY) and Databricks' date_add(d, 1), by the dialect's table in
@@ -2765,10 +2772,6 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return undefined;
   }
   if (name === 'CONCAT') return joinProblem(name, args, read) ?? args;
-  if (name === 'NULLIF') {
-    const exact = nullifForm(args, read);
-    return typeof exact === 'string' ? exact : args;
-  }
   const part = (arg: any) => String(partName(arg) ?? '?');
   if (name === 'DATE_PART' && intervalPart(part(args[0]), args[1], read)) return [args[1]];
   if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'DATE_DIFF', 'TIMESTAMPDIFF'].includes(name)) {
@@ -3594,18 +3597,20 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
   const rewrite = (node: any): any => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(rewrite);
-    const zoned = (isNode(node) && overInterval(node, 'spanner') === true && equalities(kindOf(node)!, node[kindOf(node)!])) ||
-        (isNode(node) && spannerZone(node)) || node;
+    // The exact forms, such as the equalities of IN over an INTERVAL (see
+    // exactForm), and Spanner's time zone.
+    const exact = isNode(node) ? exactForm(node, 'spanner') : undefined;
+    const zoned = (typeof exact === 'object' && exact) || (isNode(node) && spannerZone(node)) || node;
     return Object.fromEntries(Object.entries(zoned).map(([k, v]) => [k, rewrite(v)]));
   };
   // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
   // which it writes as DATETIME, and writes DAYOFWEEK and DAYOFYEAR as DOW and
-  // DOY.
+  // DOY. Each FORM_CALL becomes its form (see formSql).
   const result = mapTree(rewrite(tree), node => {
     if (node.data_type === 'timestamp') node.timezone = true;
     const part = node.extract && partName(node.extract.field);
     if (part === 'DAYOFWEEK' || part === 'DAYOFYEAR') node.extract.field = {Custom: part};
-    return undefined;
+    return String(node.function?.name).toUpperCase() === FORM_CALL ? formSql(node.function.args) : undefined;
   });
   const written = engine.generate([result], 'bigquery');
   if (!written.success || written.sql?.length !== 1) {
