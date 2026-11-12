@@ -1515,6 +1515,14 @@ semantic_model:
                 UPDATE ledger SET closed = TRUE
               - ${second}
 `;
+  // MODEL with actions CloseBooks, Reopen and Recheck, whose statements are
+  // written as `lists` after their `statements:`.
+  const ACTIONS = (...lists: string[]) => `${MODEL}    actions:\n${
+      ['CloseBooks', 'Reopen', 'Recheck'].map((name, i) => `      - name: ${name}
+        executor:
+          sql:
+            statements:${lists[i]}
+`).join('')}`;
 
   // Each row pushes the catalog's files, writes the local ones in their
   // place, pulls, and gives the files pull leaves. Only what the catalog
@@ -1563,6 +1571,31 @@ semantic_model:
       BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
       BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = FALSE')),
       BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
+    ],
+    // A statement written in place of a flow list or an alias that a comment
+    // follows is double-quoted, since push refuses a plain statement a
+    // comment follows.
+    [
+      'action statements a comment comes to follow',
+      BOTH(ACTIONS(
+          '\n              - UPDATE ledger SET closed = FALSE' +
+              '\n              - DELETE FROM ledger WHERE closed = FALSE',
+          '\n              - UPDATE ledger SET closed = TRUE'.repeat(2),
+          ' [UPDATE ledger SET closed = TRUE]')),
+      BOTH(ACTIONS(
+          '\n              [\n                &close UPDATE ledger SET closed = TRUE' +
+              '\n              ] # only closed rows\n                # and none reopened',
+          '\n              - *close\n                # as CloseBooks did' +
+              '\n              -\n                *close # again',
+          ' [*close # as Reopen does\n              ]')),
+      BOTH(ACTIONS(
+          '\n              - "UPDATE ledger SET closed = FALSE" # only closed rows' +
+              '\n              - "DELETE FROM ledger WHERE closed = FALSE"' +
+              '\n                # and none reopened',
+          '\n              - "UPDATE ledger SET closed = TRUE"' +
+              '\n                # as CloseBooks did' +
+              '\n              -\n                "UPDATE ledger SET closed = TRUE" # again',
+          ' ["UPDATE ledger SET closed = TRUE" # as Reopen does\n              ]')),
     ],
     [
       'one value of a profile file',
