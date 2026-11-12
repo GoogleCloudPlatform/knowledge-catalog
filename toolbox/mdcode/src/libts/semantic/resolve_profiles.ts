@@ -107,18 +107,19 @@ export interface AvailabilityReport {
  * every metric that reads an unavailable field dropped; and every action with
  * no executor dropped. A field counts whether the entity declares or inherits
  * it. What a field or metric reads comes from the text `dialect` evaluates
- * (see textsFor). `dialect` defaults to the dialect the model's sources
- * imply. When the sources are in systems of different dialects, or one names
- * no system, there is no dialect and every text counts. When no lookup read
- * the dialect, it is null and no text counts.
+ * (see textsFor). An omitted `dialect` is the dialect the model's sources
+ * imply. When `dialect` is undefined, as when the sources are in systems of
+ * different dialects or one names no system, every text counts. When it is
+ * null, as when no lookup read the dialect, no text counts.
  * The input is never mutated. The report names each dropped block
  * and the unbound field that stops it, so a caller can state the withheld
  * coverage. A model with nothing unbound resolves unchanged.
  */
 export function pruneUnavailable(
     model: SemanticModel, profileName: string,
-    dialect: string|null|undefined = sourcesDialect(model)):
+    ...given: [dialect?: string|null|undefined]):
     {model: SemanticModel; report: AvailabilityReport} {
+  const dialect = given.length ? given[0] : sourcesDialect(model);
   const clone: SemanticModel = structuredClone(model);
   const report: AvailabilityReport = {
     profile: profileName,
@@ -1639,6 +1640,36 @@ export function firstEntityPerDatabase(
   return [...databases.values()];
 }
 
+// The sources `profile` states for the concrete entities of `profiled`, the
+// model with the profile applied, each with the dialect a lookup gave. A
+// source the loader's reader rejects leaves its entity the model file's table
+// and dialect, so it is left out. databaseOf still reads some rejected
+// sources, such as one with a leading `//`. A source that names no database
+// is left out too.
+function statedSources(profiled: SemanticModel, profile: ProfileSpec):
+    Array<{entity: string; source: string; lookedUp?: string}> {
+  const bindingOf = new Map(profile.entities.map(pe => [pe.name, pe]));
+  return (profiled.entities ?? []).flatMap(e => {
+    const source = bindingOf.get(e.name)?.source;
+    if (e.abstract || source === undefined || !databaseOf(source.trim()) ||
+        e.authoredSource !== source.trim()) {
+      return [];
+    }
+    return [{entity: e.name, source, lookedUp: e.sourceDialect}];
+  });
+}
+
+/**
+ * The dialect push reads the SQL of `profile` in: the one the sources the
+ * profile states imply, as dialectOfSources gives it. `profiled` is the model
+ * with the profile applied. A table the model file names for an entity the
+ * profile gives no source does not count.
+ */
+export function profileDialect(
+    profiled: SemanticModel, profile: ProfileSpec): string|null|undefined {
+  return dialectOfSources(statedSources(profiled, profile));
+}
+
 /** What the caller of validateProfileCompleteness checks itself. */
 export interface CompletenessOptions extends DialectLoad {
   // The caller warns about the model file's SQL that it reads, which it does
@@ -1719,35 +1750,21 @@ export function validateProfileCompleteness(
   }
   const seenOf = fieldsByEntity(profiled);
   const bindingOf = new Map(profile.entities.map(e => [e.name, e]));
-  // Every concrete entity bound, all in one database. The profile's dialect
-  // is the one its own sources imply, so a source the model file states for an
-  // entity the profile leaves out does not decide it.
-  const stated: Array<{entity: string; source: string; lookedUp?: string}> =
-      [];
+  // Every concrete entity bound, all in one database.
+  const stated = statedSources(profiled, profile);
   const profiledByName =
       new Map((profiled.entities ?? []).map(e => [e.name, e]));
-  // The entities whose source the loader's reader rejects.
+  // The entities whose source is rejected or names no database, which the
+  // one-database and dialect rules leave out. A rejected source is already
+  // reported.
   const rejected = new Set<string>();
   for (const e of entities) {
     if (e.abstract) continue;
-    const pe = bindingOf.get(e.name);
-    if (pe?.source === undefined) {
+    if (bindingOf.get(e.name)?.source === undefined) {
       errors.push(`${at}: entity '${e.name}' has no source in this profile`);
-      continue;
-    }
-    // A source the loader's reader rejects is already reported, and its
-    // entity keeps the model file's table and dialect. databaseOf still reads
-    // some rejected sources, such as one with a leading `//`. An entity whose
-    // source is rejected or names no database is left out of the one-database
-    // and dialect rules.
-    const db = databaseOf(pe.source.trim());
-    const profiledEntity = profiledByName.get(e.name);
-    if (!db || profiledEntity?.authoredSource !== pe.source.trim()) {
+    } else if (!stated.some(s => s.entity === e.name)) {
       rejected.add(e.name);
-      continue;
     }
-    const lookedUp = profiledEntity.sourceDialect;
-    stated.push({entity: e.name, source: pe.source, lookedUp});
   }
   const databases = firstEntityPerDatabase(stated, opts.sourceDatabases);
   if (databases.length > 1) {
@@ -1756,7 +1773,7 @@ export function validateProfileCompleteness(
         `${at} binds entities in more than one database (${named}); a ` +
         `profile reads from one system a single query can reach`);
   }
-  const dialect = dialectOfSources(stated);
+  const dialect = profileDialect(profiled, profile);
   const candidates = dialect === null ?
       possibleDialects(stated.map(s => profiledByName.get(s.entity)!)) :
       [];

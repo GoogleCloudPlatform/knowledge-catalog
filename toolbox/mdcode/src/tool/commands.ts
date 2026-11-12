@@ -31,7 +31,7 @@ import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_convert
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, profileSources, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileDialect, profileErrorMessage, profileForDocument, profileSources, pruneUnavailable, transpilesSomething,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -135,11 +135,14 @@ function hasTargetType(
   return type === 'bigquery' ? t.bigQuery.length > 0 : t.spanner.length > 0;
 }
 
-// The dialect pruning reads a model's SQL in: SPANNER when the model has a
-// Spanner graph target, since that graph reads SPANNER text first, else the
-// dialect its sources imply.
-function pruningDialect(model: SemanticModel): string|null|undefined {
-  return hasTargetType({model}, 'spanner') ? 'SPANNER' : sourcesDialect(model);
+// The dialect the report prunes the SQL of `profile` in: SPANNER when `model`
+// has a Spanner graph target, since that graph reads SPANNER text first, else
+// the dialect push's profile check reads it in. `model` is the model file
+// with `profile` applied.
+function pruningDialect(
+    model: SemanticModel, profile: ProfileSpec): string|null|undefined {
+  return hasTargetType({model}, 'spanner') ? 'SPANNER' :
+                                             profileDialect(model, profile);
 }
 
 
@@ -1505,7 +1508,8 @@ function printProfileReport(
   // Pruned for the graphs this profile's own deployments name.
   const {report} = pruneUnavailable(
       model, name,
-      pruningDialect({...model, deployments: unnamedDeployments(targets)}));
+      pruningDialect(
+          {...model, deployments: unnamedDeployments(targets)}, profile));
   console.log(`    target: ${
       targets.length ? targets.join(', ') :
                        '(none; no deployment names this profile)'}`);
