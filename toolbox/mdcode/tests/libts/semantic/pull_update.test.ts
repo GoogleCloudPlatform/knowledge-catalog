@@ -391,6 +391,32 @@ ${text.replace(/^/gm, '      ')}
     });
   }
 
+  // `data` written as a quoted string over several lines that changes is
+  // written on one line as compact JSON, with its numbers and escapes as
+  // written. Its text holds an apostrophe, so it is double-quoted, as kcmd
+  // writes a new block.
+  const JSON_TEXT =
+      String.raw`{"a":[1.0,12345678901234567890],"s":"\u00e9 \"x\" 'y'"}`;
+  const WRAPPED = String.raw`"{\n  \"a\": [1.0, 12345678901234567890],\n\
+      \  \"s\": \"\\u00e9 \\\"x\\\" 'y'\"\n}"`;
+  for (const [what, local, nl] of [
+    ['a double-quoted string wrapped with `\\` line ends', WRAPPED, '\n'],
+    ['a double-quoted string in a CRLF file', WRAPPED, '\r\n'],
+    ['a single-quoted string over several lines',
+     `'${JSON_TEXT.replace(',"s"', ',\n      "s"').replace(/'/g, "''")}'`,
+     '\n'],
+  ] as const) {
+    test(`writes ${what} as one line of compact JSON`, () => {
+      const google = (data: string) =>
+          `custom_extensions:\n  - vendor_name: GOOGLE\n    data: ${data}\n`
+              .replace(/\n/g, nl);
+      const data = JSON.parse(JSON_TEXT);
+      const block = (d: unknown) => google(`|\n      ${JSON.stringify(d)}`);
+      expect(updatedText(google(local), block(data), block({...data, b: 2})))
+          .toBe(google(JSON.stringify(`${JSON_TEXT.slice(0, -1)},"b":2}`)));
+    });
+  }
+
   // A block whose `data` is on one line.
   const inline = (data: string, vendor = 'GOOGLE') =>
       `- {vendor_name: ${vendor}, data: '${data}'}  # kept\n`;

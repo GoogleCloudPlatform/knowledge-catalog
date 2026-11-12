@@ -496,6 +496,15 @@ describe('profile translation', () => {
     expect(res.files[0].content).toBe(ossieDoc({extra: extra(`${SF_JSON},\n${' '.repeat(18)}${BQ_JSON}`)}));
   });
 
+  test('writes a GOOGLE block written as a double-quoted string wrapped with `\\` line ends as one line of compact JSON', async () => {
+    const extra = (data: string) => `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: ${data}\n`;
+    const wrapped = prodJson(SF_JSON).replace(/"/g, '\\"').replace(/\n( *)/g, (_, sp) => `\\n\\\n${' '.repeat(10)}${sp && `\\${sp}`}`);
+    const res = await importSemanticModelYaml(ossieDoc({extra: extra(`"${wrapped}"`)}), ossie);
+    expect(res.errors).toEqual([]);
+    const json = JSON.stringify(JSON.parse(prodJson(`${SF_JSON}, ${BQ_JSON}`)));
+    expect(res.files[0].content).toBe(ossieDoc({extra: extra(`'${json}'`)}));
+  });
+
   // A profile file that changes is written as YAML, as a model file is. One
   // that does not change stays as written. Each warning names its file.
   test.each([

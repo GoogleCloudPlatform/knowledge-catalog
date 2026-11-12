@@ -359,7 +359,9 @@ an item that moves, or an item it moves past, can be written in pull's form too.
 The JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
 profiles, changes the same way and keeps its layout. When that `data` would
 then not hold what the catalog holds, it comes back as the catalog holds it,
-and the rest of the file still changes only where it differs. Another
+and the rest of the file still changes only where it differs. A `data`
+written as a quoted string over several lines that changes is written as one
+line of compact JSON, quoted as kcmd quotes a new block. Another
 vendor's `data` comes back as the catalog holds it. Pull writes a file whole,
 with none of its comments, key order or formatting, when there is no local
 file, when the local file does not load or is not valid UTF-8, and when

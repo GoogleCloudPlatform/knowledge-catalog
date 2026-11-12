@@ -68,7 +68,9 @@ export function linkNodes(
  * comments and the blank lines above it. A flow collection over several lines
  * that changes is written again in block style. A value that would be written
  * as a block scalar that keeps its final line breaks, as `|+` does, is
- * double-quoted instead.
+ * double-quoted instead. The JSON `data` of a GOOGLE block written as a quoted
+ * string over several lines that changes is written on one line as compact
+ * JSON, quoted as kcmd quotes a new block.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
@@ -435,8 +437,17 @@ function setScalar(
   // that comes to need one is double-quoted.
   const indent = blockIndent(u.text, node, slot.col);
   const step = indent === undefined ? 0 : indent - slot.col;
-  let s = scalarText(
-      step >= 1 ? {...u, step} : u, value, slot.col, slot.flow, type, escaped);
+  // The JSON `data` of a GOOGLE block written as a quoted string over several
+  // lines is written on one line as compact JSON, quoted as kcmd quotes a new
+  // block. Only the whitespace outside its JSON strings goes, so its numbers,
+  // escapes and key order stay as written.
+  const compact = /^QUOTE/.test(type ?? '') && written.includes('\n') &&
+      isGoogleData(u, node) && isJson(node.value) && isJson(value);
+  let s = compact ?
+      scalarText(u, compactJson(value), slot.col, slot.flow) :
+      scalarText(
+          step >= 1 ? {...u, step} : u, value, slot.col, slot.flow, type,
+          escaped);
   // A value of several lines in place of a plain or double-quoted scalar is
   // double-quoted. As a block scalar it would take the comment after it into
   // its text. A single-quoted one stays single-quoted.
@@ -881,6 +892,28 @@ function skipBlank(t: string, p: number, limit: number): number {
 function keyOf(pair: yaml.Pair): string {
   const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
   return key === null ? '' : String(key);
+}
+
+/** Whether `node` is the `data` of a GOOGLE block. */
+function isGoogleData(u: Update, node: yaml.Node): boolean {
+  const [pair, map] = u.pairs.find(([p]) => p.value === node) ?? [];
+  return !!pair && keyOf(pair) === 'data' && yaml.isMap(map) &&
+      isGoogleVendor(map.get('vendor_name'));
+}
+
+/** Whether `value` is a string that parses as JSON. */
+function isJson(value: unknown): value is string {
+  try {
+    JSON.parse(value as string);
+    return typeof value === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/** `json`, a JSON text, without the whitespace outside its strings. */
+function compactJson(json: string): string {
+  return json.replace(/("(?:[^"\\]|\\.)*")|[ \t\n\r]+/g, (_, s) => s ?? '');
 }
 
 function entriesOf(value: object): Array<[string|number, unknown]> {

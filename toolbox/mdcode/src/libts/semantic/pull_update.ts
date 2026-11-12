@@ -84,8 +84,9 @@ export function catalogForm(
  * its local text, comments and form, and so does each part they both leave
  * out. Each part that changes is written in pull's form, except inside the
  * JSON `data` of a GOOGLE block, which keeps its layout (see `updatedJson`)
- * when `jsonLayout` is set, or else is the catalog's when it changes. The local
- * file must parse.
+ * when `jsonLayout` is set, or else is the catalog's when it changes. A `data`
+ * written as a quoted string over several lines that changes goes on one line
+ * as compact JSON (see `updateText`). The local file must parse.
  */
 export function updatedText(
     local: string, base: string, pulled: string, jsonLayout = true): string {

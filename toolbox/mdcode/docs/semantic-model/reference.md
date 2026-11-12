@@ -166,7 +166,9 @@ is written when the import reports an error. Import rewrites only the values it
 changes, and every other line of the file stays as written, with its comments,
 blank lines, quoting, indentation and line endings. The JSON `data` of a
 `GOOGLE` block keeps its layout too. A translation that `--transpile` adds to a
-profile there is written like the entry beside it. Comments on anything import
+profile there is written like the entry beside it. A `data` written as a
+quoted string over several lines is written as one line of compact JSON
+instead, quoted as kcmd quotes a new block. Comments on anything import
 removes or moves elsewhere in the file are dropped, such as those on a key that
 goes into or out of a `GOOGLE` block. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.
