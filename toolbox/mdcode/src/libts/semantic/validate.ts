@@ -984,64 +984,75 @@ export function validateActions(
 //
 // A null `dialect` says the statements' dialect is not known, as when no
 // lookup read the dialect of the model's tables or the model file leaves its
-// tables to a profile. The errors are then those that every dialect in
-// SQL_CODE_DIALECTS gives, and a check that knows the dialect reports the
-// others.
+// tables to a profile. A statement is then refused when every dialect in
+// SQL_CODE_DIALECTS refuses it: for each rule they all find it breaks, in the
+// first one's words, or else for what the first one finds. A check that knows
+// the dialect reports the others.
 function sqlExecutorErrors(
     action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
-  if (dialect === null) {
-    const [first, ...rest] =
-        SQL_CODE_DIALECTS.map(d => sqlExecutorErrors(action, where, d));
-    return first.filter(e => rest.every(errors => errors.includes(e)));
-  }
-  const executor = action.executor;
-  const errors: string[] = [];
   const declared = action.parameters.map(p => p.name);
-  executor.sql.statements.forEach((stmt, i) => {
+  return action.executor.sql.statements.flatMap((stmt, i) => {
     const at = `${where} has a sql executor whose statement ${i + 1}`;
-    const text = stmt.trim();
-    if (!text) {
-      errors.push(`${at} is blank.`);
-      return;
+    if (dialect !== null) {
+      return statementErrors(action, at, stmt, declared, dialect)
+          .map(([, error]) => error);
     }
-    // The same reader the runtime uses, deliberately: what a model may
-    // PUBLISH and what the runtime will EXECUTE have to agree about where a
-    // statement's verb is. A naive first-word read disagreed -- the runtime
-    // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
-    // tests, while this rejected them at push time, so the library accepted an
-    // authored executor `kcmd` refused. Sharing the scanner does not widen
-    // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
-    // does not list, so a MERGE is still refused here.
-    const verb = leadingDmlVerb(text, dialect);
-    if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
-      // Name what the author wrote, not merely that nothing was found. The
-      // scanner reads DML verbs only, so a SELECT executor -- the likeliest
-      // mistake here -- comes back empty, and 'has no readable DML verb' would
-      // describe a query the author can see perfectly well. When the statement
-      // does not plainly open with a word, the first token is a comment marker
-      // and names nothing, so report the absence instead.
-      const first = text.split(/\s/, 1)[0].toUpperCase();
-      const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
-      errors.push(
-          `${at} ${
-              wrote ? `starts with '${wrote}'` :
-                      'has no readable DML verb'}, but a statement must be ` +
-          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`);
-    }
-    if (text.slice(0, -1).includes(';')) {
-      errors.push(
-          `${at} contains ';'. Each statement runs on its own, so write ` +
-          `one statement per list entry.`);
-    }
-    for (const name of referencedParameters(text, dialect)) {
-      if (!boundParameter(name, declared, dialect)) {
-        errors.push(
-            `${at} binds '@${name}', but action '${action.name}' ` +
-            `declares no parameter of that name.`);
-      }
-    }
+    const readings = SQL_CODE_DIALECTS.map(
+        d => statementErrors(action, at, stmt, declared, d));
+    if (readings.some(r => !r.length)) return [];
+    const [first, ...rest] = readings;
+    const shared = first.filter(
+        ([rule]) => rest.every(r => r.some(([other]) => other === rule)));
+    return (shared.length ? shared : first).map(([, error]) => error);
   });
+}
+
+// The errors in the statement `stmt` of `action`, at `at`, read in `dialect`,
+// each with the rule it breaks: 'blank', 'verb', ';', or the parameter it
+// binds.
+function statementErrors(
+    action: Action, at: string, stmt: string, declared: string[],
+    dialect?: string): Array<[string, string]> {
+  const text = stmt.trim();
+  if (!text) return [['blank', `${at} is blank.`]];
+  const errors: Array<[string, string]> = [];
+  // The same reader the runtime uses, deliberately: what a model may
+  // PUBLISH and what the runtime will EXECUTE have to agree about where a
+  // statement's verb is. A naive first-word read disagreed -- the runtime
+  // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
+  // tests, while this rejected them at push time, so the library accepted an
+  // authored executor `kcmd` refused. Sharing the scanner does not widen
+  // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
+  // does not list, so a MERGE is still refused here.
+  const verb = leadingDmlVerb(text, dialect);
+  if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
+    // Name what the author wrote, not merely that nothing was found. The
+    // scanner reads DML verbs only, so a SELECT executor -- the likeliest
+    // mistake here -- comes back empty, and 'has no readable DML verb' would
+    // describe a query the author can see perfectly well. When the statement
+    // does not plainly open with a word, the first token is a comment marker
+    // and names nothing, so report the absence instead.
+    const first = text.split(/\s/, 1)[0].toUpperCase();
+    const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
+    errors.push(['verb',
+      `${at} ${
+          wrote ? `starts with '${wrote}'` :
+                  'has no readable DML verb'}, but a statement must be ` +
+          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`]);
+  }
+  if (text.slice(0, -1).includes(';')) {
+    errors.push([';',
+      `${at} contains ';'. Each statement runs on its own, so write ` +
+          `one statement per list entry.`]);
+  }
+  for (const name of referencedParameters(text, dialect)) {
+    if (!boundParameter(name, declared, dialect)) {
+      errors.push([`@${name}`,
+        `${at} binds '@${name}', but action '${action.name}' ` +
+            `declares no parameter of that name.`]);
+    }
+  }
   return errors;
 }
 

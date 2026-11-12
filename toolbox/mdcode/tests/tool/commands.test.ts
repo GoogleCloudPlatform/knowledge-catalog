@@ -2151,24 +2151,38 @@ describe('a pull', () => {
   }
 
   // A Spanner database reads an action's statement as GoogleSQL or as
-  // PostgreSQL. With no table's dialect read, pull warns only about an error
-  // push gives under both.
+  // PostgreSQL. With no table's dialect read, pull warns only about a
+  // statement push refuses under both: for a rule both find it breaks, in
+  // GoogleSQL's words, or else for what GoogleSQL finds.
   for (const [what, statement, error] of [
     // PostgreSQL reads `$$@raw$$` as a string.
-    ['a parameter only GoogleSQL reads',
+    ['a parameter only GoogleSQL reads that the action does not declare',
      'UPDATE orders SET note = $$@raw$$ WHERE id = @id', ''],
     // GoogleSQL reads `#` as the start of a comment.
-    ['a parameter only PostgreSQL reads',
+    ['a parameter only PostgreSQL reads that the action does not declare',
      'UPDATE orders SET flags = flags # 1 WHERE id = @missing', ''],
     // GoogleSQL matches `@ID` to `id`, and PostgreSQL does not.
     ['a parameter GoogleSQL matches in another case',
      'UPDATE orders SET note = @ID WHERE id = @id', ''],
-    ['a parameter both read', 'UPDATE orders SET note = @note WHERE id = @id',
+    ['a parameter both read that the action does not declare',
+     'UPDATE orders SET note = @note WHERE id = @id',
      "has a sql executor whose statement 1 binds '@note', but action 'tag' " +
          'declares no parameter of that name.'],
+    // PostgreSQL reads `#` as an operator, so it finds no verb outside the
+    // parenthesis.
+    ['a MERGE after a `#` line, which each reads in its own words',
+     '# (\nMERGE INTO orders t USING src s ON t.id = s.id WHEN MATCHED THEN DELETE',
+     "has a sql executor whose statement 1 starts with 'MERGE', but a " +
+         'statement must be one of INSERT, UPDATE, DELETE.'],
+    // GoogleSQL reads the line as a comment, and PostgreSQL reads a DELETE
+    // that binds `@missing`.
+    ['a statement GoogleSQL refuses for its verb and PostgreSQL for a parameter',
+     '# DELETE FROM orders WHERE id = @missing',
+     'has a sql executor whose statement 1 has no readable DML verb, but a ' +
+         'statement must be one of INSERT, UPDATE, DELETE.'],
   ]) {
     test(`on a Spanner table ${error ? 'warns' : 'gives no warning'} about ` +
-             `${what} that an action does not declare`,
+             what,
          () => checkPull({
            name: 'commerce', relationships: [], metrics: [],
            entities: [onTable('Order', `${SPANNER}/orders`, ['id'])],
