@@ -1508,8 +1508,11 @@ export function transpileAdvice(
   }
   const command = `add one with '${importCommand('--transpile', model)}'`;
   const stop = outcomes?.get(document);
-  return stop ? `${command} after fixing this: ${stop.replace(/\.$/, '')}` :
-                command;
+  // The message the advice ends adds its own period, so a multi-line error
+  // ends at its last line.
+  return stop ?
+      `${command} after fixing this: ${stop.trimEnd().replace(/\.$/, '')}` :
+      command;
 }
 
 // The advice for `f`, a field or metric with no text in `dialect`: give it

@@ -2180,6 +2180,17 @@ describe('a pull', () => {
          });
   }
 
+  // An error of several lines, such as a parse error with its code frame,
+  // ends the warning at its last line.
+  test('ends the warning at the last line of an error of several lines',
+       async () => {
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: [\n');
+         expect(await pullModel(snowflakeCode())).toBe(0);
+         expect(messages(console.warn)).toMatch(
+             /after fixing this: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n\^\.$/);
+       });
+
   // Under --dry-run --force-remove, that import leaves out the files the pull
   // would delete: another model's file and the older profile directory.
   test('under --dry-run --force-remove runs that import without the files ' +
