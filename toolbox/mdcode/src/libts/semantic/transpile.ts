@@ -3410,12 +3410,11 @@ function zoned(node: any): boolean {
 // What `node`, a SPANNER value, visibly is: the engine's literal type,
 // 'column', a type a cast gives, 'date', 'timestamp', or 'interval' for an
 // INTERVAL (see intervalKind) and a difference of two dates, timestamps or
-// columns.
+// columns (see spannerDifference). A difference of two columns may be a
+// number, which needs no time zone either.
 function spannerType(node: any): string|undefined {
   const b = bare(node);
-  const sub: (string|undefined)[] = b?.sub ? [b.sub.left, b.sub.right].map(spannerTime) : [];
-  return spannerTime(b) ?? (intervalKind(b, 'spanner') ||
-      (sub.length && sub.every(t => ['timestamp', 'date', 'column'].includes(t!))) ? 'interval' : undefined);
+  return spannerTime(b) ?? (intervalKind(b, 'spanner') || spannerDifference(b, true) ? 'interval' : undefined);
 }
 
 // What `node`, a SPANNER value, visibly is when that is not an INTERVAL: the
@@ -3432,13 +3431,13 @@ function spannerTime(node: any): string|undefined {
 }
 
 // Whether `node`, a SPANNER value, is a difference of two dates, timestamps or
-// columns, one of them a date or a timestamp. Spanner has no INTERVAL column
-// and subtracts no number from a date, so it is an INTERVAL. A difference of
-// two columns may be a number.
-function spannerDifference(node: any): boolean {
+// columns, one of them a date or a timestamp, or with `columns` also of two
+// columns. Spanner has no INTERVAL column and subtracts no number from a date,
+// so the first is an INTERVAL. A difference of two columns may be a number.
+function spannerDifference(node: any, columns = false): boolean {
   const types = node?.sub ? [node.sub.left, node.sub.right].map(spannerTime) : [];
   return types.length === 2 && types.every(t => ['timestamp', 'date', 'column'].includes(t!)) &&
-      types.some(t => t !== 'column');
+      (columns || types.some(t => t !== 'column'));
 }
 
 // The parts of a SPANNER node of `kind` that import still has to check, the
