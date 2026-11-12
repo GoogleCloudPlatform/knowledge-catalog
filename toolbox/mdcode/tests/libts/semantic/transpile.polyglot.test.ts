@@ -623,6 +623,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'current_date() - 2147483648', {error: 'kcmd does not translate - by a number outside the INT range'}],
     ['DATABRICKS', 'dateadd(SECOND, n, now())', {error: "kcmd does not translate DATEADD with part 'SECOND' by an expression"}],
     ['DATABRICKS', 'd + 3 * INTERVAL 1 DAY', {error: 'kcmd does not translate + INTERVAL 1 DAY times an amount on a value that may be a TIMESTAMP'}],
+    ['DATABRICKS', 'current_date() + INTERVAL 1 MONTH * 1.5', {error: 'kcmd does not translate INTERVAL 1 MONTH times a decimal number'}],
     ['DATABRICKS', 'current_date() + (n * INTERVAL 1 MONTH - 3 * INTERVAL 1 YEAR)', {sql: 'DATE_ADD(CURRENT_DATE, INTERVAL (-36 + (n)) MONTH)'}],
     ['DATABRICKS', 'INTERVAL 1 MONTH + INTERVAL 1 DAY', {error: 'kcmd does not translate + of INTERVAL 1 MONTH and INTERVAL 1 DAY'}],
     // A single INTERVAL alone or compared.

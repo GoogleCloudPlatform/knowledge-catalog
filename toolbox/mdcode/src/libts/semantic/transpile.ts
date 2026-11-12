@@ -1514,6 +1514,14 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
     if (!left === !right) return undefined;
     const [joined, times] = left ? [left, b.mul.right] : [right!, b.mul.left];
     if (typeof joined === 'string') return joined;
+    // BigQuery multiplies an INTERVAL only by an INT64, so a literal other
+    // than a whole number, such as 1.5, '2' or NULL, stays untranslated.
+    const n = bare(times);
+    const literal = n?.literal || bare(n?.neg?.this)?.literal || n?.null !== undefined;
+    if (literal && !/^-?\d+$/.test(numberText(n) ?? '')) {
+      const what = numberText(n) !== undefined ? 'a decimal number' : n?.null !== undefined ? 'NULL' : valueName(n);
+      return `${joined.parts[0].text} times ${what}`;
+    }
     return {parts: joined.parts.map(p => ({...p, times: [...p.times ?? [], times]})), values: [...joined.values, times]};
   }
   if (!left || !right) return undefined;
@@ -1564,7 +1572,6 @@ function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined 
     const n = (p.negative ? -1n : 1n) * BigInt(numbers[i]!) * fold[p.unit]! / fold[unit]! * product;
     return {n, others: (p.times ?? []).filter(t => !whole(t))};
   });
-  if (terms.some(t => t.others.some(o => bare(o)?.literal))) return undefined;
   const total = terms.filter(t => !t.others.length).reduce((sum, t) => sum + t.n, 0n);
   const products = terms.filter(t => t.others.length);
   if (!products.length) return {amount: wholeNumber(String(total)), unit};
