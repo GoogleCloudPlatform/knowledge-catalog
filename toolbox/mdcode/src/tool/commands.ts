@@ -1928,8 +1928,8 @@ async function pullSemanticModel(
 // dialect, since that calls a service, so only push runs the checks that need
 // one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
 // SQL for the checks of which fields and entities an expression reads, and
-// skips each name whose reading depends on the dialect. It gives an error in
-// an action's SQL statement only when every dialect gives it. It reads the
+// skips each name whose reading depends on the dialect. It refuses an
+// action's SQL statement only when every dialect refuses it. It reads the
 // overview sidecars on disk, as push does, unless given `overviews`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,

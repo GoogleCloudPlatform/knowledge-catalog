@@ -1094,25 +1094,21 @@ export function yamlChangedStatementErrors(
     const dialects = statementDialects(model, file.name);
     const statements = writtenStatements(file.text);
     const markers = joinedLineMarkers(statements, file.text, dialects);
-    for (const {action, index, statement, anchor, holder} of statements) {
+    for (const written of statements) {
+      const {action, index, statement, anchor, holder} = written;
       // An alias names its anchor, which is where the author edits.
       const at = `action '${action}' in model '${model.name}' (${
           file.fileName}) has a sql executor whose statement ${index + 1}${
           anchor ? `, written at '&${anchor}',` : ''}`;
       const flow = holder?.kind === 'flow list';
-      const after = file.text.slice(statement.range![1]);
-      // The indent of a comment line after the statement, past blank lines.
-      // YAML counts only spaces as indent.
-      const commentIndent =
-          /^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(after)?.[1].length ?? -1;
+      const cut = commentCut(file.text, written);
       const marker = markers.get(statement);
-      if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
+      if (cut === 'same line') {
         errors.push(
             `${at} has a comment on the same line, so YAML reads the ` +
             `statement as '${statement.value}'. ${
                 advice("the text after ' #'", holder)}`);
-      } else if (statement.type === 'PLAIN' && holder &&
-                 commentIndent > (flow ? -1 : holder.column)) {
+      } else if (cut === 'line under') {
         errors.push(
             `${at} is followed by a comment line ${
                 flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
@@ -1130,6 +1126,36 @@ export function yamlChangedStatementErrors(
     }
   }
   return errors;
+}
+
+// Where a YAML comment ends the plain statement `written` of `text`: on its
+// line, or on a line under it, past blank lines, that is indented past its
+// holder's '-' or keys or is anywhere in a flow list. Undefined when no
+// comment ends it.
+function commentCut(text: string, {statement, holder}: WrittenStatement):
+    'same line'|'line under'|undefined {
+  if (statement.type !== 'PLAIN') return undefined;
+  const after = text.slice(statement.range![1]);
+  if (/^[ \t]+#/.test(after)) return 'same line';
+  // YAML counts only spaces as indent.
+  const indent = /^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(after)?.[1].length ?? -1;
+  return holder && indent > (holder.kind === 'flow list' ? -1 : holder.column) ?
+      'line under' :
+      undefined;
+}
+
+// The statements of `text`, a model or profile file changed from `before`,
+// that a comment ends, unless `before` has that statement in that action
+// ended by a comment too. An alias and its anchor share one statement.
+export function cutStatements(text: string, before: string): yaml.Scalar[] {
+  const key = ({action, statement}: WrittenStatement) =>
+      `${action}\n${statement.value}`;
+  const cutBefore = new Set(
+      writtenStatements(before).filter(s => commentCut(before, s)).map(key));
+  return [...new Set(
+      writtenStatements(text)
+          .filter(s => commentCut(text, s) && !cutBefore.has(key(s)))
+          .map(s => s.statement))];
 }
 
 // The collection a statement is written in: a block list with the column of

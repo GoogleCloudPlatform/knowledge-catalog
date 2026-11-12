@@ -72,9 +72,7 @@ export function linkNodes(
  * double-quoted instead, and so is a string that comes to hold a character
  * that YAML writes only as an escape, such as DEL. The JSON `data` of a GOOGLE
  * block written as a quoted string over several lines that changes is written
- * on one line as compact JSON, quoted as kcmd quotes a new block. An action
- * statement written in place of a flow list or an alias that a comment
- * follows is double-quoted.
+ * on one line as compact JSON, quoted as kcmd quotes a new block.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
@@ -476,25 +474,18 @@ function setScalar(
 
 /**
  * Writes `value` in place of `node`. The comment on the line where `node`
- * starts stays on that line. An action statement that a comment comes to
- * follow, on its line or on a line under it indented past its `-`, is written
- * as uncutText writes it, since push refuses a plain statement a comment
- * follows.
+ * starts stays on that line.
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
   const [from, to, lead] = yaml.isNode(node) && node.range ?
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
-  // A flow collection on one line stays flow. In a flow collection, a comment
-  // anywhere before the next item follows the value.
+  // A flow collection on one line stays flow.
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value) &&
           !spansLines(u.text, node)) {
-    const cut = slot.flow && /^\s*#/.test(t.slice(to)) && inStatements(u, node);
-    const text = cut ? uncutText(u, value, slot.col, true) :
-                       scalarText(u, value, slot.col, true);
-    u.edits.push([from, to, lead + text]);
+    u.edits.push([from, to, lead + scalarText(u, value, slot.col, true)]);
     return;
   }
   const keyLine = lineEnd(t, slot.after);
@@ -507,39 +498,25 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // there, so the comments above it and after it stay.
   const under = from > keyLine && (!yaml.isCollection(node) || node.flow);
   const col = under && isFull(value) ? from - lineStart(t, from) : slot.col;
+  const [first, ...rest] = under && isFull(value) ?
+      items(u, value as object, col) :
+      block(u, slot.prefix, value, col);
   // The text after the node on its last line stays, or after a block
   // scalar's header unless the scalar's text moved into the new value. A
   // block collection of several lines keeps none.
   const header = headerTail(t, from);
-  const kept = header ??
-      (end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
-           t.slice(to, end) :
-           '');
-  // Whether a comment follows a statement on the new value's first line, and
-  // on the first line under it that is not blank, indented past its `-`. In
-  // a collection, the first follows its first entry and the second its last.
-  const statements = inStatements(u, node);
-  const onLine = statements &&
-      /^[ \t]+#/.test(!under && from > keyLine ? t.slice(slot.after, keyLine) :
-                                                 kept);
-  const below = statements &&
-      (/^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(t.slice(end))?.[1].length ?? -1) >
-          col;
-  const last = entriesOf(isFull(value) ? value : {}).length - 1;
-  const [first, ...rest] = under && isFull(value) ?
-      items(u, value as object, col,
-            i => (i === 0 && onLine) || (i === last && below)) :
-      block(u, slot.prefix, value, col, undefined, onLine || below);
   const moved = u.pairs.some(([p]) => p.value === node && u.used.has(p));
-  const after = header !== undefined && moved ? '' : kept;
+  const after = header !== undefined ? (moved ? '' : header) :
+      end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
+                                       t.slice(to, end) :
+                                       '';
   if (under && !isFull(value)) {
     // As a block scalar, text of several lines would take the text after it.
     const type = typeof value === 'string' && value.includes('\n') ?
         'QUOTE_DOUBLE' :
         undefined;
-    const text = onLine || below ? uncutText(u, value, slot.col, false) :
-                                   scalarText(u, value, slot.col, false, type);
-    u.edits.push([from, end, text + after]);
+    u.edits.push(
+        [from, end, scalarText(u, value, slot.col, false, type) + after]);
     return;
   }
   if (under) {
@@ -552,32 +529,18 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
 }
 
 /**
- * `value` as scalarText writes it, or double-quoted on one line when it is a
- * string. Plain, a comment after it on its line or on a line under it would
- * read as part of it, and a block scalar would take a comment line under it
- * as text.
- */
-function uncutText(
-    u: Update, value: unknown, col: number, flow: boolean): string {
-  return typeof value === 'string' ?
-      scalarText(u, value, col, flow, 'QUOTE_DOUBLE', true) :
-      scalarText(u, value, col, flow);
-}
-
-/**
  * The lines of `prefix`, a key and `:` or a `-` at column `col`, and `value`
  * after it, in the file's indentation. `key` is the key `prefix` writes. A
  * value that moved keeps its text.
  */
 function block(
     u: Update, prefix: string, value: unknown, col: number,
-    key?: string, uncut = false): string[] {
+    key?: string): string[] {
   const pad = ' '.repeat(col);
   const moved = prefix.endsWith(':') ? movedText(u, key, value, col) : undefined;
   if (moved) return [pad + prefix + moved[0], ...moved.slice(1)];
   if (!isFull(value)) {
-    const s = uncut ? uncutText(u, value, col, false) :
-                      scalarText(u, value, col, false);
+    const s = scalarText(u, value, col, false);
     // A block scalar's header is a line of its own, so that a comment after
     // it stays out of the text.
     const line = `${pad}${prefix} ${s}`;
@@ -592,21 +555,16 @@ function block(
   }
   const nested =
       prefix === '-' ? 2 : Array.isArray(value) ? u.seqIndent : u.step;
-  return [pad + prefix, ...items(u, value, col + nested, () => uncut)];
+  return [pad + prefix, ...items(u, value, col + nested)];
 }
 
-/**
- * The lines of each item of the collection `value`, at column `col`. Each item
- * whose index `uncut` holds is written as uncutText writes a scalar.
- */
-function items(
-    u: Update, value: object, col: number,
-    uncut: (i: number) => boolean = () => false): string[] {
+/** The lines of each item of the collection `value`, at column `col`. */
+function items(u: Update, value: object, col: number): string[] {
   release(u, value);
-  return entriesOf(value).flatMap(([k, v], i) => {
+  return entriesOf(value).flatMap(([k, v]) => {
     const prefix =
         Array.isArray(value) ? '-' : `${scalarText(u, k, 0, false)}:`;
-    return block(u, prefix, v, col, String(k), uncut(i));
+    return block(u, prefix, v, col, String(k));
   });
 }
 
@@ -942,19 +900,6 @@ function skipBlank(t: string, p: number, limit: number): number {
 function keyOf(pair: yaml.Pair): string {
   const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
   return key === null ? '' : String(key);
-}
-
-/** Whether `node` is the statements of a `sql` executor, or one of them. */
-function inStatements(u: Update, node: unknown): boolean {
-  const list = (n: unknown) => {
-    const [pair, map] = u.pairs.find(([p]) => p.value === n) ?? [];
-    return !!pair && keyOf(pair) === 'statements' &&
-        u.pairs.some(([p]) => p.value === map && keyOf(p) === 'sql');
-  };
-  return list(node) ||
-      u.pairs.some(
-          ([p]) => yaml.isSeq(p.value) && p.value.items.includes(node) &&
-              list(p.value));
 }
 
 /** Whether `node` is the `data` of a GOOGLE block. */
