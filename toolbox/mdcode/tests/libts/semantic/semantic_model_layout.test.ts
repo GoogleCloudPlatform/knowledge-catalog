@@ -191,8 +191,9 @@ describe('SemanticModelLayout sibling profile files', () => {
     write('retail.profile.default.yaml', 'name: default\n');
     let l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(
-        "Profile name 'default' is reserved for the inline bindings in " +
-        "'retail.yaml'; remove 'retail.profile.default.yaml'.");
+        "Profile file 'retail.profile.default.yaml' has profile name " +
+        "'default', which is reserved for the inline bindings in " +
+        "'retail.yaml'; remove it.");
 
     fs.rmSync(path.join(groupDir(), 'retail.profile.default.yaml'));
     write('retail.profile.prod.yaml', 'name: default\n');
@@ -475,7 +476,10 @@ describe('SemanticModelLayout profile name rules', () => {
     writeToGroup('retail.profile.prod.yaml', 'name: default\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
-        .toThrow("change the name in 'retail.profile.prod.yaml' to 'prod'");
+        .toThrow(
+            "Profile file 'retail.profile.prod.yaml' declares name " +
+            "'default', which is reserved for the inline bindings in " +
+            "'retail.yaml'; change it to 'prod'.");
   });
 });
 

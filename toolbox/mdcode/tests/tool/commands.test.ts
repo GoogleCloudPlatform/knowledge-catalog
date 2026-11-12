@@ -2199,6 +2199,13 @@ describe('a pull', () => {
          'which is a 0.2.0.dev0 document; sibling profile files are ' +
          'Google-flavor only, and a 0.2.0.dev0 model keeps its profiles in its ' +
          'GOOGLE block.'],
+    // An error that names the model file too names the profile file first.
+    ['a profile file pull leaves that takes the reserved name',
+     {'commerce.profile.default.yaml': 'name: default\n'}, SECOND_GEN,
+     undefined, 'commerce.profile.default.yaml', 'leaves',
+     "Profile file 'commerce.profile.default.yaml' has profile name " +
+         "'default', which is reserved for the inline bindings in " +
+         "'commerce.yaml'; remove it."],
     ['an overview sidecar pull leaves', {[SIDECAR]: '---\nfoo: bar\n---\nOld.\n'},
      SECOND_GEN, undefined, SIDECAR, 'leaves',
      `Overview sidecar '${SIDECAR}': its frontmatter holds only contentType ` +

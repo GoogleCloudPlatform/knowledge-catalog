@@ -617,13 +617,13 @@ export function checkProfileFileName(
   const reserved = (n?: string) => n?.toLowerCase() === DEFAULT_PROFILE_NAME;
   if (reserved(name)) {
     throw new ProfileFileError(
-        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-        `inline bindings in '${modelFile}'; remove '${file}'.`);
+        `Profile file '${file}' has profile name '${name}', which is ` +
+        `reserved for the inline bindings in '${modelFile}'; remove it.`);
   }
   if (reserved(declared)) {
     throw new ProfileFileError(
-        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-        `inline bindings in '${modelFile}'; change the name in '${file}' to ` +
+        `Profile file '${file}' declares name '${declared}', which is ` +
+        `reserved for the inline bindings in '${modelFile}'; change it to ` +
         `'${name}'.`);
   }
   if (declared === undefined) {
