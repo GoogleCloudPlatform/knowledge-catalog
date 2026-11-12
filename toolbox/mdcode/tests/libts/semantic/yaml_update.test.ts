@@ -67,6 +67,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\n          k: "  y\n\n                    z"\nb:\n          k: |8\n                   y\n'
   ],
   [
+    'block scalars that come to start with an empty line',
+    'a: |\n  x\nm:\n  k: |-\n      x\n', v => (v.a = '\nx\n', v.m.k = '\nx'),
+    'a: |\n\n  x\nm:\n  k: |-\n\n      x\n'
+  ],
+  [
     'a block scalar whose first line of text holds only a tab',
     'a: |\n    \t\n      y\n', v => (v.a = '\t\n  z\n'), 'a: |\n    \t\n      z\n'
   ],

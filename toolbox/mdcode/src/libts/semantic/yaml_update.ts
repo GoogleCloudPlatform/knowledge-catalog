@@ -765,6 +765,7 @@ function scalarText(
   // file's.
   const written = flow ? text.slice(1, -2) :
                          text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`);
+  const block = /^[|>]/.test(written);
   const names: Record<string, string> =
       {'\x85': 'N', '\u2028': 'L', '\u2029': 'P'};
   return (special ? written.replace(
@@ -772,7 +773,11 @@ function scalarText(
                         c => `\\${names[c] ?? `x${c.charCodeAt(0).toString(16)}`}`) :
                     written)
       .split('\n')
-      .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)
+      // yaml writes an empty line at the start of a block scalar as a line of
+      // spaces, which is written empty.
+      .map((line, i) => i === 0 || !line ? line :
+               block && line === ' '.repeat(u.step) ? '' :
+                                                      ' '.repeat(col) + line)
       .join(u.nl);
 }
 
