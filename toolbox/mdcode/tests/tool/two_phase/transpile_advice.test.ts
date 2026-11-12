@@ -242,6 +242,25 @@ semantic_model:
         expect([...after.errors, ...after.warnings].join('\n')).not.toContain('kcmd import');
       });
 
+  // An in-place third-party import that stops on a deployment target writes
+  // nothing over its input, so the import its advice suggests reads the
+  // input, and the engine runs once for each.
+  test('an in-place import a deployment target stops runs the engine twice', async () => {
+    writeScope(dir, {deployments: [{name: 'd', target: 'bad'}], entities: [withCode()]});
+    spyOn(ApiContext, 'default').mockReturnValue(CTX);
+    const warnings: string[] = [];
+    spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+      warnings.push(a.join(' '));
+    });
+    spyOn(console, 'error').mockImplementation(() => {});
+    const imports = spyOn(engine, 'importSemanticModelYaml');
+    expect(await importModel(VANILLA, {flavor: 'google'})).toBe(1);
+    expect(imports).toHaveBeenCalledTimes(2);
+    expect(warnings).toContainEqual(expect.stringContaining(
+        "add one with 'kcmd import <file> --flavor google --transpile' after fixing " +
+        "this: Model 'commerce': deployment 'd' targets 'bad'"));
+  });
+
   // Runs `command`, where reading a Spanner database answers `status`. Gives
   // its exit code, the lines it prints and how many times it ran the import
   // engine.

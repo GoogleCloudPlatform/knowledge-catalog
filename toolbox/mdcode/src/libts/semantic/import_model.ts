@@ -1957,36 +1957,47 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
-  // Whether this third-party import writes its files over its input, asked
-  // once and only when a message depends on it. A strict import writes the
-  // model its input holds, so the import its advice suggests reads the input.
-  let overwrote: Promise<boolean>|undefined;
-  const overwrites = () => overwrote ??=
-      (async () => !doc.strict && !!await opts.overwritesInput?.(files))();
-  // Third-party import refuses a file with a GOOGLE block, so a command that
-  // reads such a file written over the input takes --input first-party.
-  const thirdPartyImport = !doc.strict &&
-      !(documentHasGoogleBlock(doc.root) && await overwrites());
   // Push's messages name the model document after the input file in strict
   // mode, since strict mode writes nothing on an error, and after the file
   // the import writes otherwise.
   const input = doc.strict ? opts.fileName : undefined;
   const document = (input ?? fileName).replace(/\.ya?ml$/, '');
+  // 1. Load the serialized output YAML with `loadModels`
+  // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
+  // validation while turning unaccepted table sources into warnings in
+  // non-strict mode, deduplicating warnings already recorded. Step 2 gives
+  // push's error for a field its table cannot run, so the load warns about
+  // it only on a table of the preferred dialect or one no lookup has read.
+  const baseLoad = {
+    bindingOptional: true,
+    warnUnacceptedSource: !doc.strict,
+    fieldTextChecked: true,
+    sourceDialects: load.sourceDialects,
+    document,
+  };
+  // Whether the model file loads and names only deployment targets in an
+  // accepted form. The import stops below on either, and writes nothing.
+  const loadsWithTargets = () => {
+    try {
+      return !loadModels(content, baseLoad).models.some(
+          m => (m.deployments ?? []).some(d => targetProblem('', d.target)));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return false;
+    }
+  };
+  // Whether this third-party import writes its files over its input, asked
+  // once and only when a message depends on it. A strict import writes the
+  // model its input holds, so the import its advice suggests reads the input.
+  let overwrote: Promise<boolean>|undefined;
+  const overwrites = () => overwrote ??= (async () => !doc.strict &&
+      loadsWithTargets() && !!await opts.overwritesInput?.(files))();
+  // Third-party import refuses a file with a GOOGLE block, so a command that
+  // reads such a file written over the input takes --input first-party.
+  const thirdPartyImport = !doc.strict &&
+      !(documentHasGoogleBlock(doc.root) && await overwrites());
   try {
-    // 1. Load the serialized output YAML with `loadModels`
-    // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
-    // validation while turning unaccepted table sources into warnings in
-    // non-strict mode, deduplicating warnings already recorded. Step 2 gives
-    // push's error for a field its table cannot run, so the load warns about
-    // it only on a table of the preferred dialect or one no lookup has read.
-    const loadOptions = {
-      bindingOptional: true,
-      warnUnacceptedSource: !doc.strict,
-      fieldTextChecked: true,
-      sourceDialects: load.sourceDialects,
-      thirdPartyImport,
-      document,
-    };
+    const loadOptions = {...baseLoad, thirdPartyImport};
     // The advice to add a BigQuery text names the first error the import it
     // suggests would stop on, so that import runs first when the advice may
     // be given.
