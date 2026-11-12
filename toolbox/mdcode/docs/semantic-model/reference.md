@@ -935,10 +935,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   that YAML reads differently from how it is written: an unquoted statement
   with a comment on the same line or on a line indented under it, or in a
   flow list on a line before the next `,` or `]`, and a statement whose lines
-  YAML joins, when a SQL comment in it runs on into a later line. Such a
-  comment starts at `--` or `/*`, or at `#` on BigQuery or Spanner. Where the
-  key of an inserted row
-  comes from is the statement's own business: a SQL function such as
+  YAML joins, when text from a later line follows `--` or `/*`, or `#` on
+  BigQuery or Spanner, on the same line, even when `*/` closes the `/*`.
+  Where the key of an inserted row comes from is the statement's own
+  business: a SQL function such as
   `GENERATE_UUID()`, a declared parameter, or a key column left out where it has
   a default. `affects` has no bearing on it. A declared parameter hands the key
   to the caller, and since the verb check reads only a statement's first word,
