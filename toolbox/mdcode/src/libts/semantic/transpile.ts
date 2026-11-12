@@ -2463,8 +2463,9 @@ const DIGITS: Record<string, string> = {
 // results, as TIMESTAMP(x). A dialect that reads `numbers`, MySQL, computes
 // with a DATE or a DATETIME, and compares it with a number, as the number of
 // its digits, such as 20240101 or 20240101093000, and gives it among numbers
-// as its text, as it gives each number written. It negates one as a DOUBLE.
-// BigQuery takes no literal NULL beside `+`, `-` or `*`.
+// as its text, as it gives each number written. It negates one as a DOUBLE,
+// and gives a DOUBLE for one beside NULL in `+`, `-` or `*`. BigQuery takes no
+// literal NULL there, so that NULL becomes CAST(NULL AS FLOAT64).
 function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
@@ -2477,13 +2478,15 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
       givenValues(v).every(g => !g || bare(g).null !== undefined || timeType(g, read) === type);
   if (numbers && (use === 'computed' || use === 'negated')) {
     const swap = new Map();
+    const nulls = values.filter(v => bare(v)?.null !== undefined);
     for (const v of values) {
       const type = typeOf(v)!;
-      if (bare(v)?.null !== undefined) return 'NULL';
       if (!DIGITS[type]) continue;
       if (!visible(v, type)) return `${article(type)} ${type} that may be another type`;
       swap.set(v, formCall(use === 'negated' ? DIGITS[type].replace('INT64', 'FLOAT64') : DIGITS[type], [v]));
     }
+    if (nulls.length && !swap.size) return 'NULL';
+    nulls.forEach(v => swap.set(v, formCall('CAST(NULL AS FLOAT64)', [])));
     return swap;
   }
   const types = [...new Set(values.map(typeOf))]

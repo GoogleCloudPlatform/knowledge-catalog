@@ -420,6 +420,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', '(CURDATE() + 1) * 2', {sql: "(CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1) * 2"}],
     ['MYSQL', 'NOW() - CURDATE()', {sql: "CAST(FORMAT_DATETIME('%Y%m%d%H%M%S', DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) AS INT64) - CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64)"}],
     ['MYSQL', '-CURDATE()', {sql: "-CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS FLOAT64)"}],
+    ['MYSQL', 'NULL - CURDATE()', {sql: "CAST(NULL AS FLOAT64) - CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64)"}],
     ['MYSQL', 'd - INTERVAL 1 DAY - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'DATE_ADD(d, INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
     ['SQLSERVER', 'DATEADD(day, 1, GETDATE()) - 1', {sql: "DATE_SUB(DATE_ADD(CURRENT_DATETIME('UTC'), INTERVAL 1 DAY), INTERVAL 1 DAY)"}],

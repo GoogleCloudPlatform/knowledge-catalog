@@ -317,7 +317,9 @@ names microseconds.
   A date or a time it can see, in `+`, `-` or `*` or compared with a number,
   counts as the number of its digits, as in MySQL: `CURDATE() + 1` becomes
   `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. Negated, it is a
-  FLOAT64, as MySQL gives a DOUBLE. A
+  FLOAT64, as MySQL gives a DOUBLE. A literal NULL beside it in `+`, `-` or
+  `*` becomes `CAST(NULL AS FLOAT64)`, since MySQL gives a DOUBLE there and
+  BigQuery takes no literal NULL in arithmetic. A
   COALESCE, IF or CASE counts so only when each value it can give is visibly a
   DATE, or each a DATETIME. A string beside an INTERVAL is read as MySQL reads
   it, as a date written YYYY-M-D or YYYYMMDD, or a date and a time of whole
