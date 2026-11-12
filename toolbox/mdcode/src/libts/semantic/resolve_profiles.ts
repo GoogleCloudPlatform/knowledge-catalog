@@ -2369,7 +2369,7 @@ function metricLabel(name: string): string {
 // that declares it: the entity's own when it binds the field, otherwise, of
 // the ancestors that bind it, the one with the most ancestors. Undefined when
 // none binds it.
-function boundDeclaration(
+export function boundDeclaration(
     model: SemanticModel, entityName: string,
     field: string): {owner: string; field: Field}|undefined {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
