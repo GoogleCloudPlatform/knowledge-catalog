@@ -108,8 +108,8 @@ it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 Pull writes and deletes nothing that a link puts outside the entry group
-directory. It keeps such a file as it is and warns, naming it, and
-`--dry-run` gives the same warning. When pull writes a file that is itself a
+directory. When the catalog's text differs, it keeps such a file as it is and
+warns, naming it, and `--dry-run` gives the same warning. When pull writes a file that is itself a
 link, the link's target counts; a deletion removes such a link as the link.
 
 | Flag | Effect |
