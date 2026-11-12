@@ -118,8 +118,8 @@ export function expressionProblems(
   const impliedDialect = dialectless ? undefined : sourcesRead;
   // Each entity's fields as the graph renders them (see selfReferenceProblems),
   // with an inherited text read in the sources' dialect, as the runtime
-  // reads it. The SQL parser reads `#` in MySQL as an operator, so a dialect
-  // in which `#` starts a comment is read with BigQuery's rules.
+  // reads it. The SQL parser does not read `#` in MySQL as a comment, so a
+  // dialect in which `#` starts a comment is read with BigQuery's rules.
   const inheritedReading =
       impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
                                                              undefined;
