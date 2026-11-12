@@ -2427,9 +2427,10 @@ function exactForm(node: any, read: string): any {
 }
 
 // Whether `node`, a source node in the engine's dialect `read`, is IN or a
-// CASE with an operand that compares a value visibly an INTERVAL. BigQuery's
-// IN and CASE compare no INTERVAL, so import writes the equalities they
-// compare by (see equalities).
+// CASE with an operand that compares a value visibly an INTERVAL. BigQuery
+// rejects IN and CASE over an INTERVAL when the query runs, though a dry run
+// accepts them, so import writes the equalities they compare by (see
+// equalities).
 function overInterval(node: any, read: string): boolean {
   const kind = kindOf(node) ?? '';
   const value = node[kind];

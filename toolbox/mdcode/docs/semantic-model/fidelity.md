@@ -317,7 +317,7 @@ names microseconds.
   as in MySQL, and adds every unit to it.
   A date or a time it can see stays untranslated where MySQL uses it as a
   number: in `+`, `-` or `*`, such as `CURDATE() + 1`, compared with a
-  number, also in BETWEEN, IN and CASE, negated, or beside a literal NULL.
+  number, also in BETWEEN, IN and CASE, or negated.
   MySQL turns the date into its digits there, such as 20240101. NULLIF with a
   date first, a date among number results of one COALESCE, IFNULL, IF or
   CASE, and a string beside an INTERVAL, such as `'2024-01-31' + INTERVAL 1
@@ -475,13 +475,13 @@ EXTRACT of an INTERVAL stays untranslated, since Databricks keeps a day and
 time INTERVAL as one count of microseconds: the hours of `INTERVAL 25 HOURS`
 are 1 there and 25 in BigQuery.
 
-BigQuery's IN and CASE compare no INTERVAL. From PostgreSQL, Databricks and
-Spanner, IN, NOT IN and a CASE with a value over an INTERVAL become the
-equalities they compare by: `x IN (a, b)` becomes `(x = a OR x = b)`, and
-`CASE x WHEN a` becomes `CASE WHEN x = a`. They give the same truth values,
-also for NULL. An equality with a NULL is NULL whatever the other value is,
-and BigQuery's `=` takes no literal NULL, so it becomes `CAST(NULL AS
-BOOLEAN)`.
+BigQuery rejects IN and a CASE with a value over an INTERVAL when the query
+runs, though a dry run accepts them. From PostgreSQL, Databricks and Spanner,
+IN, NOT IN and a CASE with a value over an INTERVAL become the equalities they
+compare by: `x IN (a, b)` becomes `(x = a OR x = b)`, and `CASE x WHEN a`
+becomes `CASE WHEN x = a`. They give the same truth values, also for NULL. An
+equality with a NULL is NULL whatever the other value is, and BigQuery's `=`
+takes no literal NULL, so it becomes `CAST(NULL AS BOOLEAN)`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
