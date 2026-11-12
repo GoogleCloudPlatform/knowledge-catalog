@@ -389,7 +389,8 @@ names microseconds.
   Server. Its fraction becomes the hours, minutes, seconds or milliseconds it
   holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that is not whole
   hundredths of a second stays untranslated, since SQL Server rounds it to
-  1/300 of a second.
+  1/300 of a second. DATEADD of milliseconds or smaller units stays
+  untranslated, since a datetime rounds them to 1/300 of a second.
 
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
 counts as days. Added to a DATE that COALESCE, IF or CASE gives, such as

@@ -627,9 +627,8 @@ const KINDS: Record<string, string[]> = Object.fromEntries([
 // each from and the fewest and most arguments it takes. PostgreSQL's and SQL
 // Server's CONCAT skip a NULL, where BigQuery's gives NULL. PostgreSQL and
 // MySQL round a FLOAT halfway between two numbers to the even one, and
-// Databricks rounds a DOUBLE through its shortest decimal text. Databricks'
-// date_trunc gives a TIMESTAMP, where BigQuery gives a DATE or a DATETIME. An
-// ANSI_SQL ROUND of a FLOAT rounds to the even number on PostgreSQL tables.
+// Databricks rounds a DOUBLE through its shortest decimal text. An ANSI_SQL
+// ROUND of a FLOAT rounds to the even number on PostgreSQL tables.
 // DATE_TABLES lists the functions that give the current date or timestamp or
 // add a unit. SPANNER_FUNCTIONS below lists Spanner's.
 const FUNCTIONS: Record<string, [string[], number, number]> = {
@@ -951,8 +950,8 @@ const MAY_BE_TIMESTAMP = 'a value that may be a TIMESTAMP';
 // for a DATE plus any INTERVAL, and adds no month, quarter or year to a
 // TIMESTAMP. An ANSI_SQL text runs by the rules of its tables' database, and
 // the databases add a unit to a DATE as different types. A SPANNER text has no
-// table. spannerNodes keeps its days, hours and minutes, which BigQuery adds as
-// Spanner does.
+// table. spannerNodes keeps its weeks, days, hours and minutes, which BigQuery
+// adds as Spanner does.
 const DATE_TABLES: Record<string, DateTable> = {
   // MySQL gives a DATE for a DATE plus a day or longer, and a DATETIME for a
   // DATE plus an hour, a minute or a second, as BigQuery's DATE_ADD and `+`
