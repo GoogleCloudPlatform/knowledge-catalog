@@ -1,6 +1,7 @@
 // Changes the text of a YAML document to hold a new value. Each part whose
 // value stays comes back byte for byte, and a changed part is written in the
-// file's indentation and line endings.
+// file's indentation and line endings. A changed block scalar keeps the
+// indentation of its lines.
 
 import * as yaml from 'yaml';
 
@@ -68,7 +69,10 @@ export function linkNodes(
  * comments and the blank lines above it. A flow collection over several lines
  * that changes is written again in block style. A value that would be written
  * as a block scalar that keeps its final line breaks, as `|+` does, is
- * double-quoted instead.
+ * double-quoted instead, and so is a string that comes to hold a character
+ * that YAML writes only as an escape, such as DEL. The JSON `data` of a GOOGLE
+ * block written as a quoted string over several lines that changes is written
+ * on one line as compact JSON, quoted as kcmd quotes a new block.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
@@ -429,12 +433,36 @@ function setScalar(
   const written = u.text.slice(node.range![0], node.range![1]);
   const escaped = type === 'QUOTE_DOUBLE' && written.includes('\\n') &&
       !written.includes('\n');
-  let s = scalarText(u, value, slot.col, slot.flow, type, escaped);
+  // A block scalar written again keeps the indentation of its lines of text,
+  // and a header that sets that indentation keeps setting it. An indentation
+  // indicator stops at 9, so a block more than 9 columns deeper than its key
+  // that comes to need one is double-quoted.
+  const indent = blockIndent(u.text, node, slot.col);
+  const step = indent === undefined ? 0 : indent - slot.col;
+  // The JSON `data` of a GOOGLE block written as a quoted string over several
+  // lines is written on one line as compact JSON, quoted as kcmd quotes a new
+  // block. Only the whitespace outside its JSON strings goes, so its numbers,
+  // escapes and key order stay as written.
+  const compact = /^QUOTE/.test(type ?? '') && written.includes('\n') &&
+      isGoogleData(u, node) && isJson(node.value) && isJson(value);
+  let s = compact ?
+      scalarText(u, compactJson(value), slot.col, slot.flow) :
+      scalarText(
+          step >= 1 ? {...u, step} : u, value, slot.col, slot.flow, type,
+          escaped);
   // A value of several lines in place of a plain or double-quoted scalar is
   // double-quoted. As a block scalar it would take the comment after it into
   // its text. A single-quoted one stays single-quoted.
   if (!/^(BLOCK|QUOTE_SINGLE)/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
+  }
+  // The digit stays on the side of the chomping indicator it was written on.
+  const head = (t: string) => /^[|>][-+0-9]*/.exec(t)?.[0] ?? '';
+  const digit = /[1-9]/.exec(head(written))?.[0];
+  if (head(s) && digit) {
+    const chomp = /[-+]/.exec(head(s))?.[0] ?? '';
+    s = s[0] + (/^.[-+]/.test(head(written)) ? chomp + digit : digit + chomp) +
+        s.slice(head(s).length);
   }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
@@ -700,8 +728,15 @@ function scalarText(
     return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
   }
   const lines = flow && typeof value === 'string' && value.includes('\n');
+  // YAML allows DEL and the C1 controls other than NEL only as escapes, and
+  // YAML 1.1 reads NEL, U+2028 and U+2029 as line breaks where YAML 1.2 does
+  // not, so a string that holds one is double-quoted and writes them as
+  // escapes.
+  const special =
+      typeof value === 'string' && /[\x7f-\x9f\u2028\u2029]/.test(value);
   const node = isObject(value) ? value : Object.assign(
-      new yaml.Scalar(value), {type: lines ? 'QUOTE_DOUBLE' : type});
+      new yaml.Scalar(value),
+      {type: lines || special ? 'QUOTE_DOUBLE' : type});
   const text = yaml.stringify(flow ? [node] : {_: node}, {
     ...YAML_OPTIONS,
     compat: 'yaml-1.1',
@@ -712,16 +747,37 @@ function scalarText(
     collectionStyle: flow ? 'flow' : 'any',
   });
   // A block scalar that keeps its final line breaks would take the blank
-  // lines after it, so such a value is double-quoted.
-  if (!flow && /^_: [|>][0-9]*\+/.test(text)) {
+  // lines after it, and an indentation indicator stops at 9, so such a value
+  // is double-quoted.
+  if (!flow &&
+      (/^_: [|>][0-9]*\+/.test(text) ||
+       u.step > 9 && /^_: [|>][-+]?[0-9]/.test(text))) {
     return scalarText(u, value, col, flow, 'QUOTE_DOUBLE');
+  }
+  // yaml writes some double-quoted text over several lines so that it reads
+  // back as other text, as with a line of one space, so that text goes on one
+  // line.
+  if (!flow && !oneLine && /^_: "/.test(text) &&
+      text.trimEnd().includes('\n') && !readsInBlock(text, value)) {
+    return scalarText(u, value, col, flow, 'QUOTE_DOUBLE', true);
   }
   // A block scalar's indentation indicator, which yaml writes as 2, is the
   // file's.
-  return (flow ? text.slice(1, -2) :
-                 text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`))
+  const written = flow ? text.slice(1, -2) :
+                         text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`);
+  const block = /^[|>]/.test(written);
+  const names: Record<string, string> =
+      {'\x85': 'N', '\u2028': 'L', '\u2029': 'P'};
+  return (special ? written.replace(
+                        /[\x7f-\x9f\u2028\u2029]/g,
+                        c => `\\${names[c] ?? `x${c.charCodeAt(0).toString(16)}`}`) :
+                    written)
       .split('\n')
-      .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)
+      // yaml writes an empty line at the start of a block scalar as a line of
+      // spaces, which is written empty.
+      .map((line, i) => i === 0 || !line ? line :
+               block && line === ' '.repeat(u.step) ? '' :
+                                                      ' '.repeat(col) + line)
       .join(u.nl);
 }
 
@@ -798,6 +854,25 @@ function headerTail(t: string, from: number): string|undefined {
   return /^[|>][-+0-9]*(.*)/.exec(t.slice(from, lineEnd(t, from)))?.[1];
 }
 
+/**
+ * The indentation of the lines of text of the block scalar `node`, whose key
+ * or `-` is at column `col`, or undefined when `node` is not a block scalar or
+ * has no line of text. A header that sets the indentation gives it, and
+ * otherwise the spaces before its first line of text do.
+ */
+function blockIndent(
+    t: string, node: yaml.Scalar, col: number): number|undefined {
+  const [from, to] = node.range!;
+  const header =
+      /^[|>](?:([1-9])[-+]?|[-+]([1-9])?)?(?![-+0-9])/.exec(t.slice(from, to));
+  if (!header) return undefined;
+  const digit = header[1] ?? header[2];
+  if (digit) return col + Number(digit);
+  const line =
+      t.slice(from, to).split('\n').slice(1).find(l => /[^ \r]/.test(l));
+  return line === undefined ? undefined : /^ */.exec(line)![0].length;
+}
+
 function lineStart(t: string, p: number): number {
   return t.lastIndexOf('\n', p - 1) + 1;
 }
@@ -825,6 +900,28 @@ function skipBlank(t: string, p: number, limit: number): number {
 function keyOf(pair: yaml.Pair): string {
   const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
   return key === null ? '' : String(key);
+}
+
+/** Whether `node` is the `data` of a GOOGLE block. */
+function isGoogleData(u: Update, node: yaml.Node): boolean {
+  const [pair, map] = u.pairs.find(([p]) => p.value === node) ?? [];
+  return !!pair && keyOf(pair) === 'data' && yaml.isMap(map) &&
+      isGoogleVendor(map.get('vendor_name'));
+}
+
+/** Whether `value` is a string that parses as JSON. */
+function isJson(value: unknown): value is string {
+  try {
+    JSON.parse(value as string);
+    return typeof value === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/** `json`, a JSON text, without the whitespace outside its strings. */
+function compactJson(json: string): string {
+  return json.replace(/("(?:[^"\\]|\\.)*")|[ \t\n\r]+/g, (_, s) => s ?? '');
 }
 
 function entriesOf(value: object): Array<[string|number, unknown]> {

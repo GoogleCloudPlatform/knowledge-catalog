@@ -456,6 +456,61 @@ describe('profile translation', () => {
     expect(res.warnings).not.toContain("Converted 'retail.profile.prod.yaml' to YAML.");
   });
 
+  // Profile prod as JSON, with order_id bound to the JSON `dialects`.
+  const prodJson = (dialects: string) => `{
+  "profiles": [
+    {
+      "name": "prod",
+      "entities": [
+        {
+          "name": "orders",
+          "source": "${BQ_PREFIX}/tables/orders_prod",
+          "primary_key": ["order_id"],
+          "fields": [
+            {
+              "name": "order_id",
+              "expression": {
+                "dialects": [
+                  ${dialects}
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
+  const SF_JSON = '{ "dialect": "SNOWFLAKE", "expression": "NVL(order_id, 0)" }';
+  const BQ_JSON = '{ "dialect": "BIGQUERY", "expression": "COALESCE(order_id, 0)" }';
+  // [layout, the GOOGLE block's `data` written for its JSON text]
+  test.each([
+    ['over several lines', (json: string) => `|\n${json.replace(/^/gm, ' '.repeat(10))}`],
+    ['over lines indented deeper than the file', (json: string) => `|\n${json.replace(/^/gm, ' '.repeat(14))}`],
+    ['on one line', (json: string) => `'${json.replace(/\n */g, ' ')}'`],
+  ])('writes only the translated entry into a GOOGLE block written %s, beside another vendor\'s block', async (_, data) => {
+    const extra = (dialects: string) => '    custom_extensions:\n      - vendor_name: GOOGLE\n' +
+        `        data: ${data(prodJson(dialects))}\n      - vendor_name: ACME\n        data: '{"x":   1}'\n`;
+    const res = await importSemanticModelYaml(ossieDoc({extra: extra(SF_JSON)}), ossie);
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toBe(ossieDoc({extra: extra(`${SF_JSON},\n${' '.repeat(18)}${BQ_JSON}`)}));
+  });
+
+  // [the GOOGLE block's `data` as written, as import writes it] A quoted string
+  // over several lines is written on one line. yaml reads JSON that holds a lone
+  // carriage return as other text, so it is written again whole.
+  const wrapped = prodJson(SF_JSON).replace(/"/g, '\\"').replace(/\n( *)/g, (_, sp) => `\\n\\\n${' '.repeat(10)}${sp && `\\${sp}`}`);
+  const compact = JSON.stringify(JSON.parse(prodJson(`${SF_JSON}, ${BQ_JSON}`)));
+  test.each([
+    ['a double-quoted string wrapped with `\\` line ends', `"${wrapped}"`, `'${compact}'`],
+    ['JSON that holds a lone carriage return', JSON.stringify(prodJson(SF_JSON).replace('"profiles":', '"profiles": \r')), JSON.stringify(compact)],
+  ])('writes a GOOGLE block written as %s as one line of compact JSON', async (_, data, want) => {
+    const extra = (text: string) => `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: ${text}\n`;
+    const res = await importSemanticModelYaml(ossieDoc({extra: extra(data)}), ossie);
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toBe(ossieDoc({extra: extra(want)}));
+  });
+
   // A profile file that changes is written as YAML, as a model file is. One
   // that does not change stays as written. Each warning names its file.
   test.each([

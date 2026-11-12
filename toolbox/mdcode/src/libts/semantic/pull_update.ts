@@ -84,8 +84,9 @@ export function catalogForm(
  * its local text, comments and form, and so does each part they both leave
  * out. Each part that changes is written in pull's form, except inside the
  * JSON `data` of a GOOGLE block, which keeps its layout (see `updatedJson`)
- * when `jsonLayout` is set, or else is the catalog's when it changes. The local
- * file must parse.
+ * when `jsonLayout` is set, or else is the catalog's when it changes. A `data`
+ * written as a quoted string over several lines that changes goes on one line
+ * as compact JSON (see `updateText`). The local file must parse.
  */
 export function updatedText(
     local: string, base: string, pulled: string, jsonLayout = true): string {
@@ -108,6 +109,22 @@ function jsonIn(value: unknown): object|undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `data`, the JSON text of a GOOGLE block's `data`, changed to hold `value`
+ * in its own layout (see `updatedJson`), or undefined when it cannot be.
+ */
+export function updatedData(data: string, value: unknown): string|undefined {
+  // A string that ends in a blank line is written double-quoted, since a
+  // `|+` block would take the blank lines after it, so a changed `data`
+  // ends in one line break and stays a block. DEL, the C1 controls and the
+  // line and paragraph separators are written as JSON escapes, since a string
+  // that holds one is double-quoted.
+  return updatedJson(data, value)
+      ?.replace(/\n\s*$/, '\n')
+      .replace(/[\x7f-\x9f\u2028\u2029]/g,
+               c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 // `text`, a JSON object or list, changed to hold `value`, or undefined when
@@ -359,12 +376,7 @@ function merged(
   if (isDeepStrictEqual(base, pulled)) return local;
   const [l, b, p] = [local, base, pulled].map(jsonIn);
   if (json && l !== undefined && b !== undefined && p !== undefined) {
-    // A string that ends in a blank line is written double-quoted, since a
-    // `|+` block would take the blank lines after it, so a changed `data`
-    // ends in one line break and stays a block.
-    return updatedJson(local as string, merged(l, b, p, jsonLayout))
-               ?.replace(/\n\s*$/, '\n') ??
-        pulled;
+    return updatedData(local as string, merged(l, b, p, jsonLayout)) ?? pulled;
   }
   if (isRecord(local) && isRecord(base) && isRecord(pulled)) {
     const entries = mergedEntries(

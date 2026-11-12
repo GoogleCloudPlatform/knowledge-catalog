@@ -40,6 +40,13 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: "p\\nq"  # c\nb: "p\n\n  q"\nd: "p\n\n  q"\n'
   ],
   [
+    'strings on one line that gain DEL, a line separator, a paragraph separator and C1 controls',
+    'a: "Sales by region"\nb: \'Sales by region\'\nc: Sales by region\nd: "Sales by region"\n',
+    v => (v.a = 'Sales by\x7f region', v.b = 'Sales by\u2028 region',
+          v.c = 'Sales by\u2029 region', v.d = 'Sales\x85 by\x9b region'),
+    'a: "Sales by\\x7f region"\nb: "Sales by\\L region"\nc: "Sales by\\P region"\nd: "Sales\\N by\\x9b region"\n'
+  ],
+  [
     'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
     v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
   ],
@@ -48,6 +55,42 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: |-\n  x\n\nb: |\n  y\n\n\nc: |+\n  v\n\nd: 1\n',
     v => (v.a = ' z\n\n', v.b = 'w\n\n', v.c = 'u\n'),
     'a: " z\n\n  \\n"\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\nd: 1\n'
+  ],
+  [
+    'a block scalar whose first line of text starts with a tab',
+    'a: |\n    \tx\n    y\n', v => (v.a = '\tx\nz\n'), 'a: |\n    \tx\n    z\n'
+  ],
+  [
+    'block scalars in a file indented by ten that come to start with a blank, one more than 9 columns deeper than its key',
+    'a:\n          k: |-\n                    x\nb:\n          k: |8\n                   x\n',
+    v => (v.a.k = '  y\nz', v.b.k = ' y\n'),
+    'a:\n          k: "  y\n\n                    z"\nb:\n          k: |8\n                   y\n'
+  ],
+  [
+    'block scalars that come to start with an empty line',
+    'a: |\n  x\nm:\n  k: |-\n      x\n', v => (v.a = '\nx\n', v.m.k = '\nx'),
+    'a: |\n\n  x\nm:\n  k: |-\n\n      x\n'
+  ],
+  [
+    'a block scalar whose first line of text holds only a tab',
+    'a: |\n    \t\n      y\n', v => (v.a = '\t\n  z\n'), 'a: |\n    \t\n      z\n'
+  ],
+  [
+    'block scalars 9 and more than 9 columns deeper than their key, two that come to start with a blank',
+    'a:\n  k: |\n              x\n              y\n  q: 1\nb:\n  k: |-\n            x\nc:\n  k: |-\n           x\n',
+    v => (v.a.k = 'x\nz\n', v.b.k = v.c.k = '  y\nz'),
+    'a:\n  k: |\n              x\n              z\n  q: 1\nb:\n  k: "  y\n\n            z"\nc:\n  k: |9-\n             y\n           z\n'
+  ],
+  [
+    'block scalars whose header sets their indentation, before or after the chomping indicator, one that comes to keep its last line break',
+    'k:\n  data: |-4\n        x\n      y\nm:\n  data: |-4\n      x\n      y\np: |4-\n      x\n    y\n',
+    v => (v.k.data = '  x\nz', v.m.data = 'x\nz\n', v.p = '  x\nz'),
+    'k:\n  data: |-4\n        x\n      z\nm:\n  data: |4\n      x\n      z\np: |4-\n      x\n    z\n'
+  ],
+  [
+    'a quoted string set to text whose lines yaml would write so that a line of one space reads back as a backslash',
+    'a: "x"\n', v => (v.a = 'first line of forty characters or more!!\n \nlast'),
+    'a: "first line of forty characters or more!!\\n\\ \\nlast"\n'
   ],
   [
     '`|+` block scalars moved, and text that ends in two line breaks added',

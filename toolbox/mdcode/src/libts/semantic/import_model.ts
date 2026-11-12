@@ -11,6 +11,7 @@ import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, d
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
+import {updatedData} from './pull_update';
 import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
@@ -1564,7 +1565,7 @@ async function transpileDocument(
           mt, transpiled.model.metrics.find(x => x.name === mt.name)?.dialects);
     }
     // A profile in a GOOGLE block is JSON text, so a block whose profiles
-    // gained an entry is written back as JSON.
+    // gained an entry is written back as JSON in the block's own layout.
     for (const block of asRecords(doc.model.custom_extensions)) {
       const data = parseGoogleBlocks([block])[0];
       let changed = false;
@@ -1572,7 +1573,7 @@ async function transpileDocument(
         changed = syncProfile(p, profile(p.name)) || changed;
       }
       if (changed) {
-        block.data = JSON.stringify(data);
+        block.data = updatedData(block.data, data) ?? JSON.stringify(data);
         doc.modified = true;
       }
     }
