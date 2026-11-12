@@ -568,13 +568,25 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
     }, {
-      // A Cloud SQL for MySQL table gives '#' too: the parameter and verb
-      // checks read its looked-up dialect as GoogleSQL.
+      // MySQL starts a comment at '#' too, as push reads a Cloud SQL for
+      // MySQL table's looked-up dialect.
       services: {lookupEntry: () => cloudSqlEntry('cloudsql-mysql-table')},
       files: {'commerce.yaml': modelWriting(
           ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
           {entities: [{...CUSTOMER, source: MYSQL_TABLE}]})},
       errors: [has("statement 1 has '#' on a line")],
+    }, {
+      // Snowflake starts no comment with '#'.
+      services: {lookupEntry: () => ({
+        status: 200, result: {fullyQualifiedName: 'snowflake:acme.db.public.c'},
+      })},
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+          {entities: [{
+            ...CUSTOMER,
+            source: 'projects/test-project/locations/us/entryGroups/sf/entries/customer',
+          }]})},
+      code: 0,
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],

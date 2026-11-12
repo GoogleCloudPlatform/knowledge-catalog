@@ -28,7 +28,7 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {boundParameter, leadingDmlVerb, readsPostgres, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
+import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -1304,8 +1304,8 @@ function statementDialects(
 // statement. A statement with no such marker is left out. A marker counts
 // anywhere in the statement, inside a string or a quoted name too, and a
 // comment runs to the next line break of the statement. `--` and `/*` are
-// markers in every dialect, and `#` in each one the parameter and verb checks
-// read as GoogleSQL. With no dialect, `#` is not a marker. The yaml library
+// markers in every dialect, and `#` in each one where hashStartsComment says
+// it starts a comment. With no dialect, `#` is not a marker. The yaml library
 // decides which lines it joins: each line with text of a statement, except
 // the last line of a plain or quoted one, gets a character at its end that
 // neither `text` nor any statement holds, and the text is parsed again. A
@@ -1313,7 +1313,7 @@ function statementDialects(
 // is followed by more of the comment.
 function joinedLineMarkers(statements: WrittenStatement[], text: string,
                            dialects: string[]): Map<yaml.Scalar, string> {
-  const marker = dialects.some(d => !readsPostgres(d)) ?
+  const marker = dialects.some(d => hashStartsComment(d)) ?
       /--|\/\*|#/ :
       /--|\/\*/;
   // A '|' block keeps every line break, so a comment in it covers no later

@@ -935,8 +935,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   that YAML reads differently from how it is written: an unquoted statement
   with a comment on the same line or on a line indented under it, or in a
   flow list on a line before the next `,` or `]`, and a statement whose lines
-  YAML joins, when text from a later line follows `--` or `/*`, or `#` on a
-  database whose dialect is not PostgreSQL, on the same line, even when `*/`
+  YAML joins, when text from a later line follows `--` or `/*`, or `#` on
+  BigQuery, GoogleSQL Spanner or MySQL, on the same line, even when `*/`
   closes the `/*`.
   Where the key of an inserted row comes from is the statement's own
   business: a SQL function such as

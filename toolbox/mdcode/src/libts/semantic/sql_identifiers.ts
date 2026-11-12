@@ -248,25 +248,38 @@ function endOfTripleQuoted(text: string, from: number): number {
 }
 
 // One dialect for each way sqlCode reads a statement: SPANNER for GoogleSQL,
-// which it reads for every dialect but POSTGRES and ALLOYDB, and POSTGRES for
+// SQLSERVER for a dialect in which `#` starts no comment, and POSTGRES for
 // PostgreSQL.
-export const SQL_CODE_DIALECTS = ['SPANNER', 'POSTGRES'] as const;
+export const SQL_CODE_DIALECTS = ['SPANNER', 'SQLSERVER', 'POSTGRES'] as const;
 
 // Whether a statement in `dialect` is read as PostgreSQL. Any other is read as
 // GoogleSQL.
-export function readsPostgres(dialect?: string|null): boolean {
+function readsPostgres(dialect?: string|null): boolean {
   return dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+}
+
+// The dialects in which `#` starts a comment that runs to the end of the
+// line: BigQuery, GoogleSQL Spanner and MySQL. PostgreSQL and AlloyDB read `#`
+// as an operator, SQL Server as the start of a temporary table's name, and
+// Snowflake and Databricks start no comment with it.
+const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER', 'MYSQL']);
+
+// Whether `#` starts a comment in `dialect`. A statement given no dialect is
+// read as GoogleSQL, where it does.
+export function hashStartsComment(dialect?: string|null): boolean {
+  return !dialect || HASH_COMMENT_DIALECTS.has(dialect);
 }
 
 // `text` with each comment and each quoted string or identifier replaced by a
 // space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
-// `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).
-// With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept, and
-// each quoted string is replaced by `''`, so an `@` before a string reads no
-// name after it.
+// `POSTGRES` or `ALLOYDB`. `#` starts a comment where hashStartsComment says
+// so. With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept,
+// and each quoted string is replaced by `''`, so an `@` before a string reads
+// no name after it.
 function sqlCode(
     text: string, dialect?: string|null, quotedNames = false): string {
   const postgres = readsPostgres(dialect);
+  const hashComments = hashStartsComment(dialect);
   const identCont =
       postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   let out = '';
@@ -281,7 +294,7 @@ function sqlCode(
     const c = text[i];
     if (c === '-' && text[i + 1] === '-') {
       i = skip(i, endOfLineComment(text, i + 2));
-    } else if (!postgres && c === '#') {
+    } else if (hashComments && c === '#') {
       i = skip(i, endOfLineComment(text, i + 1));
     } else if (c === '/' && text[i + 1] === '*') {
       i = skip(i, endOfBlockComment(text, i, postgres));
@@ -330,11 +343,11 @@ const POSTGRES_PARAMETER = /@@+|@([A-Za-z_]\w*)/g;
 
 // The distinct `@name` references in a SQL statement, ignoring comments and
 // quoted strings or identifiers so prose or a literal containing an '@' is not
-// read as a binding. `#` starts a line comment in GoogleSQL (the default), and
-// stays an operator (`#>`, `#-`) on PostgreSQL/AlloyDB. GoogleSQL also reads
-// `@ name` and `` @`name` `` as the parameter `name`. Used to check that every
-// parameter a statement reads is one the caller will bind, and to bind only
-// the parameters a statement actually reads.
+// read as a binding. `#` starts a line comment where hashStartsComment says
+// so, and is an operator such as `#>` or `#-` on PostgreSQL. GoogleSQL also
+// reads `@ name` and `` @`name` `` as the parameter `name`. Used to check that
+// every parameter a statement reads is one the caller will bind, and to bind
+// only the parameters a statement actually reads.
 export function referencedParameters(
     text: string, dialect?: string|null): string[] {
   const googleSql = !readsPostgres(dialect);
@@ -372,9 +385,9 @@ export function boundParameter(
 // the CTE body is inside parentheses; for `UPDATE t SET note = 'DELETE'` it is
 // the UPDATE, because the literal is not read as a keyword.
 //
-// In GoogleSQL (the default), `#` is skipped as a line comment alongside `--`,
-// while on PostgreSQL/AlloyDB `#` stays an operator (such as `#>` or `#>>` in a
-// leading CTE).
+// `#` is skipped as a line comment alongside `--` where hashStartsComment says
+// it starts one, and stays an operator elsewhere, such as `#>` or `#>>` in a
+// leading CTE on PostgreSQL.
 //
 // It lives here, rather than beside the one caller that refuses a zero-row
 // write, because validation reads the same statements to decide what a model

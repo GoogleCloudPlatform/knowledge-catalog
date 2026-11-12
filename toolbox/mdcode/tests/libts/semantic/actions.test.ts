@@ -661,6 +661,30 @@ describe('validatePushRequirements gates actions', () => {
     }])).toEqual(errors);
   });
 
+  // How each table's dialect reads a statement's parameters. SQL Server reads
+  // `#staging` as a temporary table, where GoogleSQL would start a comment.
+  test.each<[string, string, string, string, string[], string[]]>([
+    ['SQL Server',
+     'cloudsql.googleapis.com/projects/p/locations/us-central1/instances/ss/' +
+         'databases/shop/schemas/dbo/tables/orders',
+     'SQLSERVER', 'UPDATE #staging SET tier = @tier WHERE id = @id', ['id'],
+     ["binds '@tier'"]],
+  ])('on %s reads the parameters of a statement', (_, source, dialect, statement, names, errors) => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [statement]}},
+      parameters: names.map(name => ({name, type: 'Integer'})),
+    }]);
+    const entity = {
+      ...model.entities[0], authoredSource: source, dataSource: source,
+      sourceDialect: dialect,
+    };
+    expect(validatePushRequirements([{
+      document,
+      model: {...model, entities: [entity], deployments: undefined},
+    }])).toEqual(errors.map(e => expect.stringContaining(e)));
+  });
+
   test('checks no parameter names of an action without a sql executor', () => {
     expect(validatePushRequirements([loaded([{
       name: 'A',
