@@ -315,13 +315,18 @@ names microseconds.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
   as in MySQL, and adds every unit to it.
-  A date or a time it can see stays untranslated where MySQL uses it as a
-  number: in `+`, `-` or `*`, such as `CURDATE() + 1`, compared with a
-  number, also in BETWEEN, IN and CASE, or negated.
-  MySQL turns the date into its digits there, such as 20240101. NULLIF with a
-  date first, a date among number results of one COALESCE, IFNULL, IF or
+  A date or a time it can see, such as the current date, a date function or
+  date arithmetic on any value, stays untranslated where MySQL uses it as a
+  number or as text. That is in `+`, `-` or `*`, such as `CURDATE() + 1`,
+  negated, or compared with a number or text, also in BETWEEN, IN and CASE,
+  such as `CURDATE() = YEAR(d)` or `CURDATE() = '2024-01-05'`. MySQL turns
+  the date into its digits beside a number, such as 20240101, and reads text
+  beside it as a date by its own rules, such as '20240105'. NULLIF with a
+  date, a date among number or text results of one COALESCE, IFNULL, IF or
   CASE, and a string beside an INTERVAL, such as `'2024-01-31' + INTERVAL 1
-  DAY`, stay untranslated too, since MySQL gives text there.
+  DAY`, stay untranslated too, since MySQL gives text there. A value whose
+  type import cannot see, such as a column or `d + 1`, does not count, so
+  `IF(flag, CURDATE(), d + 1)` is translated as written.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'

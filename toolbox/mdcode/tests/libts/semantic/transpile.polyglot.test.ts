@@ -783,6 +783,17 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'year(d) < 2024 AND month(d) > 1 -- c', {sql: 'EXTRACT(YEAR FROM d) < 2024 AND EXTRACT(MONTH FROM d) > 1 /* c */'}],
     ['SNOWFLAKE', 'DATEADD(day, 1, CAST(d AS TIMESTAMP_NTZ))', {sql: 'DATE_ADD(CAST(d AS DATETIME), INTERVAL 1 DAY)'}],
     ['POSTGRES', "x IN (INTERVAL '1 day' * 2)", {sql: '(x = INTERVAL 1 DAY * 2)'}],
+    // MySQL values by kind: a date beside a number or text, NULLIF and
+    // negation stay untranslated, and a value of no visible kind does not count.
+    ['MYSQL', 'CURDATE() = YEAR(d)', {error: 'kcmd does not translate = on a DATE and a number, which MySQL compares by the digits of the date'}],
+    ['MYSQL', "COALESCE(CURDATE(), 'none')", {error: 'kcmd does not translate COALESCE on a DATE and a string, which MySQL gives as text'}],
+    ['MYSQL', 'NULLIF(DATE_ADD(d, INTERVAL 1 DAY), e)', {error: 'kcmd does not translate NULLIF of a date first, which MySQL gives as text'}],
+    ['MYSQL', 'NULLIF(e, DATE_ADD(d, INTERVAL 1 DAY))', {error: 'kcmd does not translate NULLIF on a date and a value that may be another type'}],
+    ['MYSQL', '-DATE_ADD(d, INTERVAL 1 DAY)', {error: 'kcmd does not translate - on a date, which MySQL turns into its digits'}],
+    ['MYSQL', 'IF(flag, CURDATE(), d + 1)', {sql: 'IF(flag, CURRENT_DATE, d + 1)'}],
+    ['MYSQL', '-NULL', {error: 'kcmd does not translate - on NULL'}],
+    ['POSTGRES', 'NULLIF(CURRENT_DATE, NULL)', {sql: '(CURRENT_DATE)'}],
+    ['POSTGRES', 'NULLIF(NULL, CURRENT_DATE)', {sql: 'NULLIF(NULL, CURRENT_DATE)'}],
   ] as const)('translates %s %s, or leaves it untranslated', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);

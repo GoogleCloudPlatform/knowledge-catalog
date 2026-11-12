@@ -1564,6 +1564,45 @@ function intervalTyped(node: any, read: string): boolean {
   return operands.some(o => intervalTyped(o, read));
 }
 
+// Whether `node`, a source value in the engine's dialect `read`, is visibly a
+// date or a time: a value of a visible date or time type, a date function of
+// a dialect's table, the current date or time, DATE_TRUNC, a sum or
+// difference with an INTERVAL or a date, or a date or time that COALESCE or a
+// similar function returns. An INTERVAL value and a difference of dates or
+// times are INTERVALs (see intervalTyped).
+function dateValued(node: any, read: string): boolean {
+  const b = bare(node);
+  const table = DATE_TABLES[read];
+  if ((table?.sums && typeof intervalValue(b, read, table) === 'object') || timeDifference(b, read)) return false;
+  const dated = (v: any) => dateValued(v, read);
+  return !!timeType(b, read) || returned(b).some(dated) ||
+      [...CURRENT, ...DATE_FUNCTIONS, 'DATE_TRUNC'].includes(String(b?.function?.name).toUpperCase()) ||
+      [b?.add, b?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) || dated(v.left) || dated(v.right)));
+}
+
+// The kind of `node`, a MySQL value: a date or a time, a number, text, or
+// undefined where import cannot see it, as for a column. MySQL turns a date or
+// a time beside a number into its digits, compares one beside text by reading
+// the text as a date by its own rules, and gives one among number or text
+// results as text.
+const NUMBER_KINDS = new Set(['sum', 'count', 'avg', 'abs', 'floor', 'ceil', 'length', 'extract', ...Object.keys(PARTS)]);
+const TEXT_KINDS = new Set(['concat', 'upper', 'lower', 'trim', 'substring', 'replace']);
+function mysqlKind(node: any, read: string): 'date'|'number'|'text'|undefined {
+  const b = bare(node);
+  const kind = kindOf(b) ?? '';
+  const name = String(b?.function?.name).toUpperCase();
+  if (dateValued(b, read)) return 'date';
+  if (numberText(b) !== undefined || NUMBER_KINDS.has(kind) || name === 'ROUND' ||
+      ['double', 'decimal', 'float'].includes(castType(b?.cast?.to))) {
+    return 'number';
+  }
+  if (b?.literal?.literal_type === 'string' || TEXT_KINDS.has(kind) || name === 'CONCAT') return 'text';
+  const parts = kind === 'neg' ? [b.neg.this] : ['add', 'sub', 'mul', 'div'].includes(kind) ?
+      [b[kind].left, b[kind].right] : returned(b).filter(v => v && bare(v).null === undefined);
+  const kinds = new Set(parts.map(v => mysqlKind(v, read)));
+  return kinds.size === 1 ? [...kinds][0] : undefined;
+}
+
 // The one amount and unit that `parts`, INTERVALs of whole numbers, add up
 // to, in their smallest unit, or undefined. They must all be months, quarters
 // and years, or all be weeks or smaller units. A week is 7 days, a quarter 3
@@ -2213,14 +2252,7 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   if (timeDifference({[kind]: value}, read)) return sides;
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
-  // A value import can see is a date or a time, a function of a dialect's
-  // table, DATE_TRUNC and a sum or difference with an INTERVAL or a date are
-  // dates or times, as is a function that returns one.
-  const date = (s: any): boolean => !!timeType(s, read) || returned(s).some(date) ||
-      [...CURRENT, ...DATE_FUNCTIONS, 'DATE_TRUNC'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
-      [bare(s)?.add, bare(s)?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) ||
-                                                   date(v.left) || date(v.right)));
-  if (sides.some(date)) return `${op} of a date${table?.numbers ? `, which ${DIGITS_NOTE}` : ''}`;
+  if (sides.some(s => dateValued(s, read))) return `${op} of a date${table?.numbers ? `, which ${DIGITS_NOTE}` : ''}`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
       `${op} without a number, SUM, COUNT or AVG on one side`;
@@ -2517,15 +2549,24 @@ const DIGITS_NOTE = 'MySQL turns into its digits';
 // says, by value, or the types BigQuery does not compare, for a message.
 // BigQuery compares the visible types of one group of COMPARED. A dialect that
 // `stamps` compares a DATE or a DATETIME with a TIMESTAMP, and gives them as
-// results, as TIMESTAMP(x). A dialect that reads `numbers`, MySQL, turns a
-// DATE or a DATETIME negated or compared with a number into the number of its
-// digits, and one among number results into text.
+// results, as TIMESTAMP(x). BigQuery negates no literal NULL. A dialect that
+// reads `numbers`, MySQL, turns a date or a time negated or compared with a
+// number into the number of its digits, and one among number or text results
+// into text, which import leaves untranslated (see mysqlKind).
 function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
   const numbers = DATE_TABLES[read]?.numbers;
-  const negated = use === 'negated' && typeOf(values[0]);
-  if (numbers && negated && WIDER.includes(negated)) return `${article(negated)} ${negated}, which ${DIGITS_NOTE}`;
+  if (use === 'negated' && bare(values[0])?.null !== undefined) return 'NULL';
+  const date = numbers ? values.find(v => v && mysqlKind(v, read) === 'date') : undefined;
+  if (date) {
+    const name = timeType(date, read) ?? 'date';
+    const other = values.map(v => v && mysqlKind(v, read)).find(k => k === 'number' || k === 'text');
+    const why = use === 'results' ? 'gives as text' : other === 'number' ? 'compares by the digits of the date' :
+        'compares by reading the string as a date by its own rules';
+    if (use === 'negated') return `${article(name)} ${name}, which ${DIGITS_NOTE}`;
+    if (other) return `${article(name)} ${name} and a ${other === 'text' ? 'string' : 'number'}, which MySQL ${why}`;
+  }
   const types = [...new Set(values.map(typeOf))]
       .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const group = COMPARED.find(g => g.includes(types[0])) ?? [types[0]];
@@ -2536,8 +2577,7 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
     const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
     return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
   }
-  if (!numbers || other !== 'number') return problem;
-  return `${problem}, which MySQL ${use === 'results' ? 'gives as text' : 'compares by the digits of the date'}`;
+  return problem;
 }
 
 // The name in `sums` of the type of `node`, a source value in the engine's
@@ -2557,13 +2597,22 @@ function intervalType(node: any, read: string): string|undefined {
 // or a time as text, which import leaves untranslated. IF(a = b, NULL, a)
 // gives the type of a, with TIMESTAMP(x) around a DATE or a DATETIME compared
 // with a TIMESTAMP, which the sources read as midnight UTC. A value with no
-// visible type, such as a column, may be any type.
+// visible type, such as a column, may be any type. NULLIF(a, NULL) is a, and
+// BigQuery's NULLIF(NULL, b) is NULL of b's type, as in the sources.
 function nullifForm(args: any[], read: string): any {
   const [a, b] = args;
-  const types = [...new Set(args.flatMap(givenValues).map(v => timeType(v, read)))];
+  const dated = read === 'mysql' ? args.findIndex(v => mysqlKind(v, read) === 'date') : -1;
+  if (dated >= 0) {
+    const name = timeType(args[dated], read) ?? 'date';
+    if (dated === 0) return `NULLIF of ${article(name)} ${name} first, which MySQL gives as text`;
+    const forms = valueForms([a, b], read, 'compared');
+    return `NULLIF on ${typeof forms === 'string' ? forms : `${article(name)} ${name} and a value that may be another type`}`;
+  }
+  if (bare(a)?.null !== undefined) return undefined;
+  if (bare(b)?.null !== undefined) return formCall('(_1)', [a]);
+  const given = args.flatMap(givenValues).filter(v => bare(v)?.null === undefined);
+  const types = [...new Set(given.map(v => timeType(v, read)))];
   const time = types.find(t => t);
-  const first = givenValues(a).map(v => timeType(v, read)).find(t => t);
-  if (read === 'mysql' && first) return `NULLIF of ${article(first)} ${first} first, which MySQL gives as text`;
   if (types.length === 1) return undefined;
   if (NULLIF_FIRST.has(read)) {
     const forms = valueForms([a, b], read, 'compared');
