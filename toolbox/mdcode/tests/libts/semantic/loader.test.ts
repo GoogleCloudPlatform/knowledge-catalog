@@ -3711,6 +3711,27 @@ describe('deployments and inline profiles', () => {
       `model 'sales': deployments 'prod' and 'staging' target the same resource '${BQ_TARGET}'; each deployment must target a distinct resource`,
     );
 
+    // Spanner and BigQuery read a graph name without regard to case; a dataset
+    // name and an AlloyDB database keep theirs.
+    const loads = (a: string, b: string) => () => load(GOOGLE, {
+      name: 'sales',
+      deployments: [{ name: 'prod', target: a }, { name: 'staging', target: b }],
+      datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
+    });
+    const ALLOYDB_TARGET = 'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/sales';
+    for (const target of [SPANNER_TARGET, BQ_TARGET]) {
+      const upper = target.replace(/sales$/, 'Sales');
+      expect(loads(target, upper)).toThrow(
+        `model 'sales': deployments 'prod' and 'staging' target the same resource: '${target}' and '${upper}' name one graph, since Spanner and BigQuery read a graph name without regard to case; each deployment must target a distinct resource`);
+    }
+    for (const [a, b] of [
+      [BQ_TARGET, BQ_TARGET.replace('/analytics/', '/Analytics/')],
+      [SPANNER_TARGET, SPANNER_TARGET.replace('/databases/sales/', '/databases/sales2/').replace(/sales$/, 'Sales')],
+      [ALLOYDB_TARGET, ALLOYDB_TARGET.replace(/sales$/, 'Sales')],
+    ]) {
+      expect(loads(a, b)).not.toThrow();
+    }
+
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployments: [

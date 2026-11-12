@@ -12,6 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
+import {deploymentTargetKey} from './deployment_target';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
@@ -2344,16 +2345,22 @@ function convertModel(
   rejectDuplicateNames(
       deployments.map(d => d.name), 'deployment name', `model '${m.name}'`,
       true);
-  const seenTargets = new Map<string, string>();
+  const seenTargets = new Map<string, {name: string; target: string}>();
   for (const d of deployments) {
-    const first = seenTargets.get(d.target);
+    const key = deploymentTargetKey(d.target);
+    const first = seenTargets.get(key);
     if (first !== undefined) {
+      const resource = first.target === d.target ?
+          `the same resource '${d.target}'` :
+          `the same resource: '${first.target}' and '${d.target}' name one ` +
+              `graph, since Spanner and BigQuery read a graph name without ` +
+              `regard to case`;
       throw new SemanticModelError(
           `Semantic model load error: model '${m.name}': deployments '${
-              first}' and '${d.name}' target the same resource '${
-              d.target}'; each deployment must target a distinct resource`);
+              first.name}' and '${d.name}' target ${
+              resource}; each deployment must target a distinct resource`);
     }
-    seenTargets.set(d.target, d.name);
+    seenTargets.set(key, {name: d.name, target: d.target});
   }
 
   const description = composeDescription(m.description);

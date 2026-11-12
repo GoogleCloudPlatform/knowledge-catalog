@@ -805,7 +805,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   or `alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<d>`
   (for example a `propertyGraph` typo, a Spanner graph under `propertyGraphs/`,
   a leading `//`, or a `…/entryGroups/@bigquery/entries/…` entry form is
-  rejected). The error names the offending target and what to write instead. A
+  rejected). The error names the offending target and what to write instead.
+  Two targets whose Spanner or BigQuery graph names differ only in letter case
+  name one graph, as Spanner and BigQuery read them, so they are not distinct. A
   **logical model that declares no deployments** is allowed: it deploys no graph
   and publishes to Knowledge Catalog only. This gate runs before any destination
   leg, so a malformed target writes **nothing** — not to the graph and **not to
