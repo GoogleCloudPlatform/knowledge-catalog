@@ -1401,6 +1401,20 @@ describe('parameter description, required, and default', () => {
         expect(errs.some(e => e.includes('default \'banana\' is invalid')))
             .toBe(true);
       });
+
+  // BigQuery reads a DateTime as a DATETIME, which has no zone. A DateTimeTz
+  // needs one.
+  test.each([
+    ['DateTime', '2026-03-04T10:00:00', []],
+    ['DateTimeTz', '2026-03-04T10:00:00', ["default '2026-03-04T10:00:00' is invalid"]],
+  ])('checks the default of a %s', (type, value, errors) => {
+    const model = withActions([{
+      name: 'Reopen', executor: MCP,
+      parameters: [{name: 'when', type, default: value}],
+    }]);
+    expect(validatePushRequirements([{document: 'test.yaml', model: model.models[0]}]))
+        .toEqual(errors.map(e => expect.stringContaining(e)));
+  });
 });
 
 
