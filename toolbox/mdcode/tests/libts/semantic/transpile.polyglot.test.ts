@@ -437,7 +437,6 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', "FORMAT(d, 'yyyy-MM')", {error: 'kcmd does not translate FORMAT'}],
     ['MYSQL', 'LAST_DAY(CURDATE())', {error: 'kcmd does not translate LAST_DAY'}],
     ['DATABRICKS', 'datediff(a, b)', {error: 'kcmd does not translate datediff'}],
-    ['DATABRICKS', 'datediff(MONTH, a, b)', {error: 'kcmd does not translate datediff'}],
     ['SNOWFLAKE', 'ADD_MONTHS(CURRENT_DATE(), -1)', {error: 'kcmd does not translate ADD_MONTHS'}],
     ['SQLSERVER', 'DATEDIFF(dd, a, b)', {error: "kcmd does not translate DATEDIFF with part 'dd'"}],
     ['SQLSERVER', 'DATEADD(day, DATEDIFF(day, 0, GETDATE()), 0)', {error: 'kcmd does not translate DATEADD of a number'}],
@@ -532,6 +531,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
           .map(r => r.sql ?? (r.error!.startsWith('kcmd does not translate') ? 'untranslated' : r.error!));
   const UNITS = ['SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK', 'MONTH', 'QUARTER', 'YEAR'];
   const SUB_DAY = UNITS.slice(0, 3);
+  // Databricks' whole months from a to b, which it counts by the calendar.
+  const [ta, tb] = ['TIMESTAMP(a)', 'TIMESTAMP(b)'];
+  const endDay = `CASE WHEN DATE(${tb}) > DATE(${ta}) AND TIME(${tb}) < TIME(${ta}) THEN DATE_SUB(DATE(${tb}), INTERVAL '1' DAY) ` +
+      `WHEN DATE(${tb}) < DATE(${ta}) AND TIME(${tb}) > TIME(${ta}) THEN DATE_ADD(DATE(${tb}), INTERVAL '1' DAY) ELSE DATE(${tb}) END`;
+  const monthsAB = `DIV(DATE_DIFF(${endDay}, DATE(${ta}), MONTH) * 32 + EXTRACT(DAY FROM ${endDay}) - EXTRACT(DAY FROM ${ta}), 32)`;
   const DAY_OR_LONGER = UNITS.slice(3);
 
   // Each row of each dialect's table: the sum, with {U} or {u} for the unit,
@@ -669,7 +673,10 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SNOWFLAKE', 'DATEADD(("day"), 1, d)', {error: 'kcmd does not translate DATEADD with a quoted part'}],
     ['DATABRICKS', 'timestampdiff(hour, current_date(), now())', {sql: 'TIMESTAMP_DIFF(TIMESTAMP(CURRENT_TIMESTAMP()), TIMESTAMP(CURRENT_DATE), HOUR)'}],
     ['DATABRICKS', 'timestampdiff(WEEK, a, b)', {sql: 'DIV(TIMESTAMP_DIFF(TIMESTAMP(b), TIMESTAMP(a), DAY), 7)'}],
-    ['DATABRICKS', 'timestampdiff(MONTH, a, b)', {error: "kcmd does not translate TIMESTAMPDIFF with part 'MONTH'"}],
+    ['DATABRICKS', 'timestampdiff(MONTH, a, b)', {sql: monthsAB}],
+    ['DATABRICKS', 'date_diff(QUARTER, a, b)', {sql: `DIV(${monthsAB}, 3)`}],
+    ['DATABRICKS', 'timestampdiff(YEAR, a, b)', {sql: `DIV(${monthsAB}, 12)`}],
+    ['DATABRICKS', 'datediff(DAY, a, b)', {sql: 'TIMESTAMP_DIFF(TIMESTAMP(b), TIMESTAMP(a), DAY)'}],
     ['DATABRICKS', 'dateadd(`order date`, 7)', {sql: 'DATE_ADD(CAST(CAST(`order date` AS DATETIME) AS DATE), INTERVAL 7 DAY)'}],
     ['POSTGRES', 'DATE_TRUNC("month", d)', {error: 'kcmd does not translate DATE_TRUNC with a quoted part'}],
     ['POSTGRES', 'DATE_PART("day", d)', {error: 'kcmd does not translate DATE_PART with a quoted part'}],

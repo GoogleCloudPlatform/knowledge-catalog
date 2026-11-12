@@ -638,7 +638,8 @@ const FUNCTIONS: Record<string, [string[], number, number]> = {
   ROUND: [['tsql', 'snowflake'], 1, 2],
   DATE_TRUNC: [['postgresql', 'snowflake', 'databricks'], 2, 2],
   DATE_PART: [['postgresql', 'snowflake', 'tsql'], 2, 2],
-  DATEDIFF: [['tsql'], 3, 3],
+  DATEDIFF: [['tsql', 'databricks'], 3, 3],
+  DATE_DIFF: [['databricks'], 3, 3],
   TIMESTAMPDIFF: [['databricks'], 3, 3],
 };
 
@@ -702,20 +703,34 @@ const DATABRICKS_TRUNC = lookup({
   millisecond: 'MILLISECOND', microsecond: 'MICROSECOND',
 });
 
+// The date of _2 that Databricks counts months to from _1, both read in UTC:
+// a day earlier when _2 is on a later date at an earlier time of day than _1,
+// and a day later when it is on an earlier date at a later time of day.
+const END_DAY = 'CASE WHEN DATE(TIMESTAMP(_2)) > DATE(TIMESTAMP(_1)) AND TIME(TIMESTAMP(_2)) < TIME(TIMESTAMP(_1)) ' +
+    'THEN DATE_SUB(DATE(TIMESTAMP(_2)), INTERVAL 1 DAY) ' +
+    'WHEN DATE(TIMESTAMP(_2)) < DATE(TIMESTAMP(_1)) AND TIME(TIMESTAMP(_2)) > TIME(TIMESTAMP(_1)) ' +
+    'THEN DATE_ADD(DATE(TIMESTAMP(_2)), INTERVAL 1 DAY) ELSE DATE(TIMESTAMP(_2)) END';
+
+// The whole months from _1 to END_DAY, toward zero: each date as 32 times
+// its month plus its day of the month, which keeps their order, divided by 32.
+const MONTHS_DIFF =
+    `DIV(DATE_DIFF(${END_DAY}, DATE(TIMESTAMP(_1)), MONTH) * 32 + EXTRACT(DAY FROM ${END_DAY}) - ` +
+    'EXTRACT(DAY FROM TIMESTAMP(_1)), 32)';
+
 // BigQuery's SQL for Databricks' timestampdiff(unit, _1, _2), by the unit's
 // name in lower case. Databricks counts the whole units from _1 to _2, toward
 // zero, reading a DATE as midnight UTC, as BigQuery's TIMESTAMP_DIFF counts
-// them between TIMESTAMP(x) values. A week is 7 days. Databricks counts months,
-// quarters and years by the calendar day and time, which TIMESTAMP_DIFF does
-// not take.
+// them between TIMESTAMP(x) values. A week is 7 days. It counts months by the
+// calendar (see MONTHS_DIFF), a quarter as 3 of them and a year as 12.
 const TIMESTAMP_DIFFS = lookup({
   ...Object.fromEntries(['microsecond', 'millisecond', 'second', 'minute', 'hour', 'day'].map(
       u => [u, `TIMESTAMP_DIFF(TIMESTAMP(_2), TIMESTAMP(_1), ${u.toUpperCase()})`])),
   week: 'DIV(TIMESTAMP_DIFF(TIMESTAMP(_2), TIMESTAMP(_1), DAY), 7)',
+  month: MONTHS_DIFF, quarter: `DIV(${MONTHS_DIFF}, 3)`, year: `DIV(${MONTHS_DIFF}, 12)`,
 });
 
 // The SQL in TIMESTAMP_DIFFS for `part`, the unit of Databricks'
-// timestampdiff, which is a name, or undefined.
+// timestampdiff and its other names, which is a name, or undefined.
 function diffSql(part: any): string|undefined {
   const name = bare(part)?.column?.name;
   return name && !name.quoted ? TIMESTAMP_DIFFS[String(name.name).toLowerCase()] : undefined;
@@ -808,6 +823,9 @@ interface DateTable {
   // Snowflake's DATE_TRUNC, and so its row. MIN and MAX have the type of their
   // operand in every dialect.
   keepsType?: string[];
+  // The functions that count whole units from a start to an end, with the
+  // unit first, as Databricks' timestampdiff does (see TIMESTAMP_DIFFS).
+  diffs?: string[];
   // The functions that give the current date. A name the engine keeps, which
   // BigQuery does not have, also needs an entry in CURRENT_TIME.
   today: string[];
@@ -1073,6 +1091,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
     functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part', TIMESTAMPADD: 'part'},
+    diffs: ['TIMESTAMPDIFF', 'DATEDIFF', 'DATE_DIFF'],
     words: named({
       MICROSECOND: ['microseconds'], MILLISECOND: ['milliseconds'], SECOND: ['seconds'], MINUTE: ['minutes'],
       HOUR: ['hours'], DAY: ['days'], WEEK: ['weeks'], MONTH: ['months'], YEAR: ['years'],
@@ -2192,7 +2211,7 @@ function returned(node: any): any[] {
 const NOT_TEXT = new Set([
   ...BOOLEANS, 'neg', 'add', 'sub', 'mul', 'div', 'sum', 'count', 'avg', 'abs', 'floor',
   'ceil', 'length', 'extract', ...Object.keys(PARTS), ...CURRENT, ...DATE_FUNCTIONS, 'ROUND',
-  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF', 'interval',
+  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'DATE_DIFF', 'TIMESTAMPDIFF', 'interval',
 ]);
 
 // The message for `op`, || or CONCAT in the engine's dialect `read`, when one
@@ -2335,7 +2354,7 @@ function exactForm(node: any, read: string): any {
   const unit = read === 'databricks' && name === 'DATE_TRUNC' && args.length === 2 && truncUnit(args[0], read);
   if (unit) return formCall(`TIMESTAMP_TRUNC(TIMESTAMP(_1), ${unit})`, [args[1]]);
   // Databricks' timestampdiff counts whole units (see TIMESTAMP_DIFFS).
-  const diff = read === 'databricks' && name === 'TIMESTAMPDIFF' && args.length === 3 && diffSql(args[0]);
+  const diff = DATE_TABLES[read]?.diffs?.includes(name) && args.length === 3 && diffSql(args[0]);
   if (diff) return formCall(diff, args.slice(1));
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
@@ -2469,9 +2488,9 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
     return typeof exact === 'string' ? exact : args;
   }
   const part = (arg: any) => String(partName(arg) ?? '?');
-  if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF'].includes(name)) {
-    const unit = name === 'DATE_TRUNC' ? truncUnit(args[0], read) :
-        name === 'TIMESTAMPDIFF' ? diffSql(args[0]) : PARTS[part(args[0]).toLowerCase()];
+  if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'DATE_DIFF', 'TIMESTAMPDIFF'].includes(name)) {
+    const unit = table.diffs?.includes(name) ? diffSql(args[0]) :
+        name === 'DATE_TRUNC' ? truncUnit(args[0], read) : PARTS[part(args[0]).toLowerCase()];
     if (!unit) return `${name} with part '${part(args[0])}'`;
     const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
