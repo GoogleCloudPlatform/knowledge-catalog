@@ -31,7 +31,7 @@ import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_convert
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileDialect, profileErrorMessage, profileForDocument, profileSources, pruneUnavailable, transpilesSomething,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileDialect, profileErrorMessage, profileForDocument, profileSources, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -138,11 +138,12 @@ function hasTargetType(
 // The dialect the report prunes the SQL of `profile` in: SPANNER when `model`
 // has a Spanner graph target, since that graph reads SPANNER text first, else
 // the dialect push's profile check reads it in. `model` is the model file
-// with `profile` applied.
+// with `profile` applied. Without `profile`, it is the dialect the model
+// file's own sources imply.
 function pruningDialect(
-    model: SemanticModel, profile: ProfileSpec): string|null|undefined {
-  return hasTargetType({model}, 'spanner') ? 'SPANNER' :
-                                             profileDialect(model, profile);
+    model: SemanticModel, profile?: ProfileSpec): string|null|undefined {
+  if (hasTargetType({model}, 'spanner')) return 'SPANNER';
+  return profile ? profileDialect(model, profile) : sourcesDialect(model);
 }
 
 
@@ -1500,9 +1501,10 @@ async function printStore(
 
 // Prints a profile's report under its header: the deployment target, the
 // source each entity binds to, and what the profile cannot answer or cannot
-// run. `model` is the model file with `profile` applied.
+// run. `model` is the model file with `profile` applied. Without `profile`,
+// the report is of the model file's own bindings.
 function printProfileReport(
-    model: SemanticModel, name: string, profile: ProfileSpec): void {
+    model: SemanticModel, name: string, profile?: ProfileSpec): void {
   // The targets the profile's deployments name, as --print-store reads them.
   const targets = profileTargets(model, name);
   // Pruned for the graphs this profile's own deployments name.
@@ -1516,9 +1518,10 @@ function printProfileReport(
   console.log('    sources:');
   // No profile binds an abstract entity, since it has no table. As push reads
   // a named profile, an entity it gives no source is unbound, though the model
-  // file names a table for it.
+  // file names a table for it. Without `profile`, an entity's source is the
+  // one the model file names.
   const concrete = (model.entities ?? []).filter(e => !e.abstract);
-  const sourceIn = profileSources(profile);
+  const sourceIn = profile ? profileSources(profile) : writtenSource;
   const unbound = concrete.filter(
       e => sourceIn(e) === undefined || !writtenSource(e));
   for (const e of concrete) {
@@ -1622,17 +1625,22 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // bindings, which every model has.
   const inlineHeader =
       `  profile '${DEFAULT_PROFILE}': the model document's own inline ` +
-      `bindings, as authored -- nothing merged, nothing withheld.`;
-  // Prints the warnings push gives about the model file's own bindings in
-  // `doc`, unless the model file does not load on its own.
-  const warnInline = (doc: {name: string; text: string}, named: boolean) => {
-    const loaded = loadSemanticModels([doc], {bindingOptional: true});
-    if (loaded.error) return;
-    for (const w of inlineBindingWarnings(
-             loaded.models[0].model, doc.name, named)) {
-      console.warn(`  profile '${DEFAULT_PROFILE}': warning: ${w}`);
-    }
-  };
+      `bindings, as authored -- nothing merged.`;
+  // Prints the report of the model file's own bindings in `doc` when `report`
+  // is set, pruned as push prunes a deployment that uses them, then the
+  // warnings push gives about them. Prints nothing when the model file does
+  // not load on its own.
+  const printInline =
+      (doc: {name: string; text: string}, named: boolean, report = true) => {
+        const loaded =
+            loadSemanticModels([doc], {bindingOptional: true, ...load});
+        if (loaded.error) return;
+        const {model} = loaded.models[0];
+        if (report) printProfileReport(model, DEFAULT_PROFILE);
+        for (const w of inlineBindingWarnings(model, doc.name, named)) {
+          console.warn(`  profile '${DEFAULT_PROFILE}': warning: ${w}`);
+        }
+      };
 
   // The errors of a plain push's local checks, each reported under the model
   // and profile it belongs to.
@@ -1690,7 +1698,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     // universally valid name undeclared.
     if (only === DEFAULT_PROFILE) {
       console.log(inlineHeader);
-      warnInline(doc, declared.length > 0);
+      printInline(doc, declared.length > 0);
       printRejects('    ', pushErrorsOf(doc.name, DEFAULT_PROFILE));
       continue;
     }
@@ -1716,7 +1724,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       console.log(
           `  no binding profiles; the model document is its own inline ` +
           `'default' binding.`);
-      warnInline(doc, declared.length > 0);
+      printInline(doc, declared.length > 0);
       printRejects('    ', pushErrorsOf(doc.name, DEFAULT_PROFILE));
       continue;
     }
@@ -1771,7 +1779,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     if (!only) {
       const errors = pushErrorsOf(doc.name, DEFAULT_PROFILE);
       if (errors.length) console.log(inlineHeader);
-      warnInline(doc, declared.length > 0);
+      printInline(doc, declared.length > 0, errors.length > 0);
       printRejects('    ', errors);
     }
   }
