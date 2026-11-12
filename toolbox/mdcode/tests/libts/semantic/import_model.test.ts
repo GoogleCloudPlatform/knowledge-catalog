@@ -928,6 +928,8 @@ describe('profile checks', () => {
         content: `name: ${name}\nentities:\n  - name: orders\n    source: ${source}\n${KEYED}${more}`});
   const unbound = (dialects: string) =>
       model(AMOUNT(`{dialects: [${dialects}]}`)).replace(/ +source: .*\n/, '');
+  const METRIC = (dialects: string) =>
+      `    metrics:\n      - {name: m, entity: orders, expression: {dialects: [${dialects}]}}\n`;
   test.each([
     ['an entity bound only through a profile file',
      model(AMOUNT('{dialects: [{dialect: PostgreSQL, expression: amount}]}'))
@@ -962,11 +964,44 @@ describe('profile checks', () => {
      model(AMOUNT('{dialects: [{dialect: GoogleSQL, expression: amount}]}'), SPANNER_TABLE),
      {readDialects: lookup({spanner: 'POSTGRESQL'})},
      "field 'orders.amount': write dialect 'GoogleSQL' as 'BIGQUERY'."],
-  ] as Array<[string, string, object, string]>)(
+    ['an AlloyDB profile beside a BigQuery profile that excludes the field',
+     unbound('{dialect: PostgreSQL, expression: amount}'),
+     {profileFiles: [profileOf('bq', BQ_TABLE, '    fields_exclude: [amount]\n'), profileOf('ad', ALLOYDB_TABLE)]},
+     "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ...['[m]', "'*'"].map(excluded => [
+      `an AlloyDB profile beside a BigQuery profile with metrics_exclude: ${excluded}`,
+      UNBOUND + METRIC('{dialect: PostgreSQL, expression: COUNT(orders.order_id)}'),
+      {profileFiles: [profileOf('bq', BQ_TABLE, `metrics_exclude: ${excluded}\n`), profileOf('ad', ALLOYDB_TABLE)]},
+      "metric 'm': write dialect 'PostgreSQL' as 'ALLOYDB'."]),
+    ['a supertype whose binding a BigQuery profile replaces, and a subtype that inherits it',
+     model(AMOUNT(`{dialects: [{dialect: GoogleSQL, expression: "'0'"}]}`) +
+           `      - name: customers\n        extends: [orders]\n        source: ${SPANNER_DB}/tables/customers\n` +
+           '        primary_key: [order_id]\n        fields:\n          - {name: order_id, expression: order_id}\n',
+           SPANNER_TABLE),
+     {profileFiles: [profileOf('bq', BQ_TABLE, `      - {name: amount, expression: "'0'"}\n` +
+                               `  - name: customers\n    source: ${BQ_PREFIX}/tables/customers\n` +
+                               KEYED)]},
+     "field 'orders.amount': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['Spanner and AlloyDB profiles, with a GoogleSQL and a PostgreSQL label',
+     unbound('{dialect: GoogleSQL, expression: amount}, {dialect: PostgreSQL, expression: amount}'),
+     {profileFiles: [profileOf('sp', SPANNER_TABLE), profileOf('ad', ALLOYDB_TABLE)],
+      readDialects: lookup({spanner: 'GOOGLE_STANDARD_SQL'})},
+     ["field 'orders.amount': write dialect 'GoogleSQL' as 'SPANNER'.",
+      "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."]],
+    ['BigQuery and AlloyDB profiles, with a GoogleSQL and a PostgreSQL label',
+     unbound('{dialect: GoogleSQL, expression: amount}, {dialect: PostgreSQL, expression: amount}'),
+     {profileFiles: [profileOf('bq', BQ_TABLE), profileOf('ad', ALLOYDB_TABLE)]},
+     "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['BigQuery and Spanner profiles, with a lowercase dialect beside it on a metric',
+     UNBOUND + METRIC('{dialect: bigquery, expression: COUNT(orders.order_id)}, ' +
+                      '{dialect: GoogleSQL, expression: COUNT(orders.order_id)}'),
+     {profileFiles: [profileOf('bq', BQ_TABLE), profileOf('sp', SPANNER_TABLE)]},
+     "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
+  ] as Array<[string, string, object, string|string[]]>)(
       'reads a vendor label on %s', async (_, input, opts, needed) => {
         const res = await importSemanticModelYaml(
             input, {...strict, flavor: 'google', ...opts});
-        expect(res.errors).toContain(needed);
+        expect(res.errors).toEqual(expect.arrayContaining([needed].flat()));
       });
 
   // The repair step removes a metric with no entity whose expression reaches

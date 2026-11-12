@@ -6,13 +6,13 @@ import * as yaml from 'yaml';
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
-import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {ALLOWED_DIALECTS, DialectExpression, expressionForDialect, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, tableDialects, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
+import {applyProfile, boundDeclaration, declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, tableDialects, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -298,75 +298,120 @@ const DIALECT_ALIASES:
   TSQL: ['SQLSERVER'],
 };
 
-// Each dialect the table `source` may run, as push reads it with the lookups
-// in `load`, or none when push knows no dialect for it.
-function sourceDialectsOf(source: string, load: DialectLoad): string[] {
-  const key = dialectLookupKey(source.trim());
-  const sourceDialect = key ? load.sourceDialects?.get(key) : undefined;
-  return tableDialects(
-             {abstract: false, authoredSource: source, dataSource: '',
-              sourceDialect},
-             true)
-             ?.dialects ??
-      [];
+// One binding of the model as push applies it: the model file's own, or a
+// profile's, which `profile` holds.
+interface LabelBinding {
+  model: SemanticModel;
+  profile?: ProfileSpec;
 }
 
-// The dialect the vendor label `upper` names on tables that may run the
-// dialects in `tables`, one list for each table: the dialect it names on such
-// a table when every one of them may run that one, or else the dialect it
-// usually names. Undefined when it is no vendor label.
-function aliasedDialect(
-    upper: string, tables: string[][]): SqlDialect|undefined {
-  const alias = DIALECT_ALIASES[upper];
-  if (!alias) return undefined;
-  const [usual, own] = alias;
-  return own && tables.length && tables.every(t => t.includes(own)) ? own :
-                                                                      usual;
-}
-
-// The tables that run the text of field `field` of `ds`, or of a metric when
-// `ds` is unset, under each binding: the model file's and each named
-// profile's. A field runs on the table of its entity and of each entity that
-// inherits it without restating its expression, and a metric on every
-// entity's table. A profile that restates the field runs its own text.
-function labelSources(
+/**
+ * The model file's bindings and each profile's, as push applies them with the
+ * lookups in `load`: the model file's first, then each profile it declares, in
+ * `profileFiles` for a Google-flavor input or in the model's GOOGLE blocks for
+ * a vanilla one. A profile that does not apply is left out, since push refuses
+ * it. A copy of the model loads, converted to the Google flavor as the import
+ * converts it, without its metrics, which no binding changes, and with each
+ * vendor dialect label read as a dialect its list does not hold, since the
+ * loader takes no such label. Empty when the copy does not load, as the
+ * import then stops on the same error.
+ */
+function labelBindings(
     doc: ImportDocument, profileFiles: SerializedFile[],
-    ds?: Record<string, any>, field?: string): string[] {
-  const restates = (e: Record<string, any>) => field !== undefined &&
-      asRecords(e.fields).some(f => f.name === field && f.expression != null);
-  const parents = (e: Record<string, any>) => [e.extends,
-    ...parseGoogleBlocks(e.custom_extensions).map(b => b.extends)]
-      .flatMap(x => Array.isArray(x) ? x : []);
-  const runs = new Set(ds ? [ds.name] : doc.datasets.map(d => d.name));
-  for (let grew = !!ds; grew;) {
-    grew = false;
-    for (const e of doc.datasets) {
-      if (runs.has(e.name) || restates(e) ||
-          !parents(e).some(x => runs.has(x))) {
-        continue;
+    load: DialectLoad): LabelBinding[] {
+  const root = plainCopy(doc.root);
+  const m = root.semantic_model[0];
+  delete m.metrics;
+  // Converting the copy reports nothing.
+  const copy: ImportDocument = {
+    ...doc,
+    root,
+    model: m,
+    datasets: asRecords(m.entities ?? m.datasets),
+    relationships: asRecords(m.relationships),
+    metrics: [],
+    targetVersion: GOOGLE_VERSION,
+    warnOrError: () => {},
+    repair: () => {},
+  };
+  const profiles = doc.inputVersion === GOOGLE_VERSION ?
+      profileFiles :
+      moveConstructs(copy, []);
+  if (doc.inputVersion !== GOOGLE_VERSION) adaptToGoogleVersion(copy);
+  for (const f of copy.datasets.flatMap(ds => asRecords(ds.fields))) {
+    const entries = asRecords(f.expression?.dialects);
+    const free =
+        ALLOWED_DIALECTS.filter(d => !entries.some(e => e.dialect === d));
+    for (const e of entries) {
+      if (typeof e.dialect === 'string' &&
+          DIALECT_ALIASES[e.dialect.trim().toUpperCase()]) {
+        e.dialect = free.shift();
       }
-      runs.add(e.name);
-      grew = true;
     }
   }
-  const profiles = [
-    ...profileFiles.map(pf => {
-      try {
-        return yaml.parse(pf.content, YAML_OPTIONS);
-      } catch {
-        return undefined;
-      }
-    }),
-    ...parseGoogleBlocks(doc.model.custom_extensions)
-        .flatMap(b => asRecords(b.profiles)),
-  ];
-  const bound = [
-    ...doc.datasets.filter(e => runs.has(e.name)),
-    ...profiles.flatMap(p => isRecord(p) ? asRecords(p.entities) : [])
-        .filter(e => runs.has(e.name) && !restates(e)),
-  ];
-  return bound.map(e => e.source)
-      .filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+  let model: SemanticModel;
+  try {
+    model = {
+      ...fromDocument(root, {
+        bindingOptional: true,
+        warnUnacceptedSource: true,
+        sourceDialects: load.sourceDialects,
+      }).models[0],
+      actions: [],
+    };
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return [];
+  }
+  return [{model}, ...profiles.flatMap(pf => {
+    try {
+      const profile = loadProfileFile(
+          pf.content, parseProfileName(pf.fileName), {skipActions: true});
+      return [{
+        model: applyProfile(
+            model, profile, {load: {sourceDialects: load.sourceDialects}}),
+        profile,
+      }];
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return [];
+    }
+  })];
+}
+
+// The dialects of each table, one list per table, that runs the model file's
+// text of field `field` of entity `entity` under one of `bindings`: the table
+// of each concrete entity that does not exclude the field and binds it with
+// `entity`'s declaration (see boundDeclaration), under each binding but that
+// of a profile that binds the field on `entity` itself.
+function fieldTables(
+    bindings: LabelBinding[], entity: string, field: string): string[][] {
+  return bindings.flatMap(({model, profile}) => {
+    if (profile?.entities.some(
+            pe => pe.name === entity &&
+                pe.fields?.some(f => f.name === field && isFieldBound(f)))) {
+      return [];
+    }
+    return (model.entities ?? []).flatMap(e => {
+      const table = e.abstract ? undefined : tableDialects(e, true);
+      return table && !e.excludedFields?.includes(field) &&
+              boundDeclaration(model, e.name, field)?.owner === entity ?
+          [table.dialects] :
+          [];
+    });
+  });
+}
+
+// The dialects of each table, one list per table, that runs metric `metric`
+// under one of `bindings`: every table of a binding that does not exclude it.
+function metricTables(bindings: LabelBinding[], metric: string): string[][] {
+  return bindings
+      .filter(({profile}) => profile?.metricsExclude !== '*' &&
+                  !profile?.metricsExclude?.includes(metric))
+      .flatMap(({model}) => (model.entities ?? []).flatMap(e => {
+        const table = e.abstract ? undefined : tableDialects(e, true);
+        return table ? [table.dialects] : [];
+      }));
 }
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
@@ -991,33 +1036,54 @@ function normalizeExpressionDialects(
 }
 
 /**
- * Rewrites each vendor dialect label on a field or metric as the dialect it
- * names on the tables `sources` that run the text, read with the lookups in
- * `load`. A table whose every dialect has an entry of its own on the field or
- * metric runs that entry instead.
+ * Rewrites each vendor dialect label on a field or metric, in list order, as
+ * the dialect it names on `tables`, the tables that run the text, each given
+ * as the dialects it may run. A label names its own dialect, such as SPANNER
+ * for GoogleSQL, when some table runs the entry under that name and every
+ * table that runs it under the usual name, such as BIGQUERY, runs it under its
+ * own name too, and otherwise the usual name. A table runs the entry
+ * expressionForDialect picks for one of its dialects. A name another entry
+ * has is never taken while the other name is free.
  */
 function relabelVendorDialects(
     obj: Record<string, any>, label: string, doc: ImportDocument,
-    sources: string[], load: DialectLoad): void {
+    tables: string[][]): void {
   if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects)) {
     return;
   }
   const entries = asRecords(obj.expression.dialects);
-  const stated = new Set(entries.map(e => e.dialect)
-                             .filter(d => d !== 'ANSI_SQL' &&
-                                         ALLOWED_DIALECT_SET.has(d)));
-  const tables = sources.map(s => sourceDialectsOf(s, load))
-                     .filter(t => !t.length || t.some(d => !stated.has(d)));
-  for (const entry of entries) {
-    if (typeof entry.dialect !== 'string') continue;
-    const mapped = aliasedDialect(entry.dialect.trim().toUpperCase(), tables);
-    if (mapped === undefined || entry.dialect === mapped) continue;
+  const taken = (i: number, name: string) =>
+      entries.some((e, j) => j !== i && e.dialect === name);
+  // Whether a table of `dialects` runs entry `i` written as `name`.
+  const runs = (i: number, name: SqlDialect, dialects: string[]) => {
+    const item = {
+      dialects: entries.map((e, j) => ({
+                              dialect: j === i ? name : e.dialect,
+                              expression: String(j),
+                            })) as DialectExpression[],
+    };
+    return !taken(i, name) &&
+        dialects.some(
+            d => expressionForDialect(item, d as SqlDialect) === String(i));
+  };
+  entries.forEach((entry, i) => {
+    if (typeof entry.dialect !== 'string') return;
+    const alias = DIALECT_ALIASES[entry.dialect.trim().toUpperCase()];
+    if (!alias) return;
+    const [usual, own] = alias;
+    const mapped = own && !taken(i, own) &&
+            (taken(i, usual) ||
+             tables.some(t => runs(i, own, t)) &&
+                 tables.every(t => !runs(i, usual, t) || runs(i, own, t))) ?
+        own :
+        usual;
+    if (entry.dialect === mapped) return;
     doc.repair(
         `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`,
         `${label}: write dialect '${entry.dialect}' as '${mapped}'.`);
     entry.dialect = mapped;
     doc.modified = true;
-  }
+  });
 }
 
 /**
@@ -1235,22 +1301,22 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
  * `false` when the metric is unanchored and reaches 0 or >1 entities so the
- * caller prunes it from `doc.metrics`. A vendor label names its dialect on the
- * tables `sources`, read with the lookups in `load`. `translatesLater` is as
- * for `unanchoredMetricProblem`.
+ * caller prunes it from `doc.metrics`. A vendor label names its dialect on
+ * `tables`, as relabelVendorDialects reads them. `translatesLater` is as for
+ * `unanchoredMetricProblem`.
  */
 function repairMetric(
-    mt: Record<string, any>, doc: ImportDocument, sources: string[],
-    load: DialectLoad, translatesLater = false): boolean {
+    mt: Record<string, any>, doc: ImportDocument, tables: string[][],
+    translatesLater = false): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
-  relabelVendorDialects(mt, mtLabel, doc, sources, load);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
         `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
         `add one.`);
     return true;
   }
+  relabelVendorDialects(mt, mtLabel, doc, tables);
   if (!keepsMetric(mt, doc, translatesLater)) return false;
   truncateDescription(mt, mtLabel, doc);
   return true;
@@ -1393,14 +1459,14 @@ async function repairDocument(
   // metric check runs again after translation, or push's checks in strict
   // mode.
   const load = await readSourceDialects(doc, opts);
-  // A vendor label names its dialect on the tables push reads for it, once
-  // every source is complete and its dialect read.
-  const profileFiles = opts.profileFiles ?? [];
+  // A vendor label names its dialect on the tables push runs its text on
+  // under each binding, once every source is complete and its dialect read.
+  const bindings = labelBindings(doc, opts.profileFiles ?? [], load);
   for (const ds of doc.datasets) {
     for (const f of asRecords(ds.fields)) {
       relabelVendorDialects(
           f, `field '${ds.name ?? ''}.${f.name}'`, doc,
-          labelSources(doc, profileFiles, ds, f.name), load);
+          fieldTables(bindings, ds.name, f.name));
     }
   }
   doc.impliedDialect = sourcesDialect({
@@ -1415,10 +1481,10 @@ async function repairDocument(
       };
     }),
   });
-  const metricSources = labelSources(doc, profileFiles);
   filterMetrics(
       doc,
-      (mt, d) => repairMetric(mt, d, metricSources, load, !!opts.transpile));
+      (mt, d) => repairMetric(
+          mt, d, metricTables(bindings, mt.name), !!opts.transpile));
 
   // 4. Cap each relationship's `description`. A `GOOGLE` block comes only in
   // strict mode, which writes nothing, so its description is only reported.
