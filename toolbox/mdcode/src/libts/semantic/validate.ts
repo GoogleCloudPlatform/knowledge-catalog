@@ -1086,8 +1086,9 @@ export function yamlChangedStatementErrors(
       const flow = holder?.kind === 'flow list';
       const after = file.text.slice(statement.range![1]);
       // The indent of a comment line after the statement, past blank lines.
+      // YAML counts only spaces as indent.
       const commentIndent =
-          /^(?:[ \t]*\r?\n)+([ \t]*)#/.exec(after)?.[1].length ?? -1;
+          /^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(after)?.[1].length ?? -1;
       const marker = markers.get(statement);
       if (statement.type === 'PLAIN' && /^[ \t]+#/.test(after)) {
         errors.push(

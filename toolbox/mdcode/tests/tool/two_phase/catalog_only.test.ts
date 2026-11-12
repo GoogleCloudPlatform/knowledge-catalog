@@ -350,6 +350,8 @@ scenarios('push --no-deployment refuses a scope before any network call', [
       files: {'commerce.yaml': modelWriting([
         '- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k",
         '- "DELETE FROM customer WHERE c_key = @k"', '  # a note',
+        // YAML counts no tab as indent.
+        '- DELETE FROM customer WHERE c_key = @k', '\t# a note',
       ])},
       code: 0,
     }, {
