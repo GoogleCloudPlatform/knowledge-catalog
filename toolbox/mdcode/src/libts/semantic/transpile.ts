@@ -782,6 +782,12 @@ interface DateRow {
   // the source writes it, which BigQuery adds as days to a DATE and rejects
   // beside a timestamp, as the source does.
   days?: Addition;
+  // Set when the dialect also adds a decimal number as days with their
+  // fraction: the microseconds the fraction must be a whole number of, which
+  // the operand's type holds exactly. Import adds the number as a whole amount
+  // of the longest unit that holds it, by the row's `units`, such as 1.25 as
+  // 30 hours.
+  fractionStep?: bigint;
 }
 
 // The date arithmetic table of one dialect.
@@ -1066,7 +1072,10 @@ const DATE_TABLES: Record<string, DateTable> = {
   // string, and its dayofyear and weekday parts add days. GETDATE() and
   // CURRENT_TIMESTAMP give a datetime, which the repairs write as
   // CURRENT_DATETIME('UTC'). It has no INTERVAL, and its date plus a number
-  // depends on the date's type.
+  // depends on the date's type: a datetime plus a number adds that many days,
+  // with their fraction, and a date rejects it. A datetime counts 1/300 of a
+  // second, which holds a decimal fraction of a day exactly when it is whole
+  // hundredths of a second.
   tsql: {
     date: 'date', today: ['CURRENT_DATE'], now: {functions: ['GETDATE', 'CURRENT_TIMESTAMP'], row: 'datetime'},
     functions: {DATEADD: 'part'}, quotedParts: false, intervals: [], stringAmounts: true,
@@ -1083,7 +1092,10 @@ const DATE_TABLES: Record<string, DateTable> = {
         },
       },
       date: {type: 'DATE', name: 'a date', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'date')},
-      datetime: {type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime')},
+      datetime: {
+        type: 'DATETIME', name: 'a datetime', units: adds(UNITS, 'DATE_ADD', 'datetime'),
+        days: {form: 'DATE_ADD', gives: 'datetime'}, fractionStep: 10000n,
+      },
     },
   },
   generic: {
@@ -1154,15 +1166,35 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
       operand, amount, unit, subtract, first, name: op, spelling: `${op} ${written}`, unitText: written,
     });
   }
-  // A whole number added to a date, which some dialects add as days.
+  // A number added to a date, which some dialects add as days.
   const [operand, amount] = dayOperands(kind, value);
-  if (!/^-?\d+$/.test(numberText(amount) ?? '') || bare(operand)?.column) return undefined;
+  const text = numberText(amount) ?? '';
+  if (!/^-?\d*\.?\d+$/.test(text) || bare(operand)?.column) return undefined;
   const found = operandRow(operand, read, table);
   if (typeof found === 'string') return found;
-  const days = found && table.rows[found.row].days;
-  if (!days) return undefined;
-  const unit = days.form === 'DATE_ADD' ? 'DAY' : undefined;
-  return {operand, amount: wholeNumber(numberText(amount)!), unit, subtract: kind === 'sub', addition: days};
+  const row = found && table.rows[found.row];
+  const subtract = kind === 'sub';
+  if (!row?.days) return undefined;
+  if (/^-?\d+$/.test(text)) {
+    const unit = row.days.form === 'DATE_ADD' ? 'DAY' : undefined;
+    return {operand, amount: wholeNumber(text), unit, subtract, addition: row.days};
+  }
+  const part = row.fractionStep && dayFraction(text, row.fractionStep);
+  const addition = part && row.units[part.unit];
+  return addition ? {operand, ...part, subtract, addition} : undefined;
+}
+
+// `text`, a decimal number of days, as a whole amount of the longest unit of a
+// day or less that holds it, or undefined when it is not a whole number of
+// `step` microseconds.
+function dayFraction(text: string, step: bigint): {amount: unknown; unit: Unit}|undefined {
+  const [, sign, whole, fraction] = /^(-?)(\d*)\.(\d+)$/.exec(text)!;
+  const scale = 10n ** BigInt(fraction.length);
+  const micros = BigInt(whole + fraction) * DAY_MICROS;
+  if (micros % scale || (micros / scale) % step) return undefined;
+  const per: Partial<Record<Unit, bigint>> = {DAY: DAY_MICROS, ...MICROS};
+  const unit = (['DAY', ...[...SUB_DAY].reverse()] as Unit[]).find(u => (micros / scale) % per[u]! === 0n)!;
+  return {amount: wholeNumber(`${sign}${micros / scale / per[unit]!}`), unit};
 }
 
 // The date arithmetic of a call of `name` with `args`, a function in the
@@ -1312,6 +1344,7 @@ const DAYS: Partial<Record<Unit, bigint>> = {DAY: 1n, WEEK: 7n};
 const MICROS: Partial<Record<Unit, bigint>> = {
   HOUR: 3600000000n, MINUTE: 60000000n, SECOND: 1000000n, MILLISECOND: 1000n, MICROSECOND: 1n,
 };
+const DAY_MICROS = 86400000000n;
 
 // The INTERVALs PostgreSQL keeps of `parts`, whole numbers, when it restricts
 // them to the fields down to `smallest`, as in '90 minutes'::interval hour. It
@@ -1413,7 +1446,7 @@ function intervalTyped(node: any, read: string): boolean {
 // times whole numbers adds their product. Times any other amount, the sum is
 // an expression, which BigQuery rejects unless it is an INT64.
 const FOLDS: Partial<Record<Unit, bigint>>[] = [
-  {WEEK: 7n * 86400000000n, DAY: 86400000000n, ...MICROS}, {YEAR: 12n, QUARTER: 3n, MONTH: 1n},
+  {WEEK: 7n * DAY_MICROS, DAY: DAY_MICROS, ...MICROS}, {YEAR: 12n, QUARTER: 3n, MONTH: 1n},
 ];
 function folded(parts: IntervalPart[]): {amount: unknown; unit: Unit}|undefined {
   const fold = FOLDS.find(f => parts.every(p => f[p.unit]));

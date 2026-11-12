@@ -353,7 +353,11 @@ names microseconds.
   for a date. Seconds stay untranslated on a column, since SQL Server ignores
   -30 to 29 seconds added to a smalldatetime. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
-  and adds every unit to it.
+  and adds every unit to it. A number added to it counts days, as in SQL
+  Server. Its fraction becomes the hours, minutes, seconds or milliseconds it
+  holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that is not whole
+  hundredths of a second stays untranslated, since SQL Server rounds it to
+  1/300 of a second.
 
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
 counts as days. A column plus a whole number, such as `(d + 1) + INTERVAL '1
@@ -366,7 +370,7 @@ minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 7 days in both. The amount is a whole number or an expression, such as
 `INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
 BigQuery give its parts the same way. From the other databases, import leaves
-any other date arithmetic untranslated, such as an amount that is a fraction,
+any other date arithmetic untranslated, such as an INTERVAL of a fraction,
 or a function such as MAX plus an INTERVAL.
 
 From PostgreSQL and Databricks, import also translates a sum or difference of
