@@ -565,7 +565,8 @@ async function scopeTranspileOutcomes(
 // their profile files, and each other profile file on disk that pull leaves.
 // With `pull.forceRemove`, it leaves out what pull --force-remove deletes:
 // the older profile directory and each profile file push reads that pull
-// does not write.
+// does not write. Pull's run reads no table's dialect, so its checks read an
+// ANSI_SQL text as pull's own checks do (see DialectLoad.readWithoutDialect).
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
@@ -590,6 +591,7 @@ async function transpileOutcomes(
           readDialects: async () => dialects,
           api: () => ctx,
           withoutProfileDir: pull?.forceRemove,
+          readWithoutDialect: !!pull,
         });
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
@@ -2828,6 +2830,9 @@ interface ImportIo {
   // Set when the older `<model>.profiles/` directory beside the input is gone
   // by the time the import would run, as after pull --force-remove.
   withoutProfileDir?: boolean;
+  // Set for an import that reads no table's dialect, as pull's run does (see
+  // ImportSemanticModelOptions.readWithoutDialect).
+  readWithoutDialect?: boolean;
   api?: () => context.ApiContext;
   readDialects?: (texts: string[]) => Promise<SourceDialects>;
   transpileOutcome?:
@@ -3034,6 +3039,7 @@ async function planOneImport(
             new dataplex.CatalogClient(api()).listEntries(
                 project, location, entryGroup),
         readDialects: readDialectsOnce,
+        readWithoutDialect: io.readWithoutDialect,
         overwritesInput: async files =>
             io.overwrites(await overwritesInput(files)),
         // The advice names the first error of the import it suggests: this

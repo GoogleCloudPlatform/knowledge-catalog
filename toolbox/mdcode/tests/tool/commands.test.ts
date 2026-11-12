@@ -2180,6 +2180,32 @@ describe('a pull', () => {
          });
   }
 
+  // On a table whose dialect pull does not read, that import reads an
+  // ANSI_SQL text as pull's own checks do, so the warning names the error it
+  // stops on, as the import after the pull does.
+  test('names the error the import stops on in a text on a Spanner table', () => {
+    const text = 'IFF(TRUE, id, 0)';
+    return checkPull({
+      name: 'commerce', relationships: [],
+      entities: [onTable('Order', `${SPANNER}/orders`, ['id', 'code'])],
+      metrics: [metric('m', 'SUM(Order.missing)', 'Order')],
+      profiles: [{name: 'prod', relationships: [], metricsExclude: '*', entities: [{
+        name: 'Order', primaryKey: ['id'],
+        source: 'bigquery.googleapis.com/projects/test-project/datasets/prod/tables/orders',
+        fields: [{name: 'id', expression: 'id', stringForm: true}, {
+          name: 'code', dialects: [{dialect: 'SNOWFLAKE', expression: text}],
+          importedExpression: text, importedDialect: 'SNOWFLAKE',
+        }],
+      }]}],
+    }, "[commerce.profile.prod.yaml] profile 'prod': field 'Order.code' has no " +
+        'expression for BIGQUERY or ANSI_SQL, and this profile\'s sources are ' +
+        "BIGQUERY; give it one, or add one with 'kcmd import <file> --input " +
+        "first-party --flavor google --transpile' after fixing this: metric 'm' " +
+        "in model 'commerce' (commerce): expression references 'Order.missing', " +
+        "but entity 'Order' has no field 'missing'; metric expressions must " +
+        'reference declared fields, not physical columns.');
+  });
+
   // An error of several lines, such as a parse error with its code frame,
   // ends the warning at its last line.
   test('ends the warning at the last line of an error of several lines',

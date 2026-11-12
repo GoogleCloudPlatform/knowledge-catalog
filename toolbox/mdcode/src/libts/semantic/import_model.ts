@@ -45,6 +45,12 @@ export interface ImportSemanticModelOptions {
    * dialect of each such table is unknown.
    */
   readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  /**
+   * When true, push's checks read an ANSI_SQL text on a table whose dialect
+   * no lookup read as DialectLoad.readWithoutDialect says. Pull sets it for
+   * the import it runs with no table's dialect read, as its own checks read.
+   */
+  readWithoutDialect?: boolean;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -2141,7 +2147,10 @@ export async function importSemanticModelYaml(
       errors: [...doc.errors, listError],
     };
   }
-  const load = await repairDocument(doc, opts);
+  const load = {
+    ...await repairDocument(doc, opts),
+    ...opts.readWithoutDialect ? {readWithoutDialect: true} : {},
+  };
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
