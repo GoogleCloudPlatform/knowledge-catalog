@@ -298,40 +298,57 @@ const DIALECT_ALIASES:
   TSQL: ['SQLSERVER'],
 };
 
-// The dialect the vendor label `upper` names on the tables `sources`, as push
-// reads their dialects with the lookups in `load`, or undefined when it is no
-// vendor label.
+// Each dialect the table `source` may run, as push reads it with the lookups
+// in `load`, or none when push knows no dialect for it.
+function sourceDialectsOf(source: string, load: DialectLoad): string[] {
+  const key = dialectLookupKey(source.trim());
+  const sourceDialect = key ? load.sourceDialects?.get(key) : undefined;
+  return tableDialects(
+             {abstract: false, authoredSource: source, dataSource: '',
+              sourceDialect},
+             true)
+             ?.dialects ??
+      [];
+}
+
+// The dialect the vendor label `upper` names on tables that may run the
+// dialects in `tables`, one list for each table: the dialect it names on such
+// a table when every one of them may run that one, or else the dialect it
+// usually names. Undefined when it is no vendor label.
 function aliasedDialect(
-    upper: string, sources: string[], load: DialectLoad): SqlDialect|undefined {
+    upper: string, tables: string[][]): SqlDialect|undefined {
   const alias = DIALECT_ALIASES[upper];
   if (!alias) return undefined;
   const [usual, own] = alias;
-  const runs = (source: string) => {
-    const key = dialectLookupKey(source.trim());
-    const sourceDialect = key ? load.sourceDialects?.get(key) : undefined;
-    return !!own &&
-        !!tableDialects(
-              {abstract: false, authoredSource: source, dataSource: '',
-               sourceDialect},
-              true)
-              ?.dialects.includes(own);
-  };
-  return sources.length && sources.every(runs) ? own! : usual;
+  return own && tables.length && tables.every(t => t.includes(own)) ? own :
+                                                                      usual;
 }
 
-// The tables push reads for the fields of `ds`, or for a metric when `ds` is
-// unset: the dataset's own table, or else the model file's tables, or else,
-// when the model file binds none, the tables of its named profiles.
+// The tables that run the text of field `field` of `ds`, or of a metric when
+// `ds` is unset, under each binding: the model file's and each named
+// profile's. A field runs on the table of its entity and of each entity that
+// inherits it without restating its expression, and a metric on every
+// entity's table. A profile that restates the field runs its own text.
 function labelSources(
     doc: ImportDocument, profileFiles: SerializedFile[],
-    ds?: Record<string, any>): string[] {
-  const named = (records: unknown) => asRecords(records)
-      .map(r => r.source)
-      .filter((s): s is string => typeof s === 'string' && s.trim() !== '');
-  const own = named(ds ? [ds] : []);
-  if (own.length) return own;
-  const model = named(doc.datasets);
-  if (model.length) return model;
+    ds?: Record<string, any>, field?: string): string[] {
+  const restates = (e: Record<string, any>) => field !== undefined &&
+      asRecords(e.fields).some(f => f.name === field && f.expression != null);
+  const parents = (e: Record<string, any>) => [e.extends,
+    ...parseGoogleBlocks(e.custom_extensions).map(b => b.extends)]
+      .flatMap(x => Array.isArray(x) ? x : []);
+  const runs = new Set(ds ? [ds.name] : doc.datasets.map(d => d.name));
+  for (let grew = !!ds; grew;) {
+    grew = false;
+    for (const e of doc.datasets) {
+      if (runs.has(e.name) || restates(e) ||
+          !parents(e).some(x => runs.has(x))) {
+        continue;
+      }
+      runs.add(e.name);
+      grew = true;
+    }
+  }
   const profiles = [
     ...profileFiles.map(pf => {
       try {
@@ -343,7 +360,13 @@ function labelSources(
     ...parseGoogleBlocks(doc.model.custom_extensions)
         .flatMap(b => asRecords(b.profiles)),
   ];
-  return profiles.flatMap(p => isRecord(p) ? named(p.entities) : []);
+  const bound = [
+    ...doc.datasets.filter(e => runs.has(e.name)),
+    ...profiles.flatMap(p => isRecord(p) ? asRecords(p.entities) : [])
+        .filter(e => runs.has(e.name) && !restates(e)),
+  ];
+  return bound.map(e => e.source)
+      .filter((s): s is string => typeof s === 'string' && s.trim() !== '');
 }
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
@@ -969,7 +992,9 @@ function normalizeExpressionDialects(
 
 /**
  * Rewrites each vendor dialect label on a field or metric as the dialect it
- * names on the tables `sources`, read with the lookups in `load`.
+ * names on the tables `sources` that run the text, read with the lookups in
+ * `load`. A table whose every dialect has an entry of its own on the field or
+ * metric runs that entry instead.
  */
 function relabelVendorDialects(
     obj: Record<string, any>, label: string, doc: ImportDocument,
@@ -977,10 +1002,15 @@ function relabelVendorDialects(
   if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects)) {
     return;
   }
-  for (const entry of obj.expression.dialects) {
-    if (!isRecord(entry) || typeof entry.dialect !== 'string') continue;
-    const mapped =
-        aliasedDialect(entry.dialect.trim().toUpperCase(), sources, load);
+  const entries = asRecords(obj.expression.dialects);
+  const stated = new Set(entries.map(e => e.dialect)
+                             .filter(d => d !== 'ANSI_SQL' &&
+                                         ALLOWED_DIALECT_SET.has(d)));
+  const tables = sources.map(s => sourceDialectsOf(s, load))
+                     .filter(t => !t.length || t.some(d => !stated.has(d)));
+  for (const entry of entries) {
+    if (typeof entry.dialect !== 'string') continue;
+    const mapped = aliasedDialect(entry.dialect.trim().toUpperCase(), tables);
     if (mapped === undefined || entry.dialect === mapped) continue;
     doc.repair(
         `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`,
@@ -1367,10 +1397,10 @@ async function repairDocument(
   // every source is complete and its dialect read.
   const profileFiles = opts.profileFiles ?? [];
   for (const ds of doc.datasets) {
-    const sources = labelSources(doc, profileFiles, ds);
     for (const f of asRecords(ds.fields)) {
       relabelVendorDialects(
-          f, `field '${ds.name ?? ''}.${f.name}'`, doc, sources, load);
+          f, `field '${ds.name ?? ''}.${f.name}'`, doc,
+          labelSources(doc, profileFiles, ds, f.name), load);
     }
   }
   doc.impliedDialect = sourcesDialect({

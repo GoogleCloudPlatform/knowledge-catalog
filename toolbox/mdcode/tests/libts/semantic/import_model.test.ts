@@ -917,11 +917,17 @@ describe('profile checks', () => {
     ]);
   });
 
-  // A vendor label names its dialect on the tables push reads for the field:
-  // its entity's table once '--source-prefix' completes every source and the
-  // lookup reads its dialect, or the profile's tables when the model file
-  // binds none.
+  // A vendor label names its dialect on the tables that run the text under
+  // each binding: its entity's table and its subtypes', once '--source-prefix'
+  // completes every source and the lookup reads its dialect, and the tables
+  // each profile binds them to. A table the field has an entry of its own for
+  // runs that entry.
   const ALLOYDB_TABLE = `${ALLOYDB_DB}/schemas/public/tables/orders`;
+  const profileOf = (name: string, source: string, more = '') =>
+      ({fileName: `sales.profile.${name}.yaml`,
+        content: `name: ${name}\nentities:\n  - name: orders\n    source: ${source}\n${KEYED}${more}`});
+  const unbound = (dialects: string) =>
+      model(AMOUNT(`{dialects: [${dialects}]}`)).replace(/ +source: .*\n/, '');
   test.each([
     ['an entity bound only through a profile file',
      model(AMOUNT('{dialects: [{dialect: PostgreSQL, expression: amount}]}'))
@@ -929,11 +935,29 @@ describe('profile checks', () => {
      {profileFiles: [{fileName: 'sales.profile.prod.yaml', content:
          `name: prod\nentities:\n  - name: orders\n    source: ${ALLOYDB_TABLE}\n${KEYED}`}]},
      "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
-    ['an entity with no table listed before one whose source --source-prefix completes',
-     model('', 'orders').replace('    entities:\n', '    entities:\n      - name: party\n' +
-         "        fields: [{name: amount, expression: {dialects: [{dialect: PostgreSQL, expression: amount}]}}]\n"),
+    ['a supertype listed before a subtype whose source --source-prefix completes',
+     model('', 'orders').replace('      - name: orders\n', '      - name: party\n        abstract: true\n' +
+         "        fields: [{name: amount, expression: {dialects: [{dialect: PostgreSQL, expression: amount}]}}]\n" +
+         '      - name: orders\n        extends: [party]\n'),
      {sourcePrefix: `${ALLOYDB_DB}/schemas/public`},
      "field 'party.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['a Spanner profile beside a BigQuery profile that its BIGQUERY entry serves',
+     unbound('{dialect: BIGQUERY, expression: amount}, {dialect: GoogleSQL, expression: amount}'),
+     {profileFiles: [profileOf('bq', BQ_TABLE), profileOf('sp', SPANNER_TABLE)]},
+     "field 'orders.amount': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['an AlloyDB profile beside a BigQuery profile that its BIGQUERY entry serves',
+     unbound('{dialect: BIGQUERY, expression: amount}, {dialect: PostgreSQL, expression: amount}'),
+     {profileFiles: [profileOf('bq', BQ_TABLE), profileOf('ad', ALLOYDB_TABLE)]},
+     "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['an entity only a Cloud SQL profile binds, beside an AlloyDB table',
+     model('      - name: audit_log\n        primary_key: [id]\n        fields:\n          - {name: id}\n' +
+           '          - {name: payload, expression: {dialects: [{dialect: PostgreSQL, expression: id}]}}\n',
+           ALLOYDB_TABLE),
+     {profileFiles: [profileOf('pg', `${CLOUDSQL_PREFIX}/tables/orders`,
+                               `  - name: audit_log\n    source: ${CLOUDSQL_PREFIX}/tables/audit_log\n` +
+                               '    primary_key: [id]\n    fields:\n      - {name: id, expression: id}\n')],
+      readDialects: lookup({entry: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}})},
+     "field 'audit_log.payload': write dialect 'PostgreSQL' as 'POSTGRES'."],
     ['a PostgreSQL-dialect Spanner table',
      model(AMOUNT('{dialects: [{dialect: GoogleSQL, expression: amount}]}'), SPANNER_TABLE),
      {readDialects: lookup({spanner: 'POSTGRESQL'})},
