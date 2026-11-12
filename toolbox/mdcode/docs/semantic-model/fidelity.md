@@ -404,8 +404,9 @@ minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 BigQuery give its parts the same way. So do a comparison and BETWEEN, since
 both compare a month as 30 days and a day as 24 hours. Months, quarters and
 years added with `+` or `-` stay untranslated, since Spanner adds them to no
-TIMESTAMP and adds no INTERVAL to a DATE. From the other databases, import leaves
-any other date arithmetic untranslated, such as an INTERVAL of a fraction.
+TIMESTAMP and adds no INTERVAL to a DATE. From the other databases, import
+leaves any other date arithmetic untranslated, such as an INTERVAL of a
+fraction.
 PostgreSQL's DATE_TRUNC of a column plus an INTERVAL stays untranslated, since
 DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
 timestamp column. COALESCE, IF or CASE of a column and a DATE plus an INTERVAL
@@ -448,10 +449,10 @@ CASE, gets TIMESTAMP(x), its midnight or wall-clock time in UTC, as those
 databases read it: `CURRENT_DATE - 7 < NOW()` becomes
 `TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY)) < CURRENT_TIMESTAMP()`.
 
-From PostgreSQL, a difference of two values that import can see are dates or
-times, one of them a timestamp or a timestamptz, is an INTERVAL of days and a
-time of day with one sign, such as `1 day 23:00:00`. BigQuery gives the
-difference of two TIMESTAMPs in hours, here `47:00:00`, so import writes
+From PostgreSQL, a difference of two dates or times that import can see, one of
+them a timestamp or a timestamptz, is an INTERVAL of days and a time of day
+with one sign, such as `1 day 23:00:00`. BigQuery gives the difference of two
+TIMESTAMPs in hours, here `47:00:00`, so import writes
 `JUSTIFY_HOURS(TIMESTAMP(a) - TIMESTAMP(b))`, which moves each whole 24 hours
 into days as PostgreSQL does. `CURRENT_DATE - NOW()` becomes
 `JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))`. A
@@ -466,7 +467,10 @@ both keep the months, days and time of an INTERVAL apart: the hours of
 FLOAT64 for DATE_PART. It writes seconds, milliseconds and microseconds from
 BigQuery's whole seconds and their microseconds, and a quarter, decade, century
 or millennium from the months or years. It writes the epoch with a year of
-365.25 days and a month of 30 days, as PostgreSQL counts it.
+365.25 days and a month of 30 days, as PostgreSQL counts it. Databricks'
+EXTRACT of an INTERVAL stays untranslated, since Databricks keeps a day and
+time INTERVAL as one count of microseconds: the hours of `INTERVAL 25 HOURS`
+are 1 there and 25 in BigQuery.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
