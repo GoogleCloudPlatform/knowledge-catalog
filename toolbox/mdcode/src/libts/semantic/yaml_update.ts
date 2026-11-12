@@ -511,19 +511,27 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // scalar's header unless the scalar's text moved into the new value. A
   // block collection of several lines keeps none.
   const header = headerTail(t, from);
-  const moved = u.pairs.some(([p]) => p.value === node && u.used.has(p));
-  const after = header !== undefined ? (moved ? '' : header) :
-      end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
-                                       t.slice(to, end) :
-                                       '';
-  const tail = !under && from > keyLine ? t.slice(slot.after, keyLine) : after;
+  const kept = header ??
+      (end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
+           t.slice(to, end) :
+           '');
   // Whether a comment follows a statement on the new value's first line, and
-  // on the first line under it that is not blank, indented past its `-`.
+  // on the first line under it that is not blank, indented past its `-`. In
+  // a collection, the first follows its first entry and the second its last.
   const statements = inStatements(u, node);
-  const onLine = statements && /^[ \t]+#/.test(tail);
+  const onLine = statements &&
+      /^[ \t]+#/.test(!under && from > keyLine ? t.slice(slot.after, keyLine) :
+                                                 kept);
   const below = statements &&
       (/^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(t.slice(end))?.[1].length ?? -1) >
           col;
+  const last = entriesOf(isFull(value) ? value : {}).length - 1;
+  const [first, ...rest] = under && isFull(value) ?
+      items(u, value as object, col,
+            i => (i === 0 && onLine) || (i === last && below)) :
+      block(u, slot.prefix, value, col, undefined, onLine || below);
+  const moved = u.pairs.some(([p]) => p.value === node && u.used.has(p));
+  const after = header !== undefined && moved ? '' : kept;
   if (under && !isFull(value)) {
     // As a block scalar, text of several lines would take the text after it.
     const type = typeof value === 'string' && value.includes('\n') ?
@@ -534,17 +542,11 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     u.edits.push([from, end, text + after]);
     return;
   }
-  // In a collection, the comment on the line follows its first entry and the
-  // one under it follows its last.
-  const last = entriesOf(isFull(value) ? value : {}).length - 1;
-  const [first, ...rest] = under && isFull(value) ?
-      items(u, value as object, col,
-            i => (i === 0 && onLine) || (i === last && below)) :
-      block(u, slot.prefix, value, col, undefined, onLine || below);
   if (under) {
     u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
+  const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
   const head = first.slice(col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
 }
