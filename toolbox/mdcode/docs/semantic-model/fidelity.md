@@ -377,6 +377,14 @@ names microseconds.
   UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
   hours, days and weeks to the current timestamp, a TIMESTAMP, and months and
   years to it as a DATETIME in UTC, as from PostgreSQL.
+  Databricks reads the amount of its date functions, and a whole number added
+  to a DATE, as an INT. It wraps a larger amount, such as 4294967301 as 5, or
+  rejects it, where BigQuery adds the whole amount. So a number outside the
+  INT range stays untranslated. An amount of microseconds, milliseconds,
+  seconds or minutes that is not a number stays untranslated too, since 2^31
+  minutes, about 4083 years, can still move a date to one in the years 1 to
+  9999. 2^31 hours cannot, and BigQuery rejects such an amount of hours or
+  longer units.
 - SQL Server: days, weeks, months, quarters and years to a column and to a
   date, such as a cast to date or CURRENT_DATE, and minutes and hours to a
   column, which BigQuery rejects for a DATE column, as SQL Server rejects them

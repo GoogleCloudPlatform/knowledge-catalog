@@ -863,6 +863,13 @@ interface DateTable {
   // True when DATEADD reads a string of a whole number, such as '1', as the
   // number.
   stringAmounts?: true;
+  // Set when the dialect reads the amount of a date function, and a whole
+  // number added to a DATE, as a 32-bit INT, where BigQuery reads an INT64: the
+  // units by which an amount outside the INT range can still move a date to
+  // one in the years 1 to 9999. The dialect wraps such an amount or rejects
+  // it, so a number outside the range stays untranslated, and so does an
+  // amount of these units that is not a number (see intRange).
+  intAmounts?: Unit[];
   // True when the dialect reads a DATE or a DATETIME as the number of its
   // digits in arithmetic and beside a number (see valueForms).
   numbers?: true;
@@ -1105,6 +1112,11 @@ const DATE_TABLES: Record<string, DateTable> = {
   // is a name, read a DATE as a TIMESTAMP at midnight UTC and give a
   // TIMESTAMP. They keep the type of a TIMESTAMP_NTZ, which a column may be, so
   // a column gets no part. They add a quarter, which an INTERVAL does not name.
+  // They read their amount as an INT, and wrap a larger one, such as
+  // 4294967301 as 5. Its date_add and date_sub of a number of days, and a DATE
+  // plus a whole number, reject an amount that is not an INT. 2^31 minutes,
+  // about 4083 years, can move a date to another in the years 1 to 9999, and
+  // 2^31 hours cannot.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
     functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part', TIMESTAMPADD: 'part'},
@@ -1119,7 +1131,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
     sums: {'year-month INTERVAL': ['MONTH', 'YEAR'], 'day-time INTERVAL': [...SUB_DAY, 'DAY', 'WEEK']},
-    products: 'SECOND', stamps: true, differences: true,
+    products: 'SECOND', stamps: true, differences: true, intAmounts: ['MICROSECOND', 'MILLISECOND', 'SECOND', 'MINUTE'],
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
@@ -1248,13 +1260,15 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
   if (typeof found === 'string') return found;
   const row = found && table.rows[found.row];
   const subtract = kind === 'sub';
+  const range = /^-?\d+$/.test(text) ? intRange(text, table) : undefined;
   // A whole number added to a DATE that COALESCE or a similar function gives
   // stays as written, where the dialect adds it to a DATE as days.
   if (!found && /^-?\d+$/.test(text) && table.rows[table.date].days && dateResults(operand, read)) {
-    return {operand, amount: wholeNumber(text), subtract, addition: {form: '+', gives: table.date}};
+    return range ? `${op} ${range}` : {operand, amount: wholeNumber(text), subtract, addition: {form: '+', gives: table.date}};
   }
   if (!row?.days) return undefined;
   if (/^-?\d+$/.test(text)) {
+    if (range) return `${op} ${range}`;
     const unit = row.days.form === 'DATE_ADD' ? 'DAY' : undefined;
     return {operand, amount: wholeNumber(text), unit, subtract, addition: row.days};
   }
@@ -1317,6 +1331,7 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   const words = table.parts ?? table.words;
   const unit = !byPart ? 'DAY' : named ? words[String(partName(part)).toLowerCase()] : undefined;
   if (!unit) return spelling;
+  if (table.intAmounts?.includes(unit) && numberText(whole) === undefined) return `${spelling} by an expression`;
   const as = byDays ? {row: table.date, rows: Object.keys(table.rows)} : byPart ? table.partReads : undefined;
   return sumOn(table, read, {operand, amount: whole, unit, subtract, call: true, as, name, spelling, unitText: spelling});
 }
@@ -1327,7 +1342,8 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
 // is the number where the dialect reads it so. Any other expression that is
 // not visibly an INTERVAL is written as it is. BigQuery rejects one that is
 // not an INT64, where the sources may round it. The sources and BigQuery
-// reject an INTERVAL there.
+// reject an INTERVAL there. A dialect with `intAmounts` reads a number as an
+// INT (see intRange).
 function functionAmount(amount: any, read: string, table: DateTable): unknown {
   const b = bare(amount);
   const text = literalText(b?.literal);
@@ -1336,7 +1352,16 @@ function functionAmount(amount: any, read: string, table: DateTable): unknown {
   if (written === undefined) {
     return b?.literal ? `by ${valueName(b)}` : intervalTyped(b, read) ? 'by an INTERVAL' : amount;
   }
-  return /^\s*[+-]?\d+\s*$/.test(written) ? wholeNumber(written) : 'of a fraction';
+  if (!/^\s*[+-]?\d+\s*$/.test(written)) return 'of a fraction';
+  return intRange(written, table) ?? wholeNumber(written);
+}
+
+// A message when `table`'s dialect reads `text`, a whole number of a date
+// function or added to a DATE, as an INT and it is outside the INT range, or
+// undefined (see `intAmounts`).
+function intRange(text: string, table: DateTable): string|undefined {
+  const n = BigInt(text.trim());
+  return table.intAmounts && (n < -(2n ** 31n) || n >= 2n ** 31n) ? 'by a number outside the INT range' : undefined;
 }
 
 // The amount and the unit of each INTERVAL in `added`, an engine interval, in
