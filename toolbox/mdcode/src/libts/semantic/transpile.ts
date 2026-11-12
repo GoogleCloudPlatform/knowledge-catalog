@@ -759,13 +759,15 @@ type Unit = typeof UNITS[number];
 // of a TIMESTAMP, and reads the result back with TIMESTAMP(y, 'UTC'), as a
 // source adds a month to a timestamp in its time zone, UTC. With `inDays`,
 // BigQuery adds each week as 7 days, which its DATE_ADD also adds to a
-// TIMESTAMP.
+// TIMESTAMP. With `text`, the source gives the sum as text, which BigQuery
+// writes with CAST(x AS STRING).
 interface Addition {
   form: 'DATE_ADD'|'+';
   gives: string;
   timestamp?: true;
   utc?: true;
   inDays?: true;
+  text?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
@@ -799,6 +801,9 @@ interface DateTable {
   date: string;
   // The row of a cast to each other type that has one, by castType's name.
   casts?: Record<string, string>;
+  // The rows of a string beside an INTERVAL, which the dialect reads as a DATE
+  // or a DATETIME by its text, by that type (see stringDate).
+  strings?: Record<string, string>;
   // The functions whose value has the type of their last argument, such as
   // Snowflake's DATE_TRUNC, and so its row. MIN and MAX have the type of their
   // operand in every dialect.
@@ -874,6 +879,11 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
   return Object.fromEntries(units.map(u => [u, {form, gives}]));
 }
 
+// `units`, each added in `form` as text (see Addition), giving the row `text`.
+function asText(units: readonly Unit[], form: 'DATE_ADD'|'+'): Partial<Record<Unit, Addition>> {
+  return Object.fromEntries(units.map(u => [u, {form, gives: 'text', text: true}]));
+}
+
 // Weeks added with DATE_ADD as days (see Addition), giving the row `gives`.
 function weeksAsDays(gives: string): Partial<Record<Unit, Addition>> {
   return {WEEK: {form: 'DATE_ADD', gives, inDays: true}};
@@ -914,9 +924,12 @@ const DATE_TABLES: Record<string, DateTable> = {
   // do. ADDDATE and SUBDATE are DATE_ADD and DATE_SUB, and with a number they
   // add days. Its current timestamp is a DATETIME in whole seconds, which the
   // repairs write as DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND). It reads a
-  // date plus a number as a number.
+  // date plus a number as a number. It reads a string beside an INTERVAL as a
+  // DATE or a DATETIME by its text and gives the sum as text, which BigQuery's
+  // CAST to STRING writes as MySQL does, without a fraction of a second.
   mysql: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
+    strings: {DATE: 'DATE text', DATETIME: 'DATETIME text'},
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
     words: {}, expressions: true, intervals: UNITS.filter(u => u !== 'MILLISECOND'),
@@ -941,6 +954,9 @@ const DATE_TABLES: Record<string, DateTable> = {
         units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'DATETIME')},
       },
       DATETIME: {type: 'DATETIME', name: 'a DATETIME', units: adds(UNITS, 'DATE_ADD', 'DATETIME')},
+      'DATE text': {name: 'a string', units: {...asText(DAY_OR_LONGER, 'DATE_ADD'), ...asText(['SECOND', 'MINUTE', 'HOUR'], '+')}},
+      'DATETIME text': {name: 'a string', units: asText(['SECOND', 'MINUTE', 'HOUR', ...DAY_OR_LONGER], 'DATE_ADD')},
+      text: {name: 'a string', units: {}},
     },
   },
   // PostgreSQL gives a timestamp without time zone for a date or a timestamp
@@ -1601,6 +1617,8 @@ function operandRow(node: any, read: string, table: DateTable):
   const b = bare(node);
   if (b?.column) return {row: 'column', name: table.rows.column.name};
   if (isDate(b)) return {row: table.date, name: valueName(b)};
+  const typed = table.strings && stringDate(b);
+  if (typed) return {row: table.strings![typed.type], name: 'a string'};
   const cast = table.casts?.[castType((b?.cast ?? b?.try_cast)?.to)];
   if (cast) return {row: cast, name: valueName(b)};
   const name = String(b?.function?.name).toUpperCase();
@@ -1612,6 +1630,26 @@ function operandRow(node: any, read: string, table: DateTable):
   const sum = dateSum(b, read);
   if (typeof sum !== 'object') return sum;
   return {row: sum.addition.gives, name: table.rows[sum.addition.gives].name};
+}
+
+// The type and BigQuery's literal of `node`, a string literal, as MySQL reads
+// it as a date beside an INTERVAL, or undefined: a date as YYYY-M-D or
+// YYYYMMDD, and a DATETIME with a time as H:M:S after a space or a T, or as
+// YYYYMMDDHHMMSS. Import reads no other form, no fraction of a second, no
+// year before 1000, and no date or time that does not exist, which MySQL reads
+// as NULL.
+function stringDate(node: any): {type: 'DATE'|'DATETIME'; sql: string}|undefined {
+  const text = node?.literal?.literal_type === 'string' ? literalText(node.literal) : undefined;
+  const parts = /^(\d{4})-(\d\d?)-(\d\d?)(?:[ T](\d\d?):(\d\d?):(\d\d?))?$/.exec(text ?? '') ??
+      /^(\d{4})(\d\d)(\d\d)(?:(\d\d)(\d\d)(\d\d))?$/.exec(text ?? '');
+  if (!parts) return undefined;
+  const [y, mo, d, h = 0, mi = 0, se = 0] = parts.slice(1).filter(p => p !== undefined).map(Number);
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  if (y < 1000 || mo < 1 || mo > 12 || d < 1 || d > days || h > 23 || mi > 59 || se > 59) return undefined;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const date = `${y}-${pad(mo)}-${pad(d)}`;
+  return parts[4] === undefined ? {type: 'DATE', sql: `DATE '${date}'`} :
+      {type: 'DATETIME', sql: `DATETIME '${date} ${pad(h)}:${pad(mi)}:${pad(se)}'`};
 }
 
 // The row in `table` of `node`, a source value beside an INTERVAL, when it is
@@ -2609,7 +2647,11 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
       while ((sum.addition.form === 'DATE_ADD' || readsOf(sum).length) && operand?.paren) {
         operand = operand.paren.this;
       }
-      return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
+      // A string the source reads as a date is BigQuery's literal of it, and
+      // a sum the source gives as text is cast to text.
+      const typed = DATE_TABLES[read].strings && stringDate(bare(operand));
+      const call = dateCall(sum, typed ? formCall(typed.sql, []) : rewrite(operand), rewrite(sum.amount), whole, dialect);
+      return sum.addition.text ? formCall('CAST(_1 AS STRING)', [call]) : call;
     }
     // An INTERVAL that import keeps as the source writes it, in an INTERVAL
     // value, is BigQuery's INTERVAL of each of its units.

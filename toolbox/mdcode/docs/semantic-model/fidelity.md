@@ -318,7 +318,13 @@ names microseconds.
   number, counts as the number of its digits, as in MySQL: `CURDATE() + 1`
   becomes `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. A
   COALESCE, IF or CASE counts so only when each value it can give is visibly a
-  DATE, or each a DATETIME.
+  DATE, or each a DATETIME. A string beside an INTERVAL is read as MySQL reads
+  it, as a date written YYYY-M-D or YYYYMMDD, or a date and a time of whole
+  seconds. The sum becomes text, as in MySQL: `'2024-01-31' + INTERVAL 1 DAY`
+  becomes `CAST(DATE_ADD(CAST('2024-01-31' AS DATE), INTERVAL 1 DAY) AS
+  STRING)`. Units
+  smaller than a second stay untranslated there, since MySQL then writes six
+  digits of a fraction of a second.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
