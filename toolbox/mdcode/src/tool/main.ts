@@ -61,7 +61,17 @@ async function run(command: () => Promise<number>): Promise<void> {
   process.exit(exitCode);
 }
 
-const cli = cac.cac('kcmd').version(`${CLI_VERSION}${BUILD_COMMIT}`).help();
+// cac gives each `--no-<flag>` option the default true and prints it in the
+// help, where it reads as if the negated flag were on. The help leaves it out.
+const cli = cac.cac('kcmd')
+                .version(`${CLI_VERSION}${BUILD_COMMIT}`)
+                .help(sections => sections.map(
+                          s => s.title === 'Options' ?
+                              {...s,
+                               body: s.body.replace(
+                                   /^(\s+--no-.*) \(default: true\)$/gm,
+                                   '$1')} :
+                              s));
 const initCmd = cli.command('init', 'Initialize a new catalog snapshot')
     .option(
         '--entry-group <id>',
@@ -123,7 +133,9 @@ if (ENABLE_SEMANTIC) {
 pushCmd
     .option(
         '--dry-run',
-        'Run every check and show what would change, without applying anything')
+        ENABLE_SEMANTIC ?
+            'Run the checks and apply nothing; skips the Knowledge Catalog checks on the entry group and the custom types, which find a missing entry group or type, a model the push would refuse, or one --force-remove would delete' :
+            'Run every check and show what would change, without applying anything')
     .option('--validate-only', 'Same as --dry-run')
     .option(
         '--propagation-timeout <seconds>',

@@ -21,3 +21,26 @@ export function parseLeniently(text: string): yaml.Document.Parsed {
   });
   return doc;
 }
+
+// The message of `err`, a YAML error in `text`. YAML reads an unquoted `*`
+// as an alias, so a value such as `metrics_exclude: *` does not parse, and
+// the message then shows its line with the `*` quoted, when that line parses.
+export function yamlErrorMessage(err: any, text: string): string {
+  const message = String(err?.message ?? err);
+  const at = err?.pos?.[0];
+  if (err?.code !== 'BAD_ALIAS' || typeof at !== 'number' || text[at] !== '*' ||
+      !/^Alias cannot be an empty string/.test(message)) {
+    return message;
+  }
+  const start = text.lastIndexOf('\n', at - 1) + 1;
+  const end = text.indexOf('\n', at);
+  const line = text.slice(start, end < 0 ? undefined : end).replace(/\r$/, '');
+  const quoted = `${line.slice(0, at - start)}"*"${line.slice(at - start + 1)}`;
+  try {
+    yaml.parse(quoted.trim(), YAML_OPTIONS);
+  } catch {
+    return message;
+  }
+  return `${message.replace(/\n*$/, '\n')}YAML reads an unquoted '*' as an ` +
+      `alias; write it in quotes, as in ${quoted.trim()}.`;
+}

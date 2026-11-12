@@ -151,7 +151,7 @@ scenarios('kcmd profiles reports what push rejects', [
       }]},
     }],
     code: 0,
-    check: r => expect(r.warnings).toContainEqual(has('needs transpilation')),
+    check: r => expect(r.warnings).toContainEqual(has('table cannot run its')),
     report: {code: 0, rejects: {'no profiles': []}},
   },
   ...([

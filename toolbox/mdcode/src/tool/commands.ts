@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, profileFilesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -26,16 +26,16 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadModels, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect, transpilesSomething,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
-import {sourceDialects} from '../libts/semantic/source_dialect';
+import {SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
@@ -460,11 +460,14 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 }
 
 // The dialects sourceDialects reads for the model documents `docs` and their
-// profile files, for every load the command makes. Prints each source whose
-// dialect cannot be read and returns null.
+// profile files, for every load the command makes, and what the import the
+// advice to add a BigQuery text suggests gives for each document that may get
+// it (see transpileOutcomes). `layout` gives each document's model file.
+// Prints each source whose dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
-    profileDocs: ProfileDocs): Promise<DialectLoad|null> {
+    profileDocs: ProfileDocs,
+    layout: SemanticModelLayout): Promise<DialectLoad|null> {
   const texts = docs.map(d => d.text);
   for (const doc of docs) {
     try {
@@ -473,12 +476,158 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, databases, errors} = await readDialects(ctx, texts);
-  if (errors.length) {
-    for (const e of errors) console.error(`Error: ${e}`);
+  const read = await readDialects(ctx, texts);
+  if (read.errors.length) {
+    for (const e of read.errors) console.error(`Error: ${e}`);
     return null;
   }
-  return {sourceDialects: dialects, sourceDatabases: databases};
+  const load = {sourceDialects: read.dialects, sourceDatabases: read.databases};
+  return {
+    ...load,
+    transpileOutcomes:
+        await transpileOutcomes(ctx, docs, profileDocs, layout, load, read),
+  };
+}
+
+// The model `doc` holds, loaded with `load`, when `kcmd import --transpile`
+// gives a BigQuery text to one of its fields or metrics or to a field one of
+// its profiles binds (see transpilesSomething), or undefined. The caller has
+// loaded the SQL parser, which the translator needs.
+function transpilingModel(
+    doc: {name: string; text: string}, profileDocs: ProfileDocs,
+    load: DialectLoad): SemanticModel|undefined {
+  let model: SemanticModel|undefined;
+  try {
+    model = loadModels(doc.text, {bindingOptional: true, ...load}).models[0];
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+  }
+  if (!model) return undefined;
+  let files: Array<{name: string; text: string}> = [];
+  try {
+    files = profileDocs(doc.name);
+  } catch {
+    // A profile file the layout rejects is reported where it is read.
+  }
+  const profiles = [
+    ...model.profiles ?? [],
+    ...files.flatMap(f => {
+      try {
+        return [loadProfileFile(f.text, f.name, {skipActions: true})];
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        return [];
+      }
+    }),
+  ];
+  return transpilesSomething(model, profiles) ? model : undefined;
+}
+
+// What transpileOutcomes gives for each model document of the semantic-model
+// scope or context set `snapshot`, or undefined for another scope. The import
+// reads each table's dialect as `kcmd import` does, so a table whose dialect
+// cannot be read gives the error or warning the import gives.
+async function scopeTranspileOutcomes(
+    ctx: context.ApiContext,
+    snapshot: kcmd.CatalogSnapshot): Promise<Map<string, string|null>|undefined> {
+  const layout = semanticLayoutOf(snapshot);
+  if (!layout) return undefined;
+  const profileDocs = profileDocsReader(layout);
+  await loadSqlEngine();
+  // Only a document that may get the advice needs its tables' dialects.
+  const docs = layout.modelDocuments().filter(
+      doc => transpilingModel(doc, profileDocs, {}));
+  if (!docs.length) return undefined;
+  const texts = docs.map(d => d.text);
+  for (const doc of docs) {
+    try {
+      texts.push(...profileDocs(doc.name).map(p => p.text));
+    } catch {
+      // A profile file the layout rejects is reported where it is read.
+    }
+  }
+  const read = await readDialects(ctx, texts);
+  return transpileOutcomes(
+      ctx, docs, profileDocs, layout,
+      {sourceDialects: read.dialects, sourceDatabases: read.databases}, read);
+}
+
+// What `kcmd import <model file> --input first-party --flavor <its flavor>
+// --transpile` gives, run in place and writing nothing, for each of `docs`
+// that may get the advice to add a BigQuery text: null when it would write
+// its files, or the first error it would stop on. The import reads each
+// table's dialect from `dialects`, read with `load` for the same files, and
+// calls services with `ctx`. The caller has loaded the SQL parser.
+//
+// `pull` is set for pull's run. That run names the entry group directory in
+// --out, which skips the checks of where the files go. Pull makes those
+// checks itself. With `pull.texts`, the import reads the texts of `docs` and
+// their profile files, and each other profile file on disk that pull leaves.
+// With `pull.forceRemove`, it leaves out what pull --force-remove deletes:
+// the older profile directory and each profile file push reads that pull
+// does not write. Pull's run reads no table's dialect, so its checks read an
+// ANSI_SQL text as pull's own checks do (see DialectLoad.readWithoutDialect).
+async function transpileOutcomes(
+    ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
+    profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
+    dialects: SourceDialects, pull?: {texts: boolean; forceRemove: boolean}):
+    Promise<Map<string, string|null>> {
+  const outcomes = new Map<string, string|null>();
+  for (const doc of docs) {
+    const model = transpilingModel(doc, profileDocs, load);
+    if (!model) continue;
+    const source = pull?.texts ?
+        {text: doc.text, profileFiles: pulledProfileFiles(doc.name)} :
+        undefined;
+    const plan = await planImport(
+        layout.modelPath(doc.name), {
+          flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
+          input: 'first-party',
+          transpile: true,
+          ...pull ? {out: path.dirname(layout.modelPath(doc.name))} : {},
+        },
+        {
+          source,
+          readDialects: async () => dialects,
+          api: () => ctx,
+          withoutProfileDir: pull?.forceRemove,
+          readWithoutDialect: !!pull,
+        });
+    outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
+  }
+  return outcomes;
+
+  // The profile files beside model `name` once pull has written its own:
+  // those it writes and each other one it leaves, in the order the import
+  // reads them (see profileFileNamesBeside).
+  function pulledProfileFiles(name: string): SerializedFile[] {
+    const dir = path.dirname(layout.modelPath(name));
+    const stem = path.basename(layout.modelPath(name), '.yaml');
+    const written = profileDocs(name).map(
+        p => ({fileName: path.basename(p.path), content: p.text}));
+    const gone = new Set([
+      ...written.map(f => f.fileName),
+      ...pull!.forceRemove ?
+          layout.localProfileFiles(name).map(f => path.basename(f.path)) :
+          [],
+    ]);
+    const left =
+        profileFileNamesBeside(dir, stem)
+            .filter(f => !gone.has(f))
+            .map(f => ({
+                   fileName: f,
+                   content: fs.readFileSync(path.join(dir, f), 'utf8'),
+                 }));
+    const named = new Set(
+        profileFilesBeside(dir, stem).map(p => path.basename(p.path)));
+    const profileOf = (f: SerializedFile) =>
+        f.fileName.slice(`${stem}.profile.`.length, -'.yaml'.length);
+    return [
+      ...left.filter(f => !named.has(f.fileName)),
+      ...[...left.filter(f => named.has(f.fileName)), ...written].sort(
+          (a, b) => profileOf(a).localeCompare(profileOf(b))),
+    ];
+  }
 }
 
 // The dialect of each source the files `texts` write, read with the clients
@@ -719,7 +868,8 @@ function retiredPushFlagErrors(options: PushOptions): string[] {
       options.profile !== undefined && typeof options.profile !== 'boolean',
       retired(
           '--profile',
-          `; declare a deployment with 'profile: prod' under ` +
+          `; declare a deployment with 'profile: ${
+              String(options.profile) || '<profile>'}' under ` +
               `'deployments:' and run 'kcmd push --deployment <name>'`),
     ],
     [
@@ -1043,7 +1193,8 @@ async function pushInTwoPhases(
   if (named && negated) {
     return fail('Cannot combine --no-deployment with --deployment.');
   }
-  const load = await dialectLoad(ctx, scope.docs, scope.profileDocs);
+  const load =
+      await dialectLoad(ctx, scope.docs, scope.profileDocs, scope.layout);
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
@@ -1084,8 +1235,11 @@ async function pushInTwoPhases(
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
   if (options.validateOnly) {
+    // A header prints only above a graph's warnings or, under --print, its
+    // DDL.
     for (const {deployment, generated} of plans) {
       if (!generated) continue;
+      if (!options.print && !generated.warnings.length) continue;
       header(deployment);
       printGraph(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
@@ -1157,7 +1311,8 @@ async function checkBeforeWrites(
 
   // A model file may leave every source to its profile files, so a source is
   // required only once a deployment's profile is applied. The checks below
-  // reject a field its table cannot run, so the load does not warn about it.
+  // reject a field its table cannot run, so the load warns about it only on a
+  // table of the preferred dialect.
   const loaded = loadSemanticModels(
       docs, {bindingOptional: true, ...load, fieldTextChecked: true});
   if (loaded.error) return fail(loaded.error);
@@ -1333,11 +1488,15 @@ async function printStore(
   // before any AlloyDB lookup. A scope that push refuses for its named
   // profiles gets push's errors, also before any AlloyDB lookup.
   let refused: string[] = [];
+  // The advice to add a BigQuery text names what the import it suggests
+  // gives, as push's does.
+  const transpileOutcomes = await scopeTranspileOutcomes(ctx, snapshot);
   const opened = await createSemanticRuntimes({
     profile: named,
     ctx,
     oneModel: true,
     snapshot,
+    transpileOutcomes,
     proceed: async () => {
       const layout = semanticLayoutOf(snapshot)!;
       const docs = layout.modelDocuments();
@@ -1356,6 +1515,7 @@ async function printStore(
       const load = {
         sourceDialects: read.dialects,
         sourceDatabases: read.databases,
+        transpileOutcomes,
       };
       const {models} =
           loadSemanticModels(docs, {bindingOptional: true, ...load});
@@ -1400,7 +1560,8 @@ function printProfileReport(model: SemanticModel, name: string): void {
       targets.length ? targets.join(', ') :
                        '(none; no deployment names this profile)'}`);
   console.log('    sources:');
-  for (const e of model.entities ?? []) {
+  // No profile binds an abstract entity, since it has no table.
+  for (const e of (model.entities ?? []).filter(e => !e.abstract)) {
     console.log(`      ${e.name} -> ${writtenSource(e) || '(unbound)'}`);
   }
 
@@ -1493,7 +1654,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
   // Source dialects are looked up once, as push does.
-  const load = await dialectLoad(ctx, docs, profileDocs);
+  const load = await dialectLoad(ctx, docs, profileDocs, layout);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
@@ -1616,11 +1777,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           res.kind === 'error' ?
           profileForDocument(doc, available, name, load, {skipActions: true}) :
           res;
-      if (published?.kind === 'file') {
-        for (const w of published.warnings) {
-          console.warn(`  profile '${name}': warning: ${w}`);
-        }
-      }
       if (res.kind === 'error') {
         applyError =
             profileErrorMessage(doc.name, res, name, profileDocs(doc.name));
@@ -1628,6 +1784,12 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         model = res.model;
       }
       console.log(`  profile '${name}'`);
+      // The warnings print under the profile they belong to.
+      if (published?.kind === 'file') {
+        for (const w of published.warnings) {
+          console.warn(`  profile '${name}': warning: ${w}`);
+        }
+      }
       if (model) {
         printProfileReport(model, name);
       } else if (applyError !== undefined && !pushErrors.length) {
@@ -1836,6 +1998,17 @@ async function pullSemanticModel(
     return 0;
   }
 
+  const pulled = result.models[0];
+  const {files: pulledFiles, warnings} = pulledModelFiles(layout, pulled);
+  const sidecars = [...(result.overviews ?? [])].map(([id, sidecar]) => {
+    const fileName = `${id}.overview.md`;
+    return {
+      fileName,
+      content: keptSidecar(layout, pulled.name, fileName, sidecar) ??
+          formatOverviewSidecar(sidecar),
+    };
+  });
+
   // Reconcile the local layout with the catalog. A local document whose name
   // differs from the pulled model would leave the entry group with two models,
   // so pull refuses by default; --force-remove deletes the stale local
@@ -1851,24 +2024,176 @@ async function pullSemanticModel(
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
   let removed = 0;
   if (staleLocal.length) {
+    // A local model's files: its model file, then each of its profile files
+    // with its profile name, which a file in the older `<model>.profiles/`
+    // directory takes from its file name. --force-remove deletes these files
+    // for a stale model, and the advice below names the same files.
+    const localFiles = (name: string) => [
+      {path: layout.modelPath(name), profileName: undefined},
+      ...layout.localProfileFiles(name).map(f => ({
+        path: f.path,
+        profileName: f.profileName ?? path.basename(f.path, '.yaml'),
+      })),
+    ];
     if (!options.forceRemove) {
-      const localList = staleLocal.map(n => `'${n}'`).join(', ');
-      const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
-      console.error(
-          `Error: local model(s) ${localList} do not match the catalog ` +
-          `model ${catalogList} in this entry group. An entry group holds ` +
-          `one model, so pull will not leave two behind. Re-run with ` +
-          `--force-remove to delete the local model(s) and pull the ` +
-          `catalog's.`);
-      return 1;
+      // A file that holds the catalog's model under another file name is
+      // kept by renaming it and its profile files to the files pull writes.
+      // Each refusal offers choices, and following one choice of each
+      // refusal ends with a pull that succeeds. The first file that holds a
+      // model is told to keep it, by deleting the files in the way and one
+      // of each two files of one profile, then renaming the rest. A file is
+      // told to delete its own files when another model file is refused too.
+      // --force-remove is named with every file it deletes.
+      const groupDir = path.dirname(layout.modelPath(staleLocal[0]));
+      // The names in the entry group directory as they are on disk.
+      const present = new Set(fs.readdirSync(groupDir));
+      // The file at `name` in the entry group directory, by its name on disk:
+      // `name`, or on a case-insensitive file system, as on macOS and Windows,
+      // the name that differs from it only in case.
+      const onDisk = (name: string) => present.has(name) ? name :
+          fs.existsSync(path.join(groupDir, name)) ?
+          [...present].find(n => n.toLowerCase() === name.toLowerCase()) :
+          undefined;
+      // A file by its path in the entry group directory.
+      const shown = (p: string) => path.relative(groupDir, p);
+      const file = (name: string) => shown(layout.modelPath(name));
+      const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
+      // Every file --force-remove deletes: each stale model's files, then each
+      // local profile file of the catalog's model and each overview sidecar
+      // that this pull leaves out.
+      const left = unwrittenFiles(
+                       layout, pulled.name,
+                       [...pulledFiles, ...sidecars].map(f => f.fileName))
+                       .map(f => shown(f.path));
+      const deletedFiles = [
+        ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
+        ...left,
+      ];
+      const forceRemove = (them: string) =>
+          `re-run with --force-remove to delete ${them} and pull the catalog's`;
+      // `choices` as the sentence that ends a refusal.
+      const offer = (choices: string[]) => {
+        const text = choices.join(', or ');
+        return `${text[0].toUpperCase()}${text.slice(1)}.`;
+      };
+      const errors: string[] = [];
+      const othersFiles: string[] = [];
+      const others: string[] = [];
+      // Each model a refusal tells a file to keep, and that file.
+      const kept = new Map<string, string>();
+      for (const name of staleLocal) {
+        const declared = layout.declaredModelName(name);
+        if (declared !== undefined &&
+            catalogPaths.has(layout.modelPath(declared))) {
+          const files = localFiles(name);
+          const own = files.map(f => shown(f.path));
+          const stem = file(declared).replace(/\.yaml$/, '');
+          const targets = files.map(
+              f => f.profileName === undefined ?
+                  file(declared) :
+                  `${stem}.profile.${f.profileName}.yaml`);
+          // The files renamed to each file pull writes, by its index in
+          // `files`. Two files hold one profile when a sibling profile file
+          // and a file in the older directory have the same profile name.
+          const groups = [...new Set(targets)].map(
+              t => files.flatMap((_, i) => targets[i] === t ? [i] : []));
+          const twice = groups.filter(g => g.length > 1);
+          // Each other file at a name pull writes.
+          const taken = [...new Set(targets.flatMap(t => {
+            const there = onDisk(t);
+            return there === undefined || own.includes(there) ? [] : [there];
+          }))];
+          // The catalog's model file when it holds this model too, else the
+          // file a refusal before this one tells to keep it.
+          const holder = layout.declaredModelName(stem) === declared ?
+              stem :
+              kept.get(declared);
+          // What stops the rename, or else where it goes.
+          const where = holder !== undefined ?
+              `, which '${file(holder)}' also holds` :
+              taken.length ?
+              `, which pull writes as '${file(declared)}', and ${
+                  quoted(taken)} ${taken.length > 1 ? 'are' : 'is'} already ` +
+                  'there' :
+              twice.length ? '' :
+                             `, which pull writes as '${file(declared)}'`;
+          // Only the file told to keep the model is told about a profile in
+          // both forms.
+          const keeps = !kept.has(declared);
+          const facts = where + (keeps ? twice : []).map(
+              g => `, and its profile '${files[g[0]].profileName}' is in ` +
+                  `both ${quoted(g.map(i => own[i]))}`).join('');
+          const them = files.length > 1 ? 'them' : 'it';
+          const choices: string[] = [];
+          let renamesOnly = false;
+          if (keeps) {
+            kept.set(declared, name);
+            // The files in the way: the model file pull writes, with its
+            // profile files, and each other file at a name pull writes.
+            const inTheWay = [...new Set([
+              ...present.has(file(declared)) ?
+                  localFiles(stem).map(f => shown(f.path)) :
+                  [],
+              ...taken,
+            ])];
+            const deletes = [
+              ...inTheWay.map(f => `'${f}'`),
+              ...twice.map(g => `one of ${quoted(g.map(i => own[i]))}`),
+            ];
+            // A plain rename keeps its short form, which names the model
+            // file as "the file".
+            renamesOnly = !deletes.length;
+            const renames = groups.map(g => {
+              const to = `'${targets[g[0]]}'`;
+              if (g.length > 1) {
+                return `the other${
+                    twice.length > 1 ?
+                        ` of ${quoted(g.map(i => own[i]))}` :
+                        ''} to ${to}`;
+              }
+              return g[0] === 0 && renamesOnly ? `the file to ${to}` :
+                                                 `'${own[g[0]]}' to ${to}`;
+            });
+            choices.push(
+                (deletes.length ? `delete ${listed(deletes)} and rename ` :
+                                  'rename ') +
+                `${listed(renames)} to keep ${them}`);
+          }
+          if (staleLocal.length > 1) choices.push(`delete ${quoted(own)}`);
+          choices.push(forceRemove(
+              renamesOnly && deletedFiles.length === own.length ?
+                  them :
+                  quoted(deletedFiles)));
+          errors.push(
+              `local model file '${file(name)}' holds model '${declared}'${
+                  facts}. ${offer(choices)}`);
+        } else {
+          othersFiles.push(...localFiles(name).map(f => shown(f.path)));
+          others.push(
+              declared === undefined || declared === name ?
+                  `'${name}'` :
+                  `'${declared}' in '${file(name)}'`);
+        }
+      }
+      if (others.length) {
+        const localList = others.join(', ');
+        const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
+        errors.push(
+            `local model(s) ${localList} do not match the catalog model ${
+                catalogList} in this entry group. An entry group holds ` +
+            `one model, so pull will not leave two behind. ${offer([
+              ...others.length < staleLocal.length ?
+                  [`delete ${quoted(othersFiles)}`] :
+                  [],
+              forceRemove(quoted(deletedFiles)),
+            ])}`);
+      }
+      return printErrors(...errors);
     }
     for (const name of staleLocal) {
       // Its profile files go too, since push refuses a profile file with no
       // model beside it.
-      const paths = [
-        layout.modelPath(name),
-        ...layout.localProfileFiles(name).map(f => f.path),
-      ];
+      const paths = localFiles(name).map(f => f.path);
       if (!options.dryRun) {
         layout.removeModelDocument(name);
         for (const p of paths.slice(1)) {
@@ -1883,18 +2208,9 @@ async function pullSemanticModel(
     }
   }
 
-  const pulled = result.models[0];
-  const {files, warnings} = pulledModelFiles(layout, pulled);
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
-  const updated = updatedFiles(layout, source, pulled.name, files);
-  for (const [id, sidecar] of result.overviews ?? []) {
-    const fileName = `${id}.overview.md`;
-    updated.push({
-      fileName,
-      content: keptSidecar(layout, pulled.name, fileName, sidecar) ??
-          formatOverviewSidecar(sidecar),
-    });
-  }
+  const updated = updatedFiles(layout, source, pulled.name, pulledFiles);
+  updated.push(...sidecars);
   const code = writePulledFiles(layout, pulled.name, updated, options, removed);
   const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
   // Under --dry-run the sidecars on disk are not the ones pull leaves, so the
@@ -1912,7 +2228,8 @@ async function pullSemanticModel(
   }
   const refusal = modelFile && await pushRefusal(
       ctx, layout, source, {name: pulled.name, text: modelFile.content},
-      pulledProfileDocs(layout, pulled, updated), overviews);
+      pulledProfileDocs(layout, pulled, updated), overviews,
+      options.forceRemove);
   if (refusal) {
     console.warn(
         `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
@@ -1930,17 +2247,32 @@ async function pullSemanticModel(
 // SQL for the checks of which fields and entities an expression reads, and
 // skips each name whose reading depends on the dialect. It refuses an
 // action's SQL statement only when every dialect refuses it. It reads the
-// overview sidecars on disk, as push does, unless given `overviews`.
+// overview sidecars on disk, as push does, unless given `overviews`. Like
+// push, it runs the import that the advice to add a BigQuery text suggests,
+// writing nothing, and that import reads no table's dialect either. The
+// import reads the files on disk, which pull has written, unless given
+// `overviews`, which pull gives under --dry-run. It then reads `doc` and
+// `profiles`, and each other profile file on disk that pull leaves. With
+// `forceRemove`, it leaves out what pull --force-remove deletes: the older
+// profile directory, and each profile file push reads that pull does not
+// write.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
     source: SemanticModelSource, doc: {name: string; text: string},
-    profiles: ReturnType<ProfileDocs>,
-    overviews?: TwoPhaseScope['overviews']): Promise<string|undefined> {
+    profiles: ReturnType<ProfileDocs>, overviews?: TwoPhaseScope['overviews'],
+    forceRemove = false): Promise<string|undefined> {
   const parserError = await sqlParserError();
   if (parserError) return parserError;
   const docs = [doc];
   const profileDocs = () => profiles;
-  const load = {readWithoutDialect: true};
+  const noDialects: SourceDialects =
+      {dialects: new Map(), databases: new Map(), errors: [], unread: []};
+  const load = {
+    readWithoutDialect: true,
+    transpileOutcomes: await transpileOutcomes(
+        ctx, docs, profileDocs, layout, {}, noDialects,
+        {texts: overviews !== undefined, forceRemove}),
+  };
   const checked = await checkBeforeWrites(
       {}, {ctx, layout, source, docs, profileDocs, load, overviews,
            pulled: true},
@@ -2174,6 +2506,24 @@ function localProfiles(
 }
 
 
+// Each local profile file of `model` and each overview sidecar that a pull
+// writing the files `fileNames` leaves out. Pull writes each file to the path
+// push reads it from, so such a file is stale.
+function unwrittenFiles(
+    layout: SemanticModelLayout, model: string, fileNames: string[]):
+    Array<{path: string; profileName?: string; kind: string}> {
+  const written = new Set(fileNames.flatMap(fileName => {
+    const target = pulledFileTarget(layout, model, fileName, true);
+    return target ? [path.resolve(target.path)] : [];
+  }));
+  return [
+    ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
+    ...layout.overviewSidecarPaths().map(
+        f => ({path: f.path, kind: 'overview sidecar'})),
+  ].filter(f => !written.has(path.resolve(f.path)));
+}
+
+
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
 // read. Then it names each local profile file and overview sidecar that the
 // pull did not write, or deletes it under --force-remove with each directory
@@ -2182,7 +2532,6 @@ function localProfiles(
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
     options: PullOptions, removed = 0): number {
-  const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0, removed};
   for (const {fileName, content} of files) {
     const target = pulledFileTarget(layout, model, fileName, true);
@@ -2193,7 +2542,6 @@ function writePulledFiles(
           `sidecars inside the entry group directory.`);
       continue;
     }
-    written.add(path.resolve(target.path));
     const before =
         fs.existsSync(target.path) ? fs.readFileSync(target.path) : undefined;
     const state = !before                   ? 'created' :
@@ -2211,15 +2559,8 @@ function writePulledFiles(
     }
   }
 
-  // Pull writes each file to the path push reads it from, so a local profile
-  // file or overview sidecar the catalog does not have is stale.
-  const local: Array<{path: string; profileName?: string; kind: string}> = [
-    ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
-    ...layout.overviewSidecarPaths().map(
-        f => ({path: f.path, kind: 'overview sidecar'})),
-  ];
-  for (const stale of local) {
-    if (written.has(path.resolve(stale.path))) continue;
+  for (const stale of
+           unwrittenFiles(layout, model, files.map(f => f.fileName))) {
     if (!options.forceRemove) {
       console.warn(
           `Warning: local ${stale.kind} ${stale.path} is not in the ` +
@@ -2451,7 +2792,112 @@ const YAML_FILE = /\.ya?ml$/i;
 // Writes nothing when the engine reports an error. Returns a process exit code.
 export async function importModel(
     file: string, options: ImportCommandOptions = {}): Promise<number> {
-  const fail = printErrors;
+  // The advice to add a BigQuery text names the first error the import it
+  // suggests would stop on: this import again with `--transpile`, of the
+  // files this import writes when it writes them over its input, and with
+  // `--input first-party` when the advice names that. An import with
+  // `--transpile` has given every text it can translate a BigQuery text, so
+  // it runs no second import.
+  const plan = await planImport(file, options, options.transpile ? {} : {
+    transpileOutcome: async (written, firstParty, readDialects, api) => {
+      const followed = await planImport(
+          file,
+          {...options, ...firstParty ? {input: 'first-party'} : {}, transpile: true},
+          {source: written, readDialects, api});
+      return 'errors' in followed ? followed.errors[0] ?? null : null;
+    },
+  });
+  for (const w of plan.warnings) console.warn(`Warning: ${w}`);
+  if ('errors' in plan) return printErrors(...plan.errors);
+  for (const {fileName: target, content} of plan.writes) {
+    writeFileAt(target, content);
+    console.log(`wrote ${target}`);
+  }
+  return 0;
+}
+
+// The input of `kcmd import` held in memory: the text of the model file and
+// its profile files.
+interface ImportSource {
+  text: string;
+  profileFiles: SerializedFile[];
+}
+
+// What planImport reads, and the import it runs for the advice to add a
+// BigQuery text.
+interface ImportIo {
+  source?: ImportSource;
+  // Set when the older `<model>.profiles/` directory beside the input is gone
+  // by the time the import would run, as after pull --force-remove.
+  withoutProfileDir?: boolean;
+  // Set for an import that reads no table's dialect, as pull's run does (see
+  // ImportSemanticModelOptions.readWithoutDialect).
+  readWithoutDialect?: boolean;
+  api?: () => context.ApiContext;
+  readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  transpileOutcome?:
+      (written: ImportSource|undefined, firstParty: boolean,
+       readDialects: (texts: string[]) => Promise<SourceDialects>,
+       api: () => context.ApiContext) => Promise<string|null>;
+}
+
+// The warnings `kcmd import` prints, then the errors it stops on, or each
+// file it writes, where.
+type ImportPlan = {warnings: string[]; errors: string[]}|
+                  {warnings: string[]; writes: SerializedFile[]};
+
+// What `kcmd import <file>` with `options` does, writing nothing: the warnings
+// it prints, then the errors it stops on, or each file it writes, where.
+// `io.source` reads the input from memory in place of `file`: the text of
+// the model file and its profile files. `io.api` gives the context the import
+// calls services with, by default one made when first needed. `io.readDialects`
+// reads each table's dialect. `io.transpileOutcome` gives the first error the
+// import with `--transpile` would stop on, of the input or, given, of the
+// file this import writes and the profile files beside it then, and with
+// `--input first-party` when `firstParty` is set, for the advice to add a
+// BigQuery text.
+async function planImport(
+    file: string, options: ImportCommandOptions,
+    io: ImportIo = {}): Promise<ImportPlan> {
+  // One context, made on first use, and each table's dialect read once for
+  // the command.
+  let ctx: context.ApiContext|undefined;
+  const api = io.api ?? (() => ctx ??= context.ApiContext.default());
+  let dialectsRead: Promise<SourceDialects>|undefined;
+  const once = {
+    ...io,
+    api,
+    readDialects: (texts: string[]) => dialectsRead ??=
+        (io.readDialects ?? (t => readDialects(api(), t)))(texts),
+  };
+  // A third-party import that writes its files over its input names import
+  // commands that read the files it writes. It writes over its input only
+  // when every file has a place (see placeFiles). An import that stops on an
+  // error found after that writes nothing, so it runs again and names
+  // commands that read its input.
+  let readsWritten = false;
+  const plan = await planOneImport(file, options, {
+    ...once,
+    overwrites: over => {
+      readsWritten ||= over;
+      return over;
+    },
+  });
+  return 'errors' in plan && readsWritten ?
+      planOneImport(file, options, {...once, overwrites: () => false}) :
+      plan;
+}
+
+// One run of planImport's import. `io.overwrites` is told whether the import
+// writes its files with the model file over its input, and gives the answer
+// its messages assume.
+async function planOneImport(
+    file: string, options: ImportCommandOptions,
+    io: ImportIo&Required<Pick<ImportIo, 'api'|'readDialects'>>&
+    {overwrites: (over: boolean) => boolean}): Promise<ImportPlan> {
+  const {api, readDialects: readDialectsOnce} = io;
+  const warnings: string[] = [];
+  const fail = (...errors: string[]) => ({warnings, errors});
   const {input = 'third-party', flavor} = options;
   if (!flavor) {
     return fail(
@@ -2465,7 +2911,7 @@ export async function importModel(
         `--input '${input}' is not supported; use 'third-party' or ` +
         `'first-party'.`);
   }
-  if (!fs.existsSync(file)) return fail(`file not found: ${file}`);
+  if (!io.source && !fs.existsSync(file)) return fail(`file not found: ${file}`);
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
@@ -2475,128 +2921,157 @@ export async function importModel(
   const stem = path.basename(file).replace(YAML_FILE, '');
   // Push refuses the older `<model>.profiles/` directory, which import does
   // not read.
-  if (legacyProfileFiles(dir, stem).length) {
+  if (!io.withoutProfileDir && legacyProfileFiles(dir, stem).length) {
     if (input === 'first-party') return fail(legacyProfileDirError(stem));
-    console.warn(`Warning: ${legacyProfileDirError(stem)}`);
+    warnings.push(legacyProfileDirError(stem));
   }
-  const profileFiles =
+  const profileFiles = io.source?.profileFiles ??
       profileFileNamesBeside(dir, stem)
           .map(f => ({
                  fileName: f,
                  content: fs.readFileSync(path.join(dir, f), 'utf8'),
                }));
-  // One context, made on first use.
-  let ctx: context.ApiContext|undefined;
-  const api = () => ctx ??= context.ApiContext.default();
   // The workspace's layout, read once, when the files go into it.
   let layoutRead: Promise<SemanticModelLayout|string>|undefined;
-  const layoutOf = () => layoutRead ??= workspaceLayout();
-  // Where the model file `fileName` goes, when it has a place.
-  const modelTarget = async (fileName: string) => {
-    if (options.out) {
-      return YAML_FILE.test(options.out) ? options.out :
-                                           path.join(options.out, fileName);
-    }
-    const layout = await layoutOf();
-    return typeof layout === 'string' ?
-        undefined :
-        layout.modelPath(fileName.replace(YAML_FILE, ''));
-  };
-  const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
-    flavor: flavor as 'ossie' | 'google',
-    sourcePrefix: options.sourcePrefix,
-    transpile: !!options.transpile,
-    strict: input === 'first-party',
-    profileFiles,
-    fileName: path.basename(file),
-    // Each is called only when needed: for a --source-prefix that names an
-    // entry group, and for files that name a Cloud SQL, Spanner or third-party
-    // table. An import that needs neither needs no credentials.
-    listEntries: (project, location, entryGroup) =>
-        new dataplex.CatalogClient(api()).listEntries(
-            project, location, entryGroup),
-    readDialects: texts => readDialects(api(), texts),
-    overwritesInput: async fileName => {
-      const target = await modelTarget(fileName);
-      return !!target && path.resolve(target) === path.resolve(file);
-    },
-  });
-  for (const w of result.warnings) console.warn(`Warning: ${w}`);
-  if (!result.ok) return fail(...result.errors);
-
-  // Every target is found before anything is written, so a file that has
-  // none writes nothing.
-  let targets: Array<{path: string; write: (text: string) => void}|undefined>;
-  if (options.out && YAML_FILE.test(options.out)) {
-    if (result.files.length > 1) {
-      return fail(
-          `--out '${options.out}' names a file, but the import gives ${
-              result.files.length} files (${
-              result.files.map(f => f.fileName).join(', ')}); name a ` +
-          `directory instead.`);
-    }
-    const out = options.out;
-    targets = [{path: out, write: text => writeFileAt(out, text)}];
-  } else if (options.out) {
-    const out = options.out;
-    targets = result.files.map(f => {
-      const target = path.join(out, f.fileName);
-      return {path: target, write: text => writeFileAt(target, text)};
-    });
-  } else {
-    const layout = await layoutOf();
-    if (typeof layout === 'string') return fail(layout);
-    // The engine's first file is the model file, `<model>.yaml`; the rest are
-    // its profile files, which pull's mapping writes beside it.
-    const model = result.files[0].fileName.replace(YAML_FILE, '');
-    targets = result.files.map(
-        f => pulledFileTarget(layout, model, f.fileName, false));
-    // The input itself may be in the entry group under another name.
-    const {inputThere, error} = otherModelFiles(layout, model, file);
-    const refusals = error ? [error] : [];
-    if (inputThere) {
-      refusals.push(
-          `the input file ${file} sits in the entry group, so the import ` +
-          `would leave this model in two files there, ${file} and ${
-              layout.modelPath(model)}. Move the input${
-              profileFiles.length ? ' and its profile files' : ''} out of ` +
-          `the entry group and import it from there, or pass --out <path> ` +
-          `to write elsewhere.`);
-    }
-    if (refusals.length) return fail(...refusals);
-    // Refuse to leave behind a profile file this import does not write,
-    // whatever its profile name. Push rejects one beside a vanilla model, and
-    // one whose name breaks its rule, and reads any other beside a Google
-    // model as that model's profile. A Google model file re-imported in place
-    // with no sibling profile file for the import to write keeps its other
-    // ones.
-    const inPlace = profileFiles.length === 0 && flavor === 'google' &&
-        result.files.length === 1 &&
-        path.resolve(file) === path.resolve(layout.modelPath(model));
-    if (!inPlace) {
-      const kept = new Set(targets.map(t => t && path.resolve(t.path)));
-      const left = layout.profileFilePaths(model).filter(
-          p => !kept.has(path.resolve(p)));
-      if (left.length) {
-        return fail(
-            `the import does not write ${left.join(', ')}, which would stay ` +
-            `beside the model; pass --out <path> to write elsewhere, or ` +
-            `first remove any the model no longer uses.`);
+  const layoutOf = () => layoutRead ??= workspaceLayout(api);
+  // Where the import writes each of `files`, the model file first, or the
+  // errors that stop it before it writes any. Every target is found before
+  // anything is written, so a file that has none writes nothing.
+  const placeFiles = async (files: SerializedFile[]):
+      Promise<{targets: string[]}|{errors: string[]}> => {
+    let targets: Array<{path: string}|undefined>;
+    if (options.out && YAML_FILE.test(options.out)) {
+      if (files.length > 1) {
+        return {
+          errors: [
+            `--out '${options.out}' names a file, but the import gives ${
+                files.length} files (${
+                files.map(f => f.fileName).join(', ')}); name a directory ` +
+                `instead.`,
+          ],
+        };
+      }
+      targets = [{path: options.out}];
+    } else if (options.out) {
+      const out = options.out;
+      targets = files.map(f => ({path: path.join(out, f.fileName)}));
+    } else {
+      const layout = await layoutOf();
+      if (typeof layout === 'string') return {errors: [layout]};
+      // The engine's first file is the model file, `<model>.yaml`; the rest
+      // are its profile files, which pull's mapping writes beside it.
+      const model = files[0].fileName.replace(YAML_FILE, '');
+      targets =
+          files.map(f => pulledFileTarget(layout, model, f.fileName, false));
+      // The input itself may be in the entry group under another name.
+      const {inputThere, error} = otherModelFiles(layout, model, file);
+      const refusals = error ? [error] : [];
+      if (inputThere) {
+        refusals.push(
+            `the input file ${file} sits in the entry group, so the import ` +
+            `would leave this model in two files there, ${file} and ${
+                layout.modelPath(model)}. Move the input${
+                profileFiles.length ? ' and its profile files' : ''} out of ` +
+            `the entry group and import it from there, or pass --out ` +
+            `<path> to write elsewhere.`);
+      }
+      if (refusals.length) return {errors: refusals};
+      // Refuse to leave behind a profile file this import does not write,
+      // whatever its profile name. Push rejects one beside a vanilla model,
+      // and one whose name breaks its rule, and reads any other beside a
+      // Google model as that model's profile. A Google model file re-imported
+      // in place with no sibling profile file for the import to write keeps
+      // its other ones.
+      const inPlace = profileFiles.length === 0 && flavor === 'google' &&
+          files.length === 1 &&
+          path.resolve(file) === path.resolve(layout.modelPath(model));
+      if (!inPlace) {
+        const kept = new Set(targets.map(t => t && path.resolve(t.path)));
+        const left = layout.profileFilePaths(model).filter(
+            p => !kept.has(path.resolve(p)));
+        if (left.length) {
+          return {
+            errors: [
+              `the import does not write ${left.join(', ')}, which would ` +
+              `stay beside the model; pass --out <path> to write elsewhere, ` +
+              `or first remove any the model no longer uses.`,
+            ],
+          };
+        }
       }
     }
-  }
-  const unplaced = result.files.filter((_, i) => !targets[i]);
-  if (unplaced.length) {
-    return fail(...unplaced.map(
-        f => `the import gives '${f.fileName}', which has no place in the ` +
-            `semantic-model layout.`));
-  }
-  const written = result.files.map((f, i) => {
-    targets[i]!.write(f.content);
-    return targets[i]!.path;
-  });
-  for (const w of written) console.log(`wrote ${w}`);
-  return 0;
+    const unplaced = files.filter((_, i) => !targets[i]);
+    if (unplaced.length) {
+      return {
+        errors: unplaced.map(
+            f => `the import gives '${f.fileName}', which has no place in ` +
+                `the semantic-model layout.`),
+      };
+    }
+    return {targets: targets.map(t => t!.path)};
+  };
+  // Whether the import writes `files` with the model file over its input. It
+  // writes nothing when a file has no place.
+  const overwritesInput = async (files: SerializedFile[]) => {
+    const placed = await placeFiles(files);
+    return 'targets' in placed &&
+        path.resolve(placed.targets[0]) === path.resolve(file);
+  };
+  // The profile files beside the input once the import writes the profile
+  // files `written` beside it, each in place of one of the same name.
+  const besideWritten = (written: SerializedFile[]) => [
+    ...profileFiles.map(f => written.find(w => w.fileName === f.fileName) ?? f),
+    ...written.filter(w => !profileFiles.some(f => f.fileName === w.fileName)),
+  ];
+  const result = await importSemanticModelYaml(
+      io.source?.text ?? fs.readFileSync(file, 'utf8'), {
+        flavor: flavor as 'ossie' | 'google',
+        sourcePrefix: options.sourcePrefix,
+        transpile: !!options.transpile,
+        strict: input === 'first-party',
+        profileFiles,
+        fileName: path.basename(file),
+        // Each is called only when needed: for a --source-prefix that names an
+        // entry group, and for files that name a Cloud SQL, Spanner or
+        // third-party table. An import that needs neither needs no
+        // credentials.
+        listEntries: (project, location, entryGroup) =>
+            new dataplex.CatalogClient(api()).listEntries(
+                project, location, entryGroup),
+        readDialects: readDialectsOnce,
+        readWithoutDialect: io.readWithoutDialect,
+        overwritesInput: async files =>
+            io.overwrites(await overwritesInput(files)),
+        // The advice names the first error of the import it suggests: this
+        // import again with `--transpile`, of the files this import writes
+        // when it writes them over its input, and with `--input first-party`
+        // when the advice names that. Of the written files, that import reads
+        // the profile files beside the model file once this one writes its
+        // own.
+        ...io.transpileOutcome ?
+            {
+              transpileOutcome:
+                  (files: SerializedFile[], readsWritten: boolean,
+                   firstParty: boolean) =>
+                      io.transpileOutcome!(
+                          readsWritten ? {
+                            text: files[0].content,
+                            profileFiles: besideWritten(files.slice(1)),
+                          } :
+                                         undefined,
+                          firstParty, readDialectsOnce, api),
+            } :
+            {},
+      });
+  warnings.push(...result.warnings);
+  if (!result.ok) return fail(...result.errors);
+  const placed = await placeFiles(result.files);
+  if ('errors' in placed) return fail(...placed.errors);
+  return {
+    warnings,
+    writes: result.files.map(
+        (f, i) => ({fileName: placed.targets[i], content: f.content})),
+  };
 }
 
 // Prints each of `errors` once, as `Error: ...`, and gives exit code 1.
@@ -2614,20 +3089,23 @@ function writeFileAt(file: string, text: string): void {
 // The semantic-model layout of the workspace in `.`, where `kcmd owl import`
 // and `kcmd import` write without --out, or the error for a workspace that
 // has none.
-async function workspaceLayout(): Promise<SemanticModelLayout|string> {
+async function workspaceLayout(
+    api = () => context.ApiContext.default()):
+    Promise<SemanticModelLayout|string> {
   if (!fs.existsSync('catalog.yaml')) {
     return `there is no catalog.yaml in this directory, so there is no model ` +
         `layout to write into. Pass --out <path> to write the file directly.`;
   }
-  const snapshot =
-      await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
-  const layout = semanticLayoutOf(snapshot);
-  if (!layout) {
-    return `this catalog is not a semantic-model scope, so there is no ` +
-        `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
-        `first, or pass --out <path> to write the file directly.`;
-  }
-  return layout;
+  const notSemantic = `this catalog is not a semantic-model scope, so there ` +
+      `is no model layout to write into. Run \`kcmd init --semantic-model ` +
+      `...\` first, or pass --out <path> to write the file directly.`;
+  // Resolving an entry group, BigQuery or knowledge base scope calls a
+  // service, so a catalog.yaml that names one and passes the manifest's
+  // checks gets this error first. The manifest reads or reports any other
+  // catalog.yaml.
+  if (kcmd.serviceScopeType('catalog.yaml')) return notSemantic;
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', api());
+  return semanticLayoutOf(snapshot) ?? notSemantic;
 }
 
 // Refuses to write `model` into `layout`'s entry group beside another
@@ -2695,6 +3173,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const opened = await createSemanticRuntimes({
     profile: named,
     ctx,
+    transpileOutcomes: await scopeTranspileOutcomes(ctx, snapshot),
     oneModel: options.name ?
         count => `--name applies to one skill, and this scope has ${
             count} models. Drop it and each takes its model's name.` :

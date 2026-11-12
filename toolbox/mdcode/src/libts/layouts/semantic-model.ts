@@ -18,9 +18,9 @@ import * as md from '../metadata';
 import {listed, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
-import {YAML_OPTIONS} from '../semantic/yaml_options';
+import {YAML_OPTIONS, yamlErrorMessage} from '../semantic/yaml_options';
 
-import {joinFrontmatter, splitFrontmatter} from './documents';
+import {frontmatterText, joinFrontmatter, splitFrontmatter} from './documents';
 
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
@@ -100,10 +100,14 @@ export function vanillaSiblingError(file: string, modelFile: string): string {
 }
 
 // The profile files in the older `<model>.profiles/` directory in `dir`, each
-// named by its file basename.
+// named by its file basename. The directory is looked up by its name as `dir`
+// lists it, so that on a case-insensitive file system, as on macOS and
+// Windows, two model names that differ only in case do not share it.
 export function legacyProfileFiles(dir: string, model: string):
     {name: string; path: string}[] {
-  const legacy = path.join(dir, `${model}.profiles`);
+  const sub = `${model}.profiles`;
+  if (!fs.existsSync(dir) || !fs.readdirSync(dir).includes(sub)) return [];
+  const legacy = path.join(dir, sub);
   if (!fs.statSync(legacy, {throwIfNoEntry: false})?.isDirectory()) return [];
   const out: {name: string; path: string}[] = [];
   for (const entry of fs.readdirSync(legacy)) {
@@ -415,6 +419,12 @@ export class SemanticModelLayout implements CatalogLayout {
     return legacyProfileFiles(this._groupDir(), model);
   }
 
+  // The model name the model document with this handle declares, or undefined
+  // when it declares none or has a YAML error.
+  declaredModelName(model: string): string|undefined {
+    return this._modelHeader(model).name;
+  }
+
   // The `version` and model `name` a model document declares, each undefined
   // when the document has none. In a document with a YAML error, the version
   // is read as the lookup of its GOOGLE block profiles reads it, and is
@@ -516,12 +526,14 @@ export function parseOverviewSidecar(
     text: string, file: string): OverviewSidecar {
   const fail = (problem: string) =>
       new Error(`Overview sidecar '${file}': ${problem}`);
+  // Some editors save a byte order mark before the first line.
+  const unmarked = text.replace(/^\uFEFF/, '');
   let split: {metadata?: any; body: string};
   try {
-    // Some editors save a byte order mark before the first line.
-    split = splitFrontmatter(text.replace(/^\uFEFF/, ''));
+    split = splitFrontmatter(unmarked);
   } catch (err: any) {
-    throw fail(`its frontmatter does not parse: ${err?.message ?? err}`);
+    throw fail(`its frontmatter does not parse: ${
+        yamlErrorMessage(err, frontmatterText(unmarked) ?? '')}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?
@@ -653,7 +665,8 @@ function parseProfileName(text: string, file: string, name: string):
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    throw new ProfileFileError(profileParseError(file, err?.message ?? err));
+    throw new ProfileFileError(
+        profileParseError(file, yamlErrorMessage(err, text)));
   }
   if (doc?.semantic_model !== undefined) {
     const keys = listed([...PROFILE_FILE_KEYS].filter(k => k !== 'name'));

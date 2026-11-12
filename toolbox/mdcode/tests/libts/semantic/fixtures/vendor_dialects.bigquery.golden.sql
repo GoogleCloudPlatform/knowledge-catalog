@@ -25,17 +25,16 @@ EDGE TABLES (
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
--- field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'orders.clerk_name': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'orders.comment_text': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'DATABRICKS' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'orders.price_float': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'DATABRICKS' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'orders.due_date': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'orders.ship_days': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'customer.phone_is_numeric': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- field 'customer.is_auto_segment': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'DATABRICKS' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- metric 'fulfilled_revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
--- metric 'avg_price_known': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
+-- field 'orders.order_status_label': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
+-- field 'orders.clerk_name': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
+-- field 'orders.comment_text': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'DATABRICKS' expression; give it one
+-- field 'orders.price_float': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'DATABRICKS' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
+-- field 'orders.due_date': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
+-- field 'orders.ship_days': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one
+-- field 'customer.phone_is_numeric': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one
+-- field 'customer.is_auto_segment': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'DATABRICKS' expression; give it one
+-- metric 'fulfilled_revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
+-- metric 'avg_price_known': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> --input first-party --flavor ossie --transpile'
 -- metric 'fulfilled_revenue' has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a MEASURE)
 -- metric 'avg_price_known' has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a MEASURE)
 -- entity 'orders': field 'order_status_label' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table

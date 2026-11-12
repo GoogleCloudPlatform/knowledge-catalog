@@ -12,13 +12,13 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
-import {YAML_OPTIONS} from './yaml_options';
+import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
@@ -45,6 +45,12 @@ export interface ImportSemanticModelOptions {
    * dialect of each such table is unknown.
    */
   readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  /**
+   * When true, push's checks read an ANSI_SQL text on a table whose dialect
+   * no lookup read as DialectLoad.readWithoutDialect says. Pull sets it for
+   * the import it runs with no table's dialect read, as its own checks read.
+   */
+  readWithoutDialect?: boolean;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -66,12 +72,25 @@ export interface ImportSemanticModelOptions {
    */
   fileName?: string;
   /**
-   * Whether writing the model file `fileName` replaces the input file. When
-   * it does and the written file has a `GOOGLE` block, a message in a
-   * third-party import that names an import command names one with
-   * `--input first-party`, which reads that file.
+   * Whether the import writes `files`, the model file first, with the model
+   * file over the input file. An import that stops writes nothing over it.
+   * A third-party import asks. When it writes over its input, the import
+   * that the advice to add a BigQuery text suggests reads `files`. When the
+   * written file also has a `GOOGLE` block, a message that names an import
+   * command names one with `--input first-party`, which reads that file.
    */
-  overwritesInput?: (fileName: string) => Promise<boolean>;
+  overwritesInput?: (files: SerializedFile[]) => Promise<boolean>;
+  /**
+   * The first error the import that the advice to add a BigQuery text
+   * suggests would stop on, or null when it would write its files. That
+   * import is this one again with `--transpile`. With `readsWritten`, it
+   * reads `files`, which this import writes over its input, and with
+   * `firstParty` it takes `--input first-party`. Called only when that advice
+   * may be given. Without it, the advice names the command alone.
+   */
+  transpileOutcome?:
+      (files: SerializedFile[], readsWritten: boolean,
+       firstParty: boolean) => Promise<string|null>;
 }
 
 /** Lists the entries of an entry group. */
@@ -401,7 +420,7 @@ function parseImportDocument(
     parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
-        err?.message ?? err}`;
+        yamlErrorMessage(err, text)}`;
   }
 
   // 2. Verify the top-level document envelope (`version` is a recognized format
@@ -1035,10 +1054,14 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
     const parts = doc.entryTables ? sourceParts(trimmed) : undefined;
     if (hasUnquotedWhitespace(trimmed)) {
       if (doc.targetVersion === OSSIE_VERSION) {
+        // A strict import with '--flavor google' rejects the source too.
+        const google = doc.strict ? '' :
+            `, or import with '--flavor google', which removes the source`;
         doc.errors.push(
             `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
             `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
-            `every ${word}.`);
+            `every ${word}. Bind the ${word} to a table and import ` +
+            `again${google}.`);
       } else {
         doc.repair(
             `${dsLabel}: removed query-valued source '${trimmed}'; ` +
@@ -1892,6 +1915,35 @@ function writeDocument(
   return updateText(doc.text, doc.document, root, doc.links);
 }
 
+// Whether `kcmd import --transpile` gives a BigQuery text to the model file
+// `content` loaded with `options`, or to a field one of its profiles or
+// `profileFiles` binds (see transpilesSomething). A file that does not load
+// gives none, since push stops on the error first.
+function transpilesFile(
+    content: string, profileFiles: SerializedFile[],
+    options: Parameters<typeof loadModels>[1]): boolean {
+  let model: SemanticModel|undefined;
+  try {
+    model = loadModels(content, options).models[0];
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+  }
+  if (!model) return false;
+  const profiles = [
+    ...model.profiles ?? [],
+    ...profileFiles.flatMap(pf => {
+      try {
+        return [loadProfileFile(
+            pf.content, parseProfileName(pf.fileName), {skipActions: true})];
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        return [];
+      }
+    }),
+  ];
+  return transpilesSomething(model, profiles);
+}
+
 /**
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
@@ -1905,26 +1957,60 @@ async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
+  // Push's messages name the model document after the input file in strict
+  // mode, since strict mode writes nothing on an error, and after the file
+  // the import writes otherwise.
+  const input = doc.strict ? opts.fileName : undefined;
+  const document = (input ?? fileName).replace(/\.ya?ml$/, '');
+  // 1. Load the serialized output YAML with `loadModels`
+  // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
+  // validation while turning unaccepted table sources into warnings in
+  // non-strict mode, deduplicating warnings already recorded. Step 2 gives
+  // push's error for a field its table cannot run, so the load warns about
+  // it only on a table of the preferred dialect or one no lookup has read.
+  const baseLoad = {
+    bindingOptional: true,
+    warnUnacceptedSource: !doc.strict,
+    fieldTextChecked: true,
+    sourceDialects: load.sourceDialects,
+    document,
+  };
+  // Whether the model file loads and names only deployment targets in an
+  // accepted form. The import stops below on either, and writes nothing.
+  const loadsWithTargets = () => {
+    try {
+      return !loadModels(content, baseLoad).models.some(
+          m => (m.deployments ?? []).some(d => targetProblem('', d.target)));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return false;
+    }
+  };
+  // Whether this third-party import writes its files over its input, asked
+  // once and only when a message depends on it. A strict import writes the
+  // model its input holds, so the import its advice suggests reads the input.
+  let overwrote: Promise<boolean>|undefined;
+  const overwrites = () => overwrote ??= (async () => !doc.strict &&
+      loadsWithTargets() && !!await opts.overwritesInput?.(files))();
   // Third-party import refuses a file with a GOOGLE block, so a command that
   // reads such a file written over the input takes --input first-party.
   const thirdPartyImport = !doc.strict &&
-      !(documentHasGoogleBlock(doc.root) &&
-        await opts.overwritesInput?.(fileName));
+      !(documentHasGoogleBlock(doc.root) && await overwrites());
   try {
-    // 1. Load the serialized output YAML with `loadModels`
-    // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
-    // validation while turning unaccepted table sources into warnings in
-    // non-strict mode, deduplicating warnings already recorded. Step 2 gives
-    // push's error for a field its table cannot run, so the load does not
-    // warn about it too.
-    const loaded = loadModels(
-        content, {
-          bindingOptional: true,
-          warnUnacceptedSource: !doc.strict,
-          fieldTextChecked: true,
-          sourceDialects: load.sourceDialects,
-          thirdPartyImport,
-        });
+    const loadOptions = {...baseLoad, thirdPartyImport};
+    // The advice to add a BigQuery text names the first error the import it
+    // suggests would stop on, so that import runs first when the advice may
+    // be given.
+    const transpileOutcomes: TranspileOutcomes|undefined =
+        opts.transpileOutcome &&
+            transpilesFile(content, profileFiles, loadOptions) ?
+        new Map([[
+          document,
+          await opts.transpileOutcome(
+              files, await overwrites(), !thirdPartyImport),
+        ]]) :
+        undefined;
+    const loaded = loadModels(content, {...loadOptions, transpileOutcomes});
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1936,20 +2022,16 @@ async function validateOutputDocument(
     // 2. Run push's local checks on the model file and each profile it
     // declares. What push rejects is an error in strict mode and a warning
     // otherwise.
-    const input = doc.strict ? opts.fileName : undefined;
-    const model = {
-      name: (input ?? fileName).replace(/\.ya?ml$/, ''),
-      text: content,
-    };
+    const model = {name: document, text: content};
     // Where the input holds profile `name`, which the output writes in
-    // `written`: its profile file, or the model file's GOOGLE block. Strict
-    // mode writes nothing on an error, so its messages name the input.
+    // `written`: its profile file, or the input file's GOOGLE block. Strict
+    // mode writes nothing on an error, so its messages name the input file.
     const inputFiles =
         doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
     const where = (name: string, written: string) => !input ? written :
         inputFiles.find(pf => parseProfileName(pf.fileName) === name)
                 ?.fileName ??
-            model.name;
+            input;
     // Push stops at a profile file that breaks a file rule, then at an action
     // statement YAML reads differently from how it is written, then at a
     // deployment target in no accepted form. validateDeploymentTargets
@@ -1988,7 +2070,8 @@ async function validateOutputDocument(
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
       for (const {error} of namedProfileErrors(
                [model], new Map([[model.name, loaded.models[0]]]),
-               () => profiles, declaredBy, doc.warnings, load)) {
+               () => profiles, declaredBy, doc.warnings,
+               {...load, transpileOutcomes})) {
         doc.warnOrError(error);
       }
       return;
@@ -2007,7 +2090,9 @@ async function validateOutputDocument(
           models: [withFiles],
           profileDocs: () => profiles,
           declaredBy,
-          load,
+          // A profile's warnings come from a second load of the model file,
+          // which names the same import command as the first.
+          load: {...load, thirdPartyImport, transpileOutcomes},
         },
         warn);
     // Push prints each error once.
@@ -2073,7 +2158,10 @@ export async function importSemanticModelYaml(
       errors: [...doc.errors, listError],
     };
   }
-  const load = await repairDocument(doc, opts);
+  const load = {
+    ...await repairDocument(doc, opts),
+    ...opts.readWithoutDialect ? {readWithoutDialect: true} : {},
+  };
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
@@ -2095,9 +2183,10 @@ export async function importSemanticModelYaml(
     const input = opts.profileFiles?.[i];
     doc.errors.push(
         input?.content === f.content ?
-            profileParseError(input.fileName, problem.message) :
+            profileParseError(
+                input.fileName, yamlErrorMessage(problem, f.content)) :
             `the import writes '${f.fileName}', which does not parse: ${
-                problem.message}`);
+                yamlErrorMessage(problem, f.content)}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
     await validateOutputDocument(files, doc, opts, load);

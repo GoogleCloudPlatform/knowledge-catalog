@@ -44,14 +44,14 @@ scenarios('a Spanner database', [
     errors: [err(
         "field 'Customer.key' in model 'commerce' (commerce) has no expression " +
         "for POSTGRES or ANSI_SQL, and the model file binds entity 'Customer' " +
-        'to a POSTGRES source.')],
+        'to a POSTGRES source; give it one.')],
     then: [{
       entities: [CUSTOMER], profiles: {x: {entities: {Customer: keyIn('SPANNER')}}},
       code: 1,
       errors: [err(
           "[commerce.profile.x.yaml] profile 'x': field 'Customer.key' has no " +
           "expression for POSTGRES or ANSI_SQL, and this profile's sources " +
-          'are POSTGRES')],
+          'are POSTGRES; give it one')],
     }, {
       entities: [keyIn('POSTGRES')], code: 0, events: ['preflight', 'apply'],
       called: {getDatabase: 1},

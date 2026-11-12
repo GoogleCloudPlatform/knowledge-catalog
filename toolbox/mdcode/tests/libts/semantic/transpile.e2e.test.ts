@@ -32,7 +32,8 @@ const GOLDEN =
 
 // The full artifact: DDL generated from the transpiled model, then every
 // warning as a SQL comment. Mirrors bigquery.e2e's render but inserts the
-// transpile pass and drops the loader's now-stale "needs transpilation" notes,
+// transpile pass and drops the loader's warnings that a BigQuery table cannot
+// run a vendor text, which the transpile pass makes stale,
 // as `kcmd import --transpile` writes the BigQuery SQL the graph reads.
 async function render(): Promise<string> {
   const text = fs.readFileSync(path.join(FIXTURES, FIXTURE), 'utf8');
@@ -41,7 +42,7 @@ async function render(): Promise<string> {
   const {ddl, warnings: genWarnings} = generatePropertyGraph(
       model, {project: 'sqlgen-testing', dataset: 'demo'});
 
-  const keptLoad = loadWarnings.filter(w => !w.includes('needs transpilation'));
+  const keptLoad = loadWarnings.filter(w => !w.includes('table cannot run its'));
   const warnings = [...keptLoad, ...transpileWarnings, ...genWarnings];
   const warnBlock =
       warnings.length ? warnings.map(w => `-- ${w}`).join('\n') : '-- (none)';

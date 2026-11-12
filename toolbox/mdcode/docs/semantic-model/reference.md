@@ -46,7 +46,7 @@ Knowledge Catalog.
 | `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
 | `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
-| `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
+| `--validate-only` | Run the validation checks and report pass/fail, but write nothing. It skips the Knowledge Catalog checks on the entry group and the custom types, which find a missing entry group or type, a model the push would refuse, or one `--force-remove` would delete. `--dry-run` is the same. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 
@@ -86,9 +86,14 @@ keeps its comments, key order and formatting, and writes a file whole when it
 cannot. An overview sidecar that push would read into the overview the catalog
 holds keeps its bytes, whatever its line endings. When push's checks that call
 no service would refuse the model pull writes, pull warns and gives push's first
-error. Pull leaves out push's checks that call a service, such as those that
-need a table's SQL dialect, the source check and the Spanner graph check, so
-only push reports those. When
+error. When that error suggests `kcmd import --transpile`, pull runs that import
+as push does, writing nothing, on the files in the entry group once it has
+written its own. Under `--dry-run` the import reads the files the entry group
+would hold after the pull. When that import would stop, the error also names the
+first error it would stop on that pull can find without reading a table's SQL
+dialect. Pull leaves out push's checks that call a service,
+such as those that need a table's SQL dialect, the source check and the Spanner
+graph check, so only push reports those. When
 the model entry's `kcmd-push-state` label says the last push stopped partway,
 it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
@@ -98,6 +103,11 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. It also deletes a local profile file or overview sidecar the pull did not write, and each directory that leaves empty. The summary counts the files it deletes. |
+
+When pull refuses a local model file, the refusal names what you can do with
+that file. On macOS and Windows, file names that differ only in letter case
+name the same file, so when pull prints more than one refusal, follow one
+refusal's choice and run pull again before you follow the next.
 
 ### import
 
@@ -199,10 +209,11 @@ kcmd profiles
 ```
 
 Reports each binding profile the model declares: the deployment targets that use
-it, the source each entity binds to, and what the profile cannot answer or
-cannot run. Under each profile it then prints every error push would give for
-it, after a `push rejects:` heading. The inline `default` binding is checked
-too. Beside declared profiles it is listed only when push would reject it.
+it, the source each concrete entity binds to, and what the profile cannot answer
+or cannot run. Under each profile it then prints every error push would give
+for it, after a `push rejects:` heading. A profile with no such error also gets
+its load warnings. The inline `default` binding is checked too. Beside declared
+profiles it is listed only when push would reject it.
 Some errors fail every push of the scope, such as a
 second model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles. A Cloud SQL or third-party
@@ -221,8 +232,8 @@ the BigQuery source table probe, the dry runs of action statements and of each
 BigQuery graph's DDL, the check that a deployment's BigQuery dataset or Spanner
 database exists, the check of a Spanner deployment's instance edition, and (on
 a push without `--validate-only`) the Knowledge Catalog checks on the entry
-group. It exits non-zero when push would reject a binding. Under each profile it
-prints the errors of that profile's own
+group and the custom types. It exits non-zero when push would reject a binding.
+Under each profile it prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the
@@ -237,7 +248,7 @@ instance.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. Of several, it is the single Spanner or AlloyDB store, or else the single BigQuery dataset. Two graphs in one BigQuery dataset or one Spanner database name one store. For a BigQuery store it is the graph's dataset, even when the profile binds a BigLake table or a table in another dataset. When the model declares actions, such a table is an error. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. When a deployment that names the store binds an entity to a table outside its database, it gives push's error. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile. It reads every model's profiles first: its sibling `<model>.profile.<name>.yaml` files (for a `0.2.0.dev0/google` model), and the profiles a vanilla `0.2.0.dev0` model carries in its `GOOGLE` custom extension block. It errors on a profile file that breaks one of the [profile file rules](profiles.md#file-layout) or on a `GOOGLE` block profile that does not load. Like push, it checks each named profile against the model file loaded on its own, with the profile checks listed under [Validation](profiles.md#validation) and the [Sources](profiles.md#sources) rules on one database and on dialect text. When a check fails, it gives the errors push gives for those profiles, before any AlloyDB call. It reads each source's dialect as push does. When a Spanner database or a third-party table's entry cannot be read, it skips the dialect rules for that table. When a Cloud SQL table's entry cannot be read, it stops, as push does. Like push, it errors on an entry that reads but gives no dialect or names no table. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. Of several, it is the single Spanner or AlloyDB store, or else the single BigQuery dataset. Two graphs in one BigQuery dataset or one Spanner database name one store. For a BigQuery store it is the graph's dataset, even when the profile binds a BigLake table or a table in another dataset. When the model declares actions, such a table is an error. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. When every deployment names a profile and `--profile` is not given, the error names those profiles. When a deployment that names the store binds an entity to a table outside its database, it gives push's error. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile. It reads every model's profiles first: its sibling `<model>.profile.<name>.yaml` files (for a `0.2.0.dev0/google` model), and the profiles a vanilla `0.2.0.dev0` model carries in its `GOOGLE` custom extension block. It errors on a profile file that breaks one of the [profile file rules](profiles.md#file-layout) or on a `GOOGLE` block profile that does not load. Like push, it checks each named profile against the model file loaded on its own, with the profile checks listed under [Validation](profiles.md#validation) and the [Sources](profiles.md#sources) rules on one database and on dialect text. When a check fails, it gives the errors push gives for those profiles, before any AlloyDB call. It reads each source's dialect as push does. When a Spanner database or a third-party table's entry cannot be read, it skips the dialect rules for that table. When a Cloud SQL table's entry cannot be read, it stops, as push does. Like push, it errors on an entry that reads but gives no dialect or names no table. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -246,7 +257,7 @@ creates, seeds or drops that database asks for the name rather than repeating
 it:
 
 ```bash
-IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store --profile ops)"
 ```
 
 ### skills-generate
@@ -744,8 +755,8 @@ warning, and `--force-remove` deletes it.
 ## Validation
 
 `push` and `--validate-only` run the same checks, apart from the Knowledge
-Catalog checks on the entry group, which only a push without `--validate-only`
-runs. [push](#push) says when each check runs.
+Catalog checks on the entry group and the custom types, which only a push
+without `--validate-only` runs. [push](#push) says when each check runs.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:
@@ -870,8 +881,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a
-  BigQuery entry for a text it can translate. Every push
-  runs this check, whether or not a deployment uses those bindings. When a
+  BigQuery entry for a text it can translate. Before a message suggests that
+  command, kcmd runs the import it names, writing nothing. When that import
+  would stop, the message also names the first error it would stop on. Every
+  push runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
   the field or metric, since those databases read that token as text.
@@ -1193,6 +1206,7 @@ project:
 
 The entry group is required. A push to an entry group that does not exist
 stops before writing anything and asks you to run `kcmd init --semantic-model`.
+A pull of such an entry group says the same.
 When the scope in catalog.yaml names the wrong location or group, correct the
 scope instead. When the entry group or a type already exists, init goes on even
 if you may not create or update it, and reports a refusal to update a type as a
@@ -1201,7 +1215,8 @@ project someone else set up. Actions and constraints are optional
 constructs, so init reports a refusal to create their types as a warning and
 carries on; every model that declares neither still pushes and pulls. Any other
 failure to create a type stops init, rather than leaving a later push to hit an
-opaque parsing error.
+opaque parsing error. When the write quota refuses the create of a type, init
+says to run it again in a minute.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.

@@ -85,6 +85,107 @@ export function readWorkspaceLayout(path: string): WorkspaceLayout | undefined {
 }
 
 
+// Checks the entry and aspect types catalog.yaml lists under `snapshot` and
+// `publishing`, as CatalogManifest.load does.
+function checkTypeLists(
+  snapshot: SnapshotConfig | undefined,
+  publishing: PublishingConfig | undefined,
+): void {
+  if (snapshot) {
+    if (snapshot.entries) {
+      for (const entryType of snapshot.entries) {
+        const parts = entryType.split('.');
+        if (parts.length !== 3) {
+          throw new Error(`Manifest error: Invalid Entry Type '${entryType}'`);
+        }
+      }
+    }
+
+    if (snapshot.aspects) {
+      for (const aspectType of snapshot.aspects) {
+        const parts = aspectType.split('.');
+        if (parts.length !== 3) {
+          throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
+        }
+      }
+    }
+  }
+
+  if (publishing) {
+    if (publishing.entries) {
+      for (const entryType of publishing.entries) {
+        const parts = entryType.split('.');
+        if (parts.length !== 3) {
+          throw new Error(`Manifest error: Invalid Entry Type '${entryType}'`);
+        }
+        if (!snapshot?.entries?.includes(entryType)) {
+          throw new Error(
+            `Manifest error: Publishing entry type '${entryType}' is not listed in snapshot entries.`
+          );
+        }
+      }
+    }
+
+    if (publishing.aspects) {
+      for (const aspectType of publishing.aspects) {
+        const parts = aspectType.split('.');
+        if (parts.length !== 3) {
+          throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
+        }
+        if (!snapshot?.aspects?.includes(aspectType)) {
+          throw new Error(
+            `Manifest error: Publishing aspect type '${aspectType}' is not listed in snapshot aspects.`
+          );
+        }
+      }
+    }
+  }
+}
+
+
+// The scope type of the catalog.yaml at `path` when it names an entry group,
+// BigQuery or knowledge base scope and passes every check CatalogManifest.load
+// makes of it. Load would then resolve the scope, which calls a service.
+// Undefined for any other file, which load reads or reports as it does.
+export function serviceScopeType(path: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(fs.readFileSync(path, 'utf8'));
+  } catch {
+    return undefined;
+  }
+  const result = manifestSchema.safeParse(parsed);
+  if (!result.success) return undefined;
+  try {
+    layoutOf(result.data);
+    checkTypeLists(result.data.snapshot, result.data.publishing);
+  } catch {
+    return undefined;
+  }
+  const scope = result.data.scope;
+  const scopes = typeof scope === 'string' ? [scope] : scope;
+  if (!scopes.length || scopes.some(s => !s.includes('.'))) return undefined;
+  const type = scopes[0].slice(0, scopes[0].indexOf('.'));
+  const names = scopes.map(s => s.slice(s.indexOf('.') + 1));
+  // Each part a name needs, as createSource reads it before it calls a
+  // service.
+  const hasParts = (name: string, count: number) =>
+    name.split('.').slice(0, count).filter(p => p).length === count;
+  if (Array.isArray(scope) &&
+      scopes.some(s => !s.startsWith(`${Sources.BIGQUERY_DATASET}.`))) {
+    return undefined;
+  }
+  if (type === Sources.ENTRYGROUP || type === Sources.KB) {
+    return hasParts(names[0], 3) ? type : undefined;
+  }
+  if (type === Sources.BIGQUERY_DATASET) {
+    return names.join(',').split(',').every(n => hasParts(n, 2)) ?
+      type : undefined;
+  }
+  return undefined;
+}
+
+
 // Records `layout` in the catalog.yaml at `path`, keeping every other key and
 // comment as written.
 export function writeWorkspaceLayout(path: string, layout: WorkspaceLayout): void {
@@ -227,56 +328,8 @@ export class CatalogManifest {
     }
 
     const snapshot = result.data.snapshot;
-    if (snapshot) {
-      if (snapshot.entries) {
-        for (const entryType of snapshot.entries) {
-          const parts = entryType.split('.');
-          if (parts.length !== 3) {
-            throw new Error(`Manifest error: Invalid Entry Type '${entryType}'`);
-          }
-        }
-      }
-
-      if (snapshot.aspects) {
-        for (const aspectType of snapshot.aspects) {
-          const parts = aspectType.split('.');
-          if (parts.length !== 3) {
-            throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
-          }
-        }
-      }
-    }
-
     const publishing = result.data.publishing;
-    if (publishing) {
-      if (publishing.entries) {
-        for (const entryType of publishing.entries) {
-          const parts = entryType.split('.');
-          if (parts.length !== 3) {
-            throw new Error(`Manifest error: Invalid Entry Type '${entryType}'`);
-          }
-          if (!snapshot?.entries?.includes(entryType)) {
-            throw new Error(
-              `Manifest error: Publishing entry type '${entryType}' is not listed in snapshot entries.`
-            );
-          }
-        }
-      }
-
-      if (publishing.aspects) {
-        for (const aspectType of publishing.aspects) {
-          const parts = aspectType.split('.');
-          if (parts.length !== 3) {
-            throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
-          }
-          if (!snapshot?.aspects?.includes(aspectType)) {
-            throw new Error(
-              `Manifest error: Publishing aspect type '${aspectType}' is not listed in snapshot aspects.`
-            );
-          }
-        }
-      }
-    }
+    checkTypeLists(snapshot, publishing);
 
     return new CatalogManifest(source, snapshot, publishing, layout);
   }

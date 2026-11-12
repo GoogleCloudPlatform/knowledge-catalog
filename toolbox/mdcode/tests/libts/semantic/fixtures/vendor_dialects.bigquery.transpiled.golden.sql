@@ -33,7 +33,6 @@ EDGE TABLES (
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- field 'orders.order_status_label': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
 -- field 'orders.clerk_name': transpiled 'SNOWFLAKE' -> 'BIGQUERY'
 -- field 'orders.comment_text': could not transpile 'DATABRICKS' -> 'BIGQUERY' (kcmd does not translate CAST to TEXT); left untranslated

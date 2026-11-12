@@ -86,14 +86,14 @@ scenarios('a third-party table', [
     errors: [err(
         "field 'Customer.key' in model 'commerce' (commerce) has no expression " +
         "for SNOWFLAKE or ANSI_SQL, and the model file binds entity 'Customer' " +
-        'to a SNOWFLAKE source.')],
+        'to a SNOWFLAKE source; give it one.')],
     then: [{
       entities: [CUSTOMER], profiles: {x: {entities: {Customer: DATABRICKS}}},
       code: 1,
       errors: [err(
           "[commerce.profile.x.yaml] profile 'x': field 'Customer.key' has no " +
           "expression for SNOWFLAKE or ANSI_SQL, and this profile's sources " +
-          'are SNOWFLAKE')],
+          'are SNOWFLAKE; give it one')],
     }, {
       // Tables in two Snowflake accounts are in two databases.
       entities: [CUSTOMER, ORDER],

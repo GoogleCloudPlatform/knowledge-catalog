@@ -414,8 +414,9 @@ export function oneModelPerEntryGroupMessage(
       `separate entry groups.`;
 }
 
-/** The error for a push to an entry group that does not exist. */
-function missingEntryGroupMessage(opts: KcDeployOptions): string {
+/** The error for a push or pull of an entry group that does not exist. */
+export function missingEntryGroupMessage(
+    opts: Pick<KcDeployOptions, 'project'|'location'|'entryGroup'>): string {
   const {project, location, entryGroup} = opts;
   return `entry group '${entryGroup}' does not exist in location ` +
       `'${location}' of project '${project}'; run 'kcmd init ` +

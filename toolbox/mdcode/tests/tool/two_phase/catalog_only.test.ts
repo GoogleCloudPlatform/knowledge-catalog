@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 import {cloudSqlEntry} from '../../libts/mocks';
 
-import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
+import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -22,7 +22,6 @@ const quotedKey = (label: string) => `Warning: ${label}[commerce] field ` +
     `that names a column alone, in backticks if it needs quoting, and a field ` +
     `of the entity whose fields list holds this expression as ` +
     `'<entity>.<field>'`;
-const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
 // Customer on `source`, its key field given as `text` in `dialect`.
 const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
   ...CUSTOMER, source,
@@ -31,6 +30,21 @@ const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
 // A profile that binds Customer to table customer in dataset `name`.
 const keyIn = (name: string, text: string, dialect?: string) =>
     ({entities: {Customer: keyAt(bqTable('customer', name), text, dialect)}});
+// Customer on `source`, with field flag in BigQuery SQL only, which reads no
+// column, so a profile may leave it as the model file binds it.
+const withFlag = (source: string) => ({
+  ...CUSTOMER, source,
+  fields: [...CUSTOMER.fields, {
+    name: 'flag',
+    expression: {dialects: [{dialect: 'BIGQUERY', expression: 'IF(TRUE, 1, 0)'}]},
+  }],
+});
+const alloyDb = (table: string) => `${ALLOYDB}/schemas/public/tables/${table}`;
+// Push's error for field flag on a table of `dialect`.
+const flagError = (dialect: string) => err(
+    "field 'Customer.flag' in model 'commerce' (commerce) has no expression " +
+    `for ${dialect} or ANSI_SQL, and the model file binds entity 'Customer' ` +
+    `to ${/^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source; give it one.`);
 
 // A catalog preflight that plans one line and gives `result`.
 const planned = (result = {}) =>
@@ -88,7 +102,7 @@ scenarios('push --no-deployment', [
     flags: {validateOnly: true},
     code: 0,
     warnings: [
-      has('needs transpilation'),
+      has("metric 'positive_keys': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression"),
       has("metric 'quoted_keys': BigQuery reads \"key\" in its 'ANSI_SQL' expression as text"),
     ],
     then: [{
@@ -117,34 +131,50 @@ scenarios('push --no-deployment', [
         has("profile 'ops': field 'Customer.key' has no expression for SPANNER"),
         has("profile 'ops': metric 'positive_keys' has no expression for SPANNER"),
       ],
-      warnings: [has('needs transpilation')],
+      warnings: [has('table cannot run its')],
     }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
   },
   {
-    // Knowledge Catalog receives every profile file, applied or not. The
-    // model file and profile dev give the same ANSI_SQL note, which prints
-    // once.
+    // Profiles that inherit field flag unchanged add no copy of push's error
+    // about it, as with no profile files. The report keeps each profile's
+    // warning.
+    name: 'a model-file field its AlloyDB or Spanner table cannot run gets push\'s error once, with no warning for each profile that inherits it',
+    entities: [withFlag(alloyDb('customer'))],
+    profiles: {dev: boundAt(alloyDb('customer_dev')), prod: boundAt(alloyDb('customer_prod'))},
+    code: 1, errors: [flagError('ALLOYDB')], warnings: [],
+    then: [{
+      entities: [withFlag(SPANNER_CUSTOMER)],
+      profiles: {prod: boundAt(`${SPANNER}/tables/CustomerProd`)},
+      code: 1, errors: [flagError('SPANNER')], warnings: [],
+    }],
+    report: {code: 1, check: (_, __, warnings) => expect(warnings).toContain(
+        "  profile 'dev': warning: [commerce] field 'Customer.flag': no " +
+        "'ALLOYDB' or 'ANSI_SQL' dialect, so the ALLOYDB table of entity " +
+        "'Customer' cannot run it")},
+  },
+  {
+    // Knowledge Catalog receives every profile file, applied or not.
     name: 'prints the warnings of each profile file once, labelled with its name, whether or not a selected deployment applies it, and none for a profile push rejects',
     deployments: [{name: 'g', profile: 'prod'}, {name: 'h', profile: 'dev'}],
     entities: [keyAt(bqTable('customer'), 'c_key')],
     profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', '"c_key"')},
     flags: {validateOnly: true},
     code: 0,
-    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    warnings: [quotedKey("profile 'prod': ")],
     then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            {flags: {deployment: 'g', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            // A GOOGLE block profile's field gets the same warning.
            {google: {profiles: [{name: 'prod', entities: [keyIn('prod', '"c_key"').entities.Customer]}]},
             profiles: {}, flags: {validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+            warnings: [quotedKey("profile 'prod': ")]},
            // Push's error for the Snowflake-only key is prod's only message.
            {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},
-            flags: {validateOnly: true}, code: 1, warnings: [NOTE],
+            flags: {validateOnly: true}, code: 1, warnings: [],
             rejects: [has("field 'Customer.key' has no expression for BIGQUERY or ANSI_SQL")]}],
     report: {code: 0},
   },
@@ -158,17 +188,17 @@ scenarios('push --no-deployment', [
     profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', executor: null}]}},
     flags: {validateOnly: true},
     code: 0,
-    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    warnings: [quotedKey("profile 'prod': ")],
     then: [{
       profiles: {prod: {...keyIn('prod', '"c_key"'), actions: [{name: 'refund', description: 'd'}]}},
-      flags: {validateOnly: true}, code: 0, warnings: [NOTE, quotedKey("profile 'prod': ")],
+      flags: {validateOnly: true}, code: 0, warnings: [quotedKey("profile 'prod': ")],
     }, {
       actions: [{
         name: 'refund', parameters: [{name: 'k', type: 'Integer'}],
         executor: {sql: {statements: ['UPDATE customer SET c_key = c_key WHERE c_key = @k']}},
       }],
       flags: {validateOnly: true}, code: 0,
-      warnings: [NOTE, quotedKey("profile 'prod': "), has('1 action(s) published')],
+      warnings: [quotedKey("profile 'prod': "), has('1 action(s) published')],
     }],
     report: {code: 0, check: (lines, _, warnings) => {
       expect(lines).toContain("    not shown: [commerce.profile.prod.yaml] profile 'prod': " +

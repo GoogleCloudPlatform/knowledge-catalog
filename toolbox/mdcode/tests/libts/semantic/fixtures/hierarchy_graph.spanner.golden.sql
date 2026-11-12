@@ -54,5 +54,4 @@ EDGE TABLES (
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- metric 'total_cities' is not emitted: Spanner Graph has no MEASURE, so model-level metrics have no home in it

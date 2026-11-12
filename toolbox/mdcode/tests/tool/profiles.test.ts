@@ -199,27 +199,37 @@ relationships:
     expect(out.split("Model document 'commerce'").length - 1).toBe(1);
   });
 
-  // Applying a profile file warns as push does, under the profile's name.
-  test('the warnings applying a profile file gives are printed', async () => {
+  // Applying a profile file warns as push does, under the profile's heading.
+  // No profile binds an abstract entity, so the report lists no source for it.
+  test('prints a profile\'s load warning under its heading, and no source for an abstract entity', async () => {
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
-      - name: Customer
-        source: ${BQ('customer')}
+      - name: Party
+        abstract: true
         fields:
-          - { name: key, expression: c_key }
+          - { name: key, datatype: Integer }
+      - name: Customer
+        extends: [Party]
+        primary_key: [key]
 `, `name: prod
 entities:
   - name: Customer
-    source: ${BQ('customer_prod')}
-    fields: [{ name: key, expression: '"c_key"' }]
+    source: ${BQ('customer')}
+    primary_key: [c_id]
+    fields:
+      - { name: key, expression: '"c_id"' }
 `);
-    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation((...a: any[]) => {
+      logs.push(a.join(' '));
+    });
     expect(await profiles()).toBe(0);
-    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n')).toContain(
-        "profile 'prod': warning: [commerce] field 'Customer.key': BigQuery " +
-        'reads "c_key"');
+    expect(logs[logs.indexOf("  profile 'prod'") + 1]).toStartWith(
+        "  profile 'prod': warning: [commerce] field 'Customer.key': BigQuery " +
+        'reads "c_id"');
+    expect(logs.filter(l => l.includes(' -> ')))
+        .toEqual([`      Customer -> ${BQ('customer')}`]);
   });
 
   test('the runtime reports a model file that does not load alone', async () => {
@@ -563,11 +573,12 @@ ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : 
   const joinOnEmail = (text: string) =>
       text.replace('to_columns: [c_id]', 'to_columns: [c_email]');
 
-  // The profile comparison's error for a join of `who` on `to` that covers no
-  // key of customer.
-  const compared = (who: string, to: string) =>
-      `[commerce] relationship 'placed_by': ${who} joins on to_columns ` +
-      `["${to}"], which cover no primary or unique key of 'customer'`;
+  // The profile comparison's error for a join of profile `profile` on `to`
+  // that covers no key of customer, which names the profile file.
+  const compared = (profile: string, to: string) =>
+      `[commerce.profile.${profile}.yaml] profile '${profile}': relationship ` +
+      `'placed_by' joins on to_columns ["${to}"], which cover no primary or ` +
+      "unique key of 'customer'";
 
   // Push's own error for a join on `to` in `binding` that covers no key.
   const own = (binding: string, to: string) =>
@@ -1449,7 +1460,7 @@ semantic_model:
           'commerce.yaml': commerce(),
           'commerce.profile.a.yaml': profileFile('a').replace(
               'to_columns: [c_id]', 'to_columns: ["`c_name`"]'),
-        }, {model: [compared("profile 'a'", '`c_name`')], a: []}],
+        }, {a: [compared('a', '`c_name`')]}],
         // Keys and join columns are compared as written, so a field of the
         // key's name bound to "c_id" changes nothing.
         ['an AlloyDB field named like the key bound to "c_id"', {
@@ -1465,9 +1476,9 @@ semantic_model:
           'commerce.profile.a.yaml': profileFile('a'),
           'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
         }, {
-          model: [compared("profile 'b'", 'c_email'), unknown('commerce')],
+          model: [unknown('commerce')],
           a: [],
-          b: [],
+          b: [compared('b', 'c_email')],
         }],
       ];
       for (const [label, files, sections] of cases) {
@@ -1788,6 +1799,28 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       });
     });
 
+    // The import the advice suggests stops on a metric with no entity whose
+    // text reaches no entity, so the profile's error names that error last.
+    test('and names the import\'s first error for a vendor-only metric with no entity', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce()}    metrics:
+      - name: purchases
+        expression:
+          dialects:
+            - { dialect: SNOWFLAKE, expression: "IFF(TRUE, COUNT(*), 0)" }
+`,
+        'commerce.profile.prod.yaml': profileFile('prod'),
+      });
+      expect((await pushResult()).errors).toContain(
+          "[commerce.profile.prod.yaml] profile 'prod': metric 'purchases' " +
+              'has no expression for BIGQUERY or ANSI_SQL, and this ' +
+              "profile's sources are BIGQUERY; give it one, add it to " +
+              "'metrics_exclude', or add one with 'kcmd import <file> --input " +
+              "first-party --flavor google --transpile' after fixing this: " +
+              "metric 'purchases': its expression reaches no declared entity; " +
+              "set 'entity' on the metric, or scope its expression to one entity");
+    });
+
     // A profile file push cannot read gives one error, which names the file,
     // whichever binding the push deploys.
     test('and names the profile file in an error, whichever binding the push deploys', async () => {
@@ -1853,7 +1886,7 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
         errors: [
           "[commerce.profile.ops.yaml] profile 'ops': field 'customer.c_id' " +
               "has no expression for SPANNER or ANSI_SQL, and this profile's " +
-              'sources are SPANNER',
+              'sources are SPANNER; give it one',
         ],
       });
     });
@@ -1983,7 +2016,7 @@ semantic_model:
         writeScope({'commerce.yaml': withAmount(complete('prod'), 'prod')});
         expect(await pushResult()).toEqual({code: 1, errors: [error]});
         // Profile prod's error for amount on `dialect`, ending in `hint`.
-        const blockError = (dialect: string, hint = '') =>
+        const blockError = (dialect: string, hint = '; give it one') =>
             "[commerce] profile 'prod': field 'purchase.amount' has no " +
             `expression for ${dialect} or ANSI_SQL, and this profile's ` +
             `sources are ${dialect}${hint}`;
@@ -1997,13 +2030,17 @@ semantic_model:
           entities: complete('prod').entities.map(
               e => ({...e, source: `${SPANNER_DB}/tables/${e.name}`})),
         };
-        for (const [label, profile, prod] of [
-               ['inherited', complete('prod'), []],
-               ['rebound', rebound, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
-               ['on Spanner', onSpanner, [blockError('SPANNER')]],
+        // On Spanner, the import the advice suggests stops on the profile's
+        // error, in its own words.
+        const afterSpanner = error.slice(0, -1) + " after fixing this: [commerce.yaml] " +
+            blockError('SPANNER').replace('[commerce] ', '') + '.';
+        for (const [label, profile, model, prod] of [
+               ['inherited', complete('prod'), error, []],
+               ['rebound', rebound, error, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
+               ['on Spanner', onSpanner, afterSpanner, [blockError('SPANNER')]],
              ] as const) {
           writeScope({'commerce.yaml': withAmount(profile)});
-          await expectReport({default: [error], prod: [...prod]}, label);
+          await expectReport({default: [model], prod: [...prod]}, label);
         }
       });
 
@@ -2211,7 +2248,7 @@ semantic_model:
             .replace('expression: p_id }', 'expression: { dialects: ' +
                      '[{ dialect: BIGQUERY, expression: p_id }] } }'),
       });
-      const spanner = `${modelNoText('purchase.p_id', 'SPANNER')}.`;
+      const spanner = `${modelNoText('purchase.p_id', 'SPANNER')}; give it one.`;
       for (const opts of [{}, noDeployment]) {
         expect({opts, ...await pushResult(opts)})
             .toEqual({opts, code: 1, errors: [spanner]});
@@ -2224,7 +2261,7 @@ semantic_model:
         // The translator cannot read `amount +`, so no hint suggests it.
         for (const [dialect, text, end] of [
                ['SNOWFLAKE', 'amount', HINT],
-               ['SNOWFLAKE', '"amount +"', '.'],
+               ['SNOWFLAKE', '"amount +"', '; give it one.'],
                ['SPANNER', 'amount', HINT],
              ]) {
           writeScope({
@@ -2339,7 +2376,7 @@ semantic_model:
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
       // `dialect` of its sources, ending in `hint`.
-      const profileError = (dialect = 'BIGQUERY', hint = '') =>
+      const profileError = (dialect = 'BIGQUERY', hint = '; give it one') =>
           "[commerce.profile.prod.yaml] profile 'prod': field " +
           `'purchase.amount' has no expression for ${dialect} or ANSI_SQL, ` +
           `and this profile's sources are ${dialect}${hint}`;
@@ -2366,8 +2403,10 @@ semantic_model:
                           errors: string[]]> = [
         ['inherited', commerce(), profileFile('prod'), [hinted]],
         ['rebound', commerce(), rebound, [profileError('BIGQUERY', PROFILE_HINT), hinted]],
+        // The import the advice suggests stops on the profile's error.
         ['on Spanner', commerce(), spannerProfile,
-         [profileError('SPANNER'), hinted]],
+         [profileError('SPANNER'),
+          `${hinted.slice(0, -1)} after fixing this: ${profileError('SPANNER')}.`]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
         ['no source in the model file',
@@ -2387,10 +2426,11 @@ semantic_model:
         }
         // The report gives the model file's error under its own bindings.
         expect(await profiles()).toBe(1);
-        const inline = errors.filter(e => e === hinted);
+        const isModel = (e: string) => e.startsWith(modelNoText('purchase.amount'));
         expect({label, inline: rejects(section(INLINE)),
                 prod: rejects(profileSection('prod'))})
-            .toEqual({label, inline, prod: errors.filter(e => e !== hinted)});
+            .toEqual({label, inline: errors.filter(isModel),
+                      prod: errors.filter(e => !isModel(e))});
       }
     });
 

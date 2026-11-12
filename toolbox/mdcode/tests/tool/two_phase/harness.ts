@@ -314,7 +314,7 @@ function installRun(services: Services): {out: Line[]; fake: Fake} {
 }
 
 // What one push printed and called.
-async function runPush(services: Services, flags: commands.PushOptions) {
+export async function runPush(services: Services, flags: commands.PushOptions) {
   const {out, fake} = installRun(services);
   const code = await commands.push(flags);
   return {
@@ -461,10 +461,11 @@ export const at = (d: string) => `[commerce] deployment '${d}'`;
 export const msg = {
   VALIDATED: 'Validation complete; no changes applied.',
   // The refusal of each flag push no longer takes, by the flag as typed.
+  // The refusal of `--profile <profile>`, which names the profile given.
+  retiredProfile: (profile: string) => "'--profile' is no longer supported " +
+      `on 'kcmd push'; declare a deployment with 'profile: ${profile}' under ` +
+      "'deployments:' and run 'kcmd push --deployment <name>'.",
   retired: {
-    '--profile': "'--profile' is no longer supported on 'kcmd push'; declare " +
-        "a deployment with 'profile: prod' under 'deployments:' and run " +
-        "'kcmd push --deployment <name>'.",
     '--all-profiles': "'--all-profiles' is no longer supported on 'kcmd " +
         "push'; 'kcmd push' deploys all entries under 'deployments:' by " +
         'default.',

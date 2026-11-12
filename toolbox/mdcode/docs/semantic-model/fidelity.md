@@ -274,7 +274,9 @@ SQL that gives the same value in BigQuery for ordinary data, whatever the
 column types are. It translates aggregates, CASE, COALESCE and other NULL
 handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. Its warning about any other
-text names the first part it does not translate.
+text names the first part it does not translate. It names a function and a
+date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
+part `w`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with the current

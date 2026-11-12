@@ -132,6 +132,8 @@ describe('kcmd import', () => {
             ...expected, profileFiles: [], fileName: 'retail.yaml',
             listEntries: expect.any(Function), readDialects: expect.any(Function),
             overwritesInput: expect.any(Function),
+            // An import with --transpile runs no second import for its advice.
+            ...options.transpile ? {} : {transpileOutcome: expect.any(Function)},
           }]]);
       expect(ApiContext.default).not.toHaveBeenCalled();
     });
@@ -191,22 +193,101 @@ describe('kcmd import', () => {
     ['in place in the workspace', path.join(GROUP, 'retail.yaml'), undefined, DESCRIBED, 'first-party'],
     ['over the file --out names', 'retail.yaml', 'retail.yaml', DESCRIBED, 'first-party'],
     // A first-party import of this file stops at the field the translator
-    // refuses.
+    // refuses. The metric draws the hint from the load too.
     ['in place, writing no GOOGLE block,', path.join(GROUP, 'retail.yaml'), undefined,
      '          - name: custom_val\n            expression: {dialects: [{dialect: SNOWFLAKE, ' +
-         "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n",
+         "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n    metrics:\n" +
+         "      - {name: n, expression: {dialects: [{dialect: SNOWFLAKE, expression: 'COUNT(orders.order_id)'}]}}\n",
      undefined],
   ])('a third-party import %s hints at a command that reads the written file', async (_, input, out, rest, mode) => {
     workspace();
     write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') + rest);
     expect(await importModel(input, {flavor: 'ossie', out})).toBe(0);
-    expect(warnings).toContainEqual(expect.stringContaining(`add one with 'kcmd import <file>${
-        mode ? ' --input first-party' : ''} --flavor ossie --transpile'`));
+    // The load warns about each text import can translate, and every warning
+    // that names a command names the same one as push's check.
+    const hint = (firstParty: unknown) => `add one with 'kcmd import <file>${
+        firstParty ? ' --input first-party' : ''} --flavor ossie --transpile'`;
+    const translated = ["field 'orders.order_id'", ...rest.includes('metrics:') ? ["metric 'n'"] : []];
+    for (const name of translated) {
+      expect(warnings).toContain(`Warning: ${name}: no 'BIGQUERY' or 'ANSI_SQL' dialect, so a ` +
+          `BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or ${hint(mode)}`);
+    }
+    for (const w of warnings.filter(w => w.includes('kcmd import'))) expect(w).toContain(hint(mode));
+    expect(warnings.join('\n')).not.toContain(hint(!mode));
     warnings = [];
     expect(await importModel(input, {flavor: 'ossie', input: mode, transpile: true, out}))
         .toBe(0);
     expect(errors).toEqual([]);
+    for (const name of translated) expect(warnings.join('\n')).not.toContain(`${name}: no 'BIGQUERY'`);
     expect(warnings.join('\n')).not.toContain("field 'orders.order_id' in model");
+  });
+
+  // The command a third-party import names for the file it writes over its
+  // input stops on a field import cannot translate, so the advice names that
+  // field's error.
+  test('a third-party import over its input names the error of the command it suggests', async () => {
+    workspace();
+    const input = path.join(GROUP, 'retail.yaml');
+    write(input, model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        '          - name: custom_val\n            expression: {dialects: [{dialect: SNOWFLAKE, ' +
+        "expression: 'MY_CUSTOM_SNOWFLAKE_UDF(order_id)'}]}\n" + DESCRIBED);
+    const error = "field 'orders.custom_val' in model 'retail' (retail) has no expression for " +
+        "BIGQUERY or ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; " +
+        'give it one';
+    expect(await importModel(input, {flavor: 'ossie'})).toBe(0);
+    expect(warnings).toContain("Warning: field 'orders.order_id': no 'BIGQUERY' or 'ANSI_SQL' " +
+        "dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; give it one, or add " +
+        "one with 'kcmd import <file> --input first-party --flavor ossie --transpile' after " +
+        `fixing this: ${error}`);
+    expect(await importModel(input, {flavor: 'ossie', input: 'first-party', transpile: true}))
+        .toBe(1);
+    expect(errors).toEqual([`Error: ${error}.`]);
+  });
+
+  // A profile that passes its checks prints its load warnings, which name the
+  // same command as the model file's.
+  test('a third-party import of a Google model and its profile file names one command', async () => {
+    write('in/retail.yaml', model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"')
+        .replace('datasets:', 'entities:') +
+        "          - name: flag\n            expression: {dialects: [{dialect: SNOWFLAKE, expression: 'IFF(TRUE, 1, 0)'}]}\n");
+    write('in/retail.profile.prod.yaml',
+          `name: prod\nentities:\n  - name: orders\n    source: ${PREFIX}/tables/orders_prod\n` +
+          '    primary_key: [order_id]\n    fields:\n      - name: order_id\n' +
+          '        expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}\n');
+    expect(await importModel('in/retail.yaml', {flavor: 'google', out: 'out'})).toBe(0);
+    expect(warnings).toContainEqual(
+        expect.stringContaining("add one with 'kcmd import <file> --flavor google --transpile'"));
+    expect(warnings.join('\n')).not.toContain('--input first-party');
+  });
+
+  // Whether an import writes over its input reads the workspace's layout. A
+  // knowledge base scope has none, and resolving it would call a service, so
+  // the import gives its own error.
+  test('a third-party import in a knowledge base workspace gives its error', async () => {
+    write('catalog.yaml', 'scope: kb.test-project.us.sales\n');
+    write('retail.yaml', model().replace('"0.2.0.dev0"', '"0.2.0.dev0/google"')
+        .replace('datasets:', 'entities:').replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        '    deployments:\n      - {name: qa, target: nonsense}\n');
+    expect(await importModel('retail.yaml', {flavor: 'google'})).toBe(1);
+    expect(errors).toEqual([expect.stringContaining(
+        "Error: Model 'retail': deployment 'qa' targets 'nonsense', which is not a BigQuery " +
+        'graph, a Spanner graph or an AlloyDB database.')]);
+  });
+
+  // A catalog.yaml that breaks one of the manifest's rules gets that rule's
+  // error, as push and pull give it, before any service call.
+  test.each([
+    ['scope: [kb.test-project.us.sales]',
+     "Manifest error: Unsupported scope type in multiple scopes: 'kb'."],
+    ['scope: []', 'Manifest error: scope array cannot be empty.'],
+    ['scope: kb.test-project.us.sales\nlayout: bogus',
+     "Manifest error: layout 'bogus' is not supported"],
+    ['scope: entryGroup.test-project.us',
+     'EntryGroup must be in format <projectId>.<locationId>.<entryGroupId>'],
+  ])('without --out, the catalog.yaml %p gets the manifest error', async (catalog, error) => {
+    write('catalog.yaml', `${catalog}\n`);
+    write('retail.yaml', model());
+    await expect(importModel('retail.yaml', {flavor: 'ossie'})).rejects.toThrow(error);
   });
 
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
@@ -572,6 +653,18 @@ describe('kcmd import', () => {
         "Error: action 'purge' in model 'retail' (retail) has a sql executor whose statement 1 " +
         'has a comment on the same line')]);
     expect(filesIn('out')).toEqual([]);
+  });
+
+  test('a strict import says why it left a field untranslated, beside the error about it', async () => {
+    write('retail.yaml', model().replace('dialect: BIGQUERY, expression: order_id',
+                                         'dialect: SNOWFLAKE, expression: "GREATEST(a, b)"'));
+    expect(await importModel('retail.yaml', {
+      flavor: 'google', input: 'first-party', transpile: true, out: 'out',
+    })).toBe(1);
+    expect(warnings).toContain(
+        "Warning: field 'orders.order_id': could not transpile 'SNOWFLAKE' -> " +
+        "'BIGQUERY' (kcmd does not translate GREATEST); left untranslated");
+    expect(errors.join('\n')).toContain("Error: field 'orders.order_id' in model 'retail'");
   });
 
   test('a bare source without --source-prefix is written as it is, with the engine\'s warning', async () => {

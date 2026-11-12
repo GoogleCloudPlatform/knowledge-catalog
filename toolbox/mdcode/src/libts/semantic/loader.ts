@@ -15,11 +15,11 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf, sourcesDialect, TableDialects, tableDialects} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, importCommand, importHint, noTextFor, profileSpecOf, sourcesDialect, TableDialects, tableDialects, TranspileOutcomes} from './resolve_profiles';
 import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
-import {parseLeniently, YAML_OPTIONS} from './yaml_options';
+import {parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -41,9 +41,9 @@ export interface LoadOptions {
   // repointed yet.
   warnUnacceptedSource?: boolean;
   // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it. A Cloud SQL, Spanner or
-  // third-party table no lookup has read keeps the warning, since the caller
-  // does not check it.
+  // model file, so the load warns about it only on a table of the preferred
+  // dialect, and on a Cloud SQL, Spanner or third-party table no lookup has
+  // read, since the caller does not check that one.
   fieldTextChecked?: boolean;
   // The flavor whose word for an entry of `entities` the load's messages use,
   // when it is not the document's own. kcmd import uses the word of the
@@ -53,6 +53,14 @@ export interface LoadOptions {
   // wrote, unless it writes a GOOGLE block over that file. The load sets
   // SemanticModel.thirdPartyImport on each model.
   thirdPartyImport?: boolean;
+  // The name push's messages give the document the load reads, by which
+  // `transpileOutcomes` holds what the import the advice to add a BigQuery
+  // text suggests gives for it. Defaults to the model's name.
+  document?: string;
+  // What the import the advice to add a BigQuery text suggests gives, which
+  // the advice names when it would stop. Without it, the advice names the
+  // command alone.
+  transpileOutcomes?: TranspileOutcomes;
 }
 
 export interface LoadResult {
@@ -96,14 +104,6 @@ export function undefinedEndpointProblem(
 function sourceRequiredMessage(entity: string): string {
   return `entity '${entity}': a non-abstract entity requires a ` +
       `source; set 'source', or mark it 'abstract: true' if it has no table`;
-}
-
-function ansiFallbackNote(preferred: string): string {
-  return `note: no '${
-             preferred}' dialect for one or more expressions; using the portable ` +
-      `'${FALLBACK_DIALECT}' dialect verbatim ('${
-             preferred}' accepts the ANSI core subset — ` +
-      `supply '${preferred}' variants only for ${preferred}-specific SQL)`;
 }
 
 export const DEFAULT_DIALECT = 'BIGQUERY';
@@ -1582,7 +1582,7 @@ export function googleBlockProfiles(text: string): ProfileSpec[] {
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    return googleBlockProfilesPastYamlError(text, err?.message ?? String(err));
+    return googleBlockProfilesPastYamlError(text, yamlErrorMessage(err, text));
   }
   return blockProfilesOf(doc);
 }
@@ -1897,7 +1897,7 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   } catch (err: any) {
     throw new SemanticModelError(
         `Semantic model load error: could not parse input: ${
-            err?.message ?? err}`);
+            yamlErrorMessage(err, text)}`);
   }
   return fromDocument(doc, opts);
 }
@@ -1936,7 +1936,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
 }
 
 // Whether a dialect list takes its ANSI_SQL text for want of one in
-// `preferred`. pickDialect picks by this and expressionWarning warns by it, so
+// `preferred`. pickDialect picks by this and expressionWarning reads it, so
 // the two cannot disagree.
 function fallsBackToAnsi(
     dialects: ReadonlyArray<{dialect: string}>, preferred: string): boolean {
@@ -1954,21 +1954,30 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   DATABRICKS: 'Databricks',
 };
 
-// A field or metric as a warning names it in `ctx`. A metric reads fields as
-// `entity.field`.
+// A field or metric as a warning names it in `ctx`, in `model`, whose
+// document push's messages name `document`, with what the import the advice
+// to add a BigQuery text suggests gives in `outcomes`. A metric reads fields
+// as `entity.field`.
 interface Subject {
   ctx: string;
   metric: boolean;
+  model: Pick<SemanticModel, 'entities'|'version'|'thirdPartyImport'>;
+  document: string;
+  outcomes?: TranspileOutcomes;
 }
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
 // when it has text in that dialect. That is the double-quote warning on a
-// dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the transpilation warning or
-// the ANSI_SQL note, which only the `preferred` dialect gives, and never for
-// the string form.
+// dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the warning that it has no
+// text the `preferred` dialect runs, ending with importHint's advice. Only that
+// dialect gives it, and never for the string form. An ANSI_SQL text runs on
+// every table, so it gives none.
 function expressionWarning(
-    item: Pick<Field, 'dialects'|'stringForm'>, subject: Subject,
-    dialect: string, preferred: string): string|undefined {
+    item: Pick<
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
+    subject: Subject, dialect: string, preferred: string): string|undefined {
   const {ctx} = subject;
   const dialects = item.dialects ?? [];
   if (!dialects.length) return undefined;
@@ -1992,12 +2001,13 @@ function expressionWarning(
         `holds this expression as '<entity>.<field>'`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
-  if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
+  if (fallsBackToAnsi(dialects, preferred)) return undefined;
   const vendor = dialects.find(d => d.dialect !== FALLBACK_DIALECT);
-  return `${ctx}: no '${preferred}' or '${
-             FALLBACK_DIALECT}' dialect; keeping the '${vendor?.dialect}' ` +
-      `expression as imported_expression (needs transpilation to '${
-             preferred}')`;
+  return `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect, so a ${
+             preferred} table cannot run its '${vendor?.dialect}' expression${
+      importHint(
+          item, preferred.toUpperCase(), subject.model, subject.document,
+          subject.outcomes)}`;
 }
 
 // Whether `entity`'s table runs SQL in `dialect`. An abstract entity runs
@@ -2010,18 +2020,20 @@ function runsDialect(
 
 // The warning `item` gives on `table`, the table of `entity`:
 // expressionWarning's when the load knows the table's dialect, or one saying
-// the table has no text to run. With `profiled`, the second is given only on a
-// Cloud SQL, Spanner or third-party table no lookup has read. On a table of the
-// `preferred` dialect, expressionWarning's transpilation warning already says
-// so.
+// the table has no text to run. With `textChecked`, the second is given only
+// on a Cloud SQL, Spanner or third-party table no lookup has read. On a table
+// of the `preferred` dialect, expressionWarning's warning already says so.
 function tableWarning(
-    item: Pick<Field, 'expression'|'dialects'|'stringForm'>, subject: Subject,
-    table: TableDialects, entity: string, preferred: string,
-    profiled: boolean): string|undefined {
+    item: Pick<
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
+    subject: Subject, table: TableDialects, entity: string, preferred: string,
+    textChecked: boolean): string|undefined {
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || (profiled && !table.unread && !table.guessed) ||
+  if (w || (textChecked && !table.unread && !table.guessed) ||
       !noTextFor(item, table.dialects)) {
     return w;
   }
@@ -2034,11 +2046,18 @@ function tableWarning(
 // tableDialects gives. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
 function fieldWarnings(
-    model: SemanticModel, preferred: string, profiled: boolean): string[] {
+    model: SemanticModel, preferred: string, textChecked: boolean,
+    document: string, outcomes?: TranspileOutcomes): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, {ctx: `field '${e.name}.${f.name}'`, metric: false}, table,
-               e.name, preferred, profiled))
+               f, {
+                 ctx: `field '${e.name}.${f.name}'`,
+                 metric: false,
+                 model,
+                 document,
+                 outcomes,
+               },
+               table, e.name, preferred, textChecked))
       .filter((w): w is string => w !== undefined);
 }
 
@@ -2047,10 +2066,18 @@ function fieldWarnings(
 // of the `preferred` dialect it is expressionWarning's; otherwise it is the
 // first tableWarning a table gives.
 function metricWarning(
-    metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
-    reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
-    preferred: string, profiled: boolean): string|undefined {
-  const subject = {ctx: `metric '${metric.name}'`, metric: true};
+    metric: Pick<
+        Metric,
+        'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
+    reached: ReadonlyArray<string|undefined>,
+    model: Pick<SemanticModel, 'version'|'thirdPartyImport'>&
+    {entities: Entity[]},
+    preferred: string, document: string,
+    outcomes?: TranspileOutcomes): string|undefined {
+  const entities = model.entities;
+  const subject =
+      {ctx: `metric '${metric.name}'`, metric: true, model, document, outcomes};
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
@@ -2062,7 +2089,7 @@ function metricWarning(
   for (const e of tables) {
     const table = tableDialects(e, true);
     const w = table &&
-        tableWarning(metric, subject, table, e.name, preferred, profiled);
+        tableWarning(metric, subject, table, e.name, preferred, false);
     if (w) return w;
   }
   return undefined;
@@ -2128,14 +2155,16 @@ export function inferMetricEntities(
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each field's expression warning, then each metric's
 // expression warning and its warning when it names no entity. A metric a
-// profile excludes gives none. With `profiled`, the profile check reports a
-// field or metric its tables cannot run, so no warning repeats it. A profile
-// changes only these; a load's other warnings, about actions, come after them.
+// profile excludes gives none. `textChecked` is LoadOptions.fieldTextChecked,
+// and `document` and `outcomes` are LoadOptions.document and
+// LoadOptions.transpileOutcomes. A profile changes only these; a load's other
+// warnings, about actions, come after them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT,
-    profiled = false): string[] {
+    textChecked = false, document = model.name,
+    outcomes?: TranspileOutcomes): string[] {
   const entities = model.entities ?? [];
-  const out = fieldWarnings(model, preferred, profiled);
+  const out = fieldWarnings(model, preferred, textChecked, document, outcomes);
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);
@@ -2144,7 +2173,8 @@ export function entityAndMetricWarnings(
     const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
-        m, [m.authoredEntity, ...referenced], entities, preferred, profiled);
+        m, [m.authoredEntity, ...referenced], {...model, entities}, preferred,
+        document, outcomes);
     if (w) out.push(w);
     if (mw) out.push(mw);
   }
@@ -2240,13 +2270,16 @@ function convertModel(
 
   // A field is judged on each entity that inherits it too, so its warning
   // waits until every entity is read.
+  const document = opts.document ?? m.name;
   warnings.push(...fieldWarnings(
-      {name: m.name, entities, relationships, metrics: []}, dialect,
-      !!opts.fieldTextChecked));
+      {name: m.name, version, entities, relationships, metrics: [],
+       thirdPartyImport: opts.thirdPartyImport},
+      dialect, !!opts.fieldTextChecked, document, opts.transpileOutcomes));
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(
-          mt, version, entities, warnings, dialect, word, impliedDialect));
+          mt, version, entities, warnings, dialect, word, impliedDialect,
+          opts.thirdPartyImport, document, opts.transpileOutcomes));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
@@ -2608,7 +2641,8 @@ function convertRelationship(
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entities: Entity[],
     warnings: string[], dialect: string, word: string,
-    impliedDialect?: string|null): Metric {
+    impliedDialect: string|null|undefined, thirdPartyImport: boolean|undefined,
+    document: string, outcomes?: TranspileOutcomes): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const entityNames = entities.map(e => e.name);
@@ -2629,8 +2663,9 @@ function convertMetric(
       },
       entityNames, dialect, impliedDialect, version);
   const ew = metricWarning(
-      {name: mt.name, dialects, stringForm}, [authored, ...referenced],
-      entities, dialect, false);
+      {name: mt.name, dialects, stringForm, ...picked},
+      [authored, ...referenced], {entities, version, thirdPartyImport},
+      dialect, document, outcomes);
   if (ew) warnings.push(ew);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
@@ -3217,17 +3252,17 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 // without regard to case. No transpilation is performed here; chosen
 // expressions are passed through verbatim. At least one form is set.
 //
-// The fallbacks differ in risk, so they are surfaced differently:
+// The fallbacks differ in risk:
 //   - ANSI_SQL is the AI-first format's default expression language (ANSI
-//     SQL:2003 core), deliberately chosen to be valid across targets — BigQuery
-//     included. Using it as `expression` is the intended authoring path, not a
-//     lossy degradation, so it is reported as a single informational `note:`
-//     (worded field-agnostically so identical notes dedupe to one line).
+//     SQL:2003 core), chosen to be valid across targets, BigQuery included.
+//     Using it as `expression` is the intended authoring path, so it draws no
+//     message unless it double-quotes a name that the target reads as text
+//     (see expressionWarning).
 //   - When neither the target nor ANSI_SQL is present, `expression` is left
-//     unset and only `importedExpression` is populated; that is a genuine risk
-//     (needs transpilation) and is warned per field/metric, naming the dialect.
-// Both are reported only where a table of the target dialect runs the
-// expression (see fieldWarnings and metricWarning).
+//     unset and only `importedExpression` is populated. That text needs
+//     translating, so expressionWarning warns about it for each field and
+//     metric, naming the dialect, where a table of the target dialect runs it
+//     (see fieldWarnings and metricWarning).
 interface PickedExpression {
   expression?: string;
   importedExpression?: string;
@@ -4125,7 +4160,7 @@ export function loadSemanticModels(
   for (const doc of docs) {
     let loaded: LoadResult;
     try {
-      loaded = loadModels(doc.text, opts);
+      loaded = loadModels(doc.text, {document: doc.name, ...opts});
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return {

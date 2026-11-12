@@ -32,7 +32,7 @@
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
-import {loadedSqlEngine, loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
+import {loadedSqlEngine, loadSqlEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -340,20 +340,30 @@ function qualifiersReached(sql: string, target: string, entityNames: string[]):
 }
 
 /**
+ * The BIGQUERY text `transpileModel`, with the default translator, gives
+ * `node` in a model whose entities are `entityNames`, or undefined when it
+ * gives none. Undefined until `loadSqlEngine()` has loaded the engine.
+ */
+export function bigQueryTranslation(
+    node: TranspileNode, entityNames: string[]): string|undefined {
+  const source = sourceToTranspile(node, DEFAULT_TARGET);
+  const engine = loadedSqlEngine();
+  if (!source || !engine) return undefined;
+  const {sql} = transpileWith(
+      engine, {id: '', ...source}, polyglotDialect(DEFAULT_TARGET)!);
+  if (sql === undefined) return undefined;
+  const reached = qualifiersReached(sql, DEFAULT_TARGET, entityNames);
+  return !reached || sameSet(reached.exact, reached.anyCase) ? sql : undefined;
+}
+
+/**
  * Whether `transpileModel`, with the default translator, gives `node` a
  * BIGQUERY text in a model whose entities are `entityNames`. False until
  * `loadSqlEngine()` has loaded the engine.
  */
 export function translatesToBigQuery(
     node: TranspileNode, entityNames: string[]): boolean {
-  const source = sourceToTranspile(node, DEFAULT_TARGET);
-  const engine = loadedSqlEngine();
-  if (!source || !engine) return false;
-  const {sql} = transpileWith(
-      engine, {id: '', ...source}, polyglotDialect(DEFAULT_TARGET)!);
-  if (sql === undefined) return false;
-  const reached = qualifiersReached(sql, DEFAULT_TARGET, entityNames);
-  return !reached || sameSet(reached.exact, reached.anyCase);
+  return bigQueryTranslation(node, entityNames) !== undefined;
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -441,9 +451,13 @@ function transpileWith(
     let repaired: {sql: string}|{error: string};
     if (write === 'bigquery') {
       const tree = sqlExpressionTree(text, r.dialect);
+      const rules = spanner ? 'spanner' : read;
+      const named = () => {
+        const found = unknownConstruct(engine, tree, rules);
+        return found && writtenName(engine, text, r.dialect, read, rules, found);
+      };
       const unknown = misreadToken(engine, source, read) ??
-          (tree ? unknownConstruct(engine, tree, spanner ? 'spanner' : read) :
-                  'a text it cannot read as one expression');
+          (tree ? named() : 'a text it cannot read as one expression');
       if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }
@@ -777,20 +791,126 @@ function nestedComparison(node: any, read: string): string|undefined {
 }
 
 // The first construct in `node`, a source expression in the engine's dialect
-// `read`, that import does not translate, named for a message, or undefined.
+// `read`, that import does not translate, named for a message, with the node
+// whose check named it, or undefined.
 function unknownConstruct(engine: PolyglotEngine, node: any, read: string):
-    string|undefined {
+    {name: string; node: any}|undefined {
   if (!node || typeof node !== 'object') return undefined;
   // An array, an identifier, a data type or another part of a node.
   const next = isNode(node) ? nextNodes(kindOf(node)!, Object.values(node)[0], read) :
                               Object.values(node);
-  if (next === undefined) return constructName(engine, node, read);
-  if (typeof next === 'string') return next;
+  if (next === undefined) return {name: constructName(engine, node, read), node};
+  if (typeof next === 'string') return {name: next, node};
   for (const child of next) {
     const unknown = unknownConstruct(engine, child, read);
     if (unknown) return unknown;
   }
   return undefined;
+}
+
+// `found.name`, which names `found.node`, a construct of `text`, an
+// expression in `dialect` the engine reads as `read`, with the function and
+// the date part as the author wrote them. `rules` is the dialect whose rules
+// named it (see unknownConstruct). The engine reads some calls as another
+// function, such as MySQL's CHAR_LENGTH as LENGTH, and some date parts by
+// another name, such as SQL Server's `w` as WEEK. The name stays as it is when
+// it does not start with the node's own, or the node is not a call found in
+// `text`.
+function writtenName(
+    engine: PolyglotEngine, text: string, dialect: string, read: string,
+    rules: string, found: {name: string; node: any}): string {
+  const own = constructName(engine, found.node, rules);
+  const lead = /^[A-Za-z_]\w*/.exec(found.name)?.[0];
+  if (!lead || lead.toUpperCase() !== own.toUpperCase()) return found.name;
+  const call = writtenCall(engine, text, dialect, read, found.node);
+  if (!call) return found.name;
+  const name = call.name + found.name.slice(lead.length);
+  const part = / with part '(.*)'$/.exec(name);
+  const written = part ? writtenPart(found.node, part[1], call) : undefined;
+  return written === undefined ? name :
+      `${name.slice(0, part!.index)} with part '${written}'`;
+}
+
+// A call as written: its function name, and the tokens of each argument.
+// `text` gives the text of a run of its tokens.
+interface WrittenCall {
+  name: string;
+  args: SqlToken[][];
+  text: (tokens: SqlToken[]) => string;
+}
+
+// The call in `text`, an expression in `dialect` the engine reads as `read`,
+// whose tree is `node`, or undefined when no call in `text` gives `node`.
+function writtenCall(
+    engine: PolyglotEngine, text: string, dialect: string, read: string,
+    node: any): WrittenCall|undefined {
+  const chars = [...text];
+  const slice = (from: SqlToken, to: SqlToken) =>
+      chars.slice(from.span.start, to.span.end).join('');
+  const tokens = engine.tokenize(text, read).tokens ?? [];
+  const wanted = JSON.stringify(treeWithoutComments(node));
+  for (const [i, t] of tokens.entries()) {
+    if (tokens[i + 1]?.token_type !== 'L_PAREN') continue;
+    // The arguments, split at each comma outside parentheses.
+    const args: SqlToken[][] = [[]];
+    let depth = 0;
+    let end = -1;
+    for (let j = i + 2; j < tokens.length && end < 0; j++) {
+      const k = tokens[j].token_type;
+      if (k === 'R_PAREN' && depth === 0) end = j;
+      else if (k === 'COMMA' && depth === 0) args.push([]);
+      else {
+        if (k === 'L_PAREN') depth++;
+        if (k === 'R_PAREN') depth--;
+        args.at(-1)!.push(tokens[j]);
+      }
+    }
+    if (end < 0) continue;
+    const tree = sqlExpressionTree(slice(t, tokens[end]), dialect);
+    if (JSON.stringify(treeWithoutComments(tree)) === wanted) {
+      return {
+        name: slice(t, t),
+        args: args.filter(a => a.length),
+        text: run => slice(run[0], run[run.length - 1]),
+      };
+    }
+  }
+  return undefined;
+}
+
+// The date part a message names `part` in `node`, the tree of `call`, as the
+// author wrote it, without quotes or enclosing parentheses, or undefined when
+// no single argument gives it. A column named like the part is left out when
+// another argument names it too. In EXTRACT it is the text before FROM.
+function writtenPart(node: any, part: string, call: WrittenCall):
+    string|undefined {
+  const extract = kindOf(node) === 'extract';
+  const args = (Object.values(node)[0] as any)?.args ?? [];
+  const named = args.flatMap((a: any, i: number) =>
+      String(partName(a)).toUpperCase() === part.toUpperCase() ? [i] : []);
+  const at = extract ? [0] :
+      named.length > 1 ? named.filter((i: number) => !bare(args[i])?.column) :
+                         named;
+  const arg = at.length === 1 ? call.args[at[0]] : undefined;
+  if (!arg) return undefined;
+  const from = extract ? arg.findIndex(t => t.token_type === 'FROM') : -1;
+  let tokens = from < 0 ? arg : arg.slice(0, from);
+  while (tokens.length > 2 && tokens[0].token_type === 'L_PAREN' &&
+         tokens.at(-1)!.token_type === 'R_PAREN') {
+    tokens = tokens.slice(1, -1);
+  }
+  if (!tokens.length) return undefined;
+  return tokens.length === 1 ? tokens[0].text : call.text(tokens);
+}
+
+// `node` with no comments, which a tree keeps beside the tokens they follow.
+function treeWithoutComments(node: any): any {
+  if (Array.isArray(node)) return node.map(treeWithoutComments);
+  if (!node || typeof node !== 'object') return node;
+  return Object.fromEntries(
+      Object.entries(node)
+          .filter(([k]) => !k.endsWith('comments'))
+          .map(([k, v]) => [k, treeWithoutComments(v)]));
 }
 
 // Whether `v` is an engine node: an object with one key, its kind, whose value

@@ -145,6 +145,11 @@ describe('conversion, strict mode, and translation', () => {
   test.each([
     ['malformed YAML', '[', {}, 'could not parse input'],
     [
+      "an unquoted '*'", 'description: *\n', {},
+      "YAML reads an unquoted '*' as an alias; write it in quotes, as in " +
+          'description: "*".'
+    ],
+    [
       'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
       'version'
     ],
@@ -635,8 +640,8 @@ describe('profile checks', () => {
   // message names, whether the path keeps a Google model's profile files]. In
   // strict mode a message names the input; otherwise it names what is written.
   const PATHS: Array<[string, (ps: Profile[]) => [string, any], string, string, boolean]> = [
-    ['a GOOGLE block, to ossie', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'ossie'}], 'sales', 'sales', false],
-    ['a GOOGLE block, to google', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'google'}], 'sales', 'sales', false],
+    ['a GOOGLE block, to ossie', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'ossie'}], 'sales', 'sales.yaml', false],
+    ['a GOOGLE block, to google', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'google'}], 'sales', 'sales.yaml', false],
     ['a profile file, to ossie', ps => [googleDoc(), {...strict, flavor: 'ossie', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', false],
     ['a profile file, to google', ps => [google, {...strict, flavor: 'google', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', true],
     ['a third-party profile file, to google', ps => [google, {flavor: 'google', fileName: 'sales.yaml', profileFiles: files(ps)}], 'retail', 'retail.profile.pg.yaml', true],
@@ -756,8 +761,9 @@ describe('profile checks', () => {
      ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
       "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one, or " +
       "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
-     ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' " +
-      "expression as imported_expression (needs transpilation to 'BIGQUERY')"]],
+     ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot " +
+      "run its 'SNOWFLAKE' expression; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor google --transpile'"]],
     ['warns about a model field with no text for a MySQL table read from its name',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'), MYSQL('orders')), [],
      [], ["field 'orders.amount': no 'MYSQL' or 'ANSI_SQL' dialect, so the MYSQL table of " +
@@ -839,7 +845,7 @@ describe('profile checks', () => {
   // Push's refusal of field amount, in the model file `doc`, on a `dialect` table.
   const NO_TEXT = (dialect: string) => (doc: string) =>
       `field 'orders.amount' in model 'retail' (${doc}) has no expression for ${dialect} or ` +
-      `ANSI_SQL, and the model file binds entity 'orders' to a ${dialect} source.`;
+      `ANSI_SQL, and the model file binds entity 'orders' to a ${dialect} source; give it one.`;
   const SKIPPED = 'Import skipped the checks that need its dialect.';
   // Entity customers, on a second table in the same database as the table `orders`.
   const customers = (orders = SPANNER_TABLE) => '      - name: customers\n' +
@@ -963,7 +969,7 @@ describe('profile checks', () => {
     });
     expect(res.errors).toEqual([
       "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
-      "SQLSERVER or ANSI_SQL, and this profile's sources are SQLSERVER",
+      "SQLSERVER or ANSI_SQL, and this profile's sources are SQLSERVER; give it one",
     ]);
   });
 
@@ -993,12 +999,12 @@ describe('profile checks', () => {
     });
     expect(res.errors).toEqual([
       "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
-          "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY",
+          "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY; give it one",
       "[sales.profile.pg.yaml] profile 'pg': metric 'years' has no expression for BIGQUERY " +
           "or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or add it to " +
           "'metrics_exclude'",
       "field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
-          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source.",
+          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one.",
     ]);
   });
 
@@ -1013,7 +1019,7 @@ describe('profile checks', () => {
         `    deployments: ${JSON.stringify([d].flat())}\n` +
         "    metrics:\n      - {name: total, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
      {...strict, flavor: 'google', profileFiles: files([p])}]],
-    ['a GOOGLE block', 'sales', (d, p) => [ossieDoc({extra:
+    ['a GOOGLE block', 'sales.yaml', (d, p) => [ossieDoc({extra:
         "    metrics:\n      - name: total\n        expression: {dialects: [{dialect: ANSI_SQL, expression: 'COUNT(orders.order_id)'}]}\n" +
         `        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]\n` +
         `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d].flat(), profiles: [p]})}'\n`}),
@@ -1540,10 +1546,19 @@ describe('sources', () => {
         const loaded =
             loadModels(googleRes.files[0].content, {bindingOptional: true});
         expect(loaded.models[0].entities[0].dataSource).toBe('');
+        const rejected =
+            "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
+            "is not supported, and version '0.2.0.dev0' requires a table " +
+            "'source' on every dataset. Bind the dataset to a table and " +
+            'import again';
         expect(ossieRes.errors).toEqual([
-          "dataset 'orders': query-valued source 'SELECT * FROM sales.orders' " +
-          "is not supported, and version '0.2.0.dev0' requires a table " +
-          "'source' on every dataset."]);
+          `${rejected}, or import with '--flavor google', which removes ` +
+          'the source.']);
+        // A strict import with '--flavor google' rejects the source too.
+        expect((await importSemanticModelYaml(
+                    ossieDoc({source: query}), {flavor: 'ossie', strict: true}))
+                   .errors)
+            .toEqual([`${rejected}.`]);
       });
 });
 

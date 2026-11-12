@@ -19,7 +19,7 @@ import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
 import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets, ParsedDeploymentTarget, resolveModelDeployments, tablesOutsideTarget} from '../deployment_target';
 import {Entity, SemanticModel} from '../ir';
-import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
+import {asResourceName, databaseOf, listed, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
 
@@ -332,16 +332,21 @@ function deploymentsFor(model: SemanticModel, profile: string):
       d => (d.profile ?? DEFAULT_PROFILE) === profile);
   if (!used.length) {
     // A vanilla model lists its deployments in its GOOGLE block.
-    const listed = model.version === OSSIE_VERSION ?
+    const where = model.version === OSSIE_VERSION ?
         `its GOOGLE block's 'deployments'` :
         `'deployments'`;
     let error: string;
     if (profile === DEFAULT_PROFILE) {
+      // Each deployment names a profile, so --profile selects its deployments.
+      const named = [...new Set(model.deployments.map(d => d.profile!))];
       error = `Model '${model.name}' declares no deployment without a ` +
-          `'profile' in ${listed}, so there is no store to run against ` +
-          `under binding profile '${DEFAULT_PROFILE}'.`;
+          `'profile' in ${where}, so there is no store to run against ` +
+          `under binding profile '${DEFAULT_PROFILE}'. Its deployments use ` +
+          `${named.length === 1 ? 'profile' : 'profiles'} ${
+              listed(named.map(n => `'${n}'`))}; pass --profile ${
+              named.length === 1 ? named[0] : '<name>'}.`;
     } else {
-      error = `${namedProfile}, and no deployment in ${listed} uses it, ${
+      error = `${namedProfile}, and no deployment in ${where} uses it, ${
           nothingToRun}`;
     }
     return {error};

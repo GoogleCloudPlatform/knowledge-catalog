@@ -417,9 +417,9 @@ relationships:
 
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0]))).toEqual([
-      "Error: [commerce] relationship 'placed_by': profile 'prod' joins on " +
-          'to_columns ["c_key"], which cover no primary or unique key of ' +
-          "'Customer'",
+      "Error: [commerce.profile.prod.yaml] profile 'prod': relationship " +
+          "'placed_by' joins on to_columns [\"c_key\"], which cover no " +
+          "primary or unique key of 'Customer'",
     ]);
   });
 
@@ -2126,6 +2126,128 @@ describe('a pull', () => {
          () => checkPull(model, error));
   }
 
+  // Model commerce with entity Order on a BigQuery table, whose field code has
+  // only a Snowflake text, which import translates, and `metrics`.
+  const snowflakeCode = (metrics: SemanticModel['metrics'] = []):
+      SemanticModel => {
+    const text = 'IFF(TRUE, id, 0)';
+    const order = onTable(
+        'Order',
+        'bigquery.googleapis.com/projects/test-project/datasets/d/tables/orders',
+        ['id']);
+    return {
+      name: 'commerce', relationships: [], metrics,
+      entities: [{...order, fields: [...order.fields, {
+        name: 'code', dialects: [{dialect: 'SNOWFLAKE', expression: text}],
+        importedExpression: text, importedDialect: 'SNOWFLAKE',
+      }]}],
+    };
+  };
+  // Pull's warning about snowflakeCode's model file, with push's advice for
+  // field code.
+  const CODE_ADVICE = 'Warning: push refuses ' +
+      `${shown('commerce.yaml')} as pull writes it: field 'Order.code' in ` +
+      "model 'commerce' (commerce) has no expression for BIGQUERY or " +
+      "ANSI_SQL, and the model file binds entity 'Order' to a BIGQUERY " +
+      "source; give it one, or add one with 'kcmd import <file> --input " +
+      "first-party --flavor google --transpile'";
+
+  // Push's advice to add a BigQuery text names the first error the import it
+  // suggests would stop on. Pull runs that import, with no table's dialect
+  // read, so its warning gives push's error whole.
+  test('warns with the error the import push suggests would stop on', () =>
+       checkPull(
+           snowflakeCode([metric('m', 'COUNT(Gone.id)', 'Order')]),
+           CODE_ADVICE.replace(/^.* as pull writes it: /, '') +
+               " after fixing this: metric 'm' in model 'commerce' " +
+               "(commerce): 'Gone.id' has qualifier 'Gone', which is not a " +
+               "declared entity in model 'commerce'; write 'entity.field' " +
+               'starting with a declared entity.'));
+
+  // Pull runs that import on the files in the entry group once it has written
+  // its own, so its warning names an error in a profile file pull leaves
+  // there. A dry run reads that file too.
+  for (const dryRun of [false, true]) {
+    test('names the error the import stops on in a profile file pull leaves' +
+             (dryRun ? ', under --dry-run' : ''),
+         async () => {
+           fs.mkdirSync(entryGroupDir(), {recursive: true});
+           fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
+           expect(await pullModel(snowflakeCode(), {dryRun})).toBe(0);
+           expect(messages(console.warn)).toEndWith(
+               "after fixing this: [commerce.profile.dev.yaml] profile 'dev': " +
+               "entity 'Order' has no source in this profile.");
+         });
+  }
+
+  // On a table whose dialect pull does not read, that import reads an
+  // ANSI_SQL text as pull's own checks do, so the warning names the error it
+  // stops on, as the import after the pull does.
+  test('names the error the import stops on in a text on a Spanner table', () => {
+    const text = 'IFF(TRUE, id, 0)';
+    return checkPull({
+      name: 'commerce', relationships: [],
+      entities: [onTable('Order', `${SPANNER}/orders`, ['id', 'code'])],
+      metrics: [metric('m', 'SUM(Order.missing)', 'Order')],
+      profiles: [{name: 'prod', relationships: [], metricsExclude: '*', entities: [{
+        name: 'Order', primaryKey: ['id'],
+        source: 'bigquery.googleapis.com/projects/test-project/datasets/prod/tables/orders',
+        fields: [{name: 'id', expression: 'id', stringForm: true}, {
+          name: 'code', dialects: [{dialect: 'SNOWFLAKE', expression: text}],
+          importedExpression: text, importedDialect: 'SNOWFLAKE',
+        }],
+      }]}],
+    }, "[commerce.profile.prod.yaml] profile 'prod': field 'Order.code' has no " +
+        'expression for BIGQUERY or ANSI_SQL, and this profile\'s sources are ' +
+        "BIGQUERY; give it one, or add one with 'kcmd import <file> --input " +
+        "first-party --flavor google --transpile' after fixing this: metric 'm' " +
+        "in model 'commerce' (commerce): expression references 'Order.missing', " +
+        "but entity 'Order' has no field 'missing'; metric expressions must " +
+        'reference declared fields, not physical columns.');
+  });
+
+  // An error of several lines, such as a parse error with its code frame,
+  // ends the warning at its last line.
+  test('ends the warning at the last line of an error of several lines',
+       async () => {
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: [\n');
+         expect(await pullModel(snowflakeCode())).toBe(0);
+         expect(messages(console.warn)).toMatch(
+             /after fixing this: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n\^\.$/);
+       });
+
+  // Under --dry-run --force-remove, that import leaves out the files the pull
+  // would delete: another model's file, the older profile directory and a
+  // local profile file the catalog lacks.
+  test('under --dry-run --force-remove runs that import without the files ' +
+           'pull deletes',
+       async () => {
+         fs.mkdirSync(local('commerce.profiles'), {recursive: true});
+         fs.writeFileSync(local('commerce.profiles/dev.yaml'), 'name: dev\n');
+         fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
+         fs.writeFileSync(local('sales.yaml'), MODEL_YAML.replace('commerce', 'sales'));
+         fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                          'scope: semantic-model.test-project.us.commerce_eg\n');
+         pulled(snowflakeCode());
+         expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
+         expect(messages(console.warn)).toBe(`${CODE_ADVICE}.`);
+       });
+
+  // That import writes nothing, so it skips the checks of where the files go,
+  // and reads no catalog type a second time.
+  test('reads each type catalog.yaml lists once', async () => {
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n' +
+            'snapshot:\n  aspects: [test-project.global.overview]\n');
+    pulled(snowflakeCode());
+    expect(await pull()).toBe(0);
+    expect(messages(console.warn)).toBe(`${CODE_ADVICE}.`);
+    expect(CatalogClient.prototype.getAspectType).toHaveBeenCalledTimes(1);
+  });
+
   // With no table's dialect read, pull still reads which fields and entities
   // an ANSI_SQL expression reads, and warns as push refuses. It leaves to push
   // a text that one of the dialects the table may have cannot parse.
@@ -2244,6 +2366,267 @@ describe('a pull', () => {
       ]}],
     }, '');
   });
+
+  // A local model file that holds the catalog's model under another name is
+  // kept by renaming it and its profile files. The refusal names each step
+  // of each choice, and --force-remove with each file it deletes, and writes
+  // nothing. Following one choice of each refusal makes pull succeed, and the
+  // next pull changes nothing.
+  const holds = "Error: local model file 'mysales.yaml' holds model 'commerce', ";
+  const force = (files: string) =>
+      `re-run with --force-remove to delete ${files} and pull the catalog's.`;
+  const rename = (from: string, to: string) => `${from}>${to}`;
+  // The files --force-remove deletes beside a second file that holds the
+  // model with its profile in both forms.
+  const sales2 = "'mysales.yaml', 'sales2.yaml', " +
+      "'sales2.profile.prod.yaml' and 'sales2.profiles/prod.yaml'";
+  // [label, the local files, the model each model file holds, the refusal,
+  // the choices: '-<file>' deletes it, '<a>><b>' renames a to b, and 'force'
+  // pulls with --force-remove]
+  test.each([
+    ['the rename that keeps it', ['mysales.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or " + force('it'),
+     [[rename('mysales.yaml', 'commerce.yaml')], ['force']]],
+    ['the rename of each profile file', ['mysales.yaml', 'mysales.profile.prod.yaml'],
+     'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " + force('them'),
+     [[rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the rename of a file in the older profile directory',
+     ['mysales.yaml', 'mysales.profiles/prod.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' and 'mysales.profiles/prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " + force('them'),
+     [[rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['one profile in both forms',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'mysales.profiles/prod.yaml'], 'commerce',
+     holds + "and its profile 'prod' is in both 'mysales.profile.prod.yaml' " +
+         "and 'mysales.profiles/prod.yaml'. Delete one of " +
+         "'mysales.profile.prod.yaml' and 'mysales.profiles/prod.yaml' and " +
+         "rename 'mysales.yaml' to 'commerce.yaml' and the other to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml', 'mysales.profile.prod.yaml' and " +
+               "'mysales.profiles/prod.yaml'"),
+     [['-mysales.profiles/prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')],
+      ['-mysales.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')],
+      ['force']]],
+    ['a profile file already there',
+     ['mysales.yaml', 'mysales.profile.prod.yaml', 'commerce.profile.prod.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml', and " +
+         "'commerce.profile.prod.yaml' is already there. Delete " +
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['a profile file already there for one in the older directory',
+     ['mysales.yaml', 'mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml', and " +
+         "'commerce.profile.prod.yaml' is already there. Delete " +
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' and 'mysales.profiles/prod.yaml' to " +
+         "'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profiles/prod.yaml'"),
+     [['-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profiles/prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the file pull writes, which holds another model',
+     ['commerce.yaml', 'mysales.yaml'], {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'},
+     holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' is " +
+         "already there. Delete 'commerce.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " + force("'mysales.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml')], ['force']]],
+    ['the file pull writes, which holds another model, and its profile file',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'],
+     {'commerce.yaml': 'other', 'mysales.yaml': 'commerce'},
+     holds + "which pull writes as 'commerce.yaml', and 'commerce.yaml' and " +
+         "'commerce.profile.prod.yaml' are already there. Delete " +
+         "'commerce.yaml' and 'commerce.profile.prod.yaml' and rename " +
+         "'mysales.yaml' to 'commerce.yaml' and 'mysales.profile.prod.yaml' " +
+         "to 'commerce.profile.prod.yaml' to keep them, or " +
+         force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.yaml', '-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the catalog model\'s file, which holds it too',
+     ['commerce.yaml', 'mysales.yaml', 'mysales.profile.prod.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "rename 'mysales.yaml' to 'commerce.yaml' and " +
+         "'mysales.profile.prod.yaml' to 'commerce.profile.prod.yaml' to " +
+         "keep them, or " + force("'mysales.yaml' and 'mysales.profile.prod.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml'),
+       rename('mysales.profile.prod.yaml', 'commerce.profile.prod.yaml')], ['force']]],
+    ['the catalog model\'s file, which holds it too, and its profile file',
+     ['commerce.yaml', 'commerce.profile.prod.yaml', 'mysales.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "'commerce.profile.prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " + force("'mysales.yaml'"),
+     [['-commerce.yaml', '-commerce.profile.prod.yaml', rename('mysales.yaml', 'commerce.yaml')],
+      ['force']]],
+    ['the catalog model\'s file, which holds it too, and its profile in the older directory',
+     ['commerce.yaml', 'commerce.profiles/prod.yaml', 'mysales.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "'commerce.profiles/prod.yaml' and rename 'mysales.yaml' to " +
+         "'commerce.yaml' to keep it, or " +
+         force("'mysales.yaml' and 'commerce.profiles/prod.yaml'"),
+     [['-commerce.yaml', '-commerce.profiles/prod.yaml', rename('mysales.yaml', 'commerce.yaml')],
+      ['force']]],
+    ['two files that hold it', ['mysales.yaml', 'sales2.yaml'], 'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'") + "\nError: local model " +
+         "file 'sales2.yaml' holds model 'commerce', which 'mysales.yaml' " +
+         "also holds. Delete 'sales2.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'"),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
+      ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    ['a second file that holds it, with one profile in both forms',
+     ['mysales.yaml', 'sales2.yaml', 'sales2.profile.prod.yaml', 'sales2.profiles/prod.yaml'],
+     'commerce',
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force(sales2) + "\nError: local model file 'sales2.yaml' holds " +
+         "model 'commerce', which 'mysales.yaml' also holds. Delete " +
+         "'sales2.yaml', 'sales2.profile.prod.yaml' and " +
+         "'sales2.profiles/prod.yaml', or " + force(sales2),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml', '-sales2.profile.prod.yaml',
+       '-sales2.profiles/prod.yaml'],
+      ['-mysales.yaml', '-sales2.yaml', '-sales2.profile.prod.yaml', '-sales2.profiles/prod.yaml'],
+      ['force']]],
+    ['two files that hold it beside the catalog model\'s file, which holds it too',
+     ['commerce.yaml', 'mysales.yaml', 'sales2.yaml'], 'commerce',
+     holds + "which 'commerce.yaml' also holds. Delete 'commerce.yaml' and " +
+         "rename 'mysales.yaml' to 'commerce.yaml' to keep it, or delete " +
+         "'mysales.yaml', or " + force("'mysales.yaml' and 'sales2.yaml'") +
+         "\nError: local model file 'sales2.yaml' holds model 'commerce', " +
+         "which 'commerce.yaml' also holds. Delete 'sales2.yaml', or " +
+         force("'mysales.yaml' and 'sales2.yaml'"),
+     [['-commerce.yaml', rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
+      ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    ['the model a file declares under another name', ['old.yaml'], 'other',
+     "Error: local model(s) 'other' in 'old.yaml' do not match the catalog " +
+         "model 'commerce' in this entry group. An entry group holds one " +
+         "model, so pull will not leave two behind. Re-run with " +
+         "--force-remove to delete 'old.yaml' and pull the catalog's.",
+     [['force']]],
+    ['another model beside a file that holds it', ['mysales.yaml', 'old.yaml'],
+     {'mysales.yaml': 'commerce', 'old.yaml': 'other'},
+     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
+         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
+         force("'mysales.yaml' and 'old.yaml'") + "\nError: local model(s) " +
+         "'other' in 'old.yaml' do not match the catalog model 'commerce' in " +
+         "this entry group. An entry group holds one model, so pull will " +
+         "not leave two behind. Delete 'old.yaml', or " +
+         force("'mysales.yaml' and 'old.yaml'"),
+     [[rename('mysales.yaml', 'commerce.yaml'), '-old.yaml'],
+      ['-mysales.yaml', '-old.yaml'], ['force']]],
+  ] as Array<[string, string[], string|Record<string, string>, string, string[][]]>)(
+      'refuses a local file that holds another model name, naming %s, and each choice works',
+      async (_, files, declares, error, choices) => {
+        pulled();
+        for (const choice of choices) {
+          writeRoundTripWorkspace();
+          fs.rmSync(entryGroupDir(), {recursive: true});
+          for (const f of files) {
+            fs.mkdirSync(path.dirname(local(f)), {recursive: true});
+            fs.writeFileSync(local(f), f.includes('.profile') ?
+                ROUND_TRIP_PROFILE :
+                ROUND_TRIP_MODEL.replace('name: commerce', `name: ${
+                    typeof declares === 'string' ? declares : declares[f]}`));
+          }
+          (console.error as Mock<any>).mockClear();
+          expect(await pull()).toBe(1);
+          expect(messages(console.error)).toBe(error);
+          const left = fs.readdirSync(
+              entryGroupDir(), {encoding: 'utf8', recursive: true});
+          expect(left.filter(f => f.endsWith('.yaml')).sort())
+              .toEqual([...files].sort());
+
+          for (const step of choice) {
+            const [from, to] = step.split('>');
+            if (step.startsWith('-')) fs.rmSync(local(step.slice(1)));
+            else if (to) fs.renameSync(local(from), local(to));
+          }
+          expect(await pull({forceRemove: choice.includes('force')})).toBe(0);
+          (console.log as Mock<any>).mockClear();
+          expect(await pull()).toBe(0);
+          expect(messages(console.log)).toContain('Wrote 0 new and 0 updated file(s)');
+        }
+      });
+
+  // A case-insensitive file system, as on macOS and Windows, finds
+  // 'Commerce.yaml' under the name pull writes.
+  test('gives the plain rename to a file named like the one pull writes but for case',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('Commerce.yaml'));
+         const exists = fs.existsSync;
+         spyOn(fs, 'existsSync').mockImplementation(((p: fs.PathLike) => exists(
+             String(p).replace(/commerce\.yaml$/, 'Commerce.yaml'))) as any);
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds.replace('mysales', 'Commerce') + "which pull writes as " +
+             "'commerce.yaml'. Rename the file to 'commerce.yaml' to keep it, " +
+             'or ' + force('it'));
+       });
+
+  // A case-insensitive file system also finds a file whose name differs only
+  // in case under a name pull writes, and a rename onto that name replaces it.
+  test('names a file under a name pull writes but for case as in the way',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.renameSync(local('commerce.yaml'), local('mysales.yaml'));
+         fs.copyFileSync(local('commerce.profile.prod.yaml'),
+                         local('mysales.profile.prod.yaml'));
+         fs.renameSync(local('commerce.profile.prod.yaml'),
+                       local('COMMERCE.profile.prod.yaml'));
+         const exists = fs.existsSync;
+         spyOn(fs, 'existsSync').mockImplementation(((p: fs.PathLike) => exists(
+             String(p).replace(/commerce\.profile\.prod\.yaml$/,
+                               'COMMERCE.profile.prod.yaml'))) as any);
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds + "which pull writes as 'commerce.yaml', and " +
+             "'COMMERCE.profile.prod.yaml' is already there. Delete " +
+             "'COMMERCE.profile.prod.yaml' and rename 'mysales.yaml' to " +
+             "'commerce.yaml' and 'mysales.profile.prod.yaml' to " +
+             "'commerce.profile.prod.yaml' to keep them, or " +
+             force("'mysales.yaml' and 'mysales.profile.prod.yaml'"));
+       });
+
+  // A case-insensitive file system also gives the older profile directory
+  // 'Commerce.profiles/' to model 'commerce'. --force-remove names each file
+  // once, by its name on disk.
+  test('names a file in an older profile directory once when its model differs from the catalog\'s but for case',
+       async () => {
+         pulled();
+         writeRoundTripWorkspace();
+         fs.rmSync(local('commerce.profile.prod.yaml'));
+         fs.renameSync(local('commerce.yaml'), local('Commerce.yaml'));
+         fs.mkdirSync(local('Commerce.profiles'));
+         fs.writeFileSync(local('Commerce.profiles/prod.yaml'), ROUND_TRIP_PROFILE);
+         const caseless = (p: fs.PathLike) => String(p).replace(
+             /\/commerce(\.yaml$|\.profiles(?=\/|$))/, '/Commerce$1');
+         for (const name of ['existsSync', 'statSync', 'readdirSync', 'readFileSync'] as const) {
+           const real = fs[name] as any;
+           spyOn(fs, name).mockImplementation(((p: fs.PathLike, ...rest: unknown[]) =>
+               real(caseless(p), ...rest)) as any);
+         }
+         expect(await pull()).toBe(1);
+         expect(messages(console.error)).toBe(
+             holds.replace('mysales', 'Commerce') + "which pull writes as " +
+             "'commerce.yaml'. Rename the file to 'commerce.yaml' and " +
+             "'Commerce.profiles/prod.yaml' to 'commerce.profile.prod.yaml' to " +
+             'keep them, or ' + force('them'));
+       });
 
   test('under --dry-run nothing is written or deleted', async () => {
     withStaleProfile();
@@ -3072,7 +3455,12 @@ semantic_model:
 `);
     const kcSpy = spyOn(kc, 'preflightKnowledgeCatalog');
     expect(await push({validateOnly: true})).toBe(1);
-    expect(prints(console.warn).join('\n')).toContain('needs transpilation');
+    expect(prints(console.warn)).toEqual([
+      "Warning: [commerce] metric 'positive_spend': no 'BIGQUERY' or " +
+      "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' " +
+      "expression; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor google --transpile'",
+    ]);
     expect(prints(console.error).join('\n')).toContain(
         "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
         "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
@@ -3440,6 +3828,8 @@ semantic_model:
     ['has a YAML syntax error', '    description: [x\n', 'could not parse input', false],
     ['has an alias whose anchor is not set', '    description: *nope\n',
      'Unresolved alias', true],
+    ['has an unquoted \'*\'', '    description: *\n',
+     'write it in quotes, as in description: "*".', false],
   ] as const;
   for (const [what, extra, problem, listed] of yamlErrors) {
     const writeBroken = () => {
@@ -3839,6 +4229,38 @@ describe('what a push says about relationships', () => {
       expect(await push({})).toBe(code);
       expect(messages(code ? console.error : console.log).split('\n'))
           .toContain(line);
+    });
+  }
+});
+
+// skills-generate runs none of push's profile checks, so under a profile it
+// warns about a field whose table cannot run its text, as it does without one.
+describe('skills-generate --profile', () => {
+  const rows = [
+    ['SPANNER', 'spanner.googleapis.com/projects/test-project/instances/i/databases/db/tables/customer'],
+    ['ALLOYDB', 'alloydb.googleapis.com/projects/test-project/locations/us-central1/clusters/c/databases/db/schemas/public/tables/customer'],
+    ['POSTGRES', 'cloudsql.googleapis.com/projects/test-project/locations/us-central1/instances/shop/databases/sales/schemas/public/tables/customer'],
+  ] as const;
+  for (const [dialect, source] of rows) {
+    test(`warns about a field its ${dialect} table cannot run`, async () => {
+      writeWorkspace();
+      fs.writeFileSync(local('commerce.profile.p.yaml'), `name: p
+entities:
+  - name: Customer
+    source: ${source}
+    fields:
+      - name: key
+        expression:
+          dialects:
+            - {dialect: BIGQUERY, expression: c_key}
+`);
+      fakeCatalog();
+
+      expect(await skillsGenerate({out: 'skills', profile: 'p'})).toBe(0);
+      expect(messages(console.warn)).toContain(
+          `Warning: [commerce] field 'Customer.key': no '${dialect}' or ` +
+          `'ANSI_SQL' dialect, so the ${dialect} table of entity 'Customer' ` +
+          'cannot run it');
     });
   }
 });

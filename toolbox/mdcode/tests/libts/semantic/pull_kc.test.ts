@@ -153,6 +153,33 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
             .rejects.toThrow(/holds 2 semantic models.*expected exactly one/i);
       });
 
+  // A listing of a group that does not exist fails, and pull then gives
+  // push's sentence for the missing group. Any other failure keeps its own
+  // error.
+  const GROUP = 'projects/dest/locations/us/entryGroups/eg';
+  const DENIED = `Permission 'dataplex.entries.list' denied on '${GROUP}'`;
+  const MISSING = "entry group 'eg' does not exist in location 'us' of " +
+      "project 'dest'; run 'kcmd init --semantic-model dest.us.eg' to create " +
+      'it, or correct the scope in catalog.yaml.';
+  // [the listing's error, the group's status, pull's error]. The errors are
+  // Dataplex's. It denies the listing of a missing group in a project where
+  // the caller cannot list entries.
+  test.each([
+    [`Entry Group \`${GROUP}\` does not exist.`, 404, MISSING],
+    [DENIED, 404, MISSING],
+    [DENIED, 200, `Failed to list entries: ${DENIED}`],
+  ])('a listing that fails with %p on a group that answers %d', async (listing, status, message) => {
+    spyOn(CatalogClient.prototype, 'listEntries')
+        .mockImplementation(async function*() {
+          throw new Error(`Failed to list entries: ${listing}`);
+        } as any);
+    spyOn(CatalogClient.prototype, 'getEntryGroup')
+        .mockResolvedValue({status} as any);
+
+    await expect(pullKnowledgeCatalog(new CatalogClient({} as any), OPTS))
+        .rejects.toThrow(new Error(message));
+  });
+
   test('an empty group reconstructs no models (a clean no-op)', async () => {
     stubClient([], []);
 

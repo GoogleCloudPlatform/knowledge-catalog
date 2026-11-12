@@ -25,7 +25,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -119,6 +119,11 @@ export interface CreateRuntimeOptions {
    * false, the result is an empty list.
    */
   proceed?: () => Promise<boolean>;
+  /**
+   * What the import that the advice to add a BigQuery text suggests gives,
+   * by model document. Without it, the advice names the command alone.
+   */
+  transpileOutcomes?: TranspileOutcomes;
 }
 
 
@@ -200,7 +205,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
        ...[...filesByDoc.values()].flat().map(f => f.text)],
       new CatalogClient(ctx), {thirdParty: false});
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
-  const load = {sourceDialects: lookup.dialects};
+  const load = {
+    sourceDialects: lookup.dialects,
+    transpileOutcomes: options.transpileOutcomes,
+  };
 
   // The model files the inline bindings are used for, loaded together.
   const inline: Array<{name: string; text: string}> = [];

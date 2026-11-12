@@ -183,16 +183,31 @@ function deriveParentLocalName(name: string): string | undefined {
   return [...parentDir, INDEX_NAME].join('/');
 }
 
+// The index of the `---` line that closes the frontmatter `lines` open with,
+// or -1 when they do not open with a `---` block.
+function frontmatterEnd(lines: string[]): number {
+  return lines[0] === '---' ? lines.indexOf('---', 1) : -1;
+}
+
+// The YAML frontmatter of markdown text: the lines between its opening `---`
+// line and the next `---` line, joined with LF. Undefined when the text does
+// not open with a `---` block.
+export function frontmatterText(content: string): string|undefined {
+  const lines = content.split(/\r?\n/);
+  const end = frontmatterEnd(lines);
+  return end === -1 ? undefined : lines.slice(1, end).join('\n');
+}
+
 // Splits markdown text into its YAML frontmatter, parsed, and its body.
 // `metadata` is undefined when the text does not open with a `---` block.
 export function splitFrontmatter(
     content: string): {metadata?: any; body: string} {
+  const frontmatter = frontmatterText(content);
+  if (frontmatter === undefined) return {body: content};
   const lines = content.split(/\r?\n/);
-  const endIndex = lines[0] === '---' ? lines.indexOf('---', 1) : -1;
-  if (endIndex === -1) return {body: content};
   return {
-    metadata: yaml.parse(lines.slice(1, endIndex).join('\n')),
-    body: lines.slice(endIndex + 1).join('\n'),
+    metadata: yaml.parse(frontmatter),
+    body: lines.slice(frontmatterEnd(lines) + 1).join('\n'),
   };
 }
 
