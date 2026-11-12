@@ -2969,13 +2969,15 @@ describe('a pull', () => {
      `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
          "leaves it: Profile file 'commerce.profile.dev.yaml' is not a file.",
      [], [shown('commerce.profile.dev.yaml')]],
-    ['a stale model\'s profile file with no valid profile name', SECOND_GEN,
+    ['a stale model\'s profile files with no valid profile name', SECOND_GEN,
      () => {
        sales('sales.yaml');
        write(local('sales.profile.1x.yaml'));
+       fs.symlinkSync('missing.yaml', local('sales.profile.yaml'));
      },
-     stale("'sales'", "'sales.yaml' and 'sales.profile.1x.yaml'"),
-     ['sales.yaml', 'sales.profile.1x.yaml'], []],
+     stale("'sales'", "'sales.yaml', 'sales.profile.1x.yaml' and " +
+           "'sales.profile.yaml'"),
+     ['sales.yaml', 'sales.profile.1x.yaml', 'sales.profile.yaml'], []],
     // With '_' for the backslash, its name is the catalog model's file.
     ['a stale model file whose name holds a backslash',
      {...SECOND_GEN, name: 'a_b'}, () => sales('a\\b.yaml'),

@@ -371,19 +371,21 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // Every file on disk that holds the model with this handle, for pull to
   // name and delete when the catalog no longer holds the model: the model
-  // file the layout read, then each `<model>.profile.*.yaml` as
-  // profileFileNamesBeside lists them, then the older `<model>.profiles/`
-  // directory as _legacyLocalFiles lists it. Each profile file has its profile
-  // name when that name is valid. A directory is left out; push rejects it,
-  // naming it. Each file is in the entry group directory, or in a
-  // `<model>.profiles` directory there that is no link, so no link puts it
-  // outside the entry group directory.
+  // file the layout read, then each `<model>.profile.*.yaml` the entry group
+  // directory lists, by file name, a link to no file included, then the older
+  // `<model>.profiles/` directory as _legacyLocalFiles lists it. Each profile
+  // file has its profile name when that name is valid. A directory is left
+  // out; push rejects it, naming it. Each file is in the entry group
+  // directory, or in a `<model>.profiles` directory there that is no link, so
+  // no link puts it outside the entry group directory.
   modelFiles(model: string): {path: string; profileName?: string}[] {
     const dir = this._groupDir();
     const prefix = `${model}.profile.`;
+    const siblings = this.files.exists(dir) ? this.files.list(dir) : [];
     return [
       {path: this.modelFile(model)},
-      ...profileFileNamesBeside(dir, model, this.files)
+      ...siblings.filter(f => f.startsWith(prefix) && f.endsWith('.yaml'))
+          .sort()
           .map(f => named(
               path.join(dir, f), f.slice(prefix.length, -'.yaml'.length))),
       ...this._legacyLocalFiles(model),
