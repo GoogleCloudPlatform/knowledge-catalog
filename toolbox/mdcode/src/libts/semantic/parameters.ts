@@ -62,6 +62,10 @@ export function storeMessage(
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RFC3339_TIMESTAMP =
     /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[-+]\d{2}:?\d{2})$/;
+// What a DateTime takes: a date and time, with a zone or without one. BigQuery
+// reads a DateTime as a DATETIME, a civil date and time with no zone.
+const DATE_TIME =
+    /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[-+]\d{2}:?\d{2})?$/;
 
 // Whether `text` is a day that exists, written the one way Spanner reads.
 // `Date.parse` answers neither question: it accepts '03/04/2026', and it reads
@@ -161,6 +165,14 @@ export function bindScalar(
       }
       return {value: text, code};
     case 'DateTime':
+      if (!DATE_TIME.test(text) || !isCalendarDay(text.slice(0, 10))) {
+        return {
+          error: `'${param.name}' is a DateTime, but '${
+              text}' is not a date and time. Write it like ` +
+              `2026-03-04T10:00:00.`,
+        };
+      }
+      return {value: text, code};
     case 'DateTimeTz':
       if (!RFC3339_TIMESTAMP.test(text) || !isCalendarDay(text.slice(0, 10))) {
         return {

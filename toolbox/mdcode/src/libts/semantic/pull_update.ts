@@ -21,7 +21,7 @@ import {modelsFromCatalogResources} from './kc_converter';
 import {generateCatalogResources} from './knowledge_catalog';
 import {isGoogleVendor, isRecord, loadSemanticModels, SemanticModelError} from './loader';
 import {loadProfileFile, plainCopy, ProfileFiles, profileProblems} from './resolve_profiles';
-import {withProfileFiles} from './validate';
+import {cutStatements, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {itemKey, itemKeys, linkNodes, parseForUpdate, spansLines, spliced, updateText} from './yaml_update';
 
@@ -95,9 +95,15 @@ export function updatedText(
   const value = plainCopy(document.toJS());
   const links = linkNodes(value, document.contents);
   const parse = (t: string) => yaml.parse(t, YAML_OPTIONS);
-  return updateText(
+  const made: Array<[number, number, string]> = [];
+  const changed = updateText(
       text, document, merged(value, parse(base), parse(pulled), jsonLayout),
-      links);
+      links, made);
+  // A statement written where a comment comes to end it is double-quoted on
+  // one line, since push refuses it plain.
+  const edits = cutStatements(changed, text, made).map(({range, value}) =>
+      [range![0], range![1], escaped(JSON.stringify(String(value)))] as const);
+  return spliced(changed, edits);
 }
 
 // The JSON object or list `value` holds when it is a string, or undefined.
@@ -121,10 +127,16 @@ export function updatedData(data: string, value: unknown): string|undefined {
   // ends in one line break and stays a block. DEL, the C1 controls and the
   // line and paragraph separators are written as JSON escapes, since a string
   // that holds one is double-quoted.
-  return updatedJson(data, value)
-      ?.replace(/\n\s*$/, '\n')
-      .replace(/[\x7f-\x9f\u2028\u2029]/g,
-               c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const json = updatedJson(data, value);
+  return json === undefined ? undefined : escaped(json.replace(/\n\s*$/, '\n'));
+}
+
+// `json` with DEL, the C1 controls and the line and paragraph separators
+// written as JSON escapes.
+function escaped(json: string): string {
+  return json.replace(
+      /[\x7f-\x9f\u2028\u2029]/g,
+      c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 // `text`, a JSON object or list, changed to hold `value`, or undefined when
@@ -372,7 +384,7 @@ function updatedJson(text: string, value: unknown): string|undefined {
 // another vendor's `data`, comes back as the catalog holds it.
 function merged(
     local: unknown, base: unknown, pulled: unknown, jsonLayout: boolean,
-    json = false): unknown {
+    json = false, statements = false): unknown {
   if (isDeepStrictEqual(base, pulled)) return local;
   const [l, b, p] = [local, base, pulled].map(jsonIn);
   if (json && l !== undefined && b !== undefined && p !== undefined) {
@@ -385,13 +397,17 @@ function merged(
     return Object.fromEntries(entries!);
   }
   if (Array.isArray(local) && Array.isArray(base) && Array.isArray(pulled)) {
+    // An action statement matches trimmed, as pull reads it, so a '|' block's
+    // final line break keeps it the same statement.
+    const read = (v: unknown) =>
+        statements && typeof v === 'string' ? v.trim() : v;
     // A key two items of one of the lists share matches by value in all three.
     const repeated = new Set([local, base, pulled].flatMap(items => {
-      const keys = items.map(v => itemKey(v));
+      const keys = items.map(v => itemKey(read(v)));
       return keys.filter((k, i) => keys.indexOf(k) !== i);
     }));
     const keyed = (items: unknown[]) => {
-      const keys = itemKeys(items, repeated);
+      const keys = itemKeys(items.map(read), repeated);
       return items.map((v, i) => [keys[i], v] as const);
     };
     const entries = mergedEntries(
@@ -447,6 +463,7 @@ function mergedEntries<K>(
         !b.has(k) && !p.has(k) ? l.get(k) :
                                  merged(l.get(k), b.get(k), p.get(k),
                                         jsonLayout,
-                                        googleBlock && k === 'data'),
+                                        googleBlock && k === 'data',
+                                        !isList && k === 'statements'),
   ]);
 }

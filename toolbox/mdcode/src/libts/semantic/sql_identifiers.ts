@@ -247,41 +247,77 @@ function endOfTripleQuoted(text: string, from: number): number {
   return text.length;
 }
 
-// One dialect for each way sqlCode reads a statement: SPANNER for GoogleSQL,
-// which it reads for every dialect but POSTGRES and ALLOYDB, and POSTGRES for
-// PostgreSQL.
-export const SQL_CODE_DIALECTS = ['SPANNER', 'POSTGRES'] as const;
+// One dialect for each way a statement's comments and parameters are read:
+// SPANNER for GoogleSQL, MYSQL for a dialect in which `#` starts a comment
+// and a parameter's name follows the `@`, SQLSERVER for one in which `#`
+// starts no comment, and POSTGRES for PostgreSQL.
+export const SQL_CODE_DIALECTS =
+    ['SPANNER', 'MYSQL', 'SQLSERVER', 'POSTGRES'] as const;
+
+// Whether a statement in `dialect` is read as PostgreSQL. Any other is read as
+// GoogleSQL.
+function readsPostgres(dialect?: string|null): boolean {
+  return dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+}
+
+// The dialects in which `#` starts a comment that runs to the end of the
+// line: BigQuery, GoogleSQL Spanner and MySQL. PostgreSQL and AlloyDB read `#`
+// as an operator, SQL Server as the start of a temporary table's name, and
+// Snowflake and Databricks start no comment with it.
+const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER', 'MYSQL']);
+
+// Whether `#` starts a comment in `dialect`. A statement given no dialect is
+// read as GoogleSQL, where it does.
+export function hashStartsComment(dialect?: string|null): boolean {
+  return !dialect || HASH_COMMENT_DIALECTS.has(dialect);
+}
+
+// Whether `dialect` reads parameters as GoogleSQL does, as BigQuery and
+// GoogleSQL Spanner do: `@ name` and `` @`name` `` are the parameter `name`,
+// and names match without regard to case. A statement given no dialect is
+// read as GoogleSQL. Every other dialect reads a name only right after the
+// `@`, and matches it exactly.
+function readsGoogleSqlParameters(dialect?: string|null): boolean {
+  return !dialect || dialect === 'BIGQUERY' || dialect === 'SPANNER';
+}
 
 // `text` with each comment and each quoted string or identifier replaced by a
 // space, read as GoogleSQL by default or as PostgreSQL when `dialect` is
-// `POSTGRES` or `ALLOYDB` (where `#` stays an operator such as `#>` or `#-`).
-function sqlCode(text: string, dialect?: string|null): string {
-  const postgres = dialect === 'POSTGRES' || dialect === 'ALLOYDB';
+// `POSTGRES` or `ALLOYDB`. `#` starts a comment where hashStartsComment says
+// so. With `quotedNames`, a GoogleSQL identifier quoted in backticks is kept,
+// and each quoted string is replaced by `''`, so an `@` before a string reads
+// no name after it.
+function sqlCode(
+    text: string, dialect?: string|null, quotedNames = false): string {
+  const postgres = readsPostgres(dialect);
+  const hashComments = hashStartsComment(dialect);
   const identCont =
       postgres ? /[A-Za-z0-9_$\x80-\uffff]/ : /[A-Za-z0-9_\x80-\uffff]/;
   let out = '';
   let start = 0;
-  const skip = (from: number, to: number): number => {
-    out += `${text.slice(start, from)} `;
+  const skip = (from: number, to: number, by = ' '): number => {
+    out += `${text.slice(start, from)}${by}`;
     start = to;
     return to - 1;
   };
+  const string = quotedNames ? "''" : ' ';
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === '-' && text[i + 1] === '-') {
       i = skip(i, endOfLineComment(text, i + 2));
-    } else if (!postgres && c === '#') {
+    } else if (hashComments && c === '#') {
       i = skip(i, endOfLineComment(text, i + 1));
     } else if (c === '/' && text[i + 1] === '*') {
       i = skip(i, endOfBlockComment(text, i, postgres));
     } else if (
         !postgres && (c === '\'' || c === '"') && text[i + 1] === c &&
         text[i + 2] === c) {
-      i = skip(i, endOfTripleQuoted(text, i));
+      i = skip(i, endOfTripleQuoted(text, i), string);
     } else if (c === '\'' || c === '"') {
-      i = skip(i, endOfQuoted(text, i, !postgres, postgres));
+      i = skip(i, endOfQuoted(text, i, !postgres, postgres), string);
     } else if (!postgres && c === '`') {
-      i = skip(i, endOfQuoted(text, i, true, false));
+      const end = endOfQuoted(text, i, true, false);
+      i = quotedNames ? end - 1 : skip(i, end);
     } else if (postgres && c === '$') {
       DOLLAR_QUOTE_TAG.lastIndex = i;
       const m = DOLLAR_QUOTE_TAG.exec(text);
@@ -308,19 +344,46 @@ function sqlCode(text: string, dialect?: string|null): string {
   return start === 0 ? text : out + text.slice(start);
 }
 
+// A GoogleSQL parameter: `@`, any spaces or comments, and a name, which may be
+// quoted in backticks. An identifier quoted elsewhere is matched whole, so an
+// `@` inside it is not read.
+const GOOGLE_SQL_PARAMETER =
+    /`(?:[^`\\]|\\.)*`?|@@+|@\s*(?:([A-Za-z_]\w*)|`((?:[^`\\]|\\.)*)`)/g;
+// Any other dialect's parameter: `@` and a name, with nothing between them.
+const PLAIN_PARAMETER = /@@+|@([A-Za-z_]\w*)/g;
+
 // The distinct `@name` references in a SQL statement, ignoring comments and
 // quoted strings or identifiers so prose or a literal containing an '@' is not
-// read as a binding. `#` starts a line comment in GoogleSQL (the default), and
-// stays an operator (`#>`, `#-`) on PostgreSQL/AlloyDB. Used to check that
-// every parameter a statement reads is one the caller will bind, and to bind
-// only the parameters a statement actually reads.
+// read as a binding. `#` starts a line comment where hashStartsComment says
+// so, and is an operator such as `#>` or `#-` on PostgreSQL. BigQuery and
+// Spanner also read `@ name` and `` @`name` `` as the parameter `name` (see
+// readsGoogleSqlParameters). Used to check that every parameter a statement
+// reads is one the caller will bind, and to bind only the parameters a
+// statement actually reads.
 export function referencedParameters(
     text: string, dialect?: string|null): string[] {
+  const googleSql = readsGoogleSqlParameters(dialect);
   const names = new Set<string>();
-  for (const m of sqlCode(text, dialect).matchAll(/@@+|@([A-Za-z_]\w*)/g)) {
-    if (m[1]) names.add(m[1]);
+  for (const m of sqlCode(text, dialect, googleSql)
+           .matchAll(googleSql ? GOOGLE_SQL_PARAMETER : PLAIN_PARAMETER)) {
+    const name = m[1] ?? m[2];
+    if (name) names.add(name);
   }
   return [...names];
+}
+
+// The parameter of `declared` that `@name` binds in `dialect`, or undefined
+// when none does. BigQuery and Spanner match parameter names without regard
+// to case, so a name binds the parameter written the same way, or else the
+// one parameter written in another case. Every other dialect matches them
+// exactly (see readsGoogleSqlParameters).
+export function boundParameter(
+    name: string, declared: readonly string[],
+    dialect?: string|null): string|undefined {
+  if (declared.includes(name)) return name;
+  if (!readsGoogleSqlParameters(dialect)) return undefined;
+  const same = declared.filter(d => d.toLowerCase() === name.toLowerCase());
+  return same.length === 1 ? same[0] : undefined;
 }
 
 
@@ -335,9 +398,9 @@ export function referencedParameters(
 // the CTE body is inside parentheses; for `UPDATE t SET note = 'DELETE'` it is
 // the UPDATE, because the literal is not read as a keyword.
 //
-// In GoogleSQL (the default), `#` is skipped as a line comment alongside `--`,
-// while on PostgreSQL/AlloyDB `#` stays an operator (such as `#>` or `#>>` in a
-// leading CTE).
+// `#` is skipped as a line comment alongside `--` where hashStartsComment says
+// it starts one, and stays an operator elsewhere, such as `#>` or `#>>` in a
+// leading CTE on PostgreSQL.
 //
 // It lives here, rather than beside the one caller that refuses a zero-row
 // write, because validation reads the same statements to decide what a model

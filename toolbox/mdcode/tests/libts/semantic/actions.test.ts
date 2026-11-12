@@ -14,7 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile, loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -619,6 +619,115 @@ describe('validatePushRequirements gates actions', () => {
     }])]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain('binds \'@orderId\'');
+  });
+
+  // GoogleSQL reads `@ note` and `` @`note` `` as the parameter `note`.
+  test.each<[string, string[]]>([
+    ['UPDATE orders SET note = @ note WHERE id = @id', ['binds \'@note\'']],
+    ['UPDATE orders SET note = @`note` WHERE id = @id', ['binds \'@note\'']],
+    // GoogleSQL matches parameter names without regard to case.
+    ['DELETE FROM orders WHERE id = @ID', []],
+  ])('reads the parameters of %p as GoogleSQL does', (statement, binds) => {
+    const errs = validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [statement]}},
+      parameters: [{name: 'id', type: 'Integer'}],
+    }])]);
+    expect(errs).toEqual(binds.map(b => expect.stringContaining(b)));
+  });
+
+  // BigQuery reads two parameter names that differ only in case as one name.
+  // AlloyDB keeps them apart. A model file that binds no table gives no
+  // dialect, and each deployment's check reads its profile's.
+  test.each([
+    ['BigQuery', 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
+     ['action \'A\' in model \'m\' (doc) declares parameters \'id\' and ' +
+      '\'ID\', which BigQuery and Spanner read as one name. Rename one.']],
+    ['AlloyDB',
+     'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/' +
+         'databases/d/schemas/public/tables/orders',
+     []],
+    ['a model file that binds no table', '', []],
+  ])('on %s checks parameter names that differ only in case', (_, source, errors) => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders WHERE id = @id']}},
+      parameters: [{name: 'id', type: 'Integer'}, {name: 'ID', type: 'String'}],
+    }]);
+    const entity = {...model.entities[0], authoredSource: source, dataSource: source};
+    expect(validatePushRequirements([{
+      document,
+      model: {...model, entities: [entity], deployments: undefined},
+    }])).toEqual(errors);
+  });
+
+  // How each table's dialect reads a statement's parameters. SQL Server reads
+  // `#staging` as a temporary table, where GoogleSQL would start a comment.
+  // MySQL reads a parameter's name only right after the `@`, and matches it
+  // exactly.
+  test.each<[string, string, string, string, string[], string[]]>([
+    ['SQL Server',
+     'cloudsql.googleapis.com/projects/p/locations/us-central1/instances/ss/' +
+         'databases/shop/schemas/dbo/tables/orders',
+     'SQLSERVER', 'UPDATE #staging SET tier = @tier WHERE id = @id', ['id'],
+     ["binds '@tier'"]],
+    ...[
+      ['UPDATE orders SET tier = @ID WHERE id = @id', ['id'], ["binds '@ID'"]],
+      ['UPDATE orders SET tier = @ tier WHERE id = @id', ['id'], []],
+      ['DELETE FROM orders WHERE id = @id OR id = @ID', ['id', 'ID'], []],
+    ].map(([statement, names, errors]) => [
+      'MySQL',
+      'cloudsql.googleapis.com/projects/p/locations/us-central1/instances/my/' +
+          'databases/shop/tables/orders',
+      'MYSQL', statement, names, errors,
+    ] as [string, string, string, string, string[], string[]]),
+  ])('on %s reads the parameters of a statement', (_, source, dialect, statement, names, errors) => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: [statement]}},
+      parameters: names.map((name, i) => ({name, type: i ? 'String' : 'Integer'})),
+    }]);
+    const entity = {
+      ...model.entities[0], authoredSource: source, dataSource: source,
+      sourceDialect: dialect,
+    };
+    expect(validatePushRequirements([{
+      document,
+      model: {...model, entities: [entity], deployments: undefined},
+    }])).toEqual(errors.map(e => expect.stringContaining(e)));
+  });
+
+  // A model file that binds no table runs its statements through its named
+  // profiles, so they are read in each profile's dialect: here AlloyDB, which
+  // matches parameter names exactly.
+  test('reads the statements of a model file that binds no table as its profiles\' tables do', () => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders WHERE id = @ID']}},
+      parameters: [{name: 'id', type: 'Integer'}],
+    }]);
+    const prod = loadProfileFile(
+        'name: prod\nentities:\n  - name: customer\n    source: alloydb.googleapis.com/' +
+            'projects/p/locations/us-central1/clusters/c/databases/d/schemas/public/' +
+            'tables/orders\n',
+        'prod');
+    expect(validatePushRequirements([{
+      document,
+      model: {
+        ...model,
+        entities: [{...model.entities[0], authoredSource: '', dataSource: ''}],
+        deployments: undefined,
+        profiles: [prod],
+      },
+    }])).toEqual([expect.stringContaining("binds '@ID'")]);
+  });
+
+  test('checks no parameter names of an action without a sql executor', () => {
+    expect(validatePushRequirements([loaded([{
+      name: 'A',
+      executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      parameters: [{name: 'id', type: 'Integer'}, {name: 'ID', type: 'String'}],
+    }])])).toEqual([]);
   });
 
   test('an @ inside a string literal is not read as a binding', () => {
@@ -1292,6 +1401,20 @@ describe('parameter description, required, and default', () => {
         expect(errs.some(e => e.includes('default \'banana\' is invalid')))
             .toBe(true);
       });
+
+  // BigQuery reads a DateTime as a DATETIME, which has no zone. A DateTimeTz
+  // needs one.
+  test.each([
+    ['DateTime', '2026-03-04T10:00:00', []],
+    ['DateTimeTz', '2026-03-04T10:00:00', ["default '2026-03-04T10:00:00' is invalid"]],
+  ])('checks the default of a %s', (type, value, errors) => {
+    const model = withActions([{
+      name: 'Reopen', executor: MCP,
+      parameters: [{name: 'when', type, default: value}],
+    }]);
+    expect(validatePushRequirements([{document: 'test.yaml', model: model.models[0]}]))
+        .toEqual(errors.map(e => expect.stringContaining(e)));
+  });
 });
 
 

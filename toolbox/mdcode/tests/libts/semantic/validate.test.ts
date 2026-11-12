@@ -295,7 +295,7 @@ describe('action parameters', () => {
 // answers from a declared schema. Whether the REAL backends refuse the same
 // statements is a question only a live run can settle; see the e2e tests.
 describe('action statement pre-flight', () => {
-  const ACCOUNT = {account: ['account_id', 'balance']};
+  const ACCOUNT = {account: ['account_id', 'balance', 'memo']};
 
   // An action whose sql executor runs `statements`, with three declared
   // parameters the statements may reference.
@@ -306,6 +306,8 @@ describe('action statement pre-flight', () => {
         {name: 'amount', type: 'Float'},
         {name: 'id', type: 'Integer'},
         {name: 'note', type: 'Opaque'},
+        {name: 'at', type: 'DateTime'},
+        {name: 'tz', type: 'DateTimeTz'},
       ],
       executor: {kind: 'sql', sql: {statements}},
     } as Action;
@@ -372,13 +374,31 @@ describe('action statement pre-flight', () => {
 
     // Sending the types is what makes the action's DECLARED parameter types a
     // claim the store checks, rather than a comment.
-    test('sends the declared type of each referenced parameter', async () => {
+    test.each([
+      ['each referenced parameter', GOOD],
+      ['parameters written with a space or in backticks',
+       'UPDATE account SET balance = @ amount WHERE account_id = @`id`'],
+      ['parameters written in another case',
+       'UPDATE account SET balance = @AMOUNT WHERE account_id = @Id'],
+    ])('sends the declared type of %s', async (_, statement) => {
       const spanner = new SpannerClientMock();
       spanner.schema = mockSchema(ACCOUNT);
       await validateSpannerActionStatements(
-          [spannerModel([sqlAction([GOOD])])], spanner);
+          [spannerModel([sqlAction([statement])])], spanner);
       expect(spanner.planned[0].paramTypes)
           .toEqual({amount: {code: 'FLOAT64'}, id: {code: 'INT64'}});
+    });
+
+    // Spanner has no DATETIME type.
+    test('sends TIMESTAMP for a DateTime parameter', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      await validateSpannerActionStatements(
+          [spannerModel(
+              [sqlAction(['UPDATE account SET memo = @at WHERE account_id = @id'])])],
+          spanner);
+      expect(spanner.planned[0].paramTypes)
+          .toEqual({at: {code: 'TIMESTAMP'}, id: {code: 'INT64'}});
     });
 
     test('omits a parameter the statement does not reference', async () => {
@@ -414,7 +434,7 @@ describe('action statement pre-flight', () => {
     // store to infer.
     test('omits an Opaque parameter rather than guessing a type', async () => {
       const spanner = new SpannerClientMock();
-      spanner.schema = mockSchema({account: ['account_id', 'balance', 'memo']});
+      spanner.schema = mockSchema(ACCOUNT);
       await validateSpannerActionStatements(
           [spannerModel(
               [sqlAction(['UPDATE account SET memo = @note WHERE 1=1'])])],
@@ -593,13 +613,30 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).toContain('BigQuery');
     });
 
-    test('sends the declared type of each referenced parameter', async () => {
+    // BigQuery infers parameter types only when a request declares none.
+    test.each([
+      ['the declared type of each referenced parameter', GOOD,
+       {amount: 'FLOAT64', id: 'INT64'}],
+      ['no types for a statement that reads an Opaque parameter',
+       'UPDATE account SET memo = @note WHERE account_id = @id', {}],
+      ['DATETIME for a DateTime parameter',
+       'UPDATE account SET memo = @at WHERE account_id = @id',
+       {at: 'DATETIME', id: 'INT64'}],
+      ['TIMESTAMP for a DateTimeTz parameter',
+       'UPDATE account SET memo = @tz WHERE account_id = @id',
+       {tz: 'TIMESTAMP', id: 'INT64'}],
+      ['the types of parameters written with a space or in backticks',
+       'UPDATE account SET balance = @ amount WHERE account_id = @`id`',
+       {amount: 'FLOAT64', id: 'INT64'}],
+      ['the declared types of parameters written in another case',
+       'UPDATE account SET balance = @AMOUNT WHERE account_id = @Id',
+       {amount: 'FLOAT64', id: 'INT64'}],
+    ])('sends %s', async (_, statement, types) => {
       const bq = new BigQueryClientMock();
       bq.dmlSchema = mockSchema(ACCOUNT);
       await validateBigQueryActionStatements(
-          [bqModel([sqlAction([GOOD])])], bq, 'p');
-      expect(bq.dryRunDml[0].parameterTypes)
-          .toEqual({amount: 'FLOAT64', id: 'INT64'});
+          [bqModel([sqlAction([statement])])], bq, 'p');
+      expect(bq.dryRunDml[0].parameterTypes).toEqual(types);
     });
 
     test('omits a parameter named only inside a comment', async () => {

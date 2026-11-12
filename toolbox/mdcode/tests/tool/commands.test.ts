@@ -1357,6 +1357,54 @@ semantic_model:
          });
   }
 
+  // Pull writes an action statement on one line, so YAML joins no lines of
+  // it and push accepts it again.
+  test('a pulled long action statement pushes again', async () => {
+    await pushed({
+      'commerce.yaml': WITH_SQL_ACTION.replace(
+          'UPDATE ledger SET closed = TRUE',
+          "UPDATE ledger SET note = CONCAT(note, ' -- closed by the " +
+              "nightly job') WHERE closed = FALSE"),
+      'commerce.profile.prod.yaml': PROFILE,
+    });
+    fs.rmSync(local('commerce.yaml'));
+
+    expect(await pull()).toBe(0);
+    expect(await push({deployment: false})).toBe(0);
+  });
+
+  // A statement that holds a carriage return is written double-quoted, and
+  // pull keeps it on one line too.
+  test('a pulled statement with a carriage return stays on one line', async () => {
+    const statement =
+        'UPDATE ledger SET closed = TRUE -- all of them\\r\\nWHERE closed = FALSE';
+    await pushed({
+      'commerce.yaml': WITH_SQL_ACTION.replace('UPDATE ledger SET closed = TRUE', statement),
+      'commerce.profile.prod.yaml': PROFILE,
+    });
+    fs.rmSync(local('commerce.yaml'));
+
+    expect(await pull()).toBe(0);
+    expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toContain(`- "${statement}"`);
+  });
+
+  // Pull keeps a statement that YAML reads as the catalog holds it, and warns
+  // when push refuses it.
+  test('a kept statement that push refuses draws push\'s error', async () => {
+    await pushed({'commerce.yaml': WITH_SQL_ACTION, 'commerce.profile.prod.yaml': PROFILE});
+    const kept = WITH_SQL_ACTION.replace(
+        '{sql: {statements: ["UPDATE ledger SET closed = TRUE"]}}',
+        '\n          sql:\n            statements:\n' +
+            '              - UPDATE ledger SET closed = TRUE # all rows');
+    fs.writeFileSync(local('commerce.yaml'), kept);
+    (console.warn as Mock<any>).mockClear();
+
+    expect(await pull()).toBe(0);
+    expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(kept);
+    expect(messages(console.warn)).toContain(
+        'has a sql executor whose statement 1 has a comment on the same line');
+  });
+
   // `text` with each pair of `pairs` replaced, each first part found once.
   const edited = (text: string, ...pairs: Array<[string, string]>) =>
       pairs.reduce((t, [from, to]) => {
@@ -1456,6 +1504,26 @@ semantic_model:
     'commerce.profile.dev.yaml': 'entities: [\n',
   };
 
+  // MODEL with action CloseBooks, whose sql executor runs a statement written
+  // as a '|' block and then `second`.
+  const STATEMENTS = (second: string) => `${MODEL}    actions:
+      - name: CloseBooks
+        executor:
+          sql:
+            statements:
+              - |
+                UPDATE ledger SET closed = TRUE
+              - ${second}
+`;
+  // MODEL with actions CloseBooks, Reopen, Recheck, Audit and Purge, whose
+  // statements are written as `lists` after their `statements:`.
+  const ACTIONS = (...lists: string[]) => `${MODEL}    actions:\n${
+      ['CloseBooks', 'Reopen', 'Recheck', 'Audit', 'Purge'].map((name, i) => `      - name: ${name}
+        executor:
+          sql:
+            statements:${lists[i]}
+`).join('')}`;
+
   // Each row pushes the catalog's files, writes the local ones in their
   // place, pulls, and gives the files pull leaves. Only what the catalog
   // changes is written, and the rest keeps its comments, key order and style.
@@ -1495,6 +1563,48 @@ semantic_model:
       {'commerce.yaml': withBlock(BLOCK_DATA)},
       {'commerce.yaml': withBlock(ITEM_DATA, VANILLA_ITEM)},
       {'commerce.yaml': withBlock(BLOCK_DATA)},
+    ],
+    // An unchanged '|' statement keeps its text when the one after it
+    // changes.
+    [
+      'one of two action statements',
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = FALSE')),
+      BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
+    ],
+    // A statement pull writes where a comment comes to end it is
+    // double-quoted, since push refuses it plain, also when a comment ended it
+    // in the local file's flow list or anchor. A statement the local file
+    // already writes so and pull leaves alone stays as written.
+    [
+      'action statements a comment comes to follow',
+      BOTH(ACTIONS(
+          '\n              - UPDATE ledger SET closed = TRUE' +
+              '\n              - DELETE FROM ledger WHERE closed = FALSE',
+          '\n              - UPDATE ledger SET closed = TRUE'.repeat(2),
+          ' [UPDATE ledger SET closed = TRUE]',
+          '\n              - INSERT INTO audit VALUES (1)' +
+              '\n              - UPDATE ledger SET closed = TRUE',
+          ' [DELETE FROM audit]')),
+      BOTH(ACTIONS(
+          '\n              [\n                &close UPDATE ledger SET closed = TRUE # as before' +
+              '\n              ] # only closed rows\n                # and none reopened',
+          '\n              - *close\n                # as CloseBooks did' +
+              '\n              -\n                *close # again',
+          ' [*close # as Reopen does\n              ]',
+          '\n                # close first\n              - UPDATE ledger SET closed = TRUE',
+          '\n              - DELETE FROM audit # keep a week')),
+      BOTH(ACTIONS(
+          '\n              - "UPDATE ledger SET closed = TRUE" # only closed rows' +
+              '\n              - "DELETE FROM ledger WHERE closed = FALSE"' +
+              '\n                # and none reopened',
+          '\n              - "UPDATE ledger SET closed = TRUE"' +
+              '\n                # as CloseBooks did' +
+              '\n              -\n                "UPDATE ledger SET closed = TRUE" # again',
+          ' ["UPDATE ledger SET closed = TRUE" # as Reopen does\n              ]',
+          '\n              - "INSERT INTO audit VALUES (1)"' +
+              '\n                # close first\n              - UPDATE ledger SET closed = TRUE',
+          '\n              - DELETE FROM audit # keep a week')),
     ],
     [
       'one value of a profile file',
@@ -2050,21 +2160,38 @@ describe('a pull', () => {
   }
 
   // A Spanner database reads an action's statement as GoogleSQL or as
-  // PostgreSQL. With no table's dialect read, pull warns only about an error
-  // push gives under both.
+  // PostgreSQL. With no table's dialect read, pull warns only about a
+  // statement push refuses under both: for a rule both find it breaks, in
+  // GoogleSQL's words, or else for what GoogleSQL finds.
   for (const [what, statement, error] of [
     // PostgreSQL reads `$$@raw$$` as a string.
-    ['a parameter only GoogleSQL reads',
+    ['a parameter only GoogleSQL reads that the action does not declare',
      'UPDATE orders SET note = $$@raw$$ WHERE id = @id', ''],
     // GoogleSQL reads `#` as the start of a comment.
-    ['a parameter only PostgreSQL reads',
+    ['a parameter only PostgreSQL reads that the action does not declare',
      'UPDATE orders SET flags = flags # 1 WHERE id = @missing', ''],
-    ['a parameter both read', 'UPDATE orders SET note = @note WHERE id = @id',
+    // GoogleSQL matches `@ID` to `id`, and PostgreSQL does not.
+    ['a parameter GoogleSQL matches in another case',
+     'UPDATE orders SET note = @ID WHERE id = @id', ''],
+    ['a parameter both read that the action does not declare',
+     'UPDATE orders SET note = @note WHERE id = @id',
      "has a sql executor whose statement 1 binds '@note', but action 'tag' " +
          'declares no parameter of that name.'],
+    // PostgreSQL reads `#` as an operator, so it finds no verb outside the
+    // parenthesis.
+    ['a MERGE after a `#` line, which each reads in its own words',
+     '# (\nMERGE INTO orders t USING src s ON t.id = s.id WHEN MATCHED THEN DELETE',
+     "has a sql executor whose statement 1 starts with 'MERGE', but a " +
+         'statement must be one of INSERT, UPDATE, DELETE.'],
+    // GoogleSQL reads the line as a comment, and PostgreSQL reads a DELETE
+    // that binds `@missing`.
+    ['a statement GoogleSQL refuses for its verb and PostgreSQL for a parameter',
+     '# DELETE FROM orders WHERE id = @missing',
+     'has a sql executor whose statement 1 has no readable DML verb, but a ' +
+         'statement must be one of INSERT, UPDATE, DELETE.'],
   ]) {
     test(`on a Spanner table ${error ? 'warns' : 'gives no warning'} about ` +
-             `${what} that an action does not declare`,
+             what,
          () => checkPull({
            name: 'commerce', relationships: [], metrics: [],
            entities: [onTable('Order', `${SPANNER}/orders`, ['id'])],
@@ -2074,6 +2201,19 @@ describe('a pull', () => {
            }],
          }, error && `action 'tag' in model 'commerce' (commerce) ${error}`));
   }
+
+  // GoogleSQL reads `id` and `ID` as one name, and PostgreSQL does not.
+  test('on a Spanner table gives no warning about two parameter names that ' +
+           'differ only in case',
+       () => checkPull({
+         name: 'commerce', relationships: [], metrics: [],
+         entities: [onTable('Order', `${SPANNER}/orders`, ['id'])],
+         actions: [{
+           name: 'tag',
+           parameters: [{name: 'id', type: 'String'}, {name: 'ID', type: 'Integer'}],
+           executor: {kind: 'sql', sql: {statements: ['UPDATE orders SET note = @ID WHERE id = @id']}},
+         }],
+       }, ''));
 
   // A table's dialect may read an unqualified name as a keyword and a name in
   // double quotes as a string, so pull skips both. A metric text that loses a

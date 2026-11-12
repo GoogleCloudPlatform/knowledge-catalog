@@ -8,8 +8,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
+import {cloudSqlEntry} from '../../libts/mocks';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
+import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -231,6 +232,34 @@ const sameAsRuntime = (c: Case): Case => ({
       expect(r.errors).toEqual([`Error: ${await runtimeError(c)}`]),
 });
 
+// Action purge, with the sql executor `executor` when it is set.
+const purge = (executor?: object) => ({
+  name: 'purge', parameters: [{name: 'k', type: 'Integer'}], executor,
+});
+const ONE_STATEMENT = {sql: {statements: ['STATEMENT']}};
+// `text` with its one statement replaced by `lines`, written as is.
+const withStatementLines = (text: string, ...lines: string[]) => {
+  const [line, indent] = /^( *)- STATEMENT$/m.exec(text)!;
+  return text.replace(line, lines.map(l => indent + l).join('\n'));
+};
+// The model file of `scope` with action purge, whose one statement is written
+// as `lines`.
+const modelWriting = (lines: string[], scope: Scope = {}) => withStatementLines(
+    modelFile({...scope, actions: [purge(ONE_STATEMENT)]}), ...lines);
+const COMMENTED = "UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
+// A Cloud SQL for MySQL table, whose dialect push looks up.
+const MYSQL_TABLE = 'cloudsql.googleapis.com/projects/test-project/locations/' +
+    'us-central1/instances/shop/databases/sales/tables/customer';
+// A scope whose model file binds Customer to an AlloyDB table.
+const ON_ALLOYDB =
+    {entities: [{...CUSTOMER, source: `${ALLOYDB}/schemas/public/tables/customer`}]};
+// A model file whose action purge has the description DESCRIPTION, written
+// before its one statement.
+const DESCRIBED = modelFile({actions: [{
+  name: 'purge', description: 'DESCRIPTION', parameters: [{name: 'k', type: 'Integer'}],
+  executor: ONE_STATEMENT,
+}]});
+
 scenarios('push --no-deployment refuses a scope before any network call', [
   {
     name: '--no-deployment refuses a target a vanilla GOOGLE block lists twice',
@@ -279,5 +308,306 @@ scenarios('push --no-deployment refuses a scope before any network call', [
     name: '--no-deployment refuses a model file that does not load',
     entities: [{...CUSTOMER, colour: 'red'}],
     errors: [has('Semantic model load error')],
+  },
+  {
+    name: 'refuses an unquoted action statement with a comment on the same line',
+    files: {'commerce.yaml': modelWriting([`- ${COMMENTED}`])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        'whose statement 1 has a comment on the same line, so YAML reads the ' +
+        "statement as 'UPDATE customer SET doc = doc'. If the text after ' #' " +
+        "is part of the statement, write it as a block scalar with '|'. If it " +
+        "is a YAML comment, move it to the '-' column.")],
+    then: [{
+      files: {'commerce.yaml': modelWriting([
+        '- UPDATE customer SET doc = doc WHERE c_key = @k',
+        '# a comment on its own line',
+        `- "${COMMENTED}" # a note`,
+        '- |', `  ${COMMENTED}`,
+      ])},
+      code: 0,
+    }, {
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': withStatementLines(
+          profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
+          `- ${COMMENTED}`)},
+      errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1")],
+    }, {
+      files: {'commerce.yaml': modelWriting([`- &cut ${COMMENTED}`, '- *cut'])},
+      errors: [has('whose statement 1 has a comment'),
+               has("whose statement 2, written at '&cut', has a comment")],
+    }],
+    report: {code: 1, rejects: {'': [pushed()], 'no profiles': []}},
+  },
+  {
+    name: 'refuses an unquoted action statement followed by a comment line indented under it',
+    files: {'commerce.yaml': modelWriting(
+        ['- UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        'whose statement 1 is followed by a comment line indented under it, ' +
+        "so YAML reads the statement as 'UPDATE customer SET doc = doc'. If " +
+        'the comment line is part of the statement, write it as a block ' +
+        "scalar with '|'. If it is a YAML comment, move it to the '-' column.")],
+    then: [{
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '- UPDATE customer SET doc = doc', "#- '{draft}' WHERE c_key = @k",
+        '- "DELETE FROM customer WHERE c_key = @k"', '  # a note',
+        // YAML counts no tab as indent.
+        '- DELETE FROM customer WHERE c_key = @k', '\t# a note',
+      ])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '- &cut UPDATE customer SET doc = doc', '',
+        "  #- '{draft}' WHERE c_key = @k", '- *cut',
+      ]).replace(/\n/g, '\r\n')},
+      errors: [has('statement 1 is followed by a comment line'),
+               has("statement 2, written at '&cut', is followed by a comment line")],
+    }, {
+      // The alias reads the comment line against the list its anchor is in.
+      files: {'commerce.yaml': withStatementLines(withStatementLines(
+          modelFile({actions: [
+            purge(ONE_STATEMENT),
+            {...purge({sql: {statements: ['STATEMENT']}}), name: 'archive'},
+          ]}),
+          '- &kept DELETE FROM customer WHERE c_key = @k', '# reused below'), '[*kept]')},
+      code: 0,
+    }, {
+      // An anchor in a mapping reads a comment line against its key's column.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED
+              .replace('description: DESCRIPTION',
+                       "description: &cut UPDATE customer SET doc = doc\n          #- '{draft}' WHERE c_key = @k"),
+          '- *cut', '- DELETE FROM customer WHERE c_key = @k')},
+      errors: [has(
+          "statement 1, written at '&cut', is followed by a comment line indented " +
+          "under it, so YAML reads the statement as 'UPDATE customer SET doc = doc'. " +
+          "If the comment line is part of the statement, write it as a block scalar " +
+          "with '|'. If it is a YAML comment, move it to the column of 'description'.")],
+    }, {
+      // An anchor before a key does not move the column of the keys.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED.replace('- name: purge', '- &act name: purge')
+              .replace('description: DESCRIPTION',
+                       "&d description: &cut UPDATE customer SET doc = doc\n          #- '{draft}' WHERE c_key = @k"),
+          '- *cut')},
+      errors: [has(
+          "statement 1, written at '&cut', is followed by a comment line indented " +
+          "under it, so YAML reads the statement as 'UPDATE customer SET doc = doc'. " +
+          "If the comment line is part of the statement, write it as a block scalar " +
+          "with '|'. If it is a YAML comment, move it to the column of '&d description'.")],
+    }, {
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED
+              .replace('description: DESCRIPTION',
+                       'description: &kept DELETE FROM customer WHERE c_key = @k\n        # a note'),
+          '[*kept]')},
+      code: 0,
+    }],
+  },
+  {
+    name: 'refuses an unquoted action statement in a flow list followed by a comment line',
+    files: {'commerce.yaml': modelWriting(
+        ['[UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k", ']'])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        "whose statement 1 is followed by a comment line before the next ',' " +
+        "or ']', so YAML reads the statement as 'UPDATE customer SET doc = " +
+        "doc'. If the comment line is part of the statement, write the " +
+        "statements as a block list, with this one as a block scalar with " +
+        "'|'. If it is a YAML comment, move it after the ',' or ']' that " +
+        'follows the statement.')],
+    then: [{
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc', "  #- '{draft}' WHERE c_key = @k"])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '[UPDATE customer SET doc = doc WHERE c_key = @k, # a note',
+        '  DELETE FROM customer WHERE c_key = @k',
+        ']  # a note',
+      ])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([`[${COMMENTED}`, ']'])},
+      errors: [has(
+          "has a comment on the same line, so YAML reads the statement as " +
+          "'UPDATE customer SET doc = doc'. If the text after ' #' is part of " +
+          'the statement, write the statements as a block list')],
+    }, {
+      files: {'commerce.yaml': modelWriting(
+          ['[UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k]'])},
+      errors: [has(
+          "has '--' on a line YAML joins to the next one, so a SQL comment " +
+          'it starts would also cover the lines after it. Write the ' +
+          'statements as a block list, with this one as a block scalar with ' +
+          "'|', which keeps its line breaks.")],
+    }],
+  },
+  {
+    // `--` and `/*` are SQL comment markers everywhere. `#` is one on
+    // BigQuery, and an operator on AlloyDB. A marker counts anywhere on a line
+    // YAML joins to the next one, inside a string too.
+    name: 'refuses a SQL comment marker on a line YAML joins to the next one, as the statement\'s database reads it',
+    files: {'commerce.yaml': modelWriting(
+        ['- UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
+    errors: [err(
+        "action 'purge' in model 'commerce' (commerce) has a sql executor " +
+        "whose statement 1 has '--' on a line YAML joins to the next one, so " +
+        'a SQL comment it starts would also cover the lines after it. ' +
+        "Write it as a block scalar with '|', which keeps its line breaks.")],
+    then: [{
+      files: {'commerce.yaml': modelWriting(
+          ['- |', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k'])},
+      code: 0,
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '- "UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k"',
+        "- 'UPDATE customer SET doc = doc -- every row?", "  WHERE c_key = @k'",
+        '- >', '  UPDATE customer SET doc = doc /* every row? */', '  WHERE c_key = @k',
+        "- UPDATE customer SET note = 'a -- b'", '  WHERE c_key = @k',
+        // AlloyDB reads `#` as an operator.
+        '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k',
+        '- UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
+        '- >', '  UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row',
+        // The closing quote alone on a line ends no SQL line.
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  "',
+        // A '>' block keeps the line break before a blank or more-indented
+        // line.
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '', '  WHERE c_key = @k',
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '    WHERE c_key = @k',
+        // The first marker on the line is named.
+        '- >', '  UPDATE customer SET doc = doc /* -- */', '  WHERE c_key = @k',
+        // A line holding only a no-break space is text, which YAML joins.
+        '- >', '  UPDATE customer SET doc = doc -- every row?', '  \u00a0', '  WHERE c_key = @k',
+        // A tab after the indent makes a '>' block's first line more
+        // indented.
+        '- >', '  \tUPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
+        // The yaml library joins a double-quoted line that ends in an escaped
+        // line break to the line after one blank line.
+        '- "UPDATE customer SET doc = doc -- every row?\\', '', '  WHERE c_key = @k"',
+        // A line of spaces and a tab sets a '>' block's indent.
+        '- >', '  \t', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- >', '  \t', '    UPDATE customer SET doc = doc -- every row?', '    WHERE c_key = @k',
+        // An indentation indicator sets a '>' block's indent.
+        '- >2', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- >1', '  UPDATE customer SET doc = doc -- every row?', '  WHERE c_key = @k',
+        // A double-quoted line of blanks and an escaped line break adds no
+        // text.
+        '- "UPDATE customer SET doc = doc -- every row?', '  \\', '', '', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  \\', '  "',
+        // A marker counts as YAML reads it, written as an escape or split by
+        // an escaped line break too, and a comment ends at an escaped line
+        // break.
+        '- "UPDATE customer SET doc = doc \\x2d- every row?', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc -\\', '  - every row?', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc -- every row?\\n', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET a = 1 /* closed */\\n  , doc = doc -- every row?', '  WHERE c_key = @k"',
+        // An escaped private-use character is text.
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row\\ue000 more"',
+        // A comment that starts after an escaped line break is on the last line.
+        '- "UPDATE customer SET doc = doc WHERE c_key = @k\\', '  -- one row"',
+      ], ON_ALLOYDB)},
+      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--'],
+               [21, '--'], [22, '--'], [24, '--']].map(
+          ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
+    }, {
+      // An alias is checked at its anchor, which can come before the
+      // statements ahead of the alias.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED.replace(
+              'description: DESCRIPTION',
+              'description: &cut >\n          UPDATE customer SET doc = doc -- every row?\n' +
+                  '          WHERE c_key = @k'),
+          '- >', '  DELETE FROM customer -- every row?', '  WHERE c_key = @k', '- *cut')},
+      errors: [has("statement 1 has '--' on a line YAML joins"),
+               has("statement 2, written at '&cut', has '--' on a line YAML joins")],
+    }, {
+      // A file with CRLF line breaks reads the same.
+      files: {'commerce.yaml': modelWriting([
+        '- >2', '     UPDATE customer', '  SET doc = doc -- every row?', '  WHERE c_key = @k',
+        '- "UPDATE customer SET doc = doc -- every row?\\', '  \\', '', '', '  WHERE c_key = @k"',
+      ]).replace(/\n/g, '\r\n')},
+      errors: [has("statement 1 has '--' on a line YAML joins")],
+    }, {
+      files: {'commerce.yaml': modelWriting([
+        '- >', '  UPDATE customer SET doc = doc # every row?', '  WHERE c_key = @k',
+        '- UPDATE customer SET doc = doc#every row?', '  WHERE c_key = @k',
+        // A YAML comment on a '>' block's header is not part of the statement.
+        '- > # a note', '  UPDATE customer SET doc = doc WHERE c_key = @k',
+      ], {deployments: ['g']})},
+      errors: [1, 2].map(n => has(`statement ${n} has '#' on a line`)),
+    }, {
+      // A Spanner deployment on a PostgreSQL-dialect database reads '#' as an
+      // operator, so push reports the deployment itself.
+      services: {getDatabase: {status: 200, result: {databaseDialect: 'POSTGRESQL'}}},
+      files: {'commerce.yaml': modelWriting(
+          ['- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k'],
+          {
+            entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+            deployments: [{name: 's', target: spannerGraph('s')}],
+          })},
+      errors: [has('has the PostgreSQL dialect, and Spanner creates no property graph')],
+    }, {
+      // The tables give the dialect with no deployment, and a profile's
+      // tables, here a Spanner table whose GoogleSQL dialect push looks up,
+      // give it for the profile file.
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'])},
+      errors: [has("statement 1 has '#' on a line")],
+    }, {
+      entities: [{...CUSTOMER, source: undefined}],
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': withStatementLines(
+          profileFile('p', {...boundAt(SPANNER_CUSTOMER), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
+          '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
+      errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
+    }, {
+      // A model file that binds no table runs its statements through its
+      // profiles, so it reads them in their dialects too.
+      files: {
+        'commerce.yaml': modelWriting(
+            ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+            {entities: [{...CUSTOMER, source: undefined}]}),
+        'commerce.profile.p.yaml': profileFile('p', boundTo('p')),
+      },
+      errors: [has("(commerce) has a sql executor whose statement 1 has '#' on a line")],
+    }, {
+      // MySQL starts a comment at '#' too, as push reads a Cloud SQL for
+      // MySQL table's looked-up dialect.
+      services: {lookupEntry: () => cloudSqlEntry('cloudsql-mysql-table')},
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+          {entities: [{...CUSTOMER, source: MYSQL_TABLE}]})},
+      errors: [has("statement 1 has '#' on a line")],
+    }, {
+      // Snowflake starts no comment with '#'.
+      services: {lookupEntry: () => ({
+        status: 200, result: {fullyQualifiedName: 'snowflake:acme.db.public.c'},
+      })},
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+          {entities: [{
+            ...CUSTOMER,
+            source: 'projects/test-project/locations/us/entryGroups/sf/entries/customer',
+          }]})},
+      code: 0,
+    }, {
+      // Profile p deploys to AlloyDB alone.
+      deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],
+      actions: [purge()],
+      files: {'commerce.profile.p.yaml': withStatementLines(
+          profileFile('p', {
+            ...boundAt(`${ALLOYDB}/schemas/public/tables/customer`),
+            actions: [{name: 'purge', executor: ONE_STATEMENT}],
+          }),
+          '- >', "  UPDATE customer SET doc = doc #- '{draft}'", '  WHERE c_key = @k')},
+      code: 0,
+    }],
   },
 ], {flags: {deployment: false}, code: 1, noNetwork: true});

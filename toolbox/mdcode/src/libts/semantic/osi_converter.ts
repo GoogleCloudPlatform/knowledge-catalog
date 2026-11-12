@@ -235,13 +235,24 @@ function render(doc: Record<string, any>, opts: SerializeOptions): string {
           (list.key.value === 'entities' || list.key.value === 'datasets')) {
         pair.value.format = ONE_LINE;
       }
+      // Each statement of a `sql` executor.
+      const executor = path[path.length - 2];
+      if (yaml.isScalar(pair.key) && pair.key.value === 'statements' &&
+          yaml.isSeq(pair.value) && yaml.isPair(executor) &&
+          yaml.isScalar(executor.key) && executor.key.value === 'sql') {
+        for (const item of pair.value.items) {
+          if (yaml.isScalar(item)) item.format = ONE_LINE;
+        }
+      }
     },
   });
   return document.toString({lineWidth: opts.lineWidth ?? 80});
 }
 
-// An entity's `source` is written on one line whatever its length, so a table
-// name that holds a space is never folded onto the next line.
+// An entity's `source` and each action statement are never folded onto a
+// second line, whatever their length. A table name can hold a space, and push
+// refuses a statement when a line YAML joins to the next one holds a SQL
+// comment marker.
 const ONE_LINE = 'ONE_LINE';
 const ONE_LINE_STRING: yaml.ScalarTag = {
   tag: 'tag:yaml.org,2002:str',
@@ -249,9 +260,18 @@ const ONE_LINE_STRING: yaml.ScalarTag = {
   default: true,
   identify: value => typeof value === 'string',
   resolve: value => value,
+  // A string written double-quoted, such as one that holds a carriage
+  // return, stays on one line too.
   stringify: (item, ctx, onComment, onChompKeep) => stringifyString(
-      item as yaml.Scalar,
-      {...ctx, actualString: true, options: {...ctx.options, lineWidth: 0}},
+      item as yaml.Scalar, {
+        ...ctx,
+        actualString: true,
+        options: {
+          ...ctx.options,
+          lineWidth: 0,
+          doubleQuotedMinMultiLineLength: Infinity,
+        },
+      },
       onComment, onChompKeep),
 };
 

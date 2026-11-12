@@ -38,7 +38,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1176,7 +1176,8 @@ async function checkBeforeWrites(
     const model = withProfileFiles(base, profileDocs);
     if ('errors' in model) return stop(model.errors);
     models.push(model);
-    // The model file and each profile file must be valid UTF-8.
+    // The model file and each profile file must be valid UTF-8, and YAML must
+    // read each action statement in them as it is written.
     // withProfileFiles has read the profile files, so profileDocs does not
     // throw here.
     const modelPath = layout.modelPath(base.document);
@@ -1185,11 +1186,16 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    if (scope.pulled) continue;
+    // Pull writes its files as UTF-8, so their bytes are not checked.
     for (const file of [modelFile, ...profileDocs(base.document)]) {
-      const error = checkUtf8(file.path, file.fileName, file.text);
+      const error = scope.pulled ?
+          undefined :
+          checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
     }
+    const changed =
+        yamlChangedStatementErrors(base, modelFile.text, profileDocs, load);
+    if (changed.length) return fail(...changed);
   }
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
@@ -1922,8 +1928,8 @@ async function pullSemanticModel(
 // dialect, since that calls a service, so only push runs the checks that need
 // one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
 // SQL for the checks of which fields and entities an expression reads, and
-// skips each name whose reading depends on the dialect. It gives an error in
-// an action's SQL statement only when every dialect gives it. It reads the
+// skips each name whose reading depends on the dialect. It refuses an
+// action's SQL statement only when every dialect refuses it. It reads the
 // overview sidecars on disk, as push does, unless given `overviews`.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,

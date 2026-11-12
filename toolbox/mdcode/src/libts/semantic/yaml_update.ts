@@ -72,11 +72,14 @@ export function linkNodes(
  * double-quoted instead, and so is a string that comes to hold a character
  * that YAML writes only as an escape, such as DEL. The JSON `data` of a GOOGLE
  * block written as a quoted string over several lines that changes is written
- * on one line as compact JSON, quoted as kcmd quotes a new block.
+ * on one line as compact JSON, quoted as kcmd quotes a new block. Each edit it
+ * makes to `text`, which replaces the text from one offset to another, is
+ * added to `edits` in offset order.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
-    links: ReadonlyMap<object, yaml.Node>): string {
+    links: ReadonlyMap<object, yaml.Node>,
+    edits: Array<[number, number, string]> = []): string {
   const pairs: Array<[yaml.Pair, unknown]> = [];
   yaml.visit(doc, {Pair: (_, p, path) => void pairs.push([p, path.at(-1)])});
   const u: Update = {
@@ -115,14 +118,15 @@ export function updateText(
       }
     },
   });
-  const edits = u.edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  edits.forEach(([from, to, s], i) => {
-    const [p, q, inserted] = edits[i - 1] ?? [];
+  const made = u.edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  made.forEach(([from, to, s], i) => {
+    const [p, q, inserted] = made[i - 1] ?? [];
     if (s || !ends.has(from) || p === from && q === from && inserted) return;
-    edits[i][1] = skipBlank(text, to, edits[i + 1]?.[0] ?? text.length);
-    ends.add(edits[i][1]);
+    made[i][1] = skipBlank(text, to, made[i + 1]?.[0] ?? text.length);
+    ends.add(made[i][1]);
   });
-  const out = spliced(text, edits);
+  edits.push(...made);
+  const out = spliced(text, made);
   // A text with no final newline keeps none, unless the text of a block scalar
   // that keeps its final line breaks reaches its end.
   return text.endsWith('\n') || ends.has(text.length) ?

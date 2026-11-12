@@ -8,6 +8,8 @@
 // against the schema -- because these are deployment requirements, not schema
 // rules.
 
+import * as yaml from 'yaml';
+
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {SpannerClient, SpannerType} from '../gcp/spanner';
@@ -26,8 +28,9 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
+import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
+import {YAML_OPTIONS} from './yaml_options';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -96,7 +99,8 @@ export function validatePushRequirements(
     // dispatch it, and each guard must name a constraint the model declares.
     // (The "exactly one executor kind" rule is already guaranteed by the loader
     // schema, so it cannot reach here.)
-    errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
+    errors.push(...validateActions(
+        model, document, !!opts.fieldsPruned, true, opts.load ?? {}));
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
@@ -799,7 +803,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
 // concept that does not exist.
 export function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean,
-    checkDescriptions: boolean): string[] {
+    checkDescriptions: boolean, load: DialectLoad = {}): string[] {
   const errors: string[] = [];
   const actions = model.actions ?? [];
   if (!actions.length) return errors;
@@ -830,11 +834,11 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
-  // Null when no lookup read the dialect of the model's tables, as in pull.
-  const sources = sourcesDialect(model);
-  const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sources ?? (alloyDbTargets(model).targets.length ? 'ALLOYDB' : sources) :
-      undefined;
+  // A deployment that applies a profile refuses a sql executor in the model
+  // file, and reads the profile's own statements in its tables' dialect.
+  const dialects = actions.some(a => a.executor?.kind === 'sql') ?
+      modelStatementDialects(model, load) :
+      [];
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -938,9 +942,77 @@ export function validateActions(
       }
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
-    errors.push(...sqlExecutorErrors(action, where, sqlDialect));
+    errors.push(...sqlExecutorErrors(action, where, dialects));
+    // BigQuery and Spanner match parameter names without regard to case, so
+    // they read two declared names that differ only in case as one. With no
+    // dialect known, each deployment's check reports these.
+    if (executor?.kind === 'sql') {
+      const declared = action.parameters.map(p => p.name);
+      declared.forEach((second, i) => {
+        for (const first of declared.slice(0, i)) {
+          if (!dialects.some(
+                  d => boundParameter(second, [first], d) === first)) {
+            continue;
+          }
+          errors.push(
+              `${where} declares parameters '${first}' and '${second}', ` +
+              `which BigQuery and Spanner read as one name. Rename one.`);
+        }
+      });
+    }
   }
   return errors;
+}
+
+// The dialect the statements of `model` are read in: that of its tables, or
+// else ALLOYDB for a model with an AlloyDB target. Null when neither gives
+// one: when no lookup read the tables' dialect, as in pull, and when the
+// model file binds no table.
+function statementsDialect(model: SemanticModel): string|null {
+  return sourcesDialect(model) ??
+      (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null);
+}
+
+// The dialects the statements written in the model file of `model` are read
+// in: statementsDialect's, when it gives one. A model file that binds no
+// table runs its statements through its named profiles, so they are then
+// read in the dialect each profile gives (see profileDialect). Empty when no
+// dialect is known, as when no lookup read the tables' dialect, as in pull.
+function modelStatementDialects(
+    model: SemanticModel, load: DialectLoad): string[] {
+  const own = statementsDialect(model);
+  if (own) return [own];
+  if (sourcesDialect(model) !== undefined) return [];
+  return [...new Set((model.profiles ?? []).flatMap(spec => {
+    const dialect = profileDialect(model, spec, load);
+    return dialect ? [dialect] : [];
+  }))];
+}
+
+// The dialect the statements of profile `spec` of `model` are read in:
+// statementsDialect's, with the profile's tables, looked up as `load` gives
+// them, and the deployments that use the profile. Null when that gives none
+// or the profile does not apply, which localChecks reports. Only the
+// profile's tables matter, so the model's actions, which a profile may not
+// apply to, are left out.
+function profileDialect(
+    model: SemanticModel, spec: ProfileSpec, load: DialectLoad): string|null {
+  const resolved = resolveModelDeployments(model);
+  const names = 'error' in resolved ?
+      [] :
+      resolved.deployments.filter(d => d.profile === spec.name)
+          .map(d => d.name);
+  try {
+    const bound = applyProfile({...model, actions: []}, spec, {load});
+    return statementsDialect({
+      ...bound,
+      deployments:
+          (model.deployments ?? []).filter(d => names.includes(d.name)),
+    });
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return null;
+  }
 }
 
 // The errors in a SQL executor's statements. Nothing here for the other three
@@ -961,65 +1033,413 @@ export function validateActions(
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
 //
-// A null `dialect` says no lookup read the dialect of the model's tables. The
-// errors are then those that every dialect in SQL_CODE_DIALECTS gives, and
-// push, which reads the dialect, reports the others.
+// The statements are read in each of `dialects`, the databases they run on,
+// and each error any of them gives is reported. With no dialect, the
+// statements' dialect is not known, as when no lookup read the dialect of the
+// model's tables. A statement is then refused when every dialect in
+// SQL_CODE_DIALECTS refuses it: for each rule they all find it breaks, in the
+// first one's words, or else for what the first one finds. A check that knows
+// the dialect reports the others.
 function sqlExecutorErrors(
-    action: Action, where: string, dialect?: string|null): string[] {
+    action: Action, where: string, dialects: readonly string[]): string[] {
   if (action.executor?.kind !== 'sql') return [];
-  if (dialect === null) {
-    const [first, ...rest] =
-        SQL_CODE_DIALECTS.map(d => sqlExecutorErrors(action, where, d));
-    return first.filter(e => rest.every(errors => errors.includes(e)));
-  }
-  const executor = action.executor;
-  const errors: string[] = [];
-  const bindable = new Set(action.parameters.map(p => p.name));
-  executor.sql.statements.forEach((stmt, i) => {
+  const declared = action.parameters.map(p => p.name);
+  return action.executor.sql.statements.flatMap((stmt, i) => {
     const at = `${where} has a sql executor whose statement ${i + 1}`;
-    const text = stmt.trim();
-    if (!text) {
-      errors.push(`${at} is blank.`);
-      return;
+    if (dialects.length) {
+      return [...new Set(dialects.flatMap(
+          d => statementErrors(action, at, stmt, declared, d)
+                   .map(([, error]) => error)))];
     }
-    // The same reader the runtime uses, deliberately: what a model may
-    // PUBLISH and what the runtime will EXECUTE have to agree about where a
-    // statement's verb is. A naive first-word read disagreed -- the runtime
-    // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
-    // tests, while this rejected them at push time, so the library accepted an
-    // authored executor `kcmd` refused. Sharing the scanner does not widen
-    // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
-    // does not list, so a MERGE is still refused here.
-    const verb = leadingDmlVerb(text, dialect);
-    if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
-      // Name what the author wrote, not merely that nothing was found. The
-      // scanner reads DML verbs only, so a SELECT executor -- the likeliest
-      // mistake here -- comes back empty, and 'has no readable DML verb' would
-      // describe a query the author can see perfectly well. When the statement
-      // does not plainly open with a word, the first token is a comment marker
-      // and names nothing, so report the absence instead.
-      const first = text.split(/\s/, 1)[0].toUpperCase();
-      const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
-      errors.push(
-          `${at} ${
-              wrote ? `starts with '${wrote}'` :
-                      'has no readable DML verb'}, but a statement must be ` +
-          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`);
+    const readings = SQL_CODE_DIALECTS.map(
+        d => statementErrors(action, at, stmt, declared, d));
+    if (readings.some(r => !r.length)) return [];
+    const [first, ...rest] = readings;
+    const shared = first.filter(
+        ([rule]) => rest.every(r => r.some(([other]) => other === rule)));
+    return (shared.length ? shared : first).map(([, error]) => error);
+  });
+}
+
+// The errors in the statement `stmt` of `action`, at `at`, read in `dialect`,
+// each with the rule it breaks: 'blank', 'verb', ';', or the parameter it
+// binds.
+function statementErrors(
+    action: Action, at: string, stmt: string, declared: string[],
+    dialect?: string): Array<[string, string]> {
+  const text = stmt.trim();
+  if (!text) return [['blank', `${at} is blank.`]];
+  const errors: Array<[string, string]> = [];
+  // The same reader the runtime uses, deliberately: what a model may
+  // PUBLISH and what the runtime will EXECUTE have to agree about where a
+  // statement's verb is. A naive first-word read disagreed -- the runtime
+  // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
+  // tests, while this rejected them at push time, so the library accepted an
+  // authored executor `kcmd` refused. Sharing the scanner does not widen
+  // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
+  // does not list, so a MERGE is still refused here.
+  const verb = leadingDmlVerb(text, dialect);
+  if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
+    // Name what the author wrote, not merely that nothing was found. The
+    // scanner reads DML verbs only, so a SELECT executor -- the likeliest
+    // mistake here -- comes back empty, and 'has no readable DML verb' would
+    // describe a query the author can see perfectly well. When the statement
+    // does not plainly open with a word, the first token is a comment marker
+    // and names nothing, so report the absence instead.
+    const first = text.split(/\s/, 1)[0].toUpperCase();
+    const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
+    errors.push(['verb',
+      `${at} ${
+          wrote ? `starts with '${wrote}'` :
+                  'has no readable DML verb'}, but a statement must be ` +
+          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`]);
+  }
+  if (text.slice(0, -1).includes(';')) {
+    errors.push([';',
+      `${at} contains ';'. Each statement runs on its own, so write ` +
+          `one statement per list entry.`]);
+  }
+  for (const name of referencedParameters(text, dialect)) {
+    if (!boundParameter(name, declared, dialect)) {
+      errors.push([`@${name}`,
+        `${at} binds '@${name}', but action '${action.name}' ` +
+            `declares no parameter of that name.`]);
     }
-    if (text.slice(0, -1).includes(';')) {
-      errors.push(
-          `${at} contains ';'. Each statement runs on its own, so write ` +
-          `one statement per list entry.`);
-    }
-    for (const name of referencedParameters(text, dialect)) {
-      if (!bindable.has(name)) {
+  }
+  return errors;
+}
+
+// The errors for each `sql` executor statement that YAML reads differently
+// from how it is written, in the model file `text` of `base` and in each of
+// its profile files:
+//   1. An unquoted statement with a comment on the same line. YAML ends an
+//      unquoted value at ` #`, so the statement it reads is shorter than the
+//      one written.
+//   2. An unquoted statement followed, after any blank lines, by a comment
+//      line: in a block list one indented past the list's '-', in a block
+//      mapping one indented past its keys, and in a flow list any before the
+//      next ',' or ']'. YAML ends the statement there too.
+//   3. A statement in which a SQL comment, as YAML reads the statement, runs
+//      on into text from a later line. YAML joins the lines of every style
+//      but '|', so a comment there also covers the lines after it.
+export function yamlChangedStatementErrors(
+    base: LoadedModel, text: string, profileDocs: ProfileFiles,
+    load: DialectLoad): string[] {
+  const {document} = base;
+  // The model with the profiles of its profile files, whose tables give the
+  // dialects of the statements.
+  const withFiles = withProfileFiles(base, profileDocs);
+  const model = 'errors' in withFiles ? base.model : withFiles.model;
+  // What to do with `what` when it belongs to the statement and when it is a
+  // YAML comment, where `holder` holds the statement. A flow list has no '-'
+  // column and cannot hold a block scalar.
+  const advice = (what: string, holder?: Holder) =>
+      holder?.kind === 'flow list' ?
+      `If ${what} is part of the statement, write the statements as a block ` +
+          `list, with this one as a block scalar with '|'. If it is a YAML ` +
+          `comment, move it after the ',' or ']' that follows the statement.` :
+      `If ${what} is part of the statement, write it as a block scalar with ` +
+          `'|'. If it is a YAML comment, move it to the ${
+              holder?.kind === 'block mapping' ? `column of '${holder.key}'` :
+                                                 "'-' column"}.`;
+  const errors: string[] = [];
+  // The model file holds the inline bindings and goes by its document name,
+  // as in the other action messages.
+  for (const file of [
+         {name: DEFAULT_PROFILE, text, fileName: document},
+         ...profileDocs(document),
+       ]) {
+    const dialects = statementDialects(model, file.name, load);
+    const statements = writtenStatements(file.text);
+    const markers = joinedLineMarkers(statements, file.text, dialects);
+    for (const written of statements) {
+      const {action, index, statement, anchor, holder} = written;
+      // An alias names its anchor, which is where the author edits.
+      const at = `action '${action}' in model '${model.name}' (${
+          file.fileName}) has a sql executor whose statement ${index + 1}${
+          anchor ? `, written at '&${anchor}',` : ''}`;
+      const flow = holder?.kind === 'flow list';
+      const cut = commentCut(file.text, written);
+      const marker = markers.get(statement);
+      if (cut === 'same line') {
         errors.push(
-            `${at} binds '@${name}', but action '${action.name}' ` +
-            `declares no parameter of that name.`);
+            `${at} has a comment on the same line, so YAML reads the ` +
+            `statement as '${statement.value}'. ${
+                advice("the text after ' #'", holder)}`);
+      } else if (cut === 'line under') {
+        errors.push(
+            `${at} is followed by a comment line ${
+                flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
+            `so YAML reads the statement as '${statement.value}'. ${
+                advice('the comment line', holder)}`);
+      } else if (marker) {
+        errors.push(
+            `${at} has '${marker}' on a line YAML joins to the next one, so ` +
+            `a SQL comment it starts would also cover the lines after it. ${
+                flow ? 'Write the statements as a block list, with this one ' +
+                        "as a block scalar with '|'" :
+                       "Write it as a block scalar with '|'"}, which keeps ` +
+            `its line breaks.`);
       }
     }
-  });
+  }
   return errors;
+}
+
+// Where a YAML comment ends the plain statement `written` of `text`: on its
+// line, or on a line under it, past blank lines, that is indented past its
+// holder's '-' or keys or is anywhere in a flow list. Undefined when no
+// comment ends it.
+function commentCut(text: string, {statement, holder}: WrittenStatement):
+    'same line'|'line under'|undefined {
+  if (statement.type !== 'PLAIN') return undefined;
+  const after = text.slice(statement.range![1]);
+  if (/^[ \t]+#/.test(after)) return 'same line';
+  // YAML counts only spaces as indent.
+  const indent = /^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(after)?.[1].length ?? -1;
+  return holder && indent > (holder.kind === 'flow list' ? -1 : holder.column) ?
+      'line under' :
+      undefined;
+}
+
+// The statements of `text`, a model or profile file that `edits` made from
+// `before`, that a comment ends. A statement that a comment ended in `before`
+// and that no edit touched is left out, since its text is the local file's.
+// Each edit replaces the text from one offset to another of `before`. An
+// alias and its anchor share one statement.
+export function cutStatements(
+    text: string, before: string,
+    edits: ReadonlyArray<readonly [number, number, string]>): yaml.Scalar[] {
+  // Where each such statement of `before` is in `text`.
+  const kept = new Set(
+      writtenStatements(before)
+          .filter(s => commentCut(before, s))
+          .flatMap(({statement}) => {
+            const [a, b] = statement.range!;
+            if (edits.some(([p, q]) => p < b && q > a)) return [];
+            const shift = edits.filter(([, q]) => q <= a).reduce(
+                (d, [p, q, s]) => d + s.length - (q - p), 0);
+            return [a + shift];
+          }));
+  return [...new Set(
+      writtenStatements(text)
+          .filter(s => commentCut(text, s) && !kept.has(s.statement.range![0]))
+          .map(s => s.statement))];
+}
+
+// The collection a statement is written in: a block list with the column of
+// its '-', a block mapping with the column of its keys and what the
+// statement's key line holds from that column to the key's end, or a flow
+// list.
+type Holder = {kind: 'block list'; column: number}|
+    {kind: 'block mapping'; column: number; key: string}|{kind: 'flow list'};
+
+// One `sql` executor statement in a model or profile file.
+interface WrittenStatement {
+  action: string;
+  // 0-based position in the executor's `statements` list.
+  index: number;
+  statement: yaml.Scalar;
+  // The name of the anchor the list item is an alias of.
+  anchor?: string;
+  // Where `statement` is written, which for an alias is where its anchor is.
+  // Undefined anywhere else, such as in a flow mapping.
+  holder?: Holder;
+}
+
+// Each `sql` executor statement in the model or profile file `text`. A model
+// file lists actions under each model, and a profile file at its top level.
+// Empty for text with a YAML error, which the load reports.
+function writtenStatements(text: string): WrittenStatement[] {
+  const doc = yaml.parseDocument(text, {...YAML_OPTIONS, keepSourceTokens: true});
+  if (doc.errors.length) return [];
+  const resolved = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
+  // The node at `path` under `n`, following aliases.
+  const nodeAt = (n: unknown, ...path: string[]) =>
+      resolved(path.reduce((at: unknown, key) => {
+        const map = resolved(at);
+        return yaml.isMap(map) ? map.get(key, true) : undefined;
+      }, n));
+  // The items of the list at `path` under `n`.
+  const listAt = (n: unknown, ...path: string[]) => {
+    const seq = nodeAt(n, ...path);
+    return yaml.isSeq(seq) ? seq.items : [];
+  };
+  const actions = [
+    ...listAt(doc.contents, 'semantic_model')
+        .flatMap(m => listAt(m, 'actions')),
+    ...listAt(doc.contents, 'actions'),
+  ];
+  // The collection that holds each node. A block collection's column is its
+  // indent as the yaml library reads it, which an anchor or tag on its first
+  // item does not move.
+  const holders = new Map<unknown, Holder>();
+  const column = (node: yaml.YAMLMap|yaml.YAMLSeq) =>
+      (node.srcToken as yaml.CST.BlockMap|yaml.CST.BlockSequence).indent;
+  yaml.visit(doc, {
+    Seq(_, seq) {
+      const holder: Holder = seq.flow ? {kind: 'flow list'} :
+                                        {kind: 'block list', column: column(seq)};
+      for (const item of seq.items) holders.set(item, holder);
+    },
+    Map(_, map) {
+      if (map.flow) return;
+      for (const pair of map.items) {
+        // What the key's line holds from that column to the key's end, with
+        // the key's anchor or tag.
+        const key = yaml.isNode(pair.key) ? pair.key.range! : undefined;
+        holders.set(pair.value, {
+          kind: 'block mapping',
+          column: column(map),
+          key: key ? text.slice(
+                         text.lastIndexOf('\n', key[0] - 1) + 1 + column(map),
+                         key[1]) :
+                     '',
+        });
+      }
+    },
+  });
+  return actions.flatMap(action => {
+    const statements = nodeAt(action, 'executor', 'sql', 'statements');
+    if (!yaml.isSeq(statements)) return [];
+    const name = nodeAt(action, 'name');
+    return statements.items.flatMap((item, index) => {
+      const statement = resolved(item);
+      return yaml.isScalar(statement) ? [{
+        action: yaml.isScalar(name) ? String(name.value) : '',
+        index,
+        statement,
+        anchor: yaml.isAlias(item) ? item.source : undefined,
+        holder: holders.get(statement),
+      }] : [];
+    });
+  });
+}
+
+// The dialects in which the statements of binding profile `profile` of
+// `model` run, as validateActions reads them: for the model file, those
+// modelStatementDialects gives with the deployments that use the model file's
+// own bindings, and for a profile file, the one profileDialect gives. `model`
+// holds the profiles its profile files declare, and `load` is what the caller
+// read of each table's dialect.
+function statementDialects(
+    model: SemanticModel, profile: string, load: DialectLoad): string[] {
+  if (profile === DEFAULT_PROFILE) {
+    const resolved = resolveModelDeployments(model);
+    const own = 'error' in resolved ?
+        [] :
+        resolved.deployments.filter(d => d.profile === DEFAULT_PROFILE);
+    const deployments = (model.deployments ?? [])
+                            .filter(d => own.some(r => r.name === d.name));
+    return modelStatementDialects({...model, deployments}, load);
+  }
+  const spec = (model.profiles ?? []).find(p => p.name === profile);
+  const dialect = spec && profileDialect(model, spec, load);
+  return dialect ? [dialect] : [];
+}
+
+// For each of `statements` in the model or profile file `text`, the first SQL
+// comment marker that one of `dialects` reads in the statement YAML reads,
+// when the comment it starts runs on into text from a later line of the
+// statement. A statement with no such marker is left out. A marker counts
+// anywhere in the statement, inside a string or a quoted name too, and a
+// comment runs to the next line break of the statement. `--` and `/*` are
+// markers in every dialect, and `#` in each one where hashStartsComment says
+// it starts a comment. With no dialect, `#` is not a marker. The yaml library
+// decides which lines it joins: each line with text of a statement, except
+// the last line of a plain or quoted one, gets a character at its end that
+// neither `text` nor any statement holds, and the text is parsed again. A
+// comment runs on into a later line when one of those characters inside it
+// is followed by more of the comment.
+function joinedLineMarkers(statements: WrittenStatement[], text: string,
+                           dialects: string[]): Map<yaml.Scalar, string> {
+  const marker = dialects.some(d => hashStartsComment(d)) ?
+      /--|\/\*|#/ :
+      /--|\/\*/;
+  // A '|' block keeps every line break, so a comment in it covers no later
+  // line.
+  const checked = statements.map(
+      ({statement}) => statement.type !== 'BLOCK_LITERAL' &&
+          marker.test(String(statement.value)));
+  // Empty when the text and the statements hold every private-use character,
+  // which leaves each statement accepted.
+  const end = unusedPrivateUseCharacter(
+      text + statements.map(s => String(s.statement.value)).join(''));
+  const inserts: number[] = [];
+  statements.forEach(({statement}, i) => {
+    if (!checked[i]) return;
+    const [start, stop] = statement.range!;
+    // A '>' block's text starts on the line after its header.
+    for (let from = statement.type === 'BLOCK_FOLDED' ?
+             text.indexOf('\n', start) + 1 :
+             start,
+             to = text.indexOf('\n', from);
+         to >= 0 && to < stop; from = to + 1, to = text.indexOf('\n', from)) {
+      const line = text.slice(from, to).replace(/\r$/, '');
+      // The character goes after the line's last character other than a space
+      // or tab. In a double-quoted statement, an odd number of backslashes
+      // there escapes the blank after them, or the line break when no blank
+      // follows, so it goes before the last backslash. A line with no text
+      // gets none, since one there would change how YAML reads the line.
+      const body = line.slice(0, /[ \t]*$/.exec(line)!.index);
+      const escaped = statement.type === 'QUOTE_DOUBLE' &&
+          /\\*$/.exec(body)![0].length % 2 === 1;
+      const at = body.length - (escaped ? 1 : 0);
+      if (/[^ \t]/.test(line.slice(0, at))) inserts.push(from + at);
+    }
+  });
+  const joined = new Map<yaml.Scalar, string>();
+  if (!inserts.length) return joined;
+  let changed = '';
+  let copied = 0;
+  for (const at of inserts.sort((a, b) => a - b)) {
+    changed += text.slice(copied, at) + end;
+    copied = at;
+  }
+  changed += text.slice(copied);
+  // The changed text holds the same statements in the same order.
+  const reread = writtenStatements(changed);
+  statements.forEach(({statement}, i) => {
+    if (!checked[i]) return;
+    // The statement as YAML reads it, and where each line but its last ends
+    // in it.
+    let value = '';
+    const ends: number[] = [];
+    for (const c of String(reread[i]?.statement.value ?? '')) {
+      if (c === end) ends.push(value.length);
+      else value += c;
+    }
+    let lineStart = 0;
+    for (const line of value.split('\n')) {
+      const found = marker.exec(line);
+      if (found) {
+        const from = lineStart + found.index;
+        const after = from + found[0].length;
+        const lineEnd = lineStart + line.length;
+        if (ends.some(e => e > from &&
+                          /[^ \t]/.test(value.slice(Math.max(e, after), lineEnd)))) {
+          joined.set(statement, found[0]);
+          return;
+        }
+      }
+      lineStart += line.length + 1;
+    }
+  });
+  return joined;
+}
+
+// The first private-use character, from U+E000 upward, that `text` does not
+// hold, or '' when it holds every one.
+function unusedPrivateUseCharacter(text: string): string {
+  const held = new Set(text);
+  for (const [first, last] of
+           [[0xe000, 0xf8ff], [0xf0000, 0xffffd], [0x100000, 0x10fffd]]) {
+    for (let point = first; point <= last; point++) {
+      const character = String.fromCodePoint(point);
+      if (!held.has(character)) return character;
+    }
+  }
+  return '';
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a
@@ -2913,29 +3333,41 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 
 
 // The parameter types to send with one statement's pre-flight request, keyed by
-// `@name`.
+// the name each parameter is declared with.
 //
-// Only the parameters the statement actually references are sent, and only
-// those whose declared type maps to a store type we can state. An `Opaque` type
-// is exactly the case we cannot: it means the model does not know the type, so
-// asserting one would invent a constraint the author never wrote. Those are
-// left out and the store resolves them from context, which both backends do.
+// `names` are the parameters the statement reads. Each binds a declared
+// parameter as BigQuery and Spanner match names, without regard to case. Only
+// those whose declared type maps to a store type we can state are sent. An
+// `Opaque` type is exactly the case we cannot: it means the model does not
+// know the type, so asserting one would invent a constraint the author never
+// wrote. Those are left out and the store resolves them from context.
 //
 // Sending the types at all is optional -- a statement with no parameter types
-// passes either backend's dry run. It is worth doing because it turns the
-// action's DECLARED parameter types into a claim checked against the real
-// column types, so a model that says `Float` where the column is a STRING fails
-// here rather than on the first call.
+// passes either backend's dry run, except that BigQuery types a parameter
+// selected bare in INSERT ... SELECT as INT64. It is worth doing because it
+// turns the action's DECLARED parameter types into a claim checked against the
+// real column types, so a model that says `Float` where the column is a STRING
+// fails here rather than on the first call. `codeFor` gives the store's type
+// for a declared type.
 function statementParameterTypes(
-    action: Action, sql: string): Record<string, string> {
+    action: Action, names: string[],
+    codeFor = storeCodeFor): Record<string, string> {
   const declared = new Map(action.parameters.map(p => [p.name, p.type]));
   const types: Record<string, string> = {};
-  for (const name of referencedParameters(sql)) {
-    const type = declared.get(name);
+  for (const name of names) {
+    const parameter = boundParameter(name, [...declared.keys()]);
+    const type = parameter && declared.get(parameter);
     if (!type || type === 'Opaque') continue;
-    types[name] = storeCodeFor(type);
+    types[parameter] = codeFor(type);
   }
   return types;
+}
+
+// BigQuery's type for a declared parameter type. BigQuery has DATETIME, a date
+// and time with no time zone, for `DateTime`. Spanner has no such type and
+// takes TIMESTAMP for it, as storeCodeFor gives.
+function bigQueryCodeFor(type: string): string {
+  return type === 'DateTime' ? 'DATETIME' : storeCodeFor(type);
 }
 
 
@@ -2995,7 +3427,8 @@ export async function validateSpannerActionStatements(
     }
     try {
       for (const pending of statements) {
-        const types = statementParameterTypes(pending.action, pending.sql);
+        const types = statementParameterTypes(
+            pending.action, referencedParameters(pending.sql));
         const params: Record<string, null> = {};
         const paramTypes: Record<string, {code: string}> = {};
         for (const [name, code] of Object.entries(types)) {
@@ -3043,9 +3476,18 @@ export async function validateBigQueryActionStatements(
     const project = billingProject(loaded.model, defaultProject);
     const store = `BigQuery (project '${project}')`;
     for (const pending of statements) {
+      // BigQuery infers parameter types only when the request declares none,
+      // so a statement that reads an untyped parameter declares none.
+      const names = referencedParameters(pending.sql);
+      const types =
+          statementParameterTypes(pending.action, names, bigQueryCodeFor);
+      const declared = pending.action.parameters.map(p => p.name);
+      const untyped = names.some(name => {
+        const parameter = boundParameter(name, declared);
+        return !parameter || !Object.hasOwn(types, parameter);
+      });
       const res = await bq.query(
-          project, pending.sql, undefined, true,
-          statementParameterTypes(pending.action, pending.sql));
+          project, pending.sql, undefined, true, untyped ? {} : types);
       if (res.status === 200) continue;
       errors.push(rejectedStatement(
           pending, store, storeMessage(res.message, res.status)));

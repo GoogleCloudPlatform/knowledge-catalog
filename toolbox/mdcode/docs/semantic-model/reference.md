@@ -927,9 +927,19 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
   trailing one, and may reference only `@parameter` names the action declares.
+  On BigQuery and Spanner, a name matches a declared one without regard to
+  case, and push rejects an action that declares two parameter names that
+  differ only in case.
   Together those are what let every value be bound instead of interpolated, so
-  an argument cannot reach the store as SQL. Where the key of an inserted row
-  comes from is the statement's own business: a SQL function such as
+  an argument cannot reach the store as SQL. Push also refuses a statement
+  that YAML reads differently from how it is written: an unquoted statement
+  with a comment on the same line or on a line indented under it, or in a
+  flow list on a line before the next `,` or `]`, and a statement whose lines
+  YAML joins, when text from a later line follows `--` or `/*`, or `#` on
+  BigQuery, GoogleSQL Spanner or MySQL, on the same line, even when `*/`
+  closes the `/*`.
+  Where the key of an inserted row comes from is the statement's own
+  business: a SQL function such as
   `GENERATE_UUID()`, a declared parameter, or a key column left out where it has
   a default. `affects` has no bearing on it. A declared parameter hands the key
   to the caller, and since the verb check reads only a statement's first word,
@@ -1047,7 +1057,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `account_id`?*), a placeholder or a function from the wrong dialect, and a
   parameter whose declared type does not match the column it is compared with:
   the parameter types the action declares are sent with the statement, unbound,
-  which is what turns them into a claim the store checks. The database a
+  which is what turns them into a claim the store checks. BigQuery infers
+  parameter types only when a request declares none, so a statement that reads
+  an `Opaque` parameter is sent to BigQuery with no types, and BigQuery checks
+  none of its declared types. The database a
   statement is planned against is the one the profile deploys the graph to, so
   which store answers is the profile's choice, not the statement's. Failing to
   reach the store at all fails the push rather than skipping the check — a push

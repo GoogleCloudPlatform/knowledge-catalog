@@ -380,6 +380,8 @@ be: the store catches what a name comparison can't see. A placeholder or a
 function borrowed from another dialect gets every identifier right and is still
 invalid. A parameter whose declared type doesn't fit the column it's compared to
 resolves every name correctly and fails on the type.
+On BigQuery, a statement that also reads an `Opaque` parameter is dry-run with
+no declared types, so the types its other parameters declare are not checked.
 
 An entity named `Order` bound to a table named `Orders` is the case worth
 recognizing, because the answer doesn't mention a table at all:
@@ -917,6 +919,15 @@ carries the write rather than a pointer to whoever performs it:
   schema isn't an action. A `;` anywhere but the end is rejected, because each
   list entry runs on its own and anything after the separator would silently not
   run.
+- Write a statement with ` #` in it as a block scalar with `|`. YAML reads an
+  unquoted ` #` as the start of a comment, so push refuses an unquoted
+  statement with a comment on the same line or on a line indented under it.
+  In a flow list, it refuses a comment line between an unquoted statement and
+  the next `,` or `]`. YAML also joins the lines of an unquoted or quoted
+  statement, and of a `>` block. Push reads the statement as YAML does, and
+  refuses it when text from a later line follows `--` or `/*`, or `#` on
+  BigQuery, GoogleSQL Spanner or MySQL, on the same line. It looks for these
+  anywhere, inside a string too, and counts a `/*` even when `*/` closes it.
 - **Every `@name` a statement binds has to resolve** to a parameter your
   action declares. Anything you write another way is left alone — a literal
   passes, and so does a SQL function. Nothing is interpolated into the
@@ -1154,6 +1165,7 @@ This is a prototype. Four things you might reasonably expect are absent.
   statement, so the store rejects `WHERE region = @source` when `region` is a
   string and `source` projects an integer — see
   [statements use your database names](#statements-use-your-database-names).
+  On BigQuery that holds only for a statement that reads no `Opaque` parameter.
   What survives is a wrong column of the right type. `WHERE branch_id = @source`
   passes, because the parameter is logical, the column is physical, and nothing
   joins the two beyond the type they happen to share. Whoever writes a statement
