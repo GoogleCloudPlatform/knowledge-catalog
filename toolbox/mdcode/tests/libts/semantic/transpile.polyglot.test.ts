@@ -400,7 +400,8 @@ describe('polyglotTranspiler (transformations)', () => {
     // Values whose types import cannot see.
     ['POSTGRES', 'a - b', {error: 'kcmd does not translate - without a number, SUM, COUNT or AVG on one side'}],
     ['SQLSERVER', "first_name + ' '", {error: 'kcmd does not translate + of a string'}],
-    ['MYSQL', 'CURDATE() - 7', {error: 'kcmd does not translate - of a date'}],
+    ['MYSQL', 'CURDATE() - 7', {sql: "CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) - 7"}],
+    ['MYSQL', "DATE '2024-02-29' + 1.5", {sql: "CAST(FORMAT_DATE('%Y%m%d', CAST('2024-02-29' AS DATE)) AS INT64) + NUMERIC '1.5'"}],
     ['MYSQL', 'd - INTERVAL 1 DAY - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'DATE_ADD(d, INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
     ['SQLSERVER', 'DATEADD(day, 1, GETDATE()) - 1', {sql: "DATE_SUB(DATE_ADD(CURRENT_DATETIME('UTC'), INTERVAL 1 DAY), INTERVAL 1 DAY)"}],
@@ -632,7 +633,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     // beside a number.
     ['MYSQL', '(d + (INTERVAL 1 DAY)) - 1', {error: 'kcmd does not translate - of a date'}],
     ['MYSQL', 'ADDDATE(d, INTERVAL 1 DAY) - 1', {error: 'kcmd does not translate - of a date'}],
-    ['MYSQL', 'LOCALTIMESTAMP + 1', {error: 'kcmd does not translate + of a date'}],
+    ['MYSQL', 'LOCALTIMESTAMP + 1', {sql: "CAST(FORMAT_DATETIME('%Y%m%d%H%M%S', DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) AS INT64) + 1"}],
     ['POSTGRES', 'd::timestamp + 1', {error: 'kcmd does not translate + of a date'}],
     ['ANSI_SQL', 'CAST("d" AS DATE) + 7', {error: 'kcmd does not translate + of a date'}],
     ['MYSQL', "CONCAT(ADDDATE(d, INTERVAL 1 DAY), 'x')", {error: 'kcmd does not translate CONCAT of a value that is not text'}],

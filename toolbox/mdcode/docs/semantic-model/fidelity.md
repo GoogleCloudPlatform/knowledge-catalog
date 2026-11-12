@@ -311,6 +311,9 @@ names microseconds.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
   as in MySQL, and adds every unit to it.
+  A date or a time it can see, compared with a number or plus or minus a
+  number, counts as the number of its digits, as in MySQL: `CURDATE() + 1`
+  becomes `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'

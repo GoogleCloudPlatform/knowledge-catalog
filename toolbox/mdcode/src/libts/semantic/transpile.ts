@@ -2040,7 +2040,8 @@ function article(noun: string): string {
 // DATE_TABLES holds. MySQL and SQL Server read a date beside a number as a
 // number or a count of days, and every source reads a string beside a number as
 // a number. So import refuses a value it can see is a date or a time in any
-// other arithmetic, also when MAX, COALESCE or a similar function returns it. A
+// other arithmetic, also when MAX, COALESCE or a similar function returns it,
+// except where it writes MySQL's number of its digits (see valueForms). A
 // date column is not visible, so a date column plus a number is translated as
 // written, which in BigQuery adds days to a DATE. MySQL gives a number there.
 // SPANNER arithmetic is BigQuery's.
@@ -2061,6 +2062,9 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
       [...CURRENT, ...DATE_FUNCTIONS, 'DATE_TRUNC'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) ||
                                                    date(v.left) || date(v.right)));
+  // MySQL reads a date or a time beside a number as the number of its digits.
+  const digits = kind === 'mul' ? undefined : valueForms(sides, read, false);
+  if (typeof digits === 'object' && digits.size) return sides;
   if (sides.some(date)) return `${op} of a date`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
   return sides.some(isNumber) ? sides :
@@ -2214,8 +2218,9 @@ function swapped(node: any, swap: Map<any, any>): any {
 // `read`, with a FORM_CALL for each form it needs; a message when import does
 // not translate it; or undefined to translate it as it is. PostgreSQL
 // truncates a DATE as a timestamp with time zone at midnight UTC, which a unit
-// of a day or less leaves at the date. A comparison, and the results of one
-// COALESCE, NVL, IF or CASE, get the forms valueForms gives.
+// of a day or less leaves at the date. A comparison, the operands of `+` or
+// `-`, and the results of one COALESCE, NVL, IF or CASE, get the forms
+// valueForms gives.
 function exactForm(node: any, read: string): any {
   const kind = kindOf(node) ?? '';
   const value = node[kind];
@@ -2235,8 +2240,11 @@ function exactForm(node: any, read: string): any {
   if (diff) return formCall(diff, args.slice(1));
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
-  const pairs: [any[], string, boolean][] =
-      [[comparedValues(kind, value) ?? [], OPERATORS[kind], false], [merged, valueName(node), true]];
+  const added = kind === 'add' || kind === 'sub' ? [value.left, value.right] : [];
+  const pairs: [any[], string, boolean][] = [
+    [comparedValues(kind, value) ?? [], OPERATORS[kind], false], [added, OPERATORS[kind], false],
+    [merged, valueName(node), true],
+  ];
   const swap = new Map();
   for (const [values, how, results] of pairs) {
     const forms = valueForms(values, read, results);
@@ -2246,12 +2254,13 @@ function exactForm(node: any, read: string): any {
   return swap.size ? swapped(node, swap) : undefined;
 }
 
-// The FORM_CALL in place of each of `values`, the values a node compares or,
-// with `results`, its results, by value, or the types BigQuery does not
-// compare, for a message. BigQuery compares the visible types of one group of
-// COMPARED. MySQL compares a DATE or a DATETIME with a number as the number of
-// its digits, such as 20240101 or 20240101093000, and gives it among numbers as
-// its text, as it gives each number written.
+// The FORM_CALL in place of each of `values`, the values a node compares or
+// adds or, with `results`, its results, by value, or the types BigQuery does
+// not compare, for a message. BigQuery compares the visible types of one group
+// of COMPARED. MySQL compares a DATE or a DATETIME with a number, and adds a
+// number to it, as the number of its digits, such as 20240101 or
+// 20240101093000, and gives it among numbers as its text, as it gives each
+// number written.
 function valueForms(values: any[], read: string, results: boolean): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined);
