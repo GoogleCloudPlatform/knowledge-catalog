@@ -859,6 +859,9 @@ interface DateTable {
   // True when DATEADD reads a string of a whole number, such as '1', as the
   // number.
   stringAmounts?: true;
+  // True when the dialect reads a DATE or a DATETIME as the number of its
+  // digits in arithmetic and beside a number (see valueForms).
+  numbers?: true;
   // True when the dialect compares a DATE or a timestamp without time zone
   // with a TIMESTAMP, and gives them as results of one COALESCE, IF or CASE,
   // as the TIMESTAMP at its midnight or wall-clock time in UTC, as BigQuery's
@@ -949,7 +952,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   // CAST to STRING writes as MySQL does, without a fraction of a second.
   mysql: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'],
-    strings: {DATE: 'DATE text', DATETIME: 'DATETIME text'},
+    strings: {DATE: 'DATE text', DATETIME: 'DATETIME text'}, numbers: true,
     now: {functions: ['NOW', 'CURRENT_TIMESTAMP', 'LOCALTIMESTAMP', 'LOCALTIME'], row: 'DATETIME'},
     functions: {DATE_ADD: 'interval', DATE_SUB: 'interval', ADDDATE: 'interval or days', SUBDATE: 'interval or days'},
     words: {}, expressions: true, intervals: UNITS.filter(u => u !== 'MILLISECOND'),
@@ -2170,9 +2173,9 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   const date = (s: any): boolean => !!timeType(s, read) || returned(s).some(date) ||
       [...CURRENT, ...DATE_FUNCTIONS, 'DATE_TRUNC'].includes(String(bare(s)?.function?.name).toUpperCase()) ||
       [bare(s)?.add, bare(s)?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) ||
-                                                   date(v.left) || date(v.right)));
-  // MySQL reads a date or a time beside a number as the number of its digits.
-  const digits = kind === 'mul' ? undefined : valueForms(sides, read, 'added');
+                                                   (!table?.numbers && (date(v.left) || date(v.right)))));
+  // MySQL reads a date or a time in arithmetic as the number of its digits.
+  const digits = valueForms(sides, read, 'computed');
   if (typeof digits === 'object' && digits.size) return sides;
   if (sides.some(date)) return `${op} of a date`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
@@ -2358,9 +2361,11 @@ function exactForm(node: any, read: string): any {
   if (diff) return formCall(diff, args.slice(1));
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
-  const added = kind === 'add' || kind === 'sub' ? [value.left, value.right] : [];
+  // Date arithmetic gets its forms from DATE_TABLES (see dateSum).
+  const computed = ['add', 'sub', 'mul'].includes(kind) && !dateSum(node, read) ? [value.left, value.right] : [];
   const pairs: [any[], string, Use][] = [
-    [comparedValues(kind, value) ?? [], OPERATORS[kind], 'compared'], [added, OPERATORS[kind], 'added'],
+    [comparedValues(kind, value) ?? [], OPERATORS[kind], 'compared'], [computed, OPERATORS[kind], 'computed'],
+    [kind === 'neg' ? [value.this] : [], OPERATORS[kind], 'negated'],
     [merged, valueName(node), 'results'],
   ];
   const swap = new Map();
@@ -2372,47 +2377,64 @@ function exactForm(node: any, read: string): any {
   return swap.size ? swapped(node, swap) : undefined;
 }
 
-// How a node uses the values valueForms gets: it compares them, adds them
-// with `+` or `-`, or gives them as its results.
-type Use = 'compared'|'added'|'results';
+// How a node uses the values valueForms gets: it compares them, computes
+// with them in `+`, `-` or `*`, negates one, or gives them as its results.
+type Use = 'compared'|'computed'|'negated'|'results';
+
+// The number of the digits of a DATE and of a DATETIME, by its type.
+const DIGITS: Record<string, string> = {
+  DATE: "CAST(FORMAT_DATE('%Y%m%d', _1) AS INT64)", DATETIME: "CAST(FORMAT_DATETIME('%Y%m%d%H%M%S', _1) AS INT64)",
+};
 
 // The FORM_CALL in place of each of `values`, the values a node uses as `use`
 // says, by value, or the types BigQuery does not compare, for a message.
 // BigQuery compares the visible types of one group of COMPARED. A dialect that
 // `stamps` compares a DATE or a DATETIME with a TIMESTAMP, and gives them as
-// results, as TIMESTAMP(x). MySQL compares a DATE or a DATETIME with a number,
-// and adds a number to it, as the number of its digits, such as 20240101 or
-// 20240101093000, and gives it among numbers as its text, as it gives each
-// number written.
+// results, as TIMESTAMP(x). A dialect that reads `numbers`, MySQL, computes
+// with a DATE or a DATETIME, and compares it with a number, as the number of
+// its digits, such as 20240101 or 20240101093000, and gives it among numbers
+// as its text, as it gives each number written. It negates one as a DOUBLE.
+// BigQuery takes no literal NULL beside `+`, `-` or `*`.
 function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
+  const numbers = DATE_TABLES[read]?.numbers;
+  // The digits and the text need each value COALESCE or a similar function
+  // gives to be visibly of the one type `type`. A column may be a DATETIME,
+  // which BigQuery's FORMAT_DATE also reads, and MySQL gives the digits of a
+  // DATE beside a DATETIME one way in a sum and another in a comparison.
+  const visible = (v: any, type: string) =>
+      givenValues(v).every(g => !g || bare(g).null !== undefined || timeType(g, read) === type);
+  if (numbers && (use === 'computed' || use === 'negated')) {
+    const swap = new Map();
+    for (const v of values) {
+      const type = typeOf(v)!;
+      if (bare(v)?.null !== undefined) return 'NULL';
+      if (!DIGITS[type]) continue;
+      if (!visible(v, type)) return `${article(type)} ${type} that may be another type`;
+      swap.set(v, formCall(use === 'negated' ? DIGITS[type].replace('INT64', 'FLOAT64') : DIGITS[type], [v]));
+    }
+    return swap;
+  }
   const types = [...new Set(values.map(typeOf))]
       .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
   const group = COMPARED.find(g => g.includes(types[0])) ?? [types[0]];
   const other = types.find(t => !group.includes(t));
   if (!other) return new Map();
   const problem = `${article(types[0])} ${types[0]} and ${article(other)} ${other}`;
-  if (DATE_TABLES[read]?.stamps && use !== 'added' && types.every(t => WIDER.includes(t))) {
+  if (DATE_TABLES[read]?.stamps && (use === 'compared' || use === 'results') && types.every(t => WIDER.includes(t))) {
     const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
     return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
   }
-  if (read !== 'mysql' || types.length !== 2 || other !== 'number') return problem;
+  if (!numbers || types.length !== 2 || other !== 'number') return problem;
   const results = use === 'results';
-  const digits = types[0] === 'DATE' ? "FORMAT_DATE('%Y%m%d', _1)" : "FORMAT_DATETIME('%Y%m%d%H%M%S', _1)";
-  // The digits and the text need each value COALESCE or a similar function
-  // gives to be visibly of the one type. A column may be a DATETIME, which
-  // BigQuery's FORMAT_DATE also reads, and MySQL gives the digits of a DATE
-  // beside a DATETIME one way in a sum and another in a comparison.
-  const visible = (v: any) =>
-      givenValues(v).every(g => !g || bare(g).null !== undefined || timeType(g, read) === types[0]);
   const swap = new Map();
   for (const v of values) {
     if (v === null || v === undefined || bare(v)?.null !== undefined) continue;
     const text = numberText(v);
-    if (typeOf(v) === types[0] && !visible(v)) return problem;
+    if (typeOf(v) === types[0] && !visible(v, types[0])) return problem;
     if (typeOf(v) === types[0]) {
-      swap.set(v, formCall(results ? 'CAST(_1 AS STRING)' : `CAST(${digits} AS INT64)`, [v]));
+      swap.set(v, formCall(results ? 'CAST(_1 AS STRING)' : DIGITS[types[0]], [v]));
     } else if (results && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(text ?? '')) {
       swap.set(v, formCall(`'${text}'`, []));
     } else if (results || typeOf(v) !== 'number') {

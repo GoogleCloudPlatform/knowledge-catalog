@@ -314,9 +314,10 @@ names microseconds.
   It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
   DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
   as in MySQL, and adds every unit to it.
-  A date or a time it can see, compared with a number or plus or minus a
-  number, counts as the number of its digits, as in MySQL: `CURDATE() + 1`
-  becomes `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. A
+  A date or a time it can see, in `+`, `-` or `*` or compared with a number,
+  counts as the number of its digits, as in MySQL: `CURDATE() + 1` becomes
+  `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. Negated, it is a
+  FLOAT64, as MySQL gives a DOUBLE. A
   COALESCE, IF or CASE counts so only when each value it can give is visibly a
   DATE, or each a DATETIME. A string beside an INTERVAL is read as MySQL reads
   it, as a date written YYYY-M-D or YYYYMMDD, or a date and a time of whole
@@ -390,8 +391,16 @@ minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 7 days in both. The amount is a whole number or an expression, such as
 `INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
 BigQuery give its parts the same way. From the other databases, import leaves
-any other date arithmetic untranslated, such as an INTERVAL of a fraction,
-or a function such as COALESCE plus an INTERVAL.
+any other date arithmetic untranslated, such as an INTERVAL of a fraction.
+PostgreSQL's DATE_TRUNC of a column plus an INTERVAL stays untranslated, since
+DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
+timestamp column. COALESCE, IF or CASE of a column and a DATE plus an INTERVAL
+stays untranslated, since the column can give it another type. A Databricks
+TIMESTAMP_NTZ column, for one, keeps its type where a DATE plus hours becomes
+a TIMESTAMP. MySQL's `CURDATE() - INTERVAL 1 DAY + 1` stays untranslated,
+since the engine reads it as `CURDATE() - (INTERVAL 1 DAY + 1)`, where MySQL
+subtracts the INTERVAL first. Written `(CURDATE() - INTERVAL 1 DAY) + 1`, it
+translates.
 
 From PostgreSQL and Databricks, import also translates a sum or difference of
 INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
