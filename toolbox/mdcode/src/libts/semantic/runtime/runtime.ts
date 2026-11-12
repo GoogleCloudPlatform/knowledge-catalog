@@ -22,10 +22,10 @@ import {SplitLayout} from '../../layouts/split';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
-import {SemanticModel} from '../ir';
+import {ProfileSpec, SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, profileSources, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -261,11 +261,15 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   if (options.proceed && !await options.proceed()) return [];
 
   // Push then loads every profile file, whichever profile it deploys, and
-  // refuses one that does not load.
+  // refuses one that does not load. The runtime keeps each profile it loads,
+  // by document and profile name.
+  const specsByDoc = new Map<string, Map<string, ProfileSpec>>();
   for (const doc of docs) {
+    const specs = new Map<string, ProfileSpec>();
+    specsByDoc.set(doc.name, specs);
     for (const p of filesByDoc.get(doc.name) ?? []) {
       try {
-        loadProfileFile(p.text, p.name, {skipActions: true});
+        specs.set(p.name, loadProfileFile(p.text, p.name, {skipActions: true}));
       } catch (err) {
         if (!(err instanceof SemanticModelError)) throw err;
         const file = fileNameOf(layout, doc.name, p.path);
@@ -322,10 +326,9 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
         (profilesByDoc.get(document) ?? []).find(p => p.name === profile);
     const spec = profile === DEFAULT_PROFILE || !declared ? undefined :
         'spec' in declared ? declared.spec :
-        loadProfileFile(declared.text, profile, {skipActions: true});
-    const bound = spec && new Map(spec.entities.map(pe => [pe.name, pe.source]));
-    const chosen = bound ?
-        resolveStore(authored, profile, document, e => bound.get(e.name)) :
+        specsByDoc.get(document)!.get(profile);
+    const chosen = spec ?
+        resolveStore(authored, profile, document, profileSources(spec)) :
         resolveStore(authored, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated

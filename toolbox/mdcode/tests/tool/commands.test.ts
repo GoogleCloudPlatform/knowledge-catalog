@@ -1078,6 +1078,9 @@ describe('a push of overview sidecars', () => {
 });
 
 
+// The table profile prod binds Customer to.
+const CUSTOMER_TABLE =
+    'bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer';
 // A model pulled from the catalog, with an entity and profile prod, which push
 // accepts.
 const SECOND_GEN: SemanticModel = {
@@ -1088,7 +1091,7 @@ const SECOND_GEN: SemanticModel = {
     name: 'prod',
     entities: [{
       name: 'Customer',
-      source: 'bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer',
+      source: CUSTOMER_TABLE,
       fields: [{name: 'id', expression: 'c_id'}],
     }],
     relationships: [],
@@ -1114,10 +1117,13 @@ const local = (name: string) => path.join(entryGroupDir(), name);
 const shown = (name: string) =>
     path.join('catalog', 'EntryGroups', 'commerce_eg', name);
 // A workspace holding the model file and two profile files, of which the
-// catalog has only `prod`.
+// catalog has only `prod`. Push accepts `dev` beside the catalog's model.
 const withStaleProfile = () => {
   writeRoundTripWorkspace('name: prod\n');
-  fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
+  fs.writeFileSync(
+      local('commerce.profile.dev.yaml'),
+      `name: dev\nentities:\n  - name: Customer\n    source: ${
+          CUSTOMER_TABLE}\n    fields: [{ name: id, expression: c_id }]\n`);
 };
 
 
@@ -2054,21 +2060,24 @@ describe('a pull', () => {
              .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
        });
 
-  // Writes catalog.yaml, and pulls `model` with `options`.
-  const pullModel = (model = SECOND_GEN, options: {dryRun?: boolean} = {}) => {
+  // Writes catalog.yaml, and pulls `model` and `overviews` with `options`.
+  const pullModel = (model = SECOND_GEN, options: {dryRun?: boolean} = {},
+                     overviews?: Map<string, OverviewSidecar>) => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'),
                      'scope: semantic-model.test-project.us.commerce_eg\n');
-    pulled(model);
+    pulled(model, overviews);
     return pull(options);
   };
   // Pulls `model`, and checks that pull writes its model file, warns with
-  // push's `error` when there is one, and reads no table's SQL dialect.
-  const checkPull = async (model: SemanticModel, error: string) => {
+  // push's `error` in `file` when there is one, and reads no table's SQL
+  // dialect.
+  const checkPull = async (
+      model: SemanticModel, error: string, file = 'commerce.yaml') => {
     expect(await pullModel(model)).toBe(0);
     expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
         .toBe(serializedFiles(model)['commerce.yaml']);
     expect(messages(console.warn)).toBe(error && `Warning: push refuses ${
-        shown('commerce.yaml')} as pull writes it: ${error}`);
+        shown(file)} as pull writes it: ${error}`);
     expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
     expect(CatalogClient.prototype.lookupEntry).not.toHaveBeenCalled();
   };
@@ -2088,29 +2097,38 @@ describe('a pull', () => {
       ({name, expression, stringForm: true,
         ...(entity ? {entity, authoredEntity: entity} : {})});
 
+  // A model whose metric reads an entity it lacks, and push's error.
+  const GONE_ENTITY: [SemanticModel, string] = [
+    {...SECOND_GEN, metrics: [{name: 'm', expression: 'COUNT(Gone.id)'}]},
+    "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
+        "'Gone', which is not a declared entity in model 'commerce'; write " +
+        "'entity.field' starting with a declared entity.",
+  ];
+  // A model whose profile prod has a field reading a field Customer lacks, on
+  // a Spanner table, and push's error.
+  const GONE_FIELD: [SemanticModel, string] = [
+    {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
+      name: 'Customer', source: `${SPANNER}/customer`,
+      fields: [{name: 'id', expression: 'Customer.gone * 2', stringForm: true}],
+    }]}]},
+    "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
+        "'Customer.gone', which is not a field of 'Customer'.",
+  ];
+
   // Another writer may delete an entry the model needs, such as an entity
   // another one extends or a metric reads. Pull still writes the model file,
-  // and warns with push's first error.
-  for (const [what, model, error] of [
+  // and warns with push's first error, naming the file it is in.
+  for (const [what, model, error, file] of [
     ['an entity another extends',
      {...SECOND_GEN, entities: [{...SECOND_GEN.entities[0], extends: ['Named']}]},
      "model 'commerce' (commerce): entity 'Customer' extends unknown entity " +
          "'Named'; it is not defined in the model. Checks that need the " +
          'resolved model are skipped until this is fixed.'],
-    ['an entity a metric reads',
-     {...SECOND_GEN, metrics: [{name: 'm', expression: 'COUNT(Gone.id)'}]},
-     "metric 'm' in model 'commerce' (commerce): 'Gone.id' has qualifier " +
-         "'Gone', which is not a declared entity in model 'commerce'; write " +
-         "'entity.field' starting with a declared entity."],
+    ['an entity a metric reads', ...GONE_ENTITY],
     // Pull reads no Spanner table's dialect, and still checks the fields a
     // profile field reads.
-    ['a field a profile field reads',
-     {...SECOND_GEN, profiles: [{...SECOND_GEN.profiles![0], entities: [{
-       name: 'Customer', source: `${SPANNER}/customer`,
-       fields: [{name: 'id', expression: 'Customer.gone * 2', stringForm: true}],
-     }]}]},
-     "[commerce.profile.prod.yaml] profile 'prod': field 'Customer.id' reads " +
-         "'Customer.gone', which is not a field of 'Customer'."],
+    ['a field a profile field reads', ...GONE_FIELD,
+     'commerce.profile.prod.yaml'],
     // The catalog lists its profiles in its own order. Push lists them by
     // name.
     ['the profile a deployment names',
@@ -2121,9 +2139,9 @@ describe('a pull', () => {
                      profile: 'missing'}]},
      "[commerce] model 'commerce': deployment 'qa' names unknown binding " +
          "profile 'missing'; defined profiles: dev, staging."],
-  ] as Array<[string, SemanticModel, string]>) {
-    test(`warns when push refuses the model file it writes without ${what}`,
-         () => checkPull(model, error));
+  ] as Array<[string, SemanticModel, string, string?]>) {
+    test(`warns when push refuses a file pull writes without ${what}`,
+         () => checkPull(model, error, file));
   }
 
   // Model commerce with entity Order on a BigQuery table, whose field code has
@@ -2164,19 +2182,126 @@ describe('a pull', () => {
                "declared entity in model 'commerce'; write 'entity.field' " +
                'starting with a declared entity.'));
 
-  // Pull runs that import on the files in the entry group once it has written
-  // its own, so its warning names an error in a profile file pull leaves
-  // there. A dry run reads that file too.
+  // Push reads every file in the entry group after the pull, those pull writes
+  // and those it leaves, and the warning names the file push's first error is
+  // in. A dry run reads the text pull writes for each file it writes, and
+  // every other file on disk, so it warns as the real pull does.
+  const SIDECAR = 'commerce/entities/Customer.overview.md';
+  for (const [what, files, model, overviews, file, verb, error] of [
+    ['the model file pull writes over one push accepts',
+     {'commerce.yaml': serializedFiles()['commerce.yaml']}, GONE_ENTITY[0],
+     undefined, 'commerce.yaml', 'writes', GONE_ENTITY[1]],
+    ['a profile file pull writes over one push accepts',
+     {'commerce.profile.prod.yaml':
+          serializedFiles()['commerce.profile.prod.yaml']},
+     GONE_FIELD[0], undefined, 'commerce.profile.prod.yaml', 'writes',
+     GONE_FIELD[1]],
+    ['a profile file pull leaves', {'commerce.profile.dev.yaml': 'name: dev\n'},
+     SECOND_GEN, undefined, 'commerce.profile.dev.yaml', 'leaves',
+     "[commerce.profile.dev.yaml] profile 'dev': entity 'Customer' has no " +
+         'source in this profile.'],
+    // A quote in the file's name does not end the error's label.
+    ['a profile file pull leaves whose name holds a quote',
+     {"commerce.profile.dev's.yaml": 'name: dev\n'}, SECOND_GEN, undefined,
+     "commerce.profile.dev's.yaml", 'leaves',
+     "Profile file 'commerce.profile.dev's.yaml' has profile name 'dev's'; a " +
+         'profile name is a letter followed by letters, digits, underscores ' +
+         'and hyphens.'],
+    ['a profile file pull leaves that is not valid UTF-8',
+     {'commerce.profile.dev.yaml': Buffer.from('#\xe9\nname: dev\n', 'latin1')},
+     SECOND_GEN, undefined, 'commerce.profile.dev.yaml', 'leaves',
+     "File 'commerce.profile.dev.yaml' is not valid UTF-8; save it as UTF-8."],
+    // The vanilla model file pull writes keeps its profiles in its GOOGLE
+    // block, so push refuses the local profile file beside it.
+    ['a profile file pull leaves beside the vanilla model file it writes',
+     {'commerce.profile.prod.yaml': 'name: prod\n'},
+     {name: 'commerce', version: '0.2.0.dev0', relationships: [], metrics: [],
+      entities: [onTable('Customer', CUSTOMER_TABLE, ['id'])]},
+     undefined, 'commerce.profile.prod.yaml', 'leaves',
+     "Profile file 'commerce.profile.prod.yaml' sits beside 'commerce.yaml', " +
+         'which is a 0.2.0.dev0 document; sibling profile files are ' +
+         'Google-flavor only, and a 0.2.0.dev0 model keeps its profiles in its ' +
+         'GOOGLE block.'],
+    // An error that names the model file too names the profile file first.
+    ['a profile file pull leaves that takes the reserved name',
+     {'commerce.profile.default.yaml': 'name: default\n'}, SECOND_GEN,
+     undefined, 'commerce.profile.default.yaml', 'leaves',
+     "Profile file 'commerce.profile.default.yaml' has profile name " +
+         "'default', which is reserved for the inline bindings in " +
+         "'commerce.yaml'; remove it."],
+    ['an overview sidecar pull leaves', {[SIDECAR]: '---\nfoo: bar\n---\nOld.\n'},
+     SECOND_GEN, undefined, SIDECAR, 'leaves',
+     `Overview sidecar '${SIDECAR}': its frontmatter holds only contentType ` +
+         "and links, not 'foo'."],
+    ['an overview sidecar pull leaves that is too large to store',
+     {[SIDECAR]: `${'x'.repeat(125_000)}\n`}, SECOND_GEN, undefined, SIDECAR,
+     'leaves',
+     "aspect 'dataplex-types.global.overview' of entry " +
+         "'commerce/entities/Customer' is too large to store in Knowledge " +
+         'Catalog: its data takes 125014 bytes, and one aspect holds at most ' +
+         '122880.'],
+    ['an overview sidecar pull writes', {}, SECOND_GEN,
+     new Map([['commerce', {content: 'Text.\n', contentType: 'TEXT'}]]),
+     'commerce.overview.md', 'writes',
+     "Overview sidecar 'commerce.overview.md': contentType is MARKDOWN or " +
+         "HTML, not 'TEXT'."],
+  ] as Array<[string, Record<string, string|Buffer>, SemanticModel,
+              Map<string, OverviewSidecar>|undefined, string, string,
+              string]>) {
+    for (const dryRun of [false, true]) {
+      test(`names ${what} when push refuses it${
+               dryRun ? ', under --dry-run' : ''}`,
+           async () => {
+             for (const [name, text] of Object.entries(files)) {
+               fs.mkdirSync(path.dirname(local(name)), {recursive: true});
+               fs.writeFileSync(local(name), text);
+             }
+             expect(await pullModel(model, {dryRun}, overviews)).toBe(0);
+             expect(messages(console.warn)).toEndWith(
+                 `Warning: push refuses ${shown(file)} as pull ${verb} it: ${
+                     error}`);
+           });
+    }
+  }
+
+  // A dry run reads pull's writes and deletions from memory, so it writes
+  // nothing: no temporary directory, no file in the entry group, and no file a
+  // link there leads to, whether a model file linked to a file outside or a
+  // link to the directory above the entry group.
+  test('under --dry-run writes nothing, through a link either', async () => {
+    const outside = path.join(dir, 'outside.yaml');
+    fs.writeFileSync(outside, 'old: true\n');
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.symlinkSync(outside, local('commerce.yaml'));
+    fs.symlinkSync('../..', local('up'));
+    const tmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = path.join(dir, 'missing');
+    try {
+      expect(await pullModel(SECOND_GEN, {dryRun: true}, new Map([[
+               'commerce/entities/Customer', {content: 'New.\n'},
+             ]]))).toBe(0);
+    } finally {
+      if (tmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = tmpdir;
+    }
+    expect(fs.readFileSync(outside, 'utf8')).toBe('old: true\n');
+    expect(fs.readdirSync(entryGroupDir()).sort()).toEqual(['commerce.yaml', 'up']);
+    expect(fs.existsSync(path.join(dir, 'missing'))).toBe(false);
+  });
+
+  // Push cannot read a sidecar pull leaves that is a link to no file, and the
+  // warning gives push's error. A dry run reads that link on disk as well.
   for (const dryRun of [false, true]) {
-    test('names the error the import stops on in a profile file pull leaves' +
-             (dryRun ? ', under --dry-run' : ''),
+    test(`gives push's error for a sidecar pull leaves that links to no file${
+             dryRun ? ', under --dry-run' : ''}`,
          async () => {
-           fs.mkdirSync(entryGroupDir(), {recursive: true});
-           fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: dev\n');
-           expect(await pullModel(snowflakeCode(), {dryRun})).toBe(0);
+           fs.mkdirSync(path.dirname(local(SIDECAR)), {recursive: true});
+           fs.symlinkSync('missing.md', local(SIDECAR));
+           expect(await pullModel(SECOND_GEN, {dryRun})).toBe(0);
            expect(messages(console.warn)).toEndWith(
-               "after fixing this: [commerce.profile.dev.yaml] profile 'dev': " +
-               "entity 'Order' has no source in this profile.");
+               `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
+               `writes it: ENOENT: no such file or directory, open '${
+                   shown(SIDECAR)}'.`);
          });
   }
 
@@ -2203,7 +2328,52 @@ describe('a pull', () => {
         "first-party --flavor google --transpile' after fixing this: metric 'm' " +
         "in model 'commerce' (commerce): expression references 'Order.missing', " +
         "but entity 'Order' has no field 'missing'; metric expressions must " +
-        'reference declared fields, not physical columns.');
+        'reference declared fields, not physical columns.',
+    'commerce.profile.prod.yaml');
+  });
+
+  // Push names a profile file in the parentheses after the model's name when
+  // it refuses an action statement in it, so the warning names that file.
+  test('names a profile file pull leaves when push refuses a statement in it',
+       async () => {
+         await sqlParser.loadSqlEngine();
+         const [model] = loaderMod.loadModels(
+             MODEL_YAML.replace('    entities:', '    actions:\n      - name: purge\n' +
+                                '        parameters: [{name: k, type: Integer}]\n    entities:'),
+             {bindingOptional: true}).models;
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         fs.writeFileSync(
+             local('commerce.profile.dev.yaml'),
+             'name: dev\nactions:\n  - name: purge\n    executor:\n      sql:\n' +
+                 "        statements:\n          - UPDATE c SET doc = doc #- '{d}' WHERE k = @k\n");
+         expect(await pullModel(model)).toBe(0);
+         expect(messages(console.warn)).toContain(
+             `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
+             "leaves it: action 'purge' in model 'commerce' (commerce.profile.dev.yaml) " +
+             'has a sql executor whose statement 1 has a comment on the same line');
+       });
+
+  // Push reports a deployment's errors under the profile it uses, so the
+  // warning names that profile's file, here one that keeps its local action.
+  test('names the profile file of the deployment push refuses', async () => {
+    const prod = SECOND_GEN.profiles![0];
+    fs.mkdirSync(entryGroupDir(), {recursive: true});
+    fs.writeFileSync(
+        local('commerce.profile.prod.yaml'),
+        'name: prod\nactions:\n  - name: purge\n    executor:\n      sql:\n' +
+            '        statements:\n          - DELETE FROM customer WHERE c_id = @old_k\n');
+    expect(await pullModel({
+      ...SECOND_GEN,
+      profiles: [{...prod, entities: [{...prod.entities[0], primaryKey: ['c_id']}]}],
+      deployments: [{name: 'prod_bq', profile: 'prod', target:
+                         'bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g'}],
+      actions: [{name: 'purge', parameters: [{name: 'k', type: 'Integer'}]}],
+    } as SemanticModel)).toBe(0);
+    expect(messages(console.warn)).toBe(
+        `Warning: push refuses ${shown('commerce.profile.prod.yaml')} as pull ` +
+        "writes it: action 'purge' in model 'commerce' (commerce, deployment " +
+        "'prod_bq') has a sql executor whose statement 1 binds '@old_k', but " +
+        "action 'purge' declares no parameter of that name.");
   });
 
   // An error of several lines, such as a parse error with its code frame,
@@ -2212,9 +2382,9 @@ describe('a pull', () => {
        async () => {
          fs.mkdirSync(entryGroupDir(), {recursive: true});
          fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: [\n');
-         expect(await pullModel(snowflakeCode())).toBe(0);
+         expect(await pullModel()).toBe(0);
          expect(messages(console.warn)).toMatch(
-             /after fixing this: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n\^\.$/);
+             /as pull leaves it: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n\^\.$/);
        });
 
   // Under --dry-run --force-remove, that import leaves out the files the pull
@@ -2655,23 +2825,6 @@ describe('a pull', () => {
              {...SECOND_GEN, description: 'Replaced \uFFFD char'},
              {dryRun: true})).toBe(0);
          expect(messages(console.warn)).not.toContain('push refuses');
-       });
-
-  // Pull keeps a local sidecar the catalog lacks, and push reads it, so
-  // --dry-run warns about one push rejects, as the real pull does.
-  test('under --dry-run warns about a kept local sidecar push rejects',
-       async () => {
-         const sidecar = 'commerce/entities/Customer.overview.md';
-         fs.mkdirSync(path.dirname(local(sidecar)), {recursive: true});
-         fs.writeFileSync(local(sidecar), '---\nfoo: bar\n---\nOld.\n');
-
-         expect(await pullModel(SECOND_GEN, {dryRun: true})).toBe(0);
-         expect(messages(console.warn)).toBe(
-             `Warning: local overview sidecar ${shown(sidecar)} is not in ` +
-             `the catalog; delete it, or pull with --force-remove to delete ` +
-             `it.\nWarning: push refuses ${shown('commerce.yaml')} as pull ` +
-             `writes it: Overview sidecar '${sidecar}': its frontmatter ` +
-             `holds only contentType and links, not 'foo'.`);
        });
 
   test('profile files are written and deleted through the layout', async () => {

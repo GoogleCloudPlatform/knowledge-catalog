@@ -755,6 +755,14 @@ export function profileErrorMessage(
   return `[${file?.fileName ?? docName}] ${res.error}`;
 }
 
+// The source `profile` binds an entity to, or undefined for an entity it does
+// not bind.
+export function profileSources(profile: ProfileSpec):
+    (e: Entity) => string | undefined {
+  const bound = new Map(profile.entities.map(pe => [pe.name, pe.source]));
+  return e => bound.get(e.name);
+}
+
 /**
  * Why `model` cannot be used because a deployment names a binding profile
  * `declared` does not hold, or undefined when each names `default` or a

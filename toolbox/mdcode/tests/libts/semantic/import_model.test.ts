@@ -666,8 +666,8 @@ describe('profile checks', () => {
     ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
      at => `[${at.label}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
     ['the reserved name', [{...PG, name: 'default'}],
-     at => `Profile name 'default' is reserved for the inline bindings in '${at.doc}.yaml'; ` +
-         `remove '${at.doc}.profile.default.yaml'.`, true],
+     at => `Profile file '${at.doc}.profile.default.yaml' has profile name 'default', which ` +
+         `is reserved for the inline bindings in '${at.doc}.yaml'; remove it.`, true],
     ['a name that breaks the naming rule', [{...PG, name: '1x'}],
      at => `Profile file '${at.doc}.profile.1x.yaml' has profile name '1x'; a profile name is ` +
          'a letter followed by letters, digits, underscores and hyphens.', true],
@@ -2270,8 +2270,8 @@ semantic_model:
   // [label, the profile files beside sales.yaml, push's error]
   test.each([
     ['the reserved name', [['sales.profile.default.yaml', 'name: default\n']],
-     "Profile name 'default' is reserved for the inline bindings in 'sales.yaml'; remove " +
-     "'sales.profile.default.yaml'."],
+     "Profile file 'sales.profile.default.yaml' has profile name 'default', which is " +
+     "reserved for the inline bindings in 'sales.yaml'; remove it."],
     ['names that differ only in letter case',
      [['sales.profile.PROD.yaml', 'name: PROD\n'], ['sales.profile.prod.yaml', 'name: prod\n']],
      "Profile files 'sales.profile.PROD.yaml' and 'sales.profile.prod.yaml' name the same " +
