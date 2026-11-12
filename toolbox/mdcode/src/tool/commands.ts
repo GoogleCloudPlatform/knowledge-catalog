@@ -3096,14 +3096,9 @@ async function workspaceLayout(
       `is no model layout to write into. Run \`kcmd init --semantic-model ` +
       `...\` first, or pass --out <path> to write the file directly.`;
   // Resolving an entry group, BigQuery or knowledge base scope calls a
-  // service, so the scope's type is read from the file first.
-  const scope = yaml.parse(fs.readFileSync('catalog.yaml', 'utf8'))?.scope;
-  const type = Array.isArray(scope) ? Sources.BIGQUERY_DATASET :
-                                      String(scope).split('.')[0];
-  if ([Sources.ENTRYGROUP, Sources.BIGQUERY_DATASET, Sources.KB].some(
-          t => t === type)) {
-    return notSemantic;
-  }
+  // service, so a catalog.yaml that names one gets this error first. Any
+  // other catalog.yaml gets the manifest's own error.
+  if (kcmd.serviceScopeType('catalog.yaml')) return notSemantic;
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', api());
   return semanticLayoutOf(snapshot) ?? notSemantic;
 }

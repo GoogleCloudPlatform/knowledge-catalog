@@ -274,6 +274,22 @@ describe('kcmd import', () => {
         'graph, a Spanner graph or an AlloyDB database.')]);
   });
 
+  // A catalog.yaml that breaks one of the manifest's rules gets that rule's
+  // error, as push and pull give it, before any service call.
+  test.each([
+    ['scope: [kb.test-project.us.sales]',
+     "Manifest error: Unsupported scope type in multiple scopes: 'kb'."],
+    ['scope: []', 'Manifest error: scope array cannot be empty.'],
+    ['scope: kb.test-project.us.sales\nlayout: bogus',
+     "Manifest error: layout 'bogus' is not supported"],
+    ['scope: entryGroup.test-project.us',
+     'EntryGroup must be in format <projectId>.<locationId>.<entryGroupId>'],
+  ])('without --out, the catalog.yaml %p gets the manifest error', async (catalog, error) => {
+    write('catalog.yaml', `${catalog}\n`);
+    write('retail.yaml', model());
+    await expect(importModel('retail.yaml', {flavor: 'ossie'})).rejects.toThrow(error);
+  });
+
   const IN_GROUP = path.join(GROUP, 'shop.yaml');
   // [label, the workspace, the error, the input file]
   const REFUSED_WITHOUT_OUT: Array<[string, () => void, string, string?]> = [
