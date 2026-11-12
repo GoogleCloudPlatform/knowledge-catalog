@@ -99,7 +99,8 @@ export function validatePushRequirements(
     // dispatch it, and each guard must name a constraint the model declares.
     // (The "exactly one executor kind" rule is already guaranteed by the loader
     // schema, so it cannot reach here.)
-    errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
+    errors.push(...validateActions(
+        model, document, !!opts.fieldsPruned, true, opts.load ?? {}));
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
@@ -802,7 +803,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
 // concept that does not exist.
 export function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean,
-    checkDescriptions: boolean): string[] {
+    checkDescriptions: boolean, load: DialectLoad = {}): string[] {
   const errors: string[] = [];
   const actions = model.actions ?? [];
   if (!actions.length) return errors;
@@ -835,9 +836,9 @@ export function validateActions(
       undefined;
   // A deployment that applies a profile refuses a sql executor in the model
   // file, and reads the profile's own statements in its tables' dialect.
-  const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      statementsDialect(model) :
-      undefined;
+  const dialects = actions.some(a => a.executor?.kind === 'sql') ?
+      modelStatementDialects(model, load) :
+      [];
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -941,15 +942,18 @@ export function validateActions(
       }
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
-    errors.push(...sqlExecutorErrors(action, where, sqlDialect));
+    errors.push(...sqlExecutorErrors(action, where, dialects));
     // BigQuery and Spanner match parameter names without regard to case, so
-    // they read two declared names that differ only in case as one. With a
-    // null dialect, each deployment's check reports these.
-    if (executor?.kind === 'sql' && sqlDialect !== null) {
+    // they read two declared names that differ only in case as one. With no
+    // dialect known, each deployment's check reports these.
+    if (executor?.kind === 'sql') {
       const declared = action.parameters.map(p => p.name);
       declared.forEach((second, i) => {
         for (const first of declared.slice(0, i)) {
-          if (boundParameter(second, [first], sqlDialect) !== first) continue;
+          if (!dialects.some(
+                  d => boundParameter(second, [first], d) === first)) {
+            continue;
+          }
           errors.push(
               `${where} declares parameters '${first}' and '${second}', ` +
               `which BigQuery and Spanner read as one name. Rename one.`);
@@ -967,6 +971,48 @@ export function validateActions(
 function statementsDialect(model: SemanticModel): string|null {
   return sourcesDialect(model) ??
       (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null);
+}
+
+// The dialects the statements written in the model file of `model` are read
+// in: statementsDialect's, when it gives one. A model file that binds no
+// table runs its statements through its named profiles, so they are then
+// read in the dialect each profile gives (see profileDialect). Empty when no
+// dialect is known, as when no lookup read the tables' dialect, as in pull.
+function modelStatementDialects(
+    model: SemanticModel, load: DialectLoad): string[] {
+  const own = statementsDialect(model);
+  if (own) return [own];
+  if (sourcesDialect(model) !== undefined) return [];
+  return [...new Set((model.profiles ?? []).flatMap(spec => {
+    const dialect = profileDialect(model, spec, load);
+    return dialect ? [dialect] : [];
+  }))];
+}
+
+// The dialect the statements of profile `spec` of `model` are read in:
+// statementsDialect's, with the profile's tables, looked up as `load` gives
+// them, and the deployments that use the profile. Null when that gives none
+// or the profile does not apply, which localChecks reports. Only the
+// profile's tables matter, so the model's actions, which a profile may not
+// apply to, are left out.
+function profileDialect(
+    model: SemanticModel, spec: ProfileSpec, load: DialectLoad): string|null {
+  const resolved = resolveModelDeployments(model);
+  const names = 'error' in resolved ?
+      [] :
+      resolved.deployments.filter(d => d.profile === spec.name)
+          .map(d => d.name);
+  try {
+    const bound = applyProfile({...model, actions: []}, spec, {load});
+    return statementsDialect({
+      ...bound,
+      deployments:
+          (model.deployments ?? []).filter(d => names.includes(d.name)),
+    });
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return null;
+  }
 }
 
 // The errors in a SQL executor's statements. Nothing here for the other three
@@ -987,21 +1033,23 @@ function statementsDialect(model: SemanticModel): string|null {
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
 //
-// A null `dialect` says the statements' dialect is not known, as when no
-// lookup read the dialect of the model's tables or the model file leaves its
-// tables to a profile. A statement is then refused when every dialect in
+// The statements are read in each of `dialects`, the databases they run on,
+// and each error any of them gives is reported. With no dialect, the
+// statements' dialect is not known, as when no lookup read the dialect of the
+// model's tables. A statement is then refused when every dialect in
 // SQL_CODE_DIALECTS refuses it: for each rule they all find it breaks, in the
 // first one's words, or else for what the first one finds. A check that knows
 // the dialect reports the others.
 function sqlExecutorErrors(
-    action: Action, where: string, dialect?: string|null): string[] {
+    action: Action, where: string, dialects: readonly string[]): string[] {
   if (action.executor?.kind !== 'sql') return [];
   const declared = action.parameters.map(p => p.name);
   return action.executor.sql.statements.flatMap((stmt, i) => {
     const at = `${where} has a sql executor whose statement ${i + 1}`;
-    if (dialect !== null) {
-      return statementErrors(action, at, stmt, declared, dialect)
-          .map(([, error]) => error);
+    if (dialects.length) {
+      return [...new Set(dialects.flatMap(
+          d => statementErrors(action, at, stmt, declared, d)
+                   .map(([, error]) => error)))];
     }
     const readings = SQL_CODE_DIALECTS.map(
         d => statementErrors(action, at, stmt, declared, d));
@@ -1063,7 +1111,8 @@ function statementErrors(
 
 // The errors for each `sql` executor statement that YAML reads differently
 // from how it is written, in the model file `text` of `base` and in each of
-// its profile files:
+// its profile files. `base` holds the profiles its profile files declare, as
+// withProfileFiles gives them:
 //   1. An unquoted statement with a comment on the same line. YAML ends an
 //      unquoted value at ` #`, so the statement it reads is shorter than the
 //      one written.
@@ -1097,7 +1146,7 @@ export function yamlChangedStatementErrors(
          {name: DEFAULT_PROFILE, text, fileName: document},
          ...profileDocs(document),
        ]) {
-    const dialects = statementDialects(model, file.name, file.text, load);
+    const dialects = statementDialects(model, file.name, load);
     const statements = writtenStatements(file.text);
     const markers = joinedLineMarkers(statements, file.text, dialects);
     for (const written of statements) {
@@ -1265,37 +1314,25 @@ function writtenStatements(text: string): WrittenStatement[] {
 }
 
 // The dialects in which the statements of binding profile `profile` of
-// `model` run, where `text` is its file: the one validateActions reads them
-// in, with the profile's tables and the deployments that use it. A deployment
-// target in no accepted form and a profile file that does not apply give
-// none, which localChecks reports. `load` is what the caller read of each
-// table's dialect.
+// `model` run, as validateActions reads them: for the model file, those
+// modelStatementDialects gives with the deployments that use the model file's
+// own bindings, and for a profile file, the one profileDialect gives. `model`
+// holds the profiles its profile files declare, and `load` is what the caller
+// read of each table's dialect.
 function statementDialects(
-    model: SemanticModel, profile: string, text: string,
-    load: DialectLoad): string[] {
-  const resolved = resolveModelDeployments(model);
-  const deployments = 'error' in resolved ?
-      [] :
-      resolved.deployments.filter(d => d.profile === profile);
-  let bound: SemanticModel|undefined = model;
-  if (profile !== DEFAULT_PROFILE) {
-    // Only the profile's tables matter here, so the model's actions, which
-    // a profile may not apply to, are left out.
-    try {
-      bound = applyProfile(
-          {...model, actions: []},
-          loadProfileFile(text, profile, {skipActions: true}), {load});
-    } catch (err) {
-      if (!(err instanceof SemanticModelError)) throw err;
-      bound = undefined;
-    }
+    model: SemanticModel, profile: string, load: DialectLoad): string[] {
+  if (profile === DEFAULT_PROFILE) {
+    const resolved = resolveModelDeployments(model);
+    const own = 'error' in resolved ?
+        [] :
+        resolved.deployments.filter(d => d.profile === DEFAULT_PROFILE);
+    const deployments = (model.deployments ?? [])
+                            .filter(d => own.some(r => r.name === d.name));
+    return modelStatementDialects({...model, deployments}, load);
   }
-  const read = bound && statementsDialect({
-    ...bound,
-    deployments: (model.deployments ?? [])
-                     .filter(d => deployments.some(r => r.name === d.name)),
-  });
-  return read ? [read] : [];
+  const spec = (model.profiles ?? []).find(p => p.name === profile);
+  const dialect = spec && profileDialect(model, spec, load);
+  return dialect ? [dialect] : [];
 }
 
 // For each of `statements` in the model or profile file `text`, the first SQL

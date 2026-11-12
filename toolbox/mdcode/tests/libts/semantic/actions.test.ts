@@ -14,7 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile, loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -695,6 +695,31 @@ describe('validatePushRequirements gates actions', () => {
       document,
       model: {...model, entities: [entity], deployments: undefined},
     }])).toEqual(errors.map(e => expect.stringContaining(e)));
+  });
+
+  // A model file that binds no table runs its statements through its named
+  // profiles, so they are read in each profile's dialect: here AlloyDB, which
+  // matches parameter names exactly.
+  test('reads the statements of a model file that binds no table as its profiles\' tables do', () => {
+    const {document, model} = loaded([{
+      name: 'A',
+      executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders WHERE id = @ID']}},
+      parameters: [{name: 'id', type: 'Integer'}],
+    }]);
+    const prod = loadProfileFile(
+        'name: prod\nentities:\n  - name: customer\n    source: alloydb.googleapis.com/' +
+            'projects/p/locations/us-central1/clusters/c/databases/d/schemas/public/' +
+            'tables/orders\n',
+        'prod');
+    expect(validatePushRequirements([{
+      document,
+      model: {
+        ...model,
+        entities: [{...model.entities[0], authoredSource: '', dataSource: ''}],
+        deployments: undefined,
+        profiles: [prod],
+      },
+    }])).toEqual([expect.stringContaining("binds '@ID'")]);
   });
 
   test('checks no parameter names of an action without a sql executor', () => {

@@ -568,6 +568,16 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
     }, {
+      // A model file that binds no table runs its statements through its
+      // profiles, so it reads them in their dialects too.
+      files: {
+        'commerce.yaml': modelWriting(
+            ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+            {entities: [{...CUSTOMER, source: undefined}]}),
+        'commerce.profile.p.yaml': profileFile('p', boundTo('p')),
+      },
+      errors: [has("(commerce) has a sql executor whose statement 1 has '#' on a line")],
+    }, {
       // MySQL starts a comment at '#' too, as push reads a Cloud SQL for
       // MySQL table's looked-up dialect.
       services: {lookupEntry: () => cloudSqlEntry('cloudsql-mysql-table')},
