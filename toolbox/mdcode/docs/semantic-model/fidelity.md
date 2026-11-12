@@ -401,12 +401,12 @@ DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and
 minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
 7 days in both. The amount is a whole number or an expression, such as
 `INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, since Spanner and
-BigQuery give its parts the same way. So do a comparison and BETWEEN, since
-both compare a month as 30 days and a day as 24 hours. Months, quarters and
-years added with `+` or `-` stay untranslated, since Spanner adds them to no
-TIMESTAMP and adds no INTERVAL to a DATE. From the other databases, import
-leaves any other date arithmetic untranslated, such as an INTERVAL of a
-fraction.
+BigQuery give its parts the same way. So do a comparison, BETWEEN, IN and a
+CASE with a value, since both compare a month as 30 days and a day as 24
+hours. Months, quarters and years added with `+` or `-` stay untranslated,
+since Spanner adds them to no TIMESTAMP and adds no INTERVAL to a DATE. From
+the other databases, import leaves any other date arithmetic untranslated,
+such as an INTERVAL of a fraction.
 PostgreSQL's DATE_TRUNC of a column plus an INTERVAL stays untranslated, since
 DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
 timestamp column. COALESCE, IF or CASE of a column and a DATE plus an INTERVAL
@@ -471,6 +471,13 @@ or millennium from the months or years. It writes the epoch with a year of
 EXTRACT of an INTERVAL stays untranslated, since Databricks keeps a day and
 time INTERVAL as one count of microseconds: the hours of `INTERVAL 25 HOURS`
 are 1 there and 25 in BigQuery.
+
+BigQuery's IN and CASE compare no INTERVAL. From PostgreSQL, Databricks and
+Spanner, IN, NOT IN and a CASE with a value over an INTERVAL become the
+equalities they compare by: `x IN (a, b)` becomes `(x = a OR x = b)`, and
+`CASE x WHEN a` becomes `CASE WHEN x = a`. They give the same truth values,
+also for NULL. A NULL among them becomes `CAST(NULL AS INTERVAL)`, since
+BigQuery's `=` takes no literal NULL.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's

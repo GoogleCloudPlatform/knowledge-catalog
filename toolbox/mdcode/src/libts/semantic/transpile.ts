@@ -2402,8 +2402,40 @@ function exactForm(node: any, read: string): any {
     if (typeof forms === 'string') return `${how} on ${forms}`;
     forms.forEach((f, v) => swap.set(v, f));
   }
-  return swap.size ? swapped(node, swap) : undefined;
+  const result = swap.size ? swapped(node, swap) : undefined;
+  const nullInterval = () => formCall(NULL_INTERVAL, []);
+  return overInterval(node, read) ? equalities(kind, (result ?? node)[kind], nullInterval) : result;
 }
+
+// Whether `node`, a source node in the engine's dialect `read`, is IN or a
+// CASE with an operand that compares a value visibly an INTERVAL. BigQuery's
+// IN and CASE compare no INTERVAL, so import writes the equalities they
+// compare by (see equalities).
+function overInterval(node: any, read: string): boolean {
+  const kind = kindOf(node) ?? '';
+  const value = node[kind];
+  if (kind !== 'in' && !(kind === 'case' && value.operand)) return false;
+  const interval = (v: any) => read === 'spanner' ? spannerType(v) === 'interval' : intervalTyped(v, read);
+  return comparedValues(kind, value)!.some(interval);
+}
+
+// `value`, IN or a CASE with an operand, as the equalities it compares by:
+// `x IN (a, b)` as `(x = a OR x = b)`, NOT IN as NOT of them, and `CASE x WHEN
+// a` as `CASE WHEN x = a`. They give the same truth values, also when a value
+// is NULL. BigQuery's `=` takes no literal NULL, so each becomes what
+// `nullInterval` gives, a NULL of type INTERVAL.
+function equalities(kind: string, value: any, nullInterval: () => any): any {
+  const typed = (n: any) => bare(n)?.null !== undefined ? nullInterval() : n;
+  const is = (a: any, b: any) => equal(typed(a), typed(b));
+  if (kind === 'case') {
+    return {case: {...value, operand: null, whens: value.whens.map(([w, r]: any[]) => [is(value.operand, w), r])}};
+  }
+  const or = (left: any, right: any) =>
+      ({or: {left, right, left_comments: [], operator_comments: [], trailing_comments: []}});
+  const any = {paren: {this: value.expressions.map((e: any) => is(value.this, e)).reduce(or), trailing_comments: []}};
+  return value.not ? {paren: {this: {not: {this: any}}, trailing_comments: []}} : any;
+}
+const NULL_INTERVAL = 'CAST(NULL AS INTERVAL)';
 
 // Whether `node`, a source value in the engine's dialect `read`, is a
 // difference the dialect gives as an INTERVAL of days and a time of day (see
@@ -3293,10 +3325,9 @@ function spannerNodes(kind: string, value: any, prefix: string): unknown[]|strin
         `${prefix}${OPERATORS[kind]} of a date string and a value that may be a TIMESTAMP`;
   }
   // Spanner and BigQuery compare INTERVALs with a month as 30 days and a day
-  // as 24 hours, so a comparison or BETWEEN takes an INTERVAL of any unit.
-  // BigQuery's IN and CASE take no INTERVAL.
-  const intervals = COMPARISONS.has(kind) || kind === 'between' ?
-      compared!.filter(v => spannerAmount(bare(v)?.interval)) : [];
+  // as 24 hours, so a comparison takes an INTERVAL of any unit, as do BETWEEN,
+  // IN and CASE, which compare with `=` (see equalities).
+  const intervals = compared?.filter(v => spannerAmount(bare(v)?.interval)) ?? [];
   if (intervals.length) return [...rest(...intervals), ...intervals.map(v => bare(v).interval.this)];
   if (kind === 'timestamp') {
     if (stringLiteral(value.this)) return rest(value.this);
@@ -3416,7 +3447,10 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
   const rewrite = (node: any): any => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(rewrite);
-    const zoned = (isNode(node) && spannerZone(node)) || node;
+    const nullInterval = () => sqlExpressionTree(NULL_INTERVAL, 'BIGQUERY');
+    const zoned = (isNode(node) && overInterval(node, 'spanner') &&
+                   equalities(kindOf(node)!, node[kindOf(node)!], nullInterval)) ||
+        (isNode(node) && spannerZone(node)) || node;
     return Object.fromEntries(Object.entries(zoned).map(([k, v]) => [k, rewrite(v)]));
   };
   // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
