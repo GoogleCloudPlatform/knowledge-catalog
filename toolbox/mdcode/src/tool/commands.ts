@@ -2235,13 +2235,14 @@ async function pushRefusal(
   }
   if (!first) return undefined;
   // The error is in the file a label in it names, when push reads that file:
-  // a leading `[<file>] ...` or `<Kind> '<file>' ...`, or the `(<file>)` after
-  // the model's name in `... in model '<name>' (<file>)`, which names a
-  // profile file there. An entry's overview aspect too large to store is in
-  // that entry's overview sidecar, when push reads one. For any other error
-  // with no such label, the file is that of the named profile push reports
-  // the error under, as for a deployment that uses the profile, when push
-  // reads one, and else the model file.
+  // a leading `[<file>] ...` or `<Kind> '<file>' ...`, matched against the
+  // files push reads so a quote in a file's name does not end it, or the
+  // `(<file>)` after the model's name in `... in model '<name>' (<file>)`,
+  // which names a profile file there. An entry's overview aspect too large to
+  // store is in that entry's overview sidecar, when push reads one. For any
+  // other error with no such label, the file is that of the named profile
+  // push reports the error under, as for a deployment that uses the profile,
+  // when push reads one, and else the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
   const sidecars = layout.overviewSidecarPaths();
   const files = [
@@ -2249,8 +2250,11 @@ async function pushRefusal(
         d => [layout.modelPath(d.name), ...layout.profileFilePaths(d.name)]),
     ...sidecars.map(s => s.path),
   ].map(name);
-  const label = /^(?:\[([^\]]+)\]|[A-Z][a-z]*(?: [a-z]+)* '([^']+)')/.exec(
-      first.error);
+  const kind = /^[A-Z][a-z]*(?: [a-z]+)* '/.exec(first.error)?.[0];
+  const leads = (f: string) => [f, f.split('/').join(path.sep)].some(
+      n => first.error.startsWith(`[${n}]`) ||
+          kind !== undefined && first.error.startsWith(`${kind}${n}'`));
+  const label = files.filter(leads).sort((a, b) => b.length - a.length)[0];
   const inModel = / in model '[^']*' \(([^)]+)\)/.exec(first.error);
   const overviewOf = /^aspect '[^'@]*\.overview(?:@[^']*)?' of entry '([^']+)'/
                          .exec(first.error)?.[1];
@@ -2261,8 +2265,7 @@ async function pushRefusal(
       undefined :
       `${doc.name}.profile.${first.profile}.yaml`;
   const named = [
-    label?.[1], label?.[2], inModel?.[1], sidecar && name(sidecar.path),
-    profileFile,
+    label, inModel?.[1], sidecar && name(sidecar.path), profileFile,
   ].map(n => n?.split(path.sep).join('/'))
       .find(n => n !== undefined && files.includes(n));
   return {

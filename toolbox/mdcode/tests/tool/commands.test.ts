@@ -2200,6 +2200,13 @@ describe('a pull', () => {
      SECOND_GEN, undefined, 'commerce.profile.dev.yaml', 'leaves',
      "[commerce.profile.dev.yaml] profile 'dev': entity 'Customer' has no " +
          'source in this profile.'],
+    // A quote in the file's name does not end the error's label.
+    ['a profile file pull leaves whose name holds a quote',
+     {"commerce.profile.dev's.yaml": 'name: dev\n'}, SECOND_GEN, undefined,
+     "commerce.profile.dev's.yaml", 'leaves',
+     "Profile file 'commerce.profile.dev's.yaml' has profile name 'dev's'; a " +
+         'profile name is a letter followed by letters, digits, underscores ' +
+         'and hyphens.'],
     ['a profile file pull leaves that is not valid UTF-8',
      {'commerce.profile.dev.yaml': Buffer.from('#\xe9\nname: dev\n', 'latin1')},
      SECOND_GEN, undefined, 'commerce.profile.dev.yaml', 'leaves',
