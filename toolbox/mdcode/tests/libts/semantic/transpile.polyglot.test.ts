@@ -325,6 +325,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'a::timestamp(3)', {error: 'kcmd does not translate CAST to TIMESTAMP(3)'}],
     ['SNOWFLAKE', 'CAST(a AS TIMESTAMP_TZ)', {error: 'kcmd does not translate CAST to TIMESTAMP_TZ'}],
     ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP'}],
+    ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP_NTZ)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP_NTZ'}],
     ['POSTGRES', "CAST('2024-03-15 10:00:00' AS DATE)", {error: "kcmd does not translate CAST to DATE of '2024-03-15 10:00:00'"}],
     ['POSTGRES', "DATE '2024-03-15 10:00:00'", {error: "kcmd does not translate DATE '2024-03-15 10:00:00'"}],
     ['SQLSERVER', 'TRY_CAST(ds AS DATE)', {error: 'kcmd does not translate TRY_CAST to DATE of a column'}],

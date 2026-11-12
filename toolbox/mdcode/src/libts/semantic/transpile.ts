@@ -2125,9 +2125,9 @@ function conditionValues(kind: string, value: any): unknown[] {
 // BigQuery's CAST rejects a string with a time of day as a DATE, and its
 // SAFE_CAST gives NULL, where the sources give the date. The engine writes
 // Databricks' CAST as SAFE_CAST, and Snowflake's TRY_CAST to TIMESTAMP as a
-// TIMESTAMP, where its CAST gives a TIMESTAMP_NTZ. Snowflake's TRY_CAST also
-// reads date and time formats that BigQuery's SAFE_CAST gives NULL for, such
-// as '05-Mar-2016'.
+// TIMESTAMP, where its CAST gives a TIMESTAMP_NTZ. Snowflake's TRY_CAST to a
+// timestamp also reads date and time formats that BigQuery's SAFE_CAST gives
+// NULL for, such as '05-Mar-2016'.
 function castProblem(kind: string, value: any, read: string): string|undefined {
   const type = castType(value.to);
   const size = [value.to.length ?? value.to.precision, value.to.scale].filter(n => n != null);
@@ -2135,7 +2135,9 @@ function castProblem(kind: string, value: any, read: string): string|undefined {
   if (!CAST_TYPES[type]?.includes(read) || size.length) {
     return `${name} to ${typeName(type, read)}${size.length ? `(${size.join(', ')})` : ''}`;
   }
-  if (kind === 'try_cast' && read === 'snowflake' && type === 'timestamp') return 'TRY_CAST to TIMESTAMP';
+  if (kind === 'try_cast' && read === 'snowflake' && ['timestamp', 'TIMESTAMPNTZ'].includes(type)) {
+    return `TRY_CAST to ${typeName(type, read)}`;
+  }
   if (type !== 'date') return undefined;
   const b = bare(value.this);
   const text = b?.literal?.literal_type === 'string' ? b.literal.value : undefined;
