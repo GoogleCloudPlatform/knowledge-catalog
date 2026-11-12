@@ -797,6 +797,12 @@ interface DateTable {
   rows: Record<string, DateRow>;
   // The row of a cast to DATE, a DATE literal and the current date.
   date: string;
+  // The row of a cast to each other type that has one, by castType's name.
+  casts?: Record<string, string>;
+  // The functions whose value has the type of their last argument, such as
+  // Snowflake's DATE_TRUNC, and so its row. MIN and MAX have the type of their
+  // operand in every dialect.
+  keepsType?: string[];
   // The functions that give the current date. A name the engine keeps, which
   // BigQuery does not have, also needs an entry in CURRENT_TIME.
   today: string[];
@@ -943,7 +949,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   // INTERVAL.
   postgresql: {
     date: 'date', today: ['CURRENT_DATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'timestamptz'},
-    functions: {},
+    casts: lookup({timestamp: 'timestamp', timestamptz: 'timestamptz'}), functions: {},
     words: named({
       MICROSECOND: ['microseconds', 'microsecon', 'us', 'usec', 'usecs', 'useconds'],
       MILLISECOND: ['milliseconds', 'millisecon', 'ms', 'msec', 'msecs', 'mseconds'],
@@ -978,7 +984,9 @@ const DATE_TABLES: Record<string, DateTable> = {
   },
   // Snowflake's DATEADD, and its TIMEADD and TIMESTAMPADD, give a DATE for a
   // DATE plus a day or longer, and a TIMESTAMP_NTZ for a DATE plus an hour, a
-  // minute or a second, which no whole number is added to. A month that
+  // minute or a second, which no whole number is added to. A TIMESTAMP_NTZ,
+  // such as a cast to TIMESTAMP, gets every unit, as BigQuery adds them to a
+  // DATETIME. Its DATE_TRUNC keeps the type of its date. A month that
   // lacks the day gives its last day, as in BigQuery. An interval string such
   // as '1 day' also gives a DATE for a DATE, but its rule for a month that
   // lacks the day may differ from DATEADD's, so an interval string names a day
@@ -993,6 +1001,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   // change.
   snowflake: {
     date: 'DATE', today: ['CURRENT_DATE'], now: {functions: ['CURRENT_TIMESTAMP'], row: 'TIMESTAMP_LTZ'},
+    casts: lookup({timestamp: 'TIMESTAMP_NTZ', TIMESTAMPNTZ: 'TIMESTAMP_NTZ'}), keepsType: ['DATE_TRUNC'],
     functions: {DATEADD: 'part', TIMEADD: 'part', TIMESTAMPADD: 'part'}, keywords: false,
     intervals: [...SUB_DAY, 'DAY'],
     words: named({
@@ -1016,7 +1025,10 @@ const DATE_TABLES: Record<string, DateTable> = {
         units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
         days: {form: 'DATE_ADD', gives: 'DATE'},
       },
-      TIMESTAMP_NTZ: {type: 'DATETIME', name: 'a TIMESTAMP_NTZ', units: {}},
+      TIMESTAMP_NTZ: {
+        type: 'DATETIME', name: 'a TIMESTAMP_NTZ',
+        units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'TIMESTAMP_NTZ'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
+      },
       TIMESTAMP_LTZ: {type: 'DATETIME', name: 'a TIMESTAMP_LTZ', units: adds(DAY_OR_LONGER, 'DATE_ADD', 'TIMESTAMP_LTZ')},
     },
   },
@@ -1558,15 +1570,21 @@ function sumOn(table: DateTable, read: string, sum: {
 
 // The row in `table`, the table of the engine's dialect `read`, of `node`, a
 // source value import adds a unit to, with the name a message gives it: a
-// column, a cast to DATE, a DATE literal, the current date or timestamp, or a
-// date arithmetic import translates, whose row is the one its addition gives.
-// Otherwise a message about the date arithmetic in `node`, or undefined.
+// column, a cast to DATE or to a type in `casts`, a DATE literal, the current
+// date or timestamp, or a date arithmetic import translates, whose row is the
+// one its addition gives. MIN, MAX and a function of `keepsType` take the row
+// of the value whose type they keep. Otherwise a message about the date
+// arithmetic in `node`, or undefined.
 function operandRow(node: any, read: string, table: DateTable):
     {row: string; name: string}|string|undefined {
   const b = bare(node);
   if (b?.column) return {row: 'column', name: table.rows.column.name};
   if (isDate(b)) return {row: table.date, name: valueName(b)};
+  const cast = table.casts?.[castType((b?.cast ?? b?.try_cast)?.to)];
+  if (cast) return {row: cast, name: valueName(b)};
   const name = String(b?.function?.name).toUpperCase();
+  const kept = b?.min?.this ?? b?.max?.this ?? (table.keepsType?.includes(name) ? b.function.args?.at(-1) : undefined);
+  if (kept) return operandRow(kept, read, table);
   if (b?.function && !b.function.args?.length && table.now.functions.includes(name)) {
     return {row: table.now.row, name};
   }
