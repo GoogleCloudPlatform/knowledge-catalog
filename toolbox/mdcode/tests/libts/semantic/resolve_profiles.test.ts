@@ -2090,6 +2090,46 @@ describe('profile rules', () => {
     expect(errors.filter(e => e.includes('names itself'))).toHaveLength(count);
   });
 
+  // The fields the profile restates and those it inherits from the model file
+  // are read together, in the text the profile's database runs. A cycle the
+  // caller reports in the model file is left out.
+  test.each<[string, Partial<Field>, string, string, string[]]>([
+    ['an inherited ALLOYDB entry', {dialects: [
+      {dialect: 'BIGQUERY', expression: 'party.data'},
+      {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
+    ]}, 'data', 'alloydb', ["field 'party.code' names itself"]],
+    ['through a restated field', {expression: 'party.data'}, 'party.code', 'alloydb', [
+      "field 'party.data' names itself through 'party.code'",
+      "field 'party.code' names itself through 'party.data'",
+    ]],
+    ['a model file cycle the caller reports', {expression: 'party.code'}, 'data', 'bigquery', []],
+  ])('a field names itself under a profile: %s', (_, code, data, system, expected) => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{name: 'party', dataSource: '', keys: ['id'], fields: [
+        {name: 'id', expression: 'id'},
+        {name: 'data', expression: 'data'},
+        {name: 'code', ...code},
+      ]}],
+      relationships: [],
+      metrics: [],
+    };
+    const source = system === 'alloydb' ?
+        'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/party' :
+        BQ('party');
+    const errors = validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [{name: 'party', primaryKey: ['id'], source, fields: [
+        {name: 'id', expression: 'id'},
+        {name: 'data', expression: data},
+      ]}],
+      relationships: [],
+    }, [], {ownSqlOnly: {dialect: 'BIGQUERY'}});
+    expect(errors.filter(e => e.includes('names itself'))
+               .map(e => e.slice(0, e.indexOf(';'))))
+        .toEqual(expected.map(e => `profile 'prod': ${e}`));
+  });
+
   // Only the allowlisted dialects, each once.
   test('a profile expression may use only allowlisted dialects, each once', () => {
     const file = (dialects: string) =>

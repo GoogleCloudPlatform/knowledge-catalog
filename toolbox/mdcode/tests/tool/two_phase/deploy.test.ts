@@ -824,8 +824,8 @@ scenarios('a deployment push does not select gets every local check of a selecte
                {name: 'b', expression: 'Customer.a'}],
     }}}},
   }, 'g',
-  ...['a', 'b'].map(f => has(`field 'Customer.${f}' in model 'commerce' ` +
-                            "(commerce, deployment 'x') names itself"))),
+  ...['a', 'b'].map(f => has("[commerce.profile.x.yaml] profile 'x': " +
+                            `field 'Customer.${f}' names itself`))),
   unselected('a profile action the model does not declare', {
     deployments: ['g', {name: 'x', profile: 'x'}],
     profiles: {x: {...boundTo('x'), actions: [

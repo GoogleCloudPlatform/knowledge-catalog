@@ -29,6 +29,7 @@
 
 import * as yaml from 'yaml';
 
+import {selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
@@ -1679,7 +1680,9 @@ export interface CompletenessOptions extends DialectLoad {
   // about the model file's SQL is left out when the caller also warns about
   // each text this check cannot read: an entry in a dialect other than
   // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
-  // the caller cannot read it either.
+  // the caller cannot read it either. The caller also reports each field of
+  // the model file that names itself, read in `dialect`, and this check
+  // leaves that report out.
   ownSqlOnly?: {dialect?: string|null};
   // The model file's document, which push's messages that the advice to add a
   // BigQuery text quotes name. Defaults to the model's name.
@@ -1794,22 +1797,19 @@ export function validateProfileCompleteness(
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
     // as the profile's own SQL. When no lookup read its dialect, it is read
     // with `readWithoutDialect` as columnsWithoutDialect reads it in the
-    // dialects the profile's tables may have, and not at all without. With
-    // the profile's dialect known, a field names itself only in the text its
-    // database runs (see textsFor), as push reads a model file's fields.
+    // dialects the profile's tables may have, and not at all without.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
-      const running = dialect ? textsFor(pf, dialect)[0]?.text : undefined;
       // A text with no SQL is reported above, and has nothing to read.
       const readable = expressionSources(pf).filter(
           s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
               !(s.dialect === 'ANSI_SQL' && dialect === null &&
                 !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
-        const read = written === 'ANSI_SQL' && dialect ? dialect : written;
         const columns = written === 'ANSI_SQL' && dialect === null ?
             columnsWithoutDialect(text, candidates)?.columns :
-            columnReferences(text, read);
+            columnReferences(
+                text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {
           unreadable.add(fieldLabel(pe.name, pf.name));
           continue;
@@ -1829,12 +1829,25 @@ export function validateProfileCompleteness(
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
-          } else if (ref === pf.name &&
-                     (!dialect || (read === dialect && text === running))) {
-            errors.push(`${at}: ${selfReferenceMessage(pe.name, [pf.name])}`);
           }
         }
       }
+    }
+  }
+  // A field that names itself, among the fields the profile restates and
+  // those it inherits from the model file, read in the text the profile's
+  // database runs, as push reads a model file's fields (see selfReferences).
+  // A cycle the caller reports in the model file is left out.
+  const readIn = (d: string|null|undefined) =>
+      d === null && opts.readWithoutDialect ? undefined : d;
+  const callerReports = new Set(
+      opts.ownSqlOnly ?
+          selfReferences(baseModel, readIn(opts.ownSqlOnly.dialect))
+              .map(c => JSON.stringify(c)) :
+          []);
+  for (const c of selfReferences(profiled, readIn(dialect))) {
+    if (!callerReports.has(JSON.stringify(c))) {
+      errors.push(`${at}: ${selfReferenceMessage(c.entity, c.cycle)}`);
     }
   }
 

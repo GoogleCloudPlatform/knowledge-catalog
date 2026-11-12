@@ -92,7 +92,7 @@ export function declaredFields(model: SemanticModel): Map<string, Set<string>> {
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
 //     3. Reject a field that names itself, directly or through other fields of
 //        E, declared or inherited, since the graph renders a field that names
-//        a sibling from that sibling's SQL (see selfReferenceProblems).
+//        a sibling from that sibling's SQL (see selfReferenceCycles).
 //
 // With `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
 // lookup read is read as columnsWithoutDialect reads it in the dialects those
@@ -116,19 +116,7 @@ export function expressionProblems(
   const sourcesRead = sourcesDialect(model);
   const dialectless = sourcesRead === null && !!load.readWithoutDialect;
   const impliedDialect = dialectless ? undefined : sourcesRead;
-  // Each entity's fields as the graph renders them (see selfReferenceProblems),
-  // with an inherited text read in the sources' dialect, as the runtime
-  // reads it. A dialect in which `#` starts a comment is read with BigQuery's
-  // rules, which also start a comment at `#`.
-  const inheritedReading =
-      impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
-                                                             undefined;
-  const resolvedByName = new Map(
-      (ifResolvable(
-           () => resolveInheritance(model, inheritedReading, {requalify: true})
-                     .model.entities) ??
-       model.entities ?? [])
-          .map(e => [e.name, e]));
+  const cycles = selfReferences(model, impliedDialect);
   const candidates =
       dialectless ? possibleDialects(model.entities ?? []) : [];
   // The columns `text` reads, and whether the read left a name out.
@@ -218,9 +206,15 @@ export function expressionProblems(
         }
       }
     }
-    errors.push(...selfReferenceProblems(
-        entity, resolvedByName.get(entity.name) ?? entity, model, document,
-        impliedDialect));
+    for (const {cycle} of cycles.filter(c => c.entity === entity.name)) {
+      errors.push({
+        item: {entity: entity.name, field: cycle[0]},
+        problem: selfReferenceMessage(
+                     entity.name, cycle,
+                     ` in model '${model.name}' (${document})`) +
+            '.',
+      });
+    }
   }
 
   const entityOfMetric =
@@ -406,8 +400,32 @@ function fieldNoSqlProblems(
   return errors;
 }
 
-// The errors for the fields of `entity` that name themselves, directly or
-// through other fields of `entity`. The graph renders a field that names a
+// Each field of each entity of `model` that names itself, with the fields it
+// names itself through (see selfReferenceCycles). Each entity's fields are
+// read as the graph renders them, with an inherited text read in
+// `impliedDialect`, as the runtime reads it. A dialect in which `#` starts a
+// comment is read with BigQuery's rules, which also start a comment at `#`.
+export function selfReferences(
+    model: SemanticModel, impliedDialect: string|null|undefined):
+    Array<{entity: string; cycle: string[]}> {
+  const inheritedReading =
+      impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
+                                                             undefined;
+  const resolvedByName = new Map(
+      (ifResolvable(
+           () => resolveInheritance(model, inheritedReading, {requalify: true})
+                     .model.entities) ??
+       model.entities ?? [])
+          .map(e => [e.name, e]));
+  return (model.entities ?? []).flatMap(
+      e => selfReferenceCycles(
+               e, resolvedByName.get(e.name) ?? e, impliedDialect)
+               .map(cycle => ({entity: e.name, cycle})));
+}
+
+// The fields of `entity` that name themselves, directly or through other
+// fields of `entity`, each as the cycle it starts: the field, then the fields
+// it names itself through. The graph renders a field that names a
 // sibling as `<entity>.<field>` from that sibling's own SQL, so a field that
 // reaches itself that way has no SQL to render. A field expression that writes
 // its own column as `<entity>.<field>` names itself too: write the bare column
@@ -423,9 +441,9 @@ function fieldNoSqlProblems(
 // so a field can reach itself through one it inherits. A cycle is reported on
 // an entity only when a field on it is bound there, so one an ancestor forms on
 // its own is reported on that ancestor alone.
-function selfReferenceProblems(
-    entity: Entity, resolved: Entity, model: SemanticModel, document: string,
-    impliedDialect: string|null|undefined): ExpressionProblem[] {
+function selfReferenceCycles(
+    entity: Entity, resolved: Entity,
+    impliedDialect: string|null|undefined): string[][] {
   const own = entity.fields ?? [];
   const inherited = resolved.fields ?? [];
   // A field a profile excludes is left off `resolved`, but still checked.
@@ -450,8 +468,8 @@ function selfReferenceProblems(
     }
     if (impliedDialect === null) dialects.delete('ANSI_SQL');
   }
-  // Each message, with the field it names first.
-  const errors = new Map<string, string>();
+  // Each cycle, by its fields.
+  const cycles = new Map<string, string[]>();
   for (const dialect of dialects) {
     // The fields of `entity` each field names, in this dialect, read as the
     // graph generators read them (see graph_ddl.siblingsRead), so a qualifier
@@ -471,15 +489,11 @@ function selfReferenceProblems(
     for (const f of fields) {
       const through = pathBack(f.name, reads);
       if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
-      const message = selfReferenceMessage(
-                          entity.name, [f.name, ...through],
-                          ` in model '${model.name}' (${document})`) +
-          '.';
-      if (!errors.has(message)) errors.set(message, f.name);
+      const cycle = [f.name, ...through];
+      cycles.set(JSON.stringify(cycle), cycle);
     }
   }
-  return [...errors].map(
-      ([problem, field]) => ({item: {entity: entity.name, field}, problem}));
+  return [...cycles.values()];
 }
 
 // The shortest run of other fields through which `start` reaches itself in
