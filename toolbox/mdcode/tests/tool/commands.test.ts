@@ -1573,12 +1573,13 @@ semantic_model:
       BOTH(STATEMENTS('DELETE FROM ledger WHERE closed = TRUE')),
     ],
     // A statement pull writes where a comment comes to end it is
-    // double-quoted, since push refuses it plain. A statement the local file
-    // already writes so stays as written.
+    // double-quoted, since push refuses it plain, also when a comment ended it
+    // in the local file's flow list or anchor. A statement the local file
+    // already writes so and pull leaves alone stays as written.
     [
       'action statements a comment comes to follow',
       BOTH(ACTIONS(
-          '\n              - UPDATE ledger SET closed = FALSE' +
+          '\n              - UPDATE ledger SET closed = TRUE' +
               '\n              - DELETE FROM ledger WHERE closed = FALSE',
           '\n              - UPDATE ledger SET closed = TRUE'.repeat(2),
           ' [UPDATE ledger SET closed = TRUE]',
@@ -1586,7 +1587,7 @@ semantic_model:
               '\n              - UPDATE ledger SET closed = TRUE',
           ' [DELETE FROM audit]')),
       BOTH(ACTIONS(
-          '\n              [\n                &close UPDATE ledger SET closed = TRUE' +
+          '\n              [\n                &close UPDATE ledger SET closed = TRUE # as before' +
               '\n              ] # only closed rows\n                # and none reopened',
           '\n              - *close\n                # as CloseBooks did' +
               '\n              -\n                *close # again',
@@ -1594,7 +1595,7 @@ semantic_model:
           '\n                # close first\n              - UPDATE ledger SET closed = TRUE',
           '\n              - DELETE FROM audit # keep a week')),
       BOTH(ACTIONS(
-          '\n              - "UPDATE ledger SET closed = FALSE" # only closed rows' +
+          '\n              - "UPDATE ledger SET closed = TRUE" # only closed rows' +
               '\n              - "DELETE FROM ledger WHERE closed = FALSE"' +
               '\n                # and none reopened',
           '\n              - "UPDATE ledger SET closed = TRUE"' +

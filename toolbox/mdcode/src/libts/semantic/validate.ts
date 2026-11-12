@@ -1144,17 +1144,28 @@ function commentCut(text: string, {statement, holder}: WrittenStatement):
       undefined;
 }
 
-// The statements of `text`, a model or profile file changed from `before`,
-// that a comment ends, unless `before` has that statement in that action
-// ended by a comment too. An alias and its anchor share one statement.
-export function cutStatements(text: string, before: string): yaml.Scalar[] {
-  const key = ({action, statement}: WrittenStatement) =>
-      `${action}\n${statement.value}`;
-  const cutBefore = new Set(
-      writtenStatements(before).filter(s => commentCut(before, s)).map(key));
+// The statements of `text`, a model or profile file that `edits` made from
+// `before`, that a comment ends. A statement that a comment ended in `before`
+// and that no edit touched is left out, since its text is the local file's.
+// Each edit replaces the text from one offset to another of `before`. An
+// alias and its anchor share one statement.
+export function cutStatements(
+    text: string, before: string,
+    edits: ReadonlyArray<readonly [number, number, string]>): yaml.Scalar[] {
+  // Where each such statement of `before` is in `text`.
+  const kept = new Set(
+      writtenStatements(before)
+          .filter(s => commentCut(before, s))
+          .flatMap(({statement}) => {
+            const [a, b] = statement.range!;
+            if (edits.some(([p, q]) => p < b && q > a)) return [];
+            const shift = edits.filter(([, q]) => q <= a).reduce(
+                (d, [p, q, s]) => d + s.length - (q - p), 0);
+            return [a + shift];
+          }));
   return [...new Set(
       writtenStatements(text)
-          .filter(s => commentCut(text, s) && !cutBefore.has(key(s)))
+          .filter(s => commentCut(text, s) && !kept.has(s.statement.range![0]))
           .map(s => s.statement))];
 }
 

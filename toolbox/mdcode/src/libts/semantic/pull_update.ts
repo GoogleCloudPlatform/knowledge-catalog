@@ -95,12 +95,13 @@ export function updatedText(
   const value = plainCopy(document.toJS());
   const links = linkNodes(value, document.contents);
   const parse = (t: string) => yaml.parse(t, YAML_OPTIONS);
+  const made: Array<[number, number, string]> = [];
   const changed = updateText(
       text, document, merged(value, parse(base), parse(pulled), jsonLayout),
-      links);
+      links, made);
   // A statement written where a comment comes to end it is double-quoted on
   // one line, since push refuses it plain.
-  const edits = cutStatements(changed, text).map(({range, value}) =>
+  const edits = cutStatements(changed, text, made).map(({range, value}) =>
       [range![0], range![1], escaped(JSON.stringify(String(value)))] as const);
   return spliced(changed, edits);
 }
