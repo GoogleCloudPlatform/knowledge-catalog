@@ -1,6 +1,7 @@
 // Changes the text of a YAML document to hold a new value. Each part whose
 // value stays comes back byte for byte, and a changed part is written in the
-// file's indentation and line endings.
+// file's indentation and line endings. A changed block scalar keeps the
+// indentation of its lines.
 
 import * as yaml from 'yaml';
 
@@ -68,9 +69,10 @@ export function linkNodes(
  * comments and the blank lines above it. A flow collection over several lines
  * that changes is written again in block style. A value that would be written
  * as a block scalar that keeps its final line breaks, as `|+` does, is
- * double-quoted instead. The JSON `data` of a GOOGLE block written as a quoted
- * string over several lines that changes is written on one line as compact
- * JSON, quoted as kcmd quotes a new block.
+ * double-quoted instead, and so is a string that comes to hold a character
+ * that YAML writes only as an escape, such as DEL. The JSON `data` of a GOOGLE
+ * block written as a quoted string over several lines that changes is written
+ * on one line as compact JSON, quoted as kcmd quotes a new block.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
@@ -726,9 +728,10 @@ function scalarText(
     return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
   }
   const lines = flow && typeof value === 'string' && value.includes('\n');
-  // YAML allows DEL and the C1 controls only as escapes, and YAML 1.1 reads
-  // U+2028 and U+2029 as line breaks where YAML 1.2 does not, so a string
-  // that holds one is double-quoted and writes them as escapes.
+  // YAML allows DEL and the C1 controls other than NEL only as escapes, and
+  // YAML 1.1 reads NEL, U+2028 and U+2029 as line breaks where YAML 1.2 does
+  // not, so a string that holds one is double-quoted and writes them as
+  // escapes.
   const special =
       typeof value === 'string' && /[\x7f-\x9f\u2028\u2029]/.test(value);
   const node = isObject(value) ? value : Object.assign(

@@ -344,26 +344,24 @@ comments, key order and formatting. A changed string keeps its quoting or block
 style, and other changed values are written in pull's form. A changed block
 scalar keeps the indentation of its lines and its indentation indicator. A block
 more than 9 columns deeper than its key that comes to need an indicator is
-double-quoted, since the indicator stops at 9. A double-quoted string that yaml
-would write over several lines so that it reads back as other text, such as a
-line of one space, is written on one line. A string that comes to hold DEL, a C1
-control or a line separator is double-quoted, with those characters written as
-escapes. When the catalog
-reorders a list whose order counts, such as an entity's fields, an item that
-moves, or an item it moves past, can be written in pull's form too. The JSON
-`data` of a GOOGLE block, which holds a vanilla model's deployments and
+double-quoted, since the indicator stops at 9. A double-quoted string whose
+lines would read back as other text, such as a line of one space, is written on
+one line. A string that comes to hold DEL, a C1 control or a line or paragraph
+separator is double-quoted, with those characters written as escapes. When the
+catalog reorders a list whose order counts, such as an entity's fields, an item
+that moves, or an item it moves past, can be written in pull's form too. The
+JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
 profiles, changes the same way and keeps its layout. DEL, the C1 controls and
 the line and paragraph separators in it are written as JSON escapes, such as
-`\u2028`. When that `data` would
-then not hold what the catalog holds, it comes back as the catalog holds it,
-and the rest of the file still changes only where it differs. A `data`
-written as a quoted string over several lines that changes is written as one
-line of compact JSON, quoted as kcmd quotes a new block. Another
-vendor's `data` comes back as the catalog holds it. Pull writes a file whole
-when there is no local file, and when it cannot change only those values. When
-a local file does not load, pull warns and writes it from the catalog. Use pull
-to recover a workspace from a catalog someone else deployed, or to see what the
-catalog actually holds.
+`\u2028`. When that `data` would then not hold what the catalog holds, it comes
+back as the catalog holds it, and the rest of the file still changes only where
+it differs. A `data` written as a quoted string over several lines that changes
+is written as one line of compact JSON, quoted as kcmd quotes a new block.
+Another vendor's `data` comes back as the catalog holds it. Pull writes a file
+whole when there is no local file, and when it cannot change only those values.
+When a local file does not load, pull warns and writes it from the catalog. Use
+pull to recover a workspace from a catalog someone else deployed, or to see what
+the catalog actually holds.
 
 ```bash
 kcmd pull
