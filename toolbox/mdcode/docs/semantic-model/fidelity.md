@@ -391,12 +391,12 @@ microseconds.
   for a date. Seconds stay untranslated on a column, since SQL Server ignores
   -30 to 29 seconds added to a smalldatetime. It writes GETDATE() and
   CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
-  and adds every unit from seconds to years to it. A number added to it counts days, as in SQL
-  Server. Its fraction becomes the hours, minutes, seconds or milliseconds it
-  holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that is not whole
-  hundredths of a second stays untranslated, since SQL Server rounds it to
-  1/300 of a second. DATEADD of milliseconds or smaller units stays
-  untranslated, since a datetime rounds them to 1/300 of a second.
+  and adds every unit from seconds to years to it. A number added to it counts
+  days, as in SQL Server. Its fraction becomes the hours, minutes, seconds or
+  milliseconds it holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that
+  is not whole hundredths of a second stays untranslated, since SQL Server
+  rounds it to 1/300 of a second. DATEADD of milliseconds or smaller units
+  stays untranslated, since a datetime rounds them to 1/300 of a second.
 
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
 counts as days. Added to a DATE that COALESCE, IF or CASE gives, such as
