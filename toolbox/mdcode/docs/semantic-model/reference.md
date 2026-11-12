@@ -85,15 +85,20 @@ It changes a local file only where the catalog differs from it, so the rest
 keeps its comments, key order and formatting, and writes a file whole when it
 cannot. An overview sidecar that push would read into the overview the catalog
 holds keeps its bytes, whatever its line endings. When push's checks that call
-no service would refuse the model pull writes, pull warns and gives push's first
-error. When that error suggests `kcmd import --transpile`, pull runs that import
-as push does, writing nothing, on the files in the entry group once it has
-written its own. Under `--dry-run` the import reads the files the entry group
-would hold after the pull. When that import would stop, the error also names the
+no service would refuse a file the entry group holds after the pull, pull
+warns, names the file push's first error is in, and gives that error. Those
+files are the model file, profile files and overview sidecars pull writes, and
+the local ones it keeps. Under `--dry-run` pull makes its writes and deletions
+in a temporary copy of the entry group directory, runs the checks on the copy
+and deletes it. When that error suggests `kcmd import --transpile`, pull runs
+that import as push does, writing nothing, on the same files. When that import
+would stop, the error also names the
 first error it would stop on that pull can find without reading a table's SQL
 dialect. Pull leaves out push's checks that call a service,
 such as those that need a table's SQL dialect, the source check and the Spanner
-graph check, so only push reports those. When
+graph check, so only push reports those. It also leaves out push's checks of
+the older `<model>.profiles/` directory and of a profile file with no model file
+beside it. When
 the model entry's `kcmd-push-state` label says the last push stopped partway,
 it writes nothing.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
