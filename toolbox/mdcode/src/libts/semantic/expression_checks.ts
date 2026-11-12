@@ -1,10 +1,10 @@
 // Push's checks of the SQL of each field and metric.
 
-import {Entity, expressionForDialect, Field, isFieldBound, Metric, SemanticModel} from './ir';
+import {Entity, expressionForDialect, Field, Metric, SemanticModel} from './ir';
 import {inheritedNoSqlProblems, noSqlProblemOf, noSqlReason, OSSIE_VERSION, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, resolveInheritance} from './resolve_inheritance';
-import {DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect, textsFor} from './resolve_profiles';
+import {boundDeclaration, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect, textsFor} from './resolve_profiles';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {hashStartsComment} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -208,7 +208,11 @@ export function expressionProblems(
         }
       }
     }
+    // Each cycle once, though it may be read in several texts.
+    const reported = new Set<string>();
     for (const {cycle} of cycles.filter(c => c.entity === entity.name)) {
+      if (reported.has(JSON.stringify(cycle))) continue;
+      reported.add(JSON.stringify(cycle));
       errors.push({
         item: {entity: entity.name, field: cycle[0]},
         problem: selfReferenceMessage(
@@ -402,12 +406,16 @@ function fieldNoSqlProblems(
   return errors;
 }
 
-// Each field of each entity of `model` that names itself, with the fields it
-// names itself through and the texts read (see selfReferenceCycles). Each
-// entity's fields are read as the graph renders them, with an inherited text
-// read in `impliedDialect`, as the runtime reads it. A dialect in which `#`
-// starts a comment is read with BigQuery's rules, which also start a comment
-// at `#`.
+// Each field that names itself, with the fields it names itself through and
+// the texts read, as written by the entities that bind them. Each concrete
+// entity is read with the fields its table runs, declared and inherited, as
+// the graph renders them, so a binding no table runs, such as an abstract
+// supertype's that every subtype restates, forms no cycle. A cycle is the
+// concrete entity's when it binds a field of the cycle. Otherwise it is the
+// cycle of the ancestor where it forms: of those that bind its fields, the one
+// with the most ancestors. An inherited text is read in `impliedDialect`, as
+// the runtime reads it. A dialect in which `#` starts a comment is read with
+// BigQuery's rules, which also start a comment at `#`.
 export function selfReferences(
     model: SemanticModel, impliedDialect: string|null|undefined):
     Array<{entity: string; cycle: string[]; texts: string[]}> {
@@ -420,61 +428,68 @@ export function selfReferences(
                      .model.entities) ??
        model.entities ?? [])
           .map(e => [e.name, e]));
-  return (model.entities ?? []).flatMap(
-      e => selfReferenceCycles(
-               e, resolvedByName.get(e.name) ?? e, impliedDialect)
-               .map(c => ({entity: e.name, ...c})));
+  const depth = (name: string) =>
+      resolvedByName.get(name)?.extends?.length ?? 0;
+  // Each cycle, by its entity, fields and texts.
+  const found =
+      new Map<string, {entity: string; cycle: string[]; texts: string[]}>();
+  for (const e of model.entities ?? []) {
+    if (e.abstract) continue;
+    const resolved = resolvedByName.get(e.name) ?? e;
+    for (const {cycle, dialect} of selfReferenceCycles(
+             resolved, impliedDialect)) {
+      const owners = cycle.map(
+          n => boundDeclaration(model, e.name, n) ??
+              {owner: e.name, field: resolved.fields.find(f => f.name === n)!});
+      const entity = owners.some(o => o.owner === e.name) ?
+          e.name :
+          owners.map(o => o.owner).reduce(
+              (a, b) => depth(b) > depth(a) ? b : a);
+      const texts = owners.map(o => textsFor(o.field, dialect)[0]?.text ?? '');
+      const key = JSON.stringify({entity, cycle, texts});
+      if (!found.has(key)) found.set(key, {entity, cycle, texts});
+    }
+  }
+  return [...found.values()];
 }
 
-// The fields of `entity` that name themselves, directly or through other
-// fields of `entity`, each as the cycle it starts: the field, then the fields
-// it names itself through, with the text read for each. The graph renders a
-// field that names a sibling as `<entity>.<field>` from that sibling's own
-// SQL, so a field that reaches itself that way has no SQL to render. A field
-// expression that writes its own column as `<entity>.<field>` names itself
-// too: write the bare column instead. Each field gives the text a database of the sources' dialect runs
+// The fields of `entity`, an entity with the fields its table runs, that name
+// themselves, directly or through other fields of `entity`, each as the cycle
+// it starts: the field, then the fields it names itself through, with the
+// dialect read. The graph renders a field that names a sibling as
+// `<entity>.<field>` from that sibling's own SQL, so a field that reaches
+// itself that way has no SQL to render. A field expression that writes its own
+// column as `<entity>.<field>` names itself too: write the bare column
+// instead. Each field gives the text a database of the sources' dialect runs
 // (see textsFor), so a text no such database runs forms no cycle. With no
-// dialect known, each dialect a text is written in is read on its own, from the
-// text a database of that dialect runs, so two texts that no one database runs
-// together do not form a cycle. With a null dialect, which no lookup read, no
-// text is read.
-//
-// `resolved` is `entity` with the fields it inherits, which name its fields
-// as the graph renders them (see resolve_inheritance.localizeInheritedField),
-// so a field can reach itself through one it inherits. A cycle is reported on
-// an entity only when a field on it is bound there, so one an ancestor forms on
-// its own is reported on that ancestor alone.
+// dialect known, each dialect a text is written in is read on its own, from
+// the text a database of that dialect runs, so two texts that no one database
+// runs together do not form a cycle. With a null dialect, which no lookup
+// read, no text is read. The fields inherited name the entity's fields as the
+// graph renders them (see resolve_inheritance.localizeInheritedField), so a
+// field can reach itself through one it inherits.
 function selfReferenceCycles(
-    entity: Entity, resolved: Entity,
-    impliedDialect: string|null|undefined):
-    Array<{cycle: string[]; texts: string[]}> {
-  const own = entity.fields ?? [];
-  const inherited = resolved.fields ?? [];
-  // A field a profile excludes is left off `resolved`, but still checked.
-  const fields = [
-    ...inherited,
-    ...own.filter(f => !inherited.some(r => r.name === f.name)),
-  ];
-  const bound = new Set(own.filter(f => isFieldBound(f)).map(f => f.name));
+    entity: Entity, impliedDialect: string|null|undefined):
+    Array<{cycle: string[]; dialect: string}> {
+  // A field the entity excludes is left off its table.
+  const fields = (entity.fields ?? [])
+                     .filter(f => !entity.excludedFields?.includes(f.name));
   const names = new Set(fields.map(f => f.name));
   // The dialects read, each on its own: those of the texts textsFor gives.
   const dialects = new Set(
       fields.flatMap(f => textsFor(f, impliedDialect).map(t => t.dialect)));
-  // Each cycle, by its fields.
-  const cycles = new Map<string, {cycle: string[]; texts: string[]}>();
+  const cycles: Array<{cycle: string[]; dialect: string}> = [];
   for (const dialect of dialects) {
     // The fields of `entity` each field names, in this dialect, read as the
     // graph generators read them (see graph_ddl.siblingsRead), so a qualifier
     // the parser reserves, such as `Date` in `Date.days`, names them too.
     const reads = new Map<string, string[]>();
-    const textOf = new Map<string, string>();
     for (const f of fields) {
       const text = textsFor(f, dialect)[0]?.text;
       if (text === undefined ||
           noSqlReason(text, dialect, entity.name) !== undefined) {
         continue;
       }
-      textOf.set(f.name, text);
       reads.set(
           f.name,
           [...new Set(qualifiedColumns(text, entity.name, dialect) ?? [])]
@@ -482,15 +497,10 @@ function selfReferenceCycles(
     }
     for (const f of fields) {
       const through = pathBack(f.name, reads);
-      if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
-      const cycle = [f.name, ...through];
-      const key = JSON.stringify(cycle);
-      if (!cycles.has(key)) {
-        cycles.set(key, {cycle, texts: cycle.map(n => textOf.get(n)!)});
-      }
+      if (through) cycles.push({cycle: [f.name, ...through], dialect});
     }
   }
-  return [...cycles.values()];
+  return cycles;
 }
 
 // The shortest run of other fields through which `start` reaches itself in

@@ -1838,17 +1838,17 @@ export function validateProfileCompleteness(
   // those it inherits from the model file, read in the text the profile's
   // database runs, as push reads a model file's fields (see selfReferences).
   // A cycle the caller reports in the model file, through the same texts, is
-  // left out.
+  // left out, and each other cycle is reported once.
   const callerReports = new Set(
       opts.ownSqlOnly ?
           selfReferences(baseModel, opts.ownSqlOnly.dialect)
               .map(c => JSON.stringify(c)) :
           []);
-  for (const c of selfReferences(profiled, dialect)) {
-    if (!callerReports.has(JSON.stringify(c))) {
-      errors.push(`${at}: ${selfReferenceMessage(c.entity, c.cycle)}`);
-    }
-  }
+  const cycles = new Set(
+      selfReferences(profiled, dialect)
+          .filter(c => !callerReports.has(JSON.stringify(c)))
+          .map(c => `${at}: ${selfReferenceMessage(c.entity, c.cycle)}`));
+  errors.push(...cycles);
 
   // A profile's key columns are physical column names.
   for (const pe of profile.entities) {

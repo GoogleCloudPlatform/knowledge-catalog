@@ -2583,9 +2583,9 @@ ${extraMetric}`;
       ]);
     });
 
-    // A profile's exclusion leaves the field off the node table, but its
-    // expression is still the field's, and must still render where it is
-    // bound.
+    // A profile's exclusion leaves the field off the entity's table, but a
+    // subtype that inherits the binding runs it, so it must still render
+    // there.
     test('rejects a field that names itself on an entity that excludes it', () => {
       const m = model({
         entities: [{
@@ -2595,7 +2595,7 @@ ${extraMetric}`;
             ...orders().fields,
             {name: 'total', expression: 'orders.total * 2'},
           ],
-        }],
+        }, {...orders(), name: 'web_orders', extends: ['orders']}],
       });
       expect(validatePushRequirements([loaded(m)]))
           .toEqual([
