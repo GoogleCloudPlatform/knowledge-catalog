@@ -1963,14 +1963,14 @@ async function pullSemanticModel(
   // so pull refuses by default; --force-remove deletes the stale local
   // document(s) before the catalog's is written.
   const catalogNames = new Set(result.models.map(m => m.name));
-  // Compare by the on-disk path each name maps to, not the raw name: a catalog
-  // model name and a local document whose names sanitize to the same file (e.g.
-  // 'a/b' -> 'a_b.yaml') are the same model, not a stale conflict.
+  // Compare the local model file, by its name on disk, with the path each
+  // catalog model name maps to: a catalog model 'a/b' and a local 'a_b.yaml'
+  // are the same model, and a local 'a\b.yaml' is another file.
   const catalogPaths =
       new Set(result.models.map(m => layout.modelPath(m.name)));
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
-                         .filter(n => !catalogPaths.has(layout.modelPath(n)));
+                         .filter(n => !catalogPaths.has(layout.modelFile(n)));
   // Each file of a stale local model that pull removes.
   const removed: string[] = [];
   if (staleLocal.length) {
@@ -2338,7 +2338,7 @@ function updatedFiles(
     layout: SemanticModelLayout, source: SemanticModelSource, model: string,
     files: SerializedFile[]): SerializedFile[] {
   const doc = layout.modelDocuments().find(
-      d => layout.modelPath(d.name) === layout.modelPath(model));
+      d => layout.modelFile(d.name) === layout.modelPath(model));
   if (!doc) return files;
   const modelFile = `${model}.yaml`;
   // Pull's text for each file, for the model file `text` and the profile
@@ -2449,7 +2449,7 @@ function localProfiles(
     vanilla: boolean): Map<string, ProfileSpec> {
   if (vanilla) {
     const doc = layout.modelDocuments().find(
-        d => layout.modelPath(d.name) === layout.modelPath(model));
+        d => layout.modelFile(d.name) === layout.modelPath(model));
     const loaded = doc && loadSemanticModels([doc], {bindingOptional: true});
     const profiles = loaded?.models[0]?.model.profiles ?? [];
     return new Map(profiles.map(p => [p.name, p]));
@@ -2483,7 +2483,11 @@ function unwrittenFiles(
     Array<{path: string; profileName?: string; kind: string}> {
   const written = writtenPaths(layout, model, fileNames);
   return [
-    ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
+    // The layout lists a linked older profile directory as the link.
+    ...layout.localProfileFiles(model).map(f => ({
+      ...f,
+      kind: f.path.endsWith('.yaml') ? 'profile file' : 'profile directory',
+    })),
     ...layout.overviewSidecarPaths().map(
         f => ({path: f.path, kind: 'overview sidecar'})),
   ].filter(f => !written.has(path.resolve(f.path)));

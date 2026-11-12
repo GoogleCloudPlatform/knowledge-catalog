@@ -373,7 +373,7 @@ export class SemanticModelLayout implements CatalogLayout {
     const dir = this._groupDir();
     const prefix = `${model}.profile.`;
     return [
-      {path: this._modelFile(model)},
+      {path: this.modelFile(model)},
       ...profileFileNamesBeside(dir, model, this.files)
           .map(f => named(
               path.join(dir, f), f.slice(prefix.length, -'.yaml'.length))),
@@ -610,7 +610,7 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // The model file the layout read for this handle, by its name in the entry
   // group directory, else the path modelPath maps the handle to.
-  private _modelFile(name: string): string {
+  modelFile(name: string): string {
     const read = this._index.get(name);
     return read ? path.join(this._groupDir(), path.basename(read)) :
                   this.modelPath(name);
@@ -679,7 +679,7 @@ export class SemanticModelLayout implements CatalogLayout {
   // uses it to drop a local model the catalog no longer names before writing
   // the catalog's, so the entry group is never left holding two models.
   removeModelDocument(name: string): void {
-    this.removeFile(this._modelFile(name));
+    this.removeFile(this.modelFile(name));
     this._index.delete(name);
   }
 

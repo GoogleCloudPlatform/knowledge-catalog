@@ -2917,9 +2917,9 @@ describe('a pull', () => {
   const notInCatalog = (kind: string, file: string) =>
       `Warning: local ${kind} ${shown(file)} is not in the catalog; delete ` +
       'it, or pull with --force-remove to delete it.';
-  const stale = (models: string, files: string) =>
+  const stale = (models: string, files: string, catalog = 'commerce') =>
       `Error: local model(s) ${models} do not match the catalog model ` +
-      "'commerce' in this entry group. An entry group holds one model, so " +
+      `'${catalog}' in this entry group. An entry group holds one model, so ` +
       'pull will not leave two behind. Re-run with --force-remove to delete ' +
       `${files} and pull the catalog's.`;
   const write = (file: string, text = 'name: x\n') => {
@@ -2945,7 +2945,7 @@ describe('a pull', () => {
        write(path.join(outside, 'qa.yaml'));
        fs.symlinkSync(outside, local('commerce.profiles'));
      },
-     notInCatalog('profile file', 'commerce.profiles'), ['commerce.profiles'],
+     notInCatalog('profile directory', 'commerce.profiles'), ['commerce.profiles'],
      ['qa.yaml']],
     ['a stale overview sidecar in a linked directory', SECOND_GEN,
      (outside: string) => {
@@ -2961,9 +2961,10 @@ describe('a pull', () => {
      },
      stale("'sales'", "'sales.yaml' and 'sales.profile.1x.yaml'"),
      ['sales.yaml', 'sales.profile.1x.yaml'], []],
-    ['a stale model file whose name holds a backslash', SECOND_GEN,
-     () => sales('a\\b.yaml'), stale("'sales' in 'a\\b.yaml'", "'a\\b.yaml'"),
-     ['a\\b.yaml'], []],
+    // With '_' for the backslash, its name is the catalog model's file.
+    ['a stale model file whose name holds a backslash',
+     {...SECOND_GEN, name: 'a_b'}, () => sales('a\\b.yaml'),
+     stale("'sales' in 'a\\b.yaml'", "'a\\b.yaml'", 'a_b'), ['a\\b.yaml'], []],
     ['a stale model with a profile file and the older directory', SECOND_GEN,
      () => {
        sales('sales.yaml');
@@ -2988,8 +2989,14 @@ describe('a pull', () => {
         expect(await pull()).toBe(message.startsWith('Error') ? 1 : 0);
         expect(messages(console.warn) + messages(console.error))
             .toContain(message);
+        // The dry run warns as the real run does.
+        const warnSpy = console.warn as Mock<any>;
+        warnSpy.mockClear();
         expect(await pull({dryRun: true, forceRemove: true})).toBe(0);
+        const dryRunWarnings = messages(warnSpy);
+        warnSpy.mockClear();
         expect(await pull({forceRemove: true})).toBe(0);
+        expect(messages(warnSpy)).toBe(dryRunWarnings);
         for (const file of removed) {
           for (const verb of ['would remove', 'removed']) {
             expect(messages(logSpy)).toContain(`  ${verb} ${shown(file)}\n`);
