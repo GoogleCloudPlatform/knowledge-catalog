@@ -13,7 +13,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, diskFiles, fileNameOf, filesAfter, formatOverviewSidecar, LayoutFiles, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {atOrBelow, checkProfileFileName, diskFiles, fileNameOf, filesAfter, formatOverviewSidecar, LayoutFiles, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, realLocation, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -1963,28 +1963,30 @@ async function pullSemanticModel(
   // so pull refuses by default; --force-remove deletes the stale local
   // document(s) before the catalog's is written.
   const catalogNames = new Set(result.models.map(m => m.name));
-  // Compare by the on-disk path each name maps to, not the raw name: a catalog
-  // model name and a local document whose names sanitize to the same file (e.g.
-  // 'a/b' -> 'a_b.yaml') are the same model, not a stale conflict.
+  // Compare the local model file, by its name on disk, with the path each
+  // catalog model name maps to: a catalog model 'a/b' and a local 'a_b.yaml'
+  // are the same model, and a local 'a\b.yaml' is another file.
   const catalogPaths =
       new Set(result.models.map(m => layout.modelPath(m.name)));
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
-                         .filter(n => !catalogPaths.has(layout.modelPath(n)));
+                         .filter(n => !catalogPaths.has(layout.modelFile(n)));
+  // Every file --force-remove deletes, listed before pull writes or deletes
+  // anything: each stale model's files, then the local profile files and
+  // overview sidecars this pull does not write.
+  const toDelete = deletions(
+      layout, staleLocal, pulled.name,
+      [...pulledFiles, ...sidecars].map(f => f.fileName));
+  const unwritten = toDelete.filter(f => f.model === undefined);
   // Each file of a stale local model that pull removes.
   const removed: string[] = [];
   if (staleLocal.length) {
-    // A local model's files: its model file, then each of its profile files
-    // with its profile name, which a file in the older `<model>.profiles/`
-    // directory takes from its file name. --force-remove deletes these files
-    // for a stale model, and the advice below names the same files.
-    const localFiles = (name: string) => [
-      {path: layout.modelPath(name), profileName: undefined},
-      ...layout.localProfileFiles(name).map(f => ({
-        path: f.path,
-        profileName: f.profileName ?? path.basename(f.path, '.yaml'),
-      })),
-    ];
+    // A local model's files, the model file first: those --force-remove
+    // deletes for a stale model, which the advice below names too, and else
+    // those the layout lists.
+    const localFiles = (name: string) => staleLocal.includes(name) ?
+        toDelete.filter(f => f.model === name) :
+        layout.modelFiles(name);
     if (!options.forceRemove) {
       // A file that holds the catalog's model under another file name is
       // kept by renaming it and its profile files to the files pull writes.
@@ -2007,14 +2009,13 @@ async function pullSemanticModel(
       // A file by its path in the entry group directory.
       const shown = (p: string) => path.relative(groupDir, p);
       const file = (name: string) => shown(layout.modelPath(name));
+      // The model file of the local model `name`, as it is named on disk.
+      const localFile = (name: string) => shown(layout.modelFile(name));
       const quoted = (names: string[]) => listed(names.map(n => `'${n}'`))!;
       // Every file --force-remove deletes: each stale model's files, then each
       // local profile file of the catalog's model and each overview sidecar
       // that this pull leaves out.
-      const left = unwrittenFiles(
-                       layout, pulled.name,
-                       [...pulledFiles, ...sidecars].map(f => f.fileName))
-                       .map(f => shown(f.path));
+      const left = unwritten.flatMap(f => f.outside ? [] : [shown(f.path)]);
       const deletedFiles = [
         ...staleLocal.flatMap(n => localFiles(n).map(f => shown(f.path))),
         ...left,
@@ -2038,19 +2039,25 @@ async function pullSemanticModel(
           const files = localFiles(name);
           const own = files.map(f => shown(f.path));
           const stem = file(declared).replace(/\.yaml$/, '');
+          // The file pull writes for each of `files`. A profile file with
+          // no valid profile name has none, so it is deleted.
           const targets = files.map(
-              f => f.profileName === undefined ?
-                  file(declared) :
-                  `${stem}.profile.${f.profileName}.yaml`);
+              (f, i) => i === 0 ? file(declared) :
+                  f.profileName === undefined ?
+                                  undefined :
+                                  `${stem}.profile.${f.profileName}.yaml`);
+          const unnamed = own.filter((_, i) => targets[i] === undefined);
           // The files renamed to each file pull writes, by its index in
           // `files`. Two files hold one profile when a sibling profile file
           // and a file in the older directory have the same profile name.
-          const groups = [...new Set(targets)].map(
-              t => files.flatMap((_, i) => targets[i] === t ? [i] : []));
+          const groups = [...new Set(targets)].flatMap(
+              t => t === undefined ?
+                  [] :
+                  [files.flatMap((_, i) => targets[i] === t ? [i] : [])]);
           const twice = groups.filter(g => g.length > 1);
           // Each other file at a name pull writes.
           const taken = [...new Set(targets.flatMap(t => {
-            const there = onDisk(t);
+            const there = t === undefined ? undefined : onDisk(t);
             return there === undefined || own.includes(there) ? [] : [there];
           }))];
           // The catalog's model file when it holds this model too, else the
@@ -2060,7 +2067,7 @@ async function pullSemanticModel(
               kept.get(declared);
           // What stops the rename, or else where it goes.
           const where = holder !== undefined ?
-              `, which '${file(holder)}' also holds` :
+              `, which '${localFile(holder)}' also holds` :
               taken.length ?
               `, which pull writes as '${file(declared)}', and ${
                   quoted(taken)} ${taken.length > 1 ? 'are' : 'is'} already ` +
@@ -2087,7 +2094,7 @@ async function pullSemanticModel(
               ...taken,
             ])];
             const deletes = [
-              ...inTheWay.map(f => `'${f}'`),
+              ...[...inTheWay, ...unnamed].map(f => `'${f}'`),
               ...twice.map(g => `one of ${quoted(g.map(i => own[i]))}`),
             ];
             // A plain rename keeps its short form, which names the model
@@ -2115,14 +2122,14 @@ async function pullSemanticModel(
                   them :
                   quoted(deletedFiles)));
           errors.push(
-              `local model file '${file(name)}' holds model '${declared}'${
+              `local model file '${localFile(name)}' holds model '${declared}'${
                   facts}. ${offer(choices)}`);
         } else {
           othersFiles.push(...localFiles(name).map(f => shown(f.path)));
           others.push(
               declared === undefined || declared === name ?
                   `'${name}'` :
-                  `'${declared}' in '${file(name)}'`);
+                  `'${declared}' in '${localFile(name)}'`);
         }
       }
       if (others.length) {
@@ -2146,10 +2153,7 @@ async function pullSemanticModel(
       const paths = localFiles(name).map(f => f.path);
       if (!options.dryRun) {
         layout.removeModelDocument(name);
-        for (const p of paths.slice(1)) {
-          fs.rmSync(p);
-          removeEmptyDirs(p, path.dirname(paths[0]));
-        }
+        for (const p of paths.slice(1)) layout.removeFile(p);
       }
       for (const p of paths) {
         console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
@@ -2161,22 +2165,24 @@ async function pullSemanticModel(
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
   const updated = updatedFiles(layout, source, pulled.name, pulledFiles);
   updated.push(...sidecars);
-  const code =
-      writePulledFiles(layout, pulled.name, updated, options, removed.length);
+  const code = writePulledFiles(
+      layout, pulled.name, updated, options, unwritten, removed.length);
   // Push's checks read the files the entry group holds after the pull. Under
   // --dry-run those on disk are not the ones pull leaves, so the checks read
   // the text pull writes for each file it writes, find no file it deletes,
-  // and read every other file on disk.
+  // and read every other file on disk. Pull writes no file that a link puts
+  // outside the entry group directory.
   const groupDir = path.dirname(layout.modelPath(pulled.name));
-  const fileNames = updated.map(f => f.fileName);
   const written = new Map(updated.flatMap(({fileName, content}) => {
     const target = pulledFileTarget(layout, pulled.name, fileName, true);
-    return target ? [[target.path, content] as const] : [];
+    return target && !layout.outsideGroup(target.path, true) ?
+        [[path.resolve(target.path), content] as const] :
+        [];
   }));
   const deleted = [
     ...removed,
     ...options.forceRemove ?
-        unwrittenFiles(layout, pulled.name, fileNames).map(f => f.path) :
+        unwritten.flatMap(f => f.outside ? [] : [f.path]) :
         [],
   ];
   const after = new SemanticModelLayout(
@@ -2186,8 +2192,7 @@ async function pullSemanticModel(
   const refusal = await pushRefusal(ctx, after, source);
   if (refusal) {
     const file = path.join(groupDir, refusal.file);
-    const writes = writtenPaths(layout, pulled.name, fileNames)
-                       .has(path.resolve(file));
+    const writes = written.has(path.resolve(file));
     // An error of several lines ends the warning at its last line.
     const error = refusal.error.trimEnd();
     console.warn(
@@ -2239,10 +2244,12 @@ async function pushRefusal(
   // files push reads so a quote in a file's name does not end it, or the
   // `(<file>)` after the model's name in `... in model '<name>' (<file>)`,
   // which names a profile file there. An entry's overview aspect too large to
-  // store is in that entry's overview sidecar, when push reads one. For any
-  // other error with no such label, the file is that of the named profile
-  // push reports the error under, as for a deployment that uses the profile,
-  // when push reads one, and else the model file.
+  // store is in that entry's overview sidecar, when push reads one. A
+  // file-system error, such as ENOENT or EACCES, is in the file at the path
+  // it quotes, when that path is in the entry group directory. For any other
+  // error with no such label, the file is that of the named profile push
+  // reports the error under, as for a deployment that uses the profile, when
+  // push reads one, and else the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
   const sidecars = layout.overviewSidecarPaths();
   const files = [
@@ -2264,13 +2271,17 @@ async function pushRefusal(
       first.profile === undefined || first.profile === DEFAULT_PROFILE ?
       undefined :
       `${doc.name}.profile.${first.profile}.yaml`;
+  const quoted = /^E[A-Z]+: [^,]*, \w+ '(.*)'$/s.exec(first.error)?.[1];
+  const failed = quoted === undefined ? undefined : name(quoted);
+  const failedInGroup = failed !== undefined && !path.isAbsolute(failed) &&
+      failed.split('/')[0] !== '..';
   const named = [
     label, inModel?.[1], sidecar && name(sidecar.path), profileFile,
   ].map(n => n?.split(path.sep).join('/'))
       .find(n => n !== undefined && files.includes(n));
   return {
     error: first.error,
-    file: named ?? name(layout.modelPath(doc.name)),
+    file: (failedInGroup ? failed : named) ?? name(layout.modelPath(doc.name)),
   };
 }
 
@@ -2292,18 +2303,6 @@ function keptSidecar(
         undefined;
   } catch {
     return undefined;
-  }
-}
-
-
-// Deletes the directory that held `file`, and each directory above it below
-// `top`, while it is empty.
-function removeEmptyDirs(file: string, top: string): void {
-  const stop = path.resolve(top);
-  let dir = path.dirname(path.resolve(file));
-  while (dir.startsWith(`${stop}${path.sep}`) && !fs.readdirSync(dir).length) {
-    fs.rmdirSync(dir);
-    dir = path.dirname(dir);
   }
 }
 
@@ -2352,7 +2351,7 @@ function updatedFiles(
     layout: SemanticModelLayout, source: SemanticModelSource, model: string,
     files: SerializedFile[]): SerializedFile[] {
   const doc = layout.modelDocuments().find(
-      d => layout.modelPath(d.name) === layout.modelPath(model));
+      d => layout.modelFile(d.name) === layout.modelPath(model));
   if (!doc) return files;
   const modelFile = `${model}.yaml`;
   // Pull's text for each file, for the model file `text` and the profile
@@ -2463,17 +2462,24 @@ function localProfiles(
     vanilla: boolean): Map<string, ProfileSpec> {
   if (vanilla) {
     const doc = layout.modelDocuments().find(
-        d => layout.modelPath(d.name) === layout.modelPath(model));
+        d => layout.modelFile(d.name) === layout.modelPath(model));
     const loaded = doc && loadSemanticModels([doc], {bindingOptional: true});
     const profiles = loaded?.models[0]?.model.profiles ?? [];
     return new Map(profiles.map(p => [p.name, p]));
   }
   const out = new Map<string, ProfileSpec>();
-  for (const file of layout.localProfileFiles(model)) {
-    const name = file.profileName ?? path.basename(file.path, '.yaml');
-    if (out.has(name)) continue;
+  for (const {path: p, profileName: name} of layout.localProfileFiles(model)) {
+    if (name === undefined || out.has(name)) continue;
+    let text: string;
     try {
-      out.set(name, loadProfileFile(fs.readFileSync(file.path, 'utf8'), name));
+      text = fs.readFileSync(p, 'utf8');
+    } catch {
+      // A file pull cannot read, such as a link to no file, binds no
+      // actions. Push names it.
+      continue;
+    }
+    try {
+      out.set(name, loadProfileFile(text, name));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
     }
@@ -2482,41 +2488,66 @@ function localProfiles(
 }
 
 
-// Each local profile file of `model` and each overview sidecar that a pull
-// writing the files `fileNames` leaves out. Pull writes each file to the path
-// push reads it from, so such a file is stale.
-function unwrittenFiles(
-    layout: SemanticModelLayout, model: string, fileNames: string[]):
-    Array<{path: string; profileName?: string; kind: string}> {
-  const written = writtenPaths(layout, model, fileNames);
-  return [
-    ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
+// A local file a pull with --force-remove deletes: its kind, the stale model
+// it belongs to, if any, and whether a link puts it outside the entry group
+// directory, where pull deletes nothing.
+type Deletion = {
+  path: string; profileName?: string; kind: string; model?: string;
+  outside: boolean;
+};
+
+// The local files a pull with --force-remove deletes, listed once before it
+// writes or deletes anything, for the refusal, the dry run and the real run
+// alike: each file of each stale model in `stale`, then each local profile
+// file of `model` and each overview sidecar. A path's real location, the
+// real path of its directory joined with its name, tells two names of one
+// file apart from two files, and a link at the path is a location of its
+// own. The list leaves out a path at the location of a file the pull writes
+// as `fileNames`, keeps the first path of each location, and leaves out a
+// path below another listed path, such as a file in a linked
+// `<model>.profiles` directory.
+function deletions(
+    layout: SemanticModelLayout, stale: string[], model: string,
+    fileNames: string[]): Deletion[] {
+  const written = new Set(fileNames.flatMap(fileName => {
+    const target = pulledFileTarget(layout, model, fileName, true);
+    return target ? [realLocation(target.path)] : [];
+  }));
+  const files = [
+    ...stale.flatMap(
+        name => layout.modelFiles(name).map(
+            f => ({...f, model: name, kind: 'file'}))),
+    // The layout lists a linked older profile directory as the link.
+    ...layout.localProfileFiles(model).map(f => ({
+      ...f,
+      kind: f.path.endsWith('.yaml') ? 'profile file' : 'profile directory',
+    })),
     ...layout.overviewSidecarPaths().map(
         f => ({path: f.path, kind: 'overview sidecar'})),
-  ].filter(f => !written.has(path.resolve(f.path)));
-}
-
-
-// The resolved path of each of the files `fileNames` of `model` that pull
-// writes.
-function writtenPaths(
-    layout: SemanticModelLayout, model: string,
-    fileNames: string[]): Set<string> {
-  return new Set(fileNames.flatMap(fileName => {
-    const target = pulledFileTarget(layout, model, fileName, true);
-    return target ? [path.resolve(target.path)] : [];
-  }));
+  ];
+  const paths = new Set(files.map(f => path.resolve(f.path)));
+  const seen = new Set<string>();
+  return files.flatMap(f => {
+    const at = realLocation(f.path);
+    if (written.has(at) || seen.has(at) ||
+        atOrBelow(paths, path.dirname(path.resolve(f.path)))) {
+      return [];
+    }
+    seen.add(at);
+    return [{...f, outside: layout.outsideGroup(f.path)}];
+  });
 }
 
 
 // Writes the files a pull rebuilt for `model`, and skips a name push does not
-// read. Then it names each local profile file and overview sidecar that the
-// pull did not write, or deletes it under --force-remove with each directory
-// that leaves empty. The summary counts the files it removes, and `removed`
-// more that the pull removed before.
+// read and a file that a link puts outside the entry group directory, with a
+// warning. Then it names each file of `unwritten`, the local profile files
+// and overview sidecars the pull does not write, or deletes it under
+// --force-remove with each directory that leaves empty. The summary counts
+// the files it removes, and `removed` more that the pull removed before.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: SerializedFile[],
-    options: PullOptions, removed = 0): number {
+    options: PullOptions, unwritten: Deletion[], removed = 0): number {
   const counts = {created: 0, updated: 0, unchanged: 0, removed};
   for (const {fileName, content} of files) {
     const target = pulledFileTarget(layout, model, fileName, true);
@@ -2532,6 +2563,12 @@ function writePulledFiles(
     const state = !before                   ? 'created' :
         before.equals(Buffer.from(content)) ? 'unchanged' :
                                               'updated';
+    if (state !== 'unchanged' && layout.outsideGroup(target.path, true)) {
+      console.warn(
+          `Warning: pull does not write ${target.path}, because a link puts ` +
+          'it outside the entry group directory.');
+      continue;
+    }
     counts[state]++;
     if (state === 'unchanged') {
       console.log(`  unchanged ${target.path}`);
@@ -2544,25 +2581,22 @@ function writePulledFiles(
     }
   }
 
-  for (const stale of
-           unwrittenFiles(layout, model, files.map(f => f.fileName))) {
-    if (!options.forceRemove) {
+  for (const file of unwritten) {
+    if (file.outside) {
       console.warn(
-          `Warning: local ${stale.kind} ${stale.path} is not in the ` +
+          `Warning: pull keeps local ${file.kind} ${file.path}, which is ` +
+          'not in the catalog, because a link puts it outside the entry ' +
+          'group directory.');
+    } else if (!options.forceRemove) {
+      console.warn(
+          `Warning: local ${file.kind} ${file.path} is not in the ` +
           `catalog; delete it, or pull with --force-remove to delete it.`);
     } else if (options.dryRun) {
-      console.log(`  would remove ${stale.path}`);
+      console.log(`  would remove ${file.path}`);
       counts.removed++;
     } else {
-      // The older `<model>.profiles/` directory and a sidecar have no layout
-      // method.
-      if (stale.profileName !== undefined) {
-        layout.removeProfileDocument(model, stale.profileName);
-      } else {
-        fs.rmSync(stale.path);
-      }
-      removeEmptyDirs(stale.path, path.dirname(layout.modelPath(model)));
-      console.log(`  removed ${stale.path}`);
+      layout.removeFile(file.path);
+      console.log(`  removed ${file.path}`);
       counts.removed++;
     }
   }

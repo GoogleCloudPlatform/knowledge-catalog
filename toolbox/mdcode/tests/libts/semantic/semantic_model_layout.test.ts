@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {formatOverviewSidecar, parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {filesAfter, formatOverviewSidecar, parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
 
 let root: string;
 let catalogPath: string;
@@ -265,9 +265,27 @@ describe('SemanticModelLayout sibling profile files', () => {
              path: path.join(groupDir(), 'retail.profile.prod.yaml'),
              profileName: 'prod',
            },
-           {path: path.join(groupDir(), 'retail.profiles', 'old.yaml')},
+           {
+             path: path.join(groupDir(), 'retail.profiles', 'old.yaml'),
+             profileName: 'old',
+           },
          ]);
        });
+
+  // Pull deletes a linked older profile directory as the link, so a dry run
+  // reads nothing below it.
+  test('filesAfter hides each path below a deleted link', () => {
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'qa.yaml'), 'name: qa\n');
+    const link = path.join(groupDir(), 'retail.profiles');
+    fs.symlinkSync(outside, link);
+    const files = filesAfter(new Map(), [link]);
+    expect(files.list(groupDir())).toEqual([]);
+    expect(files.exists(path.join(link, 'qa.yaml'))).toBe(false);
+    expect(() => files.list(link)).toThrow('ENOENT');
+    expect(() => files.read(path.join(link, 'qa.yaml'))).toThrow('ENOENT');
+  });
 
   // An editor lock file (Emacs `.#<file>`, macOS `._<file>`) is no orphan.
   test('orphanProfilePaths lists profile files with no model', async () => {
@@ -292,7 +310,7 @@ describe('SemanticModelLayout sibling profile files', () => {
              [path.join(groupDir(), 'retail.profiles')]);
        });
 
-  test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
+  test('profilePath and writeProfileDocument', async () => {
     write('retail.yaml', GOOGLE);
     const l = await layout('eg');
     const p = l.profilePath('retail', 'prod');
@@ -302,9 +320,6 @@ describe('SemanticModelLayout sibling profile files', () => {
     expect(fs.readFileSync(p, 'utf8')).toBe('name: prod\n');
     expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
 
-    l.removeProfileDocument('retail', 'prod');
-    expect(fs.existsSync(p)).toBe(false);
-    l.removeProfileDocument('retail', 'prod');  // a no-op the second time
     expect(() => l.profilePath('retail', 'x/../../y')).toThrow(
         "Profile name 'x/../../y' is not valid");
     expect(() => l.profilePath('../x', 'prod')).toThrow(
