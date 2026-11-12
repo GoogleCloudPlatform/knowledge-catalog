@@ -2737,6 +2737,18 @@ ${extraMetric}`;
       expect(cycles(m)).toEqual([]);
     });
 
+    // A Spanner database runs the SPANNER or the POSTGRES entry. With no
+    // lookup of the tables' dialect, no ANSI_SQL text is read.
+    test('reads no ANSI_SQL entry on Spanner tables whose dialect no lookup read', () => {
+      const m = inheriting(
+          SPANNER, undefined, {expression: 'label'},
+          {dialects: [
+            {dialect: 'SPANNER', expression: 'c_code'},
+            {dialect: 'ANSI_SQL', expression: 'customer.code + 1'},
+          ]});
+      expect(cycles(m)).toEqual([]);
+    });
+
     // The running entries form the cycle. The other entry of `code` names
     // `code` itself when read as PostgreSQL, but no database of these tables
     // runs it.

@@ -443,11 +443,12 @@ function selfReferenceProblems(
   if (impliedDialect) {
     dialects.add(impliedDialect);
   } else {
-    if (impliedDialect === undefined) dialects.add('ANSI_SQL');
+    dialects.add('ANSI_SQL');
     for (const f of fields) {
       for (const d of f.dialects ?? []) dialects.add(d.dialect);
       if (f.importedDialect) dialects.add(f.importedDialect);
     }
+    if (impliedDialect === null) dialects.delete('ANSI_SQL');
   }
   // Each message, with the field it names first.
   const errors = new Map<string, string>();
