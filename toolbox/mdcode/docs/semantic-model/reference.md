@@ -90,7 +90,8 @@ error. When that error suggests `kcmd import --transpile`, pull runs that import
 as push does, writing nothing, on the files in the entry group once it has
 written its own. Under `--dry-run` the import reads the files the entry group
 would hold after the pull. When that import would stop, the error also names the
-first error it would stop on. Pull leaves out push's checks that call a service,
+first error it would stop on that pull can find without reading a table's SQL
+dialect. Pull leaves out push's checks that call a service,
 such as those that need a table's SQL dialect, the source check and the Spanner
 graph check, so only push reports those. When
 the model entry's `kcmd-push-state` label says the last push stopped partway,
