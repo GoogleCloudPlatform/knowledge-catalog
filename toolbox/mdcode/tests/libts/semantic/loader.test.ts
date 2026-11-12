@@ -3728,6 +3728,8 @@ describe('deployments and inline profiles', () => {
       [BQ_TARGET, BQ_TARGET.replace('/analytics/', '/Analytics/')],
       [SPANNER_TARGET, SPANNER_TARGET.replace('/databases/sales/', '/databases/sales2/').replace(/sales$/, 'Sales')],
       [ALLOYDB_TARGET, ALLOYDB_TARGET.replace(/sales$/, 'Sales')],
+      // A target in no accepted form, written as another target's key.
+      [ALLOYDB_TARGET, 'alloydb/acme/us/c/sales'],
     ]) {
       expect(loads(a, b)).not.toThrow();
     }

@@ -191,12 +191,12 @@ function parseTarget(uri: string): ParsedDeploymentTarget|undefined {
 /**
  * The resource a deployment target names: two targets with the same key name
  * one resource. Spanner and BigQuery read a graph name without regard to case,
- * so the key holds it in lower case. A target in no accepted form is its own
- * text.
+ * so the key holds it in lower case. A target in no accepted form keys on its
+ * own text, which matches no accepted target's key.
  */
 export function deploymentTargetKey(target: string): string {
   const parsed = parseTarget(target);
-  if (!parsed) return target;
+  if (!parsed) return `unparsed:${target}`;
   const {engine, coordinates: c} = parsed;
   switch (engine) {
     case 'bigquery':
