@@ -254,7 +254,7 @@ export const SQL_CODE_DIALECTS = ['SPANNER', 'POSTGRES'] as const;
 
 // Whether a statement in `dialect` is read as PostgreSQL. Any other is read as
 // GoogleSQL.
-function readsPostgres(dialect?: string|null): boolean {
+export function readsPostgres(dialect?: string|null): boolean {
   return dialect === 'POSTGRES' || dialect === 'ALLOYDB';
 }
 

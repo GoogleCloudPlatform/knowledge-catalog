@@ -8,6 +8,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
+import {cloudSqlEntry} from '../../libts/mocks';
 
 import {ALLOYDB, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, writeScope} from './harness';
 
@@ -246,6 +247,9 @@ const withStatementLines = (text: string, ...lines: string[]) => {
 const modelWriting = (lines: string[], scope: Scope = {}) => withStatementLines(
     modelFile({...scope, actions: [purge(ONE_STATEMENT)]}), ...lines);
 const COMMENTED = "UPDATE customer SET doc = doc #- '{draft}' WHERE c_key = @k";
+// A Cloud SQL for MySQL table, whose dialect push looks up.
+const MYSQL_TABLE = 'cloudsql.googleapis.com/projects/test-project/locations/' +
+    'us-central1/instances/shop/databases/sales/tables/customer';
 // A scope whose model file binds Customer to an AlloyDB table.
 const ON_ALLOYDB =
     {entities: [{...CUSTOMER, source: `${ALLOYDB}/schemas/public/tables/customer`}]};
@@ -561,6 +565,14 @@ scenarios('push --no-deployment refuses a scope before any network call', [
           profileFile('p', {...boundTo('p'), actions: [{name: 'purge', executor: ONE_STATEMENT}]}),
           '- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k')},
       errors: [has("(commerce.profile.p.yaml) has a sql executor whose statement 1 has '#' on a line")],
+    }, {
+      // A Cloud SQL for MySQL table gives '#' too: the parameter and verb
+      // checks read its looked-up dialect as GoogleSQL.
+      services: {lookupEntry: () => cloudSqlEntry('cloudsql-mysql-table')},
+      files: {'commerce.yaml': modelWriting(
+          ['- >', '  UPDATE customer SET doc = doc # only draft rows?', '  WHERE c_key = @k'],
+          {entities: [{...CUSTOMER, source: MYSQL_TABLE}]})},
+      errors: [has("statement 1 has '#' on a line")],
     }, {
       // Profile p deploys to AlloyDB alone.
       deployments: ['g', {name: 'pg', target: ALLOYDB, profile: 'p'}],

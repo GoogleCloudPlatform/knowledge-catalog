@@ -28,7 +28,7 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, possibleDialects, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, unusedName} from './sql_expr_utils';
-import {boundParameter, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
+import {boundParameter, leadingDmlVerb, readsPostgres, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -1302,24 +1302,22 @@ function statementDialects(
   ])];
 }
 
-// The deployment dialects in which `#` starts a SQL comment. `--` and `/*`
-// start one in every dialect. AlloyDB reads `#` as an operator.
-const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
-
 // For each of `statements` in the model or profile file `text`, the first SQL
 // comment marker that one of `dialects` reads in the statement YAML reads,
 // when the comment it starts runs on into text from a later line of the
 // statement. A statement with no such marker is left out. A marker counts
 // anywhere in the statement, inside a string or a quoted name too, and a
-// comment runs to the next line break of the statement. With no dialect, `#`
-// is not a marker. The yaml library decides which lines it joins: each line
-// with text of a statement, except the last line of a plain or quoted one,
-// gets a character at its end that neither `text` nor any statement holds,
-// and the text is parsed again. A comment runs on into a later line when one
-// of those characters inside it is followed by more of the comment.
+// comment runs to the next line break of the statement. `--` and `/*` are
+// markers in every dialect, and `#` in each one the parameter and verb checks
+// read as GoogleSQL. With no dialect, `#` is not a marker. The yaml library
+// decides which lines it joins: each line with text of a statement, except
+// the last line of a plain or quoted one, gets a character at its end that
+// neither `text` nor any statement holds, and the text is parsed again. A
+// comment runs on into a later line when one of those characters inside it
+// is followed by more of the comment.
 function joinedLineMarkers(statements: WrittenStatement[], text: string,
                            dialects: string[]): Map<yaml.Scalar, string> {
-  const marker = dialects.some(d => HASH_COMMENT_DIALECTS.has(d)) ?
+  const marker = dialects.some(d => !readsPostgres(d)) ?
       /--|\/\*|#/ :
       /--|\/\*/;
   // A '|' block keeps every line break, so a comment in it covers no later
