@@ -292,10 +292,10 @@ the value gets, as does Snowflake's DATE_TRUNC, whose value keeps the type of
 its date. Each way a database writes the same sum gets the same BigQuery
 value and type: `+` or `-` with an INTERVAL, a function such as DATE_ADD,
 ADDDATE, DATEADD or TIMESTAMPADD with any unit name the database documents, or
-a whole number of days. The
-amount is a whole number. In a function and in MySQL's INTERVAL it can also be
-an expression, such as a column, which import writes as it is. BigQuery rejects
-an amount that is not an INT64, where the database may round it. An amount
+a whole number of days. The amount is a whole number. In a function and in
+MySQL's INTERVAL it can also be an expression, such as a column, which import
+writes as it is. BigQuery rejects an amount that is not an INT64, where the
+database may round it. An amount
 that is visibly an INTERVAL, such as `3 * INTERVAL 1 DAY` in Databricks'
 date_add, stays untranslated, as the database rejects it. SQL Server's
 DATEADD reads a string of a whole number, such as '1', as the number. A column
@@ -322,9 +322,8 @@ names microseconds.
   it, as a date written YYYY-M-D or YYYYMMDD, or a date and a time of whole
   seconds. The sum becomes text, as in MySQL: `'2024-01-31' + INTERVAL 1 DAY`
   becomes `CAST(DATE_ADD(CAST('2024-01-31' AS DATE), INTERVAL 1 DAY) AS
-  STRING)`. Units
-  smaller than a second stay untranslated there, since MySQL then writes six
-  digits of a fraction of a second.
+  STRING)`. Units smaller than a second stay untranslated there, since MySQL
+  then writes six digits of a fraction of a second.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
@@ -335,8 +334,8 @@ names microseconds.
 - PostgreSQL: every unit to a column, to a DATE and to a DATE plus an
   INTERVAL, and to the current timestamp, which stays a TIMESTAMP. A cast to
   timestamp gets what a DATE plus an INTERVAL gets, and a cast to timestamptz
-  what the current timestamp gets. A DATE plus
-  an INTERVAL gives a DATETIME, as it gives a timestamp in PostgreSQL. Months
+  what the current timestamp gets. A DATE plus an INTERVAL gives a DATETIME,
+  as it gives a timestamp in PostgreSQL. Months
   and years go to the current timestamp as a DATETIME in UTC, which BigQuery
   reads back as a TIMESTAMP: `NOW() + INTERVAL '1 month'` becomes
   `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP(), 'UTC') + INTERVAL 1 MONTH, 'UTC')`.
@@ -381,8 +380,8 @@ counts as days. Added to a DATE that COALESCE, IF or CASE gives, such as
 `COALESCE(d, CURRENT_DATE) + 1`, it stays as written. A column plus a whole
 number, such as `(d + 1) + INTERVAL '1 day'`, gets an INTERVAL as a DATE does.
 None of the three adds an INTERVAL to a number or a whole number to a
-timestamp, and BigQuery does neither. Import
-translates no date arithmetic from ANSI_SQL, since the databases an ANSI_SQL
+timestamp, and BigQuery does neither. Import translates no date arithmetic
+from ANSI_SQL, since the databases an ANSI_SQL
 text runs on add a unit as different types. From a SPANNER text it keeps
 DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and
 minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
