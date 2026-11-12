@@ -2610,11 +2610,8 @@ function nullifForm(args: any[], read: string): any {
         formCall('CAST(IF(_1, NULL, _2) AS STRING)', [equal(a, b), a]);
   }
   if (NULLIF_FIRST.has(read)) {
-    const stamped = [a, b].map((v, i) => timeType(args[1 - i], read) === 'TIMESTAMP' &&
-        ['DATE', 'DATETIME'].includes(timeType(v, read)!) ? formCall('TIMESTAMP(_1)', [v]) : v);
-    const forms = valueForms(stamped, read, 'compared');
-    return typeof forms === 'string' ? `NULLIF on ${forms}` :
-        formCall('IF(_1, NULL, _2)', [equal(stamped[0], stamped[1]), a]);
+    const forms = valueForms([a, b], read, 'compared');
+    return typeof forms === 'string' ? `NULLIF on ${forms}` : formCall('IF(_1, NULL, _2)', [equal(a, b), a]);
   }
   const other = types.find(t => t && t !== time);
   return `NULLIF on a ${time} and ${other ? `a ${other}` : 'a value that may be another type'}`;
