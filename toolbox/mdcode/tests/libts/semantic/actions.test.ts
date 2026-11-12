@@ -637,7 +637,8 @@ describe('validatePushRequirements gates actions', () => {
   });
 
   // BigQuery reads two parameter names that differ only in case as one name.
-  // AlloyDB keeps them apart.
+  // AlloyDB keeps them apart. A model file that binds no table gives no
+  // dialect, and each deployment's check reads its profile's.
   test.each([
     ['BigQuery', 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
      ['action \'A\' in model \'m\' (doc) declares parameters \'id\' and ' +
@@ -646,6 +647,7 @@ describe('validatePushRequirements gates actions', () => {
      'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/' +
          'databases/d/schemas/public/tables/orders',
      []],
+    ['a model file that binds no table', '', []],
   ])('on %s checks parameter names that differ only in case', (_, source, errors) => {
     const {document, model} = loaded([{
       name: 'A',

@@ -833,10 +833,14 @@ export function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
-  // Null when no lookup read the dialect of the model's tables, as in pull.
-  const sources = sourcesDialect(model);
+  // The dialect of the model's tables, or else ALLOYDB for a model with an
+  // AlloyDB target. Null when neither gives one: when no lookup read the
+  // tables' dialect, as in pull, and when the model file leaves its tables to
+  // a profile. Each deployment's check then reads the statements in the
+  // dialect of its profile's tables, as it reads expressions.
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
-      sources ?? (alloyDbTargets(model).targets.length ? 'ALLOYDB' : sources) :
+      sourcesDialect(model) ??
+          (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null) :
       undefined;
   for (const action of actions) {
     const where =
@@ -943,9 +947,8 @@ export function validateActions(
     errors.push(...affectedConceptErrors(action, where, concepts));
     errors.push(...sqlExecutorErrors(action, where, sqlDialect));
     // BigQuery and Spanner match parameter names without regard to case, so
-    // they read two declared names that differ only in case as one. A null
-    // dialect says no lookup read the tables' dialect, as in pull. Push reads
-    // it and reports these.
+    // they read two declared names that differ only in case as one. With a
+    // null dialect, each deployment's check reports these.
     if (executor?.kind === 'sql' && sqlDialect !== null) {
       const declared = action.parameters.map(p => p.name);
       declared.forEach((second, i) => {
@@ -979,9 +982,11 @@ export function validateActions(
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
 //
-// A null `dialect` says no lookup read the dialect of the model's tables. The
-// errors are then those that every dialect in SQL_CODE_DIALECTS gives, and
-// push, which reads the dialect, reports the others.
+// A null `dialect` says the statements' dialect is not known, as when no
+// lookup read the dialect of the model's tables or the model file leaves its
+// tables to a profile. The errors are then those that every dialect in
+// SQL_CODE_DIALECTS gives, and a check that knows the dialect reports the
+// others.
 function sqlExecutorErrors(
     action: Action, where: string, dialect?: string|null): string[] {
   if (action.executor?.kind !== 'sql') return [];
