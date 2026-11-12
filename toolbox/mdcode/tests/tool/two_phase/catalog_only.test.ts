@@ -479,9 +479,30 @@ scenarios('push --no-deployment refuses a scope before any network call', [
         // text.
         '- "UPDATE customer SET doc = doc -- every row?', '  \\', '', '', '  WHERE c_key = @k"',
         '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row', '  \\', '  "',
+        // A marker counts as YAML reads it, written as an escape or split by
+        // an escaped line break too, and a comment ends at an escaped line
+        // break.
+        '- "UPDATE customer SET doc = doc \\x2d- every row?', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc -\\', '  - every row?', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET doc = doc -- every row?\\n', '  WHERE c_key = @k"',
+        '- "UPDATE customer SET a = 1 /* closed */\\n  , doc = doc -- every row?', '  WHERE c_key = @k"',
+        // An escaped private-use character is text.
+        '- "UPDATE customer SET doc = doc', '  WHERE c_key = @k -- one row\\ue000 more"',
       ])},
-      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--']].map(
+      errors: [[1, '--'], [2, '--'], [3, '/*'], [4, '--'], [11, '/*'], [12, '--'], [14, '--'], [15, '--'], [17, '--'],
+               [21, '--'], [22, '--'], [24, '--']].map(
           ([n, m]) => has(`statement ${n} has '${m}' on a line YAML joins`)),
+    }, {
+      // An alias is checked at its anchor, which can come before the
+      // statements ahead of the alias.
+      files: {'commerce.yaml': withStatementLines(
+          DESCRIBED.replace(
+              'description: DESCRIPTION',
+              'description: &cut >\n          UPDATE customer SET doc = doc -- every row?\n' +
+                  '          WHERE c_key = @k'),
+          '- >', '  DELETE FROM customer -- every row?', '  WHERE c_key = @k', '- *cut')},
+      errors: [has("statement 1 has '--' on a line YAML joins"),
+               has("statement 2, written at '&cut', has '--' on a line YAML joins")],
     }, {
       // A file with CRLF line breaks reads the same.
       files: {'commerce.yaml': modelWriting([

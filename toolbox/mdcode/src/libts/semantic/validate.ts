@@ -1050,9 +1050,9 @@ function sqlExecutorErrors(
 //      line: in a block list one indented past the list's '-', in a block
 //      mapping one indented past its keys, and in a flow list any before the
 //      next ',' or ']'. YAML ends the statement there too.
-//   3. A statement whose YAML style joins its lines, with a SQL comment
-//      marker on a line YAML joins to the next one. Joined, a comment there
-//      also covers the lines after it.
+//   3. A statement in which a SQL comment, as YAML reads the statement, runs
+//      on into text from a later line. YAML joins the lines of every style
+//      but '|', so a comment there also covers the lines after it.
 export function yamlChangedStatementErrors(
     base: LoadedModel, text: string, profileDocs: ProfileFiles): string[] {
   const {document, model} = base;
@@ -1211,55 +1211,58 @@ function statementDialects(model: SemanticModel, profile: string): string[] {
 const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
 
 // For each of `statements` in the model or profile file `text`, the first SQL
-// comment marker that one of `dialects` reads on a line YAML joins to the next
-// one. A statement with no such marker is left out. A marker counts anywhere
-// on the line, inside a string or a quoted name too. With no dialect, `#` is
-// not a marker. The yaml library decides which lines it joins. Each line that
-// holds a marker gets a character that `text` does not hold at its end, and
-// the text is parsed again. A line is joined when its character is followed by
-// more than spaces and tabs before the next line break of the statement YAML
-// reads.
+// comment marker that one of `dialects` reads in the statement YAML reads,
+// when the comment it starts runs on into text from a later line of the
+// statement. A statement with no such marker is left out. A marker counts
+// anywhere in the statement, inside a string or a quoted name too, and a
+// comment runs to the next line break of the statement. With no dialect, `#`
+// is not a marker. The yaml library decides which lines it joins: each line
+// with text of a statement but its last gets a character at its end that
+// neither `text` nor any statement holds, and the text is parsed again. A
+// comment runs on into a later line when one of those characters inside it is
+// followed by more of the comment.
 function joinedLineMarkers(statements: WrittenStatement[], text: string,
                            dialects: string[]): Map<yaml.Scalar, string> {
   const marker = dialects.some(d => HASH_COMMENT_DIALECTS.has(d)) ?
       /--|\/\*|#/ :
       /--|\/\*/;
-  const unused = unusedPrivateUseCharacters(text);
-  // The marked lines of each statement, in order, by the character at their
-  // end. An alias shares its anchor's statement.
-  const marked = new Map<yaml.Scalar, Array<{end: string; marker: string}>>();
-  const inserts: Array<{at: number; end: string}> = [];
-  for (const {statement} of statements) {
-    if (marked.has(statement)) continue;
-    const lines: Array<{end: string; marker: string}> = [];
-    marked.set(statement, lines);
+  // A '|' block keeps every line break, so a comment in it covers no later
+  // line.
+  const checked = statements.map(
+      ({statement}) => statement.type !== 'BLOCK_LITERAL' &&
+          marker.test(String(statement.value)));
+  // Empty when the text and the statements hold every private-use character,
+  // which leaves each statement accepted.
+  const end = unusedPrivateUseCharacter(
+      text + statements.map(s => String(s.statement.value)).join(''));
+  const inserts: number[] = [];
+  statements.forEach(({statement}, i) => {
+    if (!checked[i]) return;
     const [start, stop] = statement.range!;
-    for (let from = start, to = text.indexOf('\n', from); to >= 0 && to < stop;
-         from = to + 1, to = text.indexOf('\n', from)) {
+    // A '>' block's text starts on the line after its header.
+    for (let from = statement.type === 'BLOCK_FOLDED' ?
+             text.indexOf('\n', start) + 1 :
+             start,
+             to = text.indexOf('\n', from);
+         to >= 0 && to < stop; from = to + 1, to = text.indexOf('\n', from)) {
       const line = text.slice(from, to).replace(/\r$/, '');
-      const found = marker.exec(line);
-      if (!found) continue;
-      const next = unused.next();
-      if (next.done) break;
-      // The character goes after the line's last character other than a
-      // space or tab. In a double-quoted statement, an odd number of
-      // backslashes there escapes the blank after them, or the line break when
-      // no blank follows, so it goes after that blank or before the last
-      // backslash.
+      // The character goes after the line's last character other than a space
+      // or tab. In a double-quoted statement, an odd number of backslashes
+      // there escapes the blank after them, or the line break when no blank
+      // follows, so it goes before the last backslash. A line with no text
+      // gets none, since one there would change how YAML reads the line.
       const body = line.slice(0, /[ \t]*$/.exec(line)!.index);
-      let at = from + body.length;
-      if (statement.type === 'QUOTE_DOUBLE' && /\\*$/.exec(body)![0].length % 2) {
-        at += body.length < line.length ? 1 : -1;
-      }
-      lines.push({end: next.value, marker: found[0]});
-      inserts.push({at, end: next.value});
+      const escaped = statement.type === 'QUOTE_DOUBLE' &&
+          /\\*$/.exec(body)![0].length % 2 === 1;
+      const at = body.length - (escaped ? 1 : 0);
+      if (/[^ \t]/.test(line.slice(0, at))) inserts.push(from + at);
     }
-  }
+  });
   const joined = new Map<yaml.Scalar, string>();
   if (!inserts.length) return joined;
   let changed = '';
   let copied = 0;
-  for (const {at, end} of inserts.sort((a, b) => a.at - b.at)) {
+  for (const at of inserts.sort((a, b) => a - b)) {
     changed += text.slice(copied, at) + end;
     copied = at;
   }
@@ -1267,26 +1270,46 @@ function joinedLineMarkers(statements: WrittenStatement[], text: string,
   // The changed text holds the same statements in the same order.
   const reread = writtenStatements(changed);
   statements.forEach(({statement}, i) => {
-    const value = String(reread[i]?.statement.value ?? '');
-    const first = marked.get(statement)!.find(({end}) => {
-      const at = value.indexOf(end);
-      return at >= 0 && !/^[ \t]*(\n|$)/.test(value.slice(at + end.length));
-    });
-    if (first) joined.set(statement, first.marker);
+    if (!checked[i]) return;
+    // The statement as YAML reads it, and where each line but its last ends
+    // in it.
+    let value = '';
+    const ends: number[] = [];
+    for (const c of String(reread[i]?.statement.value ?? '')) {
+      if (c === end) ends.push(value.length);
+      else value += c;
+    }
+    let lineStart = 0;
+    for (const line of value.split('\n')) {
+      const found = marker.exec(line);
+      if (found) {
+        const from = lineStart + found.index;
+        const after = from + found[0].length;
+        const lineEnd = lineStart + line.length;
+        if (ends.some(e => e > from &&
+                          /[^ \t]/.test(value.slice(Math.max(e, after), lineEnd)))) {
+          joined.set(statement, found[0]);
+          return;
+        }
+      }
+      lineStart += line.length + 1;
+    }
   });
   return joined;
 }
 
-// The private-use characters that `text` does not hold, from U+E000 upward.
-function* unusedPrivateUseCharacters(text: string): Generator<string> {
+// The first private-use character, from U+E000 upward, that `text` does not
+// hold, or '' when it holds every one.
+function unusedPrivateUseCharacter(text: string): string {
   const held = new Set(text);
   for (const [first, last] of
            [[0xe000, 0xf8ff], [0xf0000, 0xffffd], [0x100000, 0x10fffd]]) {
     for (let point = first; point <= last; point++) {
       const character = String.fromCodePoint(point);
-      if (!held.has(character)) yield character;
+      if (!held.has(character)) return character;
     }
   }
+  return '';
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a
