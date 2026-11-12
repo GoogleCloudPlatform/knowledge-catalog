@@ -449,15 +449,15 @@ CASE, gets TIMESTAMP(x), its midnight or wall-clock time in UTC, as those
 databases read it: `CURRENT_DATE - 7 < NOW()` becomes
 `TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY)) < CURRENT_TIMESTAMP()`.
 
-From PostgreSQL, a difference of two dates or times that import can see, one of
-them a timestamp or a timestamptz, is an INTERVAL of days and a time of day
-with one sign, such as `1 day 23:00:00`. BigQuery gives the difference of two
-TIMESTAMPs in hours, here `47:00:00`, so import writes
+From PostgreSQL and Databricks, a difference of two dates or times that import
+can see, one of them a timestamp or a timestamptz, is an INTERVAL of days and a
+time of day with one sign, such as `1 day 23:00:00`. BigQuery gives the
+difference of two TIMESTAMPs in hours, here `47:00:00`, so import writes
 `JUSTIFY_HOURS(TIMESTAMP(a) - TIMESTAMP(b))`, which moves each whole 24 hours
-into days as PostgreSQL does. `CURRENT_DATE - NOW()` becomes
+into days as those databases do. `CURRENT_DATE - NOW()` becomes
 `JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))`. A
-difference with a column stays untranslated, since a date column minus a date
-is a number of days.
+difference with a column stays untranslated, since the column's type is not
+visible: a PostgreSQL date column minus a date is a number of days.
 
 PostgreSQL's EXTRACT of an INTERVAL that import can see, such as
 `INTERVAL '25 hours'` or such a difference, gives each part as a numeric, and

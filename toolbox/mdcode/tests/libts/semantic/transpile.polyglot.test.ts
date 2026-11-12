@@ -676,10 +676,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'IF(c, current_date() - 1, current_timestamp())', {sql: 'IF(c, TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY)), CURRENT_TIMESTAMP())'}],
     ['POSTGRES', 'CASE WHEN c THEN CURRENT_DATE - 1 ELSE NOW() END > CURRENT_DATE', {sql: 'CASE WHEN c THEN TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY)) ELSE CURRENT_TIMESTAMP() END > TIMESTAMP(CURRENT_DATE)'}],
     ['DATABRICKS', 'MAX(current_date() - 1) < now()', {sql: 'TIMESTAMP(MAX(DATE_SUB(CURRENT_DATE, INTERVAL 1 DAY))) < CURRENT_TIMESTAMP()'}],
-    // PostgreSQL's difference of a date or a timestamp and a timestamp is an
-    // INTERVAL of days and a time of day.
+    // PostgreSQL's and Databricks' difference of a date or a timestamp and a
+    // timestamp is an INTERVAL of days and a time of day.
     ['POSTGRES', 'CURRENT_DATE - NOW()', {sql: 'JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))'}],
     ['POSTGRES', '(t::timestamp - CURRENT_DATE) > 1', {error: 'kcmd does not translate > on an INTERVAL and a number'}],
+    ['DATABRICKS', 'now() - current_date()', {sql: 'JUSTIFY_HOURS(TIMESTAMP(CURRENT_TIMESTAMP()) - TIMESTAMP(CURRENT_DATE))'}],
     ['POSTGRES', 'AVG(CURRENT_DATE - NOW())', {error: 'kcmd does not translate AVG of an INTERVAL'}],
     ['ANSI_SQL', '"t" < CURRENT_TIMESTAMP OR "d" = CURRENT_DATE', {sql: '`t` < CURRENT_TIMESTAMP OR `d` = CURRENT_DATE'}],
     ['SQLSERVER', 'DATEADD(month, 1, CURRENT_DATE)', {sql: "DATE_ADD(CAST(CURRENT_DATETIME('UTC') AS DATE), INTERVAL 1 MONTH)"}],

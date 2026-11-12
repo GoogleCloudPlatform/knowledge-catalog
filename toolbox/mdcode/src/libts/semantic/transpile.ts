@@ -1099,6 +1099,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // smaller units is of seconds, so a DATE plus it is a TIMESTAMP. It adds a
   // whole number to a DATE as days. Its current timestamp is a TIMESTAMP, and
   // a day there is 24 hours in UTC. It adds a month or a year to it in UTC.
+  // Its difference of two dates or times, one of them a TIMESTAMP, is a day
+  // and time INTERVAL (see timeDifference).
   // Its timestampadd, and its three-argument dateadd and date_add, whose part
   // is a name, read a DATE as a TIMESTAMP at midnight UTC and give a
   // TIMESTAMP. They keep the type of a TIMESTAMP_NTZ, which a column may be, so
@@ -1117,7 +1119,7 @@ const DATE_TABLES: Record<string, DateTable> = {
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
     sums: {'year-month INTERVAL': ['MONTH', 'YEAR'], 'day-time INTERVAL': [...SUB_DAY, 'DAY', 'WEEK']},
-    products: 'SECOND', stamps: true,
+    products: 'SECOND', stamps: true, differences: true,
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
@@ -2406,9 +2408,9 @@ function exactForm(node: any, read: string): any {
 // Whether `node`, a source value in the engine's dialect `read`, is a
 // difference the dialect gives as an INTERVAL of days and a time of day (see
 // `differences`): a `-` of two values visibly a DATE, a DATETIME or a
-// TIMESTAMP, one of them not a DATE. PostgreSQL reads a date or a timestamp
-// without time zone there at its midnight or wall-clock time in UTC, as
-// TIMESTAMP(x) does, and moves each whole 24 hours of the difference into its
+// TIMESTAMP, one of them not a DATE. PostgreSQL and Databricks read a date or
+// a timestamp without time zone there at its midnight or wall-clock time in
+// UTC, as TIMESTAMP(x) does, and give each whole 24 hours of the difference as
 // days, with the time of day of the same sign. BigQuery's difference of two
 // TIMESTAMPs is in hours, which JUSTIFY_HOURS moves into days the same way.
 function timeDifference(node: any, read: string): boolean {
