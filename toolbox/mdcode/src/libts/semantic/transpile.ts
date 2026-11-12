@@ -871,6 +871,10 @@ interface DateTable {
   // as the TIMESTAMP at its midnight or wall-clock time in UTC, as BigQuery's
   // TIMESTAMP(x) reads it (see valueForms).
   stamps?: true;
+  // True when the dialect gives the difference of two dates or times, one of
+  // them a timestamp, as an INTERVAL of days and a time of day (see
+  // timeDifference).
+  differences?: true;
   // The units an INTERVAL may name, when the dialect has fewer than UNITS or
   // than its function names.
   intervals?: Unit[];
@@ -996,7 +1000,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // or a year to it in UTC (see Addition). It has no
   // INTERVAL of a quarter. It joins INTERVALs of any units into one value,
   // which it adds months first, then days, then time, as BigQuery adds an
-  // INTERVAL.
+  // INTERVAL. Its difference of two dates or times, one of them a timestamp,
+  // is an INTERVAL (see timeDifference).
   postgresql: {
     date: 'date', today: ['CURRENT_DATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'timestamptz'},
     casts: lookup({timestamp: 'timestamp', timestamptz: 'timestamptz'}), functions: {},
@@ -1011,7 +1016,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       [10n, ['decade', 'decades', 'dec', 'decs']], [100n, ['century', 'centuries', 'c', 'cent']],
       [1000n, ['millennium', 'millennia', 'mil', 'mils']],
     ] as [bigint, string[]][]).flatMap(([n, words]) => words.map(w => [w, ['YEAR', n]]))),
-    severalUnits: true, fields: true, sums: {INTERVAL: [...UNITS]}, stamps: true,
+    severalUnits: true, fields: true, sums: {INTERVAL: [...UNITS]}, stamps: true, differences: true,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'column')},
       date: {
@@ -1505,13 +1510,14 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
 }
 
 // Whether `node`, a source value in the engine's dialect `read`, is visibly an
-// INTERVAL: an INTERVAL value, a negation, product, sum or difference of one,
-// or one that MAX, COALESCE or a similar function returns.
+// INTERVAL: an INTERVAL value, a difference of dates or times (see
+// timeDifference), a negation, product, sum or difference of one, or one that
+// MAX, COALESCE or a similar function returns.
 function intervalTyped(node: any, read: string): boolean {
   const table = DATE_TABLES[read];
   const b = bare(node);
   if (!table?.sums) return false;
-  if (typeof intervalValue(b, read, table) === 'object') return true;
+  if (typeof intervalValue(b, read, table) === 'object' || timeDifference(b, read)) return true;
   const kind = kindOf(b) ?? '';
   const operands = kind === 'neg' ? [b.neg.this] : ['add', 'sub', 'mul'].includes(kind) ?
       [b[kind].left, b[kind].right] : returned(b);
@@ -2169,6 +2175,7 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
   if (joined) return typeof joined === 'string' ? joined : joined.values;
   const sum = kind === 'mul' ? undefined : dateSum({[kind]: value}, read);
   if (sum) return typeof sum === 'string' ? sum : [sum.operand, ...(sum.values ?? [sum.amount])];
+  if (timeDifference({[kind]: value}, read)) return sides;
   if (sides.some(s => bare(s)?.literal?.literal_type === 'string')) return `${op} of a string`;
   if (read === 'spanner') return sides;
   // A value import can see is a date or a time, a function of a dialect's
@@ -2365,6 +2372,7 @@ function exactForm(node: any, read: string): any {
   if (diff) return formCall(diff, args.slice(1));
   if (DATE_TABLES[read]?.dayDiffs?.includes(name) && args.length === 2) return dayDiffForm(name, args, read);
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
+  if (kind === 'sub' && timeDifference(node, read)) return formCall(DIFFERENCE, [value.left, value.right]);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   // Date arithmetic gets its forms from DATE_TABLES (see dateSum).
   const computed = ['add', 'sub', 'mul'].includes(kind) && !dateSum(node, read) ? [value.left, value.right] : [];
@@ -2381,6 +2389,22 @@ function exactForm(node: any, read: string): any {
   }
   return swap.size ? swapped(node, swap) : undefined;
 }
+
+// Whether `node`, a source value in the engine's dialect `read`, is a
+// difference the dialect gives as an INTERVAL of days and a time of day (see
+// `differences`): a `-` of two values visibly a DATE, a DATETIME or a
+// TIMESTAMP, one of them not a DATE. PostgreSQL reads a date or a timestamp
+// without time zone there at its midnight or wall-clock time in UTC, as
+// TIMESTAMP(x) does, and moves each whole 24 hours of the difference into its
+// days, with the time of day of the same sign. BigQuery's difference of two
+// TIMESTAMPs is in hours, which JUSTIFY_HOURS moves into days the same way.
+function timeDifference(node: any, read: string): boolean {
+  const b = bare(node);
+  if (!DATE_TABLES[read]?.differences || !b?.sub) return false;
+  const types = [b.sub.left, b.sub.right].map(v => timeType(v, read));
+  return types.every(t => WIDER.includes(t!)) && types.some(t => t !== 'DATE');
+}
+const DIFFERENCE = 'JUSTIFY_HOURS(TIMESTAMP(_1) - TIMESTAMP(_2))';
 
 // How a node uses the values valueForms gets: it compares them, computes
 // with them in `+`, `-` or `*`, negates one, or gives them as its results.
@@ -2450,11 +2474,12 @@ function valueForms(values: any[], read: string, use: Use): Map<any, any>|string
 }
 
 // The name in `sums` of the type of `node`, a source value in the engine's
-// dialect `read`, when it is visibly an INTERVAL value, or undefined.
+// dialect `read`, when it is visibly an INTERVAL value, or undefined. A
+// difference of dates or times is of days (see timeDifference).
 function intervalType(node: any, read: string): string|undefined {
   const table = DATE_TABLES[read];
   const joined = table?.sums && intervalValue(bare(node), read, table);
-  const unit = typeof joined === 'object' ? joined.parts[0].unit : undefined;
+  const unit = typeof joined === 'object' ? joined.parts[0].unit : timeDifference(node, read) ? 'DAY' : undefined;
   return unit && Object.keys(table.sums!).find(name => table.sums![name].includes(unit));
 }
 
