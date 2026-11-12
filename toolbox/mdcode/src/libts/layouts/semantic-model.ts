@@ -178,6 +178,12 @@ function named(localPath: string, name: string):
                                         {path: localPath, profileName: name};
 }
 
+// Whether nothing at `localPath` is a directory, so that pull may delete it
+// as a file. A link to a directory is a link.
+function notDirectory(localPath: string): boolean {
+  return !fs.lstatSync(localPath, {throwIfNoEntry: false})?.isDirectory();
+}
+
 // Each `<model>.profile.<name>.yaml` in `dir`, by profile name, read with
 // `files`.
 export function profileFilesBeside(
@@ -352,15 +358,15 @@ export class SemanticModelLayout implements CatalogLayout {
   // catalog did not return: each sibling file whose name is a valid profile
   // name, then the older `<model>.profiles/` directory as _legacyLocalFiles
   // lists it. Each file has its profile name when that name is valid. It
-  // applies no flavor check. A sibling file with an invalid profile name is
-  // left out; push rejects it, naming it.
+  // applies no flavor check. A sibling file with an invalid profile name, and
+  // a directory, are left out; push rejects them, naming them.
   localProfileFiles(model: string): {path: string; profileName?: string}[] {
     return [
       ...this._siblingProfilePaths(model)
           .filter(p => !nameProblem('profile', p.name))
           .map(p => ({path: p.path, profileName: p.name})),
       ...this._legacyLocalFiles(model),
-    ];
+    ].filter(f => notDirectory(f.path));
   }
 
   // Every file on disk that holds the model with this handle, for pull to
@@ -368,7 +374,8 @@ export class SemanticModelLayout implements CatalogLayout {
   // file the layout read, then each `<model>.profile.*.yaml` as
   // profileFileNamesBeside lists them, then the older `<model>.profiles/`
   // directory as _legacyLocalFiles lists it. Each profile file has its profile
-  // name when that name is valid.
+  // name when that name is valid. A directory is left out; push rejects it,
+  // naming it.
   modelFiles(model: string): {path: string; profileName?: string}[] {
     const dir = this._groupDir();
     const prefix = `${model}.profile.`;
@@ -378,7 +385,7 @@ export class SemanticModelLayout implements CatalogLayout {
           .map(f => named(
               path.join(dir, f), f.slice(prefix.length, -'.yaml'.length))),
       ...this._legacyLocalFiles(model),
-    ];
+    ].filter(f => notDirectory(f.path));
   }
 
   // Every profile file of a model on disk, whatever its profile name: each

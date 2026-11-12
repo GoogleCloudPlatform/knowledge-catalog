@@ -2932,7 +2932,7 @@ describe('a pull', () => {
       fs.symlinkSync('missing.yaml', local('commerce.profile.dev.yaml'));
   // [label, the catalog's model, makes the local files beside a directory
   // `outside` the entry group, the message without --force-remove, the files
-  // it removes, the paths under `outside` that stay]
+  // it removes, the paths in the workspace that stay]
   test.each([
     ['a link to no file beside a Google-flavor model', SECOND_GEN, dangling,
      notInCatalog('profile file', 'commerce.profile.dev.yaml'),
@@ -2946,14 +2946,19 @@ describe('a pull', () => {
        fs.symlinkSync(outside, local('commerce.profiles'));
      },
      notInCatalog('profile directory', 'commerce.profiles'), ['commerce.profiles'],
-     ['qa.yaml']],
+     ['outside/qa.yaml']],
     ['a stale overview sidecar in a linked directory', SECOND_GEN,
      (outside: string) => {
        write(path.join(outside, 'entities', 'Old.overview.md'), 'Old.\n');
        fs.symlinkSync(outside, local('commerce'));
      },
      notInCatalog('overview sidecar', 'commerce/entities/Old.overview.md'),
-     ['commerce/entities/Old.overview.md'], ['entities']],
+     ['commerce/entities/Old.overview.md'], ['outside/entities']],
+    ['nothing at a directory with a profile file\'s name', SECOND_GEN,
+     () => fs.mkdirSync(local('commerce.profile.dev.yaml')),
+     `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
+         "leaves it: Profile file 'commerce.profile.dev.yaml' is not a file.",
+     [], [shown('commerce.profile.dev.yaml')]],
     ['a stale model\'s profile file with no valid profile name', SECOND_GEN,
      () => {
        sales('sales.yaml');
@@ -3004,9 +3009,7 @@ describe('a pull', () => {
           expect(fs.lstatSync(local(file), {throwIfNoEntry: false}))
               .toBeUndefined();
         }
-        for (const p of kept) {
-          expect(fs.existsSync(path.join(outside, p))).toBe(true);
-        }
+        for (const p of kept) expect(fs.existsSync(path.join(dir, p))).toBe(true);
       });
 
   test('the summary counts new, updated and unchanged files apart, and an ' +
