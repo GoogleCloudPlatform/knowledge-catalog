@@ -316,7 +316,9 @@ names microseconds.
   as in MySQL, and adds every unit to it.
   A date or a time it can see, compared with a number or plus or minus a
   number, counts as the number of its digits, as in MySQL: `CURDATE() + 1`
-  becomes `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`.
+  becomes `CAST(FORMAT_DATE('%Y%m%d', CURRENT_DATE) AS INT64) + 1`. A
+  COALESCE, IF or CASE counts so only when each value it can give is visibly a
+  DATE, or each a DATETIME.
   A sum that names its INTERVAL first adds it to all that follows, as MySQL
   does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
   first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
@@ -369,9 +371,11 @@ names microseconds.
   1/300 of a second.
 
 From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
-counts as days. A column plus a whole number, such as `(d + 1) + INTERVAL '1
-day'`, gets an INTERVAL as a DATE does. None of the three adds an INTERVAL to
-a number or a whole number to a timestamp, and BigQuery does neither. Import
+counts as days. Added to a DATE that COALESCE, IF or CASE gives, such as
+`COALESCE(d, CURRENT_DATE) + 1`, it stays as written. A column plus a whole
+number, such as `(d + 1) + INTERVAL '1 day'`, gets an INTERVAL as a DATE does.
+None of the three adds an INTERVAL to a number or a whole number to a
+timestamp, and BigQuery does neither. Import
 translates no date arithmetic from ANSI_SQL, since the databases an ANSI_SQL
 text runs on add a unit as different types. From a SPANNER text it keeps
 DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB, and weeks, days, hours and

@@ -1186,6 +1186,11 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
   if (typeof found === 'string') return found;
   const row = found && table.rows[found.row];
   const subtract = kind === 'sub';
+  // A whole number added to a DATE that COALESCE or a similar function gives
+  // stays as written, where the dialect adds it to a DATE as days.
+  if (!found && /^-?\d+$/.test(text) && table.rows[table.date].days && dateResults(operand, read)) {
+    return {operand, amount: wholeNumber(text), subtract, addition: {form: '+', gives: table.date}};
+  }
   if (!row?.days) return undefined;
   if (/^-?\d+$/.test(text)) {
     const unit = row.days.form === 'DATE_ADD' ? 'DAY' : undefined;
@@ -1194,6 +1199,17 @@ function operatorSum(kind: string, value: any, read: string, table: DateTable):
   const part = row.fractionStep && dayFraction(text, row.fractionStep);
   const addition = part && row.units[part.unit];
   return addition ? {operand, ...part, subtract, addition} : undefined;
+}
+
+// Whether `node`, a source value, is one that COALESCE, IF, CASE or a similar
+// function gives, whose results are visibly DATEs, besides columns and NULL.
+// The sources add a whole number to it as days, and reject it when a column
+// makes it a timestamp, as BigQuery does for a DATETIME or a TIMESTAMP.
+function dateResults(node: any, read: string): boolean {
+  const given = returned(node).length ? givenValues(node) : [];
+  const types = given.map(g => timeType(g, read));
+  return types.includes('DATE') &&
+      given.every((g, i) => types[i] === 'DATE' || !g || bare(g).column || bare(g).null !== undefined);
 }
 
 // `text`, a decimal number of days, as a whole amount of the longest unit of a
@@ -2162,8 +2178,9 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 // when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
 // literal, a cast on the list, the current date or timestamp, date arithmetic
 // import translates, by its row in DATE_TABLES, PostgreSQL's DATE_TRUNC of a
-// DATE, Databricks' date_trunc, or the first such value that MAX, COALESCE or
-// a similar function returns. A SPANNER text's current timestamp is a TIMESTAMP.
+// DATE, Databricks' date_trunc, or the widest type of the values that
+// COALESCE or a similar function returns, in the order of WIDER. A SPANNER
+// text's current timestamp is a TIMESTAMP.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
@@ -2177,8 +2194,9 @@ function timeType(node: any, read: string): string|undefined {
   const table = DATE_TABLES[read];
   const found = table && operandRow(b, read, table);
   if (typeof found === 'object') return table.rows[found.row].type;
-  const results = returned(b).map(v => timeType(v, read)).filter(t => t);
-  if (results.length) return results[0];
+  const results = returned(b).map(v => timeType(v, read));
+  const widest = WIDER.filter(t => results.includes(t)).at(-1);
+  if (widest) return widest;
   if (read === 'spanner' && CURRENT.has(String(b?.function?.name).toUpperCase())) return 'TIMESTAMP';
   const type = castType((b?.cast ?? b?.try_cast ?? b?.safe_cast)?.to);
   const types: Record<string, string> = {
@@ -2187,6 +2205,12 @@ function timeType(node: any, read: string): string|undefined {
   };
   return CAST_TYPES[type]?.includes(read) ? types[type] : undefined;
 }
+
+// The types of values that one COALESCE, IF or CASE can give, each giving
+// way to those after it: BigQuery merges a DATE into a DATETIME, and import a
+// DATE or a DATETIME into a TIMESTAMP where it writes TIMESTAMP(x) around it
+// (see valueForms).
+const WIDER = ['DATE', 'DATETIME', 'TIMESTAMP'];
 
 // The values `node`, a source value, can give: `node`, or each value it gives
 // as its own, such as COALESCE's operands.
@@ -2290,10 +2314,17 @@ function valueForms(values: any[], read: string, results: boolean): Map<any, any
   const problem = `a ${types[0]} and a ${other}`;
   if (read !== 'mysql' || types.length !== 2 || other !== 'number') return problem;
   const digits = types[0] === 'DATE' ? "FORMAT_DATE('%Y%m%d', _1)" : "FORMAT_DATETIME('%Y%m%d%H%M%S', _1)";
+  // The digits and the text need each value COALESCE or a similar function
+  // gives to be visibly of the one type. A column may be a DATETIME, which
+  // BigQuery's FORMAT_DATE also reads, and MySQL gives the digits of a DATE
+  // beside a DATETIME one way in a sum and another in a comparison.
+  const visible = (v: any) =>
+      givenValues(v).every(g => !g || bare(g).null !== undefined || timeType(g, read) === types[0]);
   const swap = new Map();
   for (const v of values) {
     if (v === null || v === undefined || bare(v)?.null !== undefined) continue;
     const text = numberText(v);
+    if (typeOf(v) === types[0] && !visible(v)) return problem;
     if (typeOf(v) === types[0]) {
       swap.set(v, formCall(results ? 'CAST(_1 AS STRING)' : `CAST(${digits} AS INT64)`, [v]));
     } else if (results && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(text ?? '')) {
