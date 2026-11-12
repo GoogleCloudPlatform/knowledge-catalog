@@ -361,7 +361,12 @@ names microseconds.
   TIMESTAMP_DIFF does between TIMESTAMP(x) values. They count months, quarters
   and years by the calendar as Databricks does: whole months to the end's day
   of the month, where the end counts a day nearer the start when its time of
-  day has not reached the start's.
+  day has not reached the start's. Two-argument datediff and date_diff count
+  the days from their second value to their first, as `DATE_DIFF(end, start,
+  DAY)` does. A DATE stays as it is. A column, the current timestamp or a
+  string of a date, with or without a time of day, is read as its date with
+  `CAST(CAST(x AS DATETIME) AS DATE)`, as date_add reads it. BigQuery rejects
+  a string that Databricks reads in another form, such as '2024-02'.
   Seconds, minutes and hours go to TIMESTAMP(x) of a DATE, its midnight in
   UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
   hours, days and weeks to the current timestamp, a TIMESTAMP, and months and

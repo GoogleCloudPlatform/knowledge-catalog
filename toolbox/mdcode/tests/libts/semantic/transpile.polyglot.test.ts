@@ -439,7 +439,6 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SNOWFLAKE', 'TO_TIMESTAMP(n, 3)', {error: 'kcmd does not translate TO_TIMESTAMP'}],
     ['SQLSERVER', "FORMAT(d, 'yyyy-MM')", {error: 'kcmd does not translate FORMAT'}],
     ['MYSQL', 'LAST_DAY(CURDATE())', {error: 'kcmd does not translate LAST_DAY'}],
-    ['DATABRICKS', 'datediff(a, b)', {error: 'kcmd does not translate datediff'}],
     ['SNOWFLAKE', 'ADD_MONTHS(CURRENT_DATE(), -1)', {error: 'kcmd does not translate ADD_MONTHS'}],
     ['SQLSERVER', 'DATEDIFF(dd, a, b)', {error: "kcmd does not translate DATEDIFF with part 'dd'"}],
     ['SQLSERVER', 'DATEADD(day, DATEDIFF(day, 0, GETDATE()), 0)', {error: 'kcmd does not translate DATEADD of a number'}],
@@ -680,6 +679,10 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'date_diff(QUARTER, a, b)', {sql: `DIV(${monthsAB}, 3)`}],
     ['DATABRICKS', 'timestampdiff(YEAR, a, b)', {sql: `DIV(${monthsAB}, 12)`}],
     ['DATABRICKS', 'datediff(DAY, a, b)', {sql: 'TIMESTAMP_DIFF(TIMESTAMP(b), TIMESTAMP(a), DAY)'}],
+    // Two-argument datediff counts the days between the dates of its values.
+    ['DATABRICKS', 'datediff(now(), current_date() - 3)', {sql: 'DATE_DIFF(CAST(CAST(CURRENT_TIMESTAMP() AS DATETIME) AS DATE), DATE_SUB(CURRENT_DATE, INTERVAL 3 DAY), DAY)'}],
+    ['DATABRICKS', "date_diff(a, '2024-02-01 10:00:00')", {sql: "DATE_DIFF(CAST(CAST(a AS DATETIME) AS DATE), CAST(CAST('2024-02-01 10:00:00' AS DATETIME) AS DATE), DAY)"}],
+    ['DATABRICKS', "datediff(NULL, '2024-02-30')", {error: 'kcmd does not translate DATEDIFF of a string'}],
     ['DATABRICKS', 'dateadd(`order date`, 7)', {sql: 'DATE_ADD(CAST(CAST(`order date` AS DATETIME) AS DATE), INTERVAL 7 DAY)'}],
     ['POSTGRES', 'DATE_TRUNC("month", d)', {error: 'kcmd does not translate DATE_TRUNC with a quoted part'}],
     ['POSTGRES', 'DATE_PART("day", d)', {error: 'kcmd does not translate DATE_PART with a quoted part'}],

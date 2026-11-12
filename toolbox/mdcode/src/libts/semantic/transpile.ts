@@ -826,6 +826,10 @@ interface DateTable {
   // The functions that count whole units from a start to an end, with the
   // unit first, as Databricks' timestampdiff does (see TIMESTAMP_DIFFS).
   diffs?: string[];
+  // The functions that count the days from a start to an end with two
+  // arguments, the end first, as Databricks' datediff(end, start) does (see
+  // dayDiffForm).
+  dayDiffs?: string[];
   // The functions that give the current date. A name the engine keeps, which
   // BigQuery does not have, also needs an entry in CURRENT_TIME.
   today: string[];
@@ -1094,7 +1098,7 @@ const DATE_TABLES: Record<string, DateTable> = {
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
     functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part', TIMESTAMPADD: 'part'},
-    diffs: ['TIMESTAMPDIFF', 'DATEDIFF', 'DATE_DIFF'],
+    diffs: ['TIMESTAMPDIFF', 'DATEDIFF', 'DATE_DIFF'], dayDiffs: ['DATEDIFF', 'DATE_DIFF'],
     words: named({
       MICROSECOND: ['microseconds'], MILLISECOND: ['milliseconds'], SECOND: ['seconds'], MINUTE: ['minutes'],
       HOUR: ['hours'], DAY: ['days'], WEEK: ['weeks'], MONTH: ['months'], YEAR: ['years'],
@@ -2359,6 +2363,7 @@ function exactForm(node: any, read: string): any {
   // Databricks' timestampdiff counts whole units (see TIMESTAMP_DIFFS).
   const diff = DATE_TABLES[read]?.diffs?.includes(name) && args.length === 3 && diffSql(args[0]);
   if (diff) return formCall(diff, args.slice(1));
+  if (DATE_TABLES[read]?.dayDiffs?.includes(name) && args.length === 2) return dayDiffForm(name, args, read);
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   // Date arithmetic gets its forms from DATE_TABLES (see dateSum).
@@ -2484,6 +2489,30 @@ function nullifForm(args: any[], read: string): any {
   return `NULLIF on a ${time} and ${other ? `a ${other}` : 'a value that may be another type'}`;
 }
 
+// The FORM_CALL for `name`(end, start), a function of `dayDiffs` whose
+// arguments are `args`, in the engine's dialect `read`, or a message.
+// Databricks reads each value as a DATE and counts the days from start to
+// end, as BigQuery's DATE_DIFF(end, start, DAY) counts them. A DATE and NULL
+// stay as they are. BigQuery reads a column, the current timestamp, date
+// arithmetic import translates, and a string of a date with or without a time
+// of day, as Databricks does, with CAST(CAST(x AS DATETIME) AS DATE) (see
+// READS).
+function dayDiffForm(name: string, args: any[], read: string): any {
+  const table = DATE_TABLES[read];
+  const sql: string[] = [];
+  for (const [i, arg] of args.entries()) {
+    const b = bare(arg);
+    const found = operandRow(b, read, table);
+    if (typeof found === 'string') return found;
+    const text = b?.literal?.literal_type === 'string' ? literalText(b.literal) : undefined;
+    const dated = /^\d{4}-/.test(text ?? '') && stringDate(b);
+    if (!found && !dated && b?.null === undefined) return `${name} of ${valueName(b)}`;
+    const date = b?.null !== undefined || found?.row === table.date;
+    sql.push(date ? `_${i + 1}` : READS.DATE.replace('_1', `_${i + 1}`));
+  }
+  return formCall(`DATE_DIFF(${sql[0]}, ${sql[1]}, DAY)`, args);
+}
+
 // The arguments of `fn`, a source function call in the engine's dialect
 // `read`, that import still has to check, the name of a construct in it
 // import does not translate, or undefined when import does not translate it.
@@ -2499,6 +2528,10 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
   if (table.functions[name]) {
     const sum = dateSum({function: fn}, read);
     return typeof sum === 'object' ? [sum.operand, sum.amount] : sum;
+  }
+  if (table.dayDiffs?.includes(name) && args.length === 2) {
+    const form = dayDiffForm(name, args, read);
+    return typeof form === 'string' ? form : args;
   }
   const [dialects, fewest, most] = FUNCTIONS[name] ?? [[], 0, 0];
   if (!dialects.includes(read) || args.length < fewest || args.length > most) {
