@@ -429,29 +429,27 @@ function setScalar(
   const written = u.text.slice(node.range![0], node.range![1]);
   const escaped = type === 'QUOTE_DOUBLE' && written.includes('\\n') &&
       !written.includes('\n');
-  let s = scalarText(u, value, slot.col, slot.flow, type, escaped);
+  // A block scalar written again keeps the indentation of its lines of text,
+  // and a header that sets that indentation keeps setting it. An indentation
+  // indicator stops at 9, so a block more than 9 columns deeper than its key
+  // that comes to need one is double-quoted.
+  const indent = blockIndent(u.text, node, slot.col);
+  const step = indent === undefined ? 0 : indent - slot.col;
+  let s = scalarText(
+      step >= 1 ? {...u, step} : u, value, slot.col, slot.flow, type, escaped);
   // A value of several lines in place of a plain or double-quoted scalar is
   // double-quoted. As a block scalar it would take the comment after it into
   // its text. A single-quoted one stays single-quoted.
   if (!/^(BLOCK|QUOTE_SINGLE)/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
-  // A block scalar written again keeps the indentation of its lines of text,
-  // and a header that sets that indentation keeps setting it.
-  const indent = blockIndent(u.text, node, slot.col);
-  const digit = /^[|>][-+]?[1-9]/.test(written) || /^[|>][1-9]/.test(s);
-  if (indent !== undefined && /^[|>]/.test(s) &&
-      (!digit || indent - slot.col <= 9)) {
-    s = s.replaceAll(
-        u.nl + ' '.repeat(slot.col + u.step), u.nl + ' '.repeat(indent));
-    if (digit) {
-      const head = (t: string) => /^[|>][-+0-9]*/.exec(t)![0];
-      const bare = (t: string) => head(t).replace(/[0-9]/, '');
-      s = (bare(written) === bare(s) && head(written) !== bare(written) ?
-               head(written) :
-               bare(s).replace(/^[|>]/, h => h + (indent - slot.col))) +
-          s.slice(head(s).length);
-    }
+  // The digit stays on the side of the chomping indicator it was written on.
+  const head = (t: string) => /^[|>][-+0-9]*/.exec(t)?.[0] ?? '';
+  const digit = /[1-9]/.exec(head(written))?.[0];
+  if (head(s) && digit) {
+    const chomp = /[-+]/.exec(head(s))?.[0] ?? '';
+    s = s[0] + (/^.[-+]/.test(head(written)) ? chomp + digit : digit + chomp) +
+        s.slice(head(s).length);
   }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
@@ -735,8 +733,11 @@ function scalarText(
     collectionStyle: flow ? 'flow' : 'any',
   });
   // A block scalar that keeps its final line breaks would take the blank
-  // lines after it, so such a value is double-quoted.
-  if (!flow && /^_: [|>][0-9]*\+/.test(text)) {
+  // lines after it, and an indentation indicator stops at 9, so such a value
+  // is double-quoted.
+  if (!flow &&
+      (/^_: [|>][0-9]*\+/.test(text) ||
+       u.step > 9 && /^_: [|>][-+]?[0-9]/.test(text))) {
     return scalarText(u, value, col, flow, 'QUOTE_DOUBLE');
   }
   // yaml writes some double-quoted text over several lines so that it reads
@@ -848,7 +849,8 @@ function blockIndent(
   if (!header) return undefined;
   const digit = header[1] ?? header[2];
   if (digit) return col + Number(digit);
-  const line = t.slice(from, to).split('\n').slice(1).find(l => l.trim());
+  const line =
+      t.slice(from, to).split('\n').slice(1).find(l => /[^ \r]/.test(l));
   return line === undefined ? undefined : /^ */.exec(line)![0].length;
 }
 

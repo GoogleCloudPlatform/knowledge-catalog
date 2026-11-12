@@ -60,9 +60,26 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: |\n    \tx\n    y\n', v => (v.a = '\tx\nz\n'), 'a: |\n    \tx\n    z\n'
   ],
   [
-    'a block scalar whose header sets its indentation',
-    'k:\n  data: |-4\n      x\n      y\nq: 1\n', v => (v.k.data = 'x\nz'),
-    'k:\n  data: |-4\n      x\n      z\nq: 1\n'
+    'block scalars in a file indented by ten that come to start with a blank, one more than 9 columns deeper than its key',
+    'a:\n          k: |-\n                    x\nb:\n          k: |8\n                   x\n',
+    v => (v.a.k = '  y\nz', v.b.k = ' y\n'),
+    'a:\n          k: "  y\n\n                    z"\nb:\n          k: |8\n                   y\n'
+  ],
+  [
+    'a block scalar whose first line of text holds only a tab',
+    'a: |\n    \t\n      y\n', v => (v.a = '\t\n  z\n'), 'a: |\n    \t\n      z\n'
+  ],
+  [
+    'block scalars more than 9 columns deeper than their key, one that comes to start with a blank',
+    'a:\n  k: |\n              x\n              y\n  q: 1\nb:\n  k: |-\n            x\n',
+    v => (v.a.k = 'x\nz\n', v.b.k = '  y\nz'),
+    'a:\n  k: |\n              x\n              z\n  q: 1\nb:\n  k: "  y\n\n            z"\n'
+  ],
+  [
+    'block scalars whose header sets their indentation, before or after the chomping indicator, one that comes to keep its last line break',
+    'k:\n  data: |-4\n        x\n      y\nm:\n  data: |-4\n      x\n      y\np: |4-\n      x\n    y\n',
+    v => (v.k.data = '  x\nz', v.m.data = 'x\nz\n', v.p = '  x\nz'),
+    'k:\n  data: |-4\n        x\n      z\nm:\n  data: |4\n      x\n      z\np: |4-\n      x\n    z\n'
   ],
   [
     'a quoted string set to text whose lines yaml would write so that a line of one space reads back as a backslash',
