@@ -2027,7 +2027,8 @@ interface WrittenCall {
 }
 
 // The call in `text`, an expression in `dialect` the engine reads as `read`,
-// whose tree is `node`, or undefined when no call in `text` gives `node`.
+// whose tree as sourceTree reads it is `node`, or undefined when no call in
+// `text` gives `node`.
 function writtenCall(
     engine: PolyglotEngine, text: string, dialect: string, read: string,
     node: any): WrittenCall|undefined {
@@ -2053,7 +2054,7 @@ function writtenCall(
       }
     }
     if (end < 0) continue;
-    const tree = sqlExpressionTree(slice(t, tokens[end]), dialect);
+    const tree = sourceTree(slice(t, tokens[end]), dialect, read);
     if (JSON.stringify(treeWithoutComments(tree)) === wanted) {
       return {
         name: slice(t, t),
