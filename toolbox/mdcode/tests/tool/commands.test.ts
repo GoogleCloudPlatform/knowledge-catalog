@@ -1944,6 +1944,20 @@ semantic_model:
          expect(JSON.parse(excluded).sort())
              .toEqual(['buyers', 'customers', 'orders']);
        });
+
+  // The local file of a vanilla catalog model is the one pull writes, so the
+  // GOOGLE block of a stale 'a\b.yaml' names no metric there.
+  test('reads no stale model file\'s GOOGLE block for the catalog\'s model',
+       async () => {
+         await pushed({'a_b.yaml': withBlock(
+             excluding(['orders', 'customers']),
+             VANILLA.replace('name: commerce', 'name: a_b'))});
+         fs.renameSync(local('a_b.yaml'), local('a\\b.yaml'));
+
+         expect(await pull({forceRemove: true})).toBe(0);
+         expect(fs.readFileSync(local('a_b.yaml'), 'utf8'))
+             .toMatch(/"metrics_exclude":\s*"\*"/);
+       });
 });
 
 
@@ -2653,15 +2667,16 @@ describe('a pull', () => {
          force("'mysales.yaml' and 'commerce.profiles/prod.yaml'"),
      [['-commerce.yaml', '-commerce.profiles/prod.yaml', rename('mysales.yaml', 'commerce.yaml')],
       ['force']]],
-    ['two files that hold it', ['mysales.yaml', 'sales2.yaml'], 'commerce',
-     holds + "which pull writes as 'commerce.yaml'. Rename the file to " +
-         "'commerce.yaml' to keep it, or delete 'mysales.yaml', or " +
-         force("'mysales.yaml' and 'sales2.yaml'") + "\nError: local model " +
-         "file 'sales2.yaml' holds model 'commerce', which 'mysales.yaml' " +
-         "also holds. Delete 'sales2.yaml', or " +
-         force("'mysales.yaml' and 'sales2.yaml'"),
-     [[rename('mysales.yaml', 'commerce.yaml'), '-sales2.yaml'],
-      ['-mysales.yaml', '-sales2.yaml'], ['force']]],
+    // Each message names 'a\b.yaml' as it is on disk.
+    ['two files that hold it', ['a\\b.yaml', 'sales2.yaml'], 'commerce',
+     holds.replace('mysales', 'a\\b') + "which pull writes as " +
+         "'commerce.yaml'. Rename the file to 'commerce.yaml' to keep it, " +
+         "or delete 'a\\b.yaml', or " + force("'a\\b.yaml' and 'sales2.yaml'") +
+         "\nError: local model file 'sales2.yaml' holds model 'commerce', " +
+         "which 'a\\b.yaml' also holds. Delete 'sales2.yaml', or " +
+         force("'a\\b.yaml' and 'sales2.yaml'"),
+     [[rename('a\\b.yaml', 'commerce.yaml'), '-sales2.yaml'],
+      ['-a\\b.yaml', '-sales2.yaml'], ['force']]],
     ['a second file that holds it, with one profile in both forms',
      ['mysales.yaml', 'sales2.yaml', 'sales2.profile.prod.yaml', 'sales2.profiles/prod.yaml'],
      'commerce',
@@ -2982,15 +2997,12 @@ describe('a pull', () => {
     ['a stale model file whose name holds a backslash',
      {...SECOND_GEN, name: 'a_b'}, () => sales('a\\b.yaml'),
      stale("'sales' in 'a\\b.yaml'", "'a\\b.yaml'", 'a_b'), ['a\\b.yaml'], []],
-    ['a stale model with a profile file and the older directory', SECOND_GEN,
-     () => {
+    ['a directory at a stale model\'s profile file name', SECOND_GEN, () => {
        sales('sales.yaml');
-       write(local('sales.profile.prod.yaml'));
-       write(local('sales.profiles/qa.yaml'));
+       fs.mkdirSync(local('sales.profile.x.yaml'));
      },
-     stale("'sales'", "'sales.yaml', 'sales.profile.prod.yaml' and " +
-           "'sales.profiles/qa.yaml'"),
-     ['sales.yaml', 'sales.profile.prod.yaml', 'sales.profiles/qa.yaml'], []],
+     stale("'sales'", "'sales.yaml'"), ['sales.yaml'],
+     [shown('sales.profile.x.yaml')]],
   ] as Array<[string, SemanticModel, (outside: string) => void, string,
               string[], string[]]>)(
       '--force-remove deletes the files the layout lists as they are on ' +
