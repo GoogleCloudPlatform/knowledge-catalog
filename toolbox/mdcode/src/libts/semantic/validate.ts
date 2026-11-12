@@ -835,9 +835,9 @@ export function validateActions(
       undefined;
   // The dialect of the model's tables, or else ALLOYDB for a model with an
   // AlloyDB target. Null when neither gives one: when no lookup read the
-  // tables' dialect, as in pull, and when the model file leaves its tables to
-  // a profile. Each deployment's check then reads the statements in the
-  // dialect of its profile's tables, as it reads expressions.
+  // tables' dialect, as in pull, and when the model file binds no table. A
+  // deployment that applies a profile refuses a sql executor in the model
+  // file, and reads the profile's own statements in its tables' dialect.
   const sqlDialect = actions.some(a => a.executor?.kind === 'sql') ?
       sourcesDialect(model) ??
           (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null) :
@@ -1232,10 +1232,10 @@ const HASH_COMMENT_DIALECTS = new Set(['BIGQUERY', 'SPANNER']);
 // anywhere in the statement, inside a string or a quoted name too, and a
 // comment runs to the next line break of the statement. With no dialect, `#`
 // is not a marker. The yaml library decides which lines it joins: each line
-// with text of a statement but its last gets a character at its end that
-// neither `text` nor any statement holds, and the text is parsed again. A
-// comment runs on into a later line when one of those characters inside it is
-// followed by more of the comment.
+// with text of a statement, except the last line of a plain or quoted one,
+// gets a character at its end that neither `text` nor any statement holds,
+// and the text is parsed again. A comment runs on into a later line when one
+// of those characters inside it is followed by more of the comment.
 function joinedLineMarkers(statements: WrittenStatement[], text: string,
                            dialects: string[]): Map<yaml.Scalar, string> {
   const marker = dialects.some(d => HASH_COMMENT_DIALECTS.has(d)) ?
