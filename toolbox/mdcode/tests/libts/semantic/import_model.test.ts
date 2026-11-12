@@ -248,6 +248,17 @@ describe('conversion, strict mode, and translation', () => {
   test.each([
     ['a dialect alias', googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'), 'google',
      "field 'orders.order_id': write dialect 'GOOGLE_SQL' as 'BIGQUERY'."],
+    ['a GoogleSQL label on a Spanner table',
+     googleDoc({source: SPANNER_TABLE}).replace('dialect: BIGQUERY', 'dialect: GoogleSQL'), 'google',
+     "field 'orders.order_id': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['a PostgreSQL label on an AlloyDB table',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`})
+         .replace('dialect: BIGQUERY', 'dialect: PostgreSQL'),
+     'google', "field 'orders.order_id': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['a GoogleSQL label on a metric of a Spanner model',
+     googleDoc({source: SPANNER_TABLE, extra: '    metrics:\n      - {name: m, entity: orders, expression: ' +
+                    "{dialects: [{dialect: GoogleSQL, expression: 'COUNT(orders.order_id)'}]}}\n"}),
+     'google', "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
     ['an unsupported dialect',
      googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: order_id}, {dialect: MDX, expression: x}]}'}),
      'google', "field 'orders.order_id': remove the entry for unsupported dialect 'MDX'."],

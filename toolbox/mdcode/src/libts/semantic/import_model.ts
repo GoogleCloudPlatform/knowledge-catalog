@@ -12,7 +12,7 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
-import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
+import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, tableDialects, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -287,12 +287,37 @@ function sourceError(source: string, ctx: string): string|undefined {
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
 
-const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
-  GOOGLE_SQL: 'BIGQUERY',
-  GOOGLESQL: 'BIGQUERY',
-  POSTGRESQL: 'POSTGRES',
-  TSQL: 'SQLSERVER',
+// Each vendor dialect label, with the dialect it names, and the dialect it
+// names instead on a table that may run that one: GoogleSQL is SPANNER on a
+// Spanner table, and PostgreSQL is ALLOYDB on an AlloyDB table.
+const DIALECT_ALIASES:
+    Readonly<Record<string, [SqlDialect, SqlDialect?]>> = {
+  GOOGLE_SQL: ['BIGQUERY', 'SPANNER'],
+  GOOGLESQL: ['BIGQUERY', 'SPANNER'],
+  POSTGRESQL: ['POSTGRES', 'ALLOYDB'],
+  TSQL: ['SQLSERVER'],
 };
+
+// The dialect the vendor label `upper` names on the tables `sources`, as push
+// reads their dialects, or undefined when it is no vendor label.
+function aliasedDialect(
+    upper: string, sources: string[]): SqlDialect|undefined {
+  const alias = DIALECT_ALIASES[upper];
+  if (!alias) return undefined;
+  const [usual, own] = alias;
+  const runs = (source: string) => !!own &&
+      !!tableDialects(
+            {abstract: false, authoredSource: source, dataSource: ''}, true)
+            ?.dialects.includes(own);
+  return sources.length && sources.every(runs) ? own! : usual;
+}
+
+// The tables of the model's datasets, which decide a vendor label on a metric
+// or on a dataset with no table of its own.
+function modelSources(doc: ImportDocument): string[] {
+  return doc.datasets.map(ds => ds.source)
+      .filter((s): s is string => typeof s === 'string' && s.trim() !== '');
+}
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
 // adds under it, if any, the resource name of a table under it, the most
@@ -869,13 +894,13 @@ function normalizeDatatype(
 }
 
 /**
- * Maps dialect aliases onto the 9 allowed SQL dialects and drops unsupported
- * non-SQL dialects on a field or metric, returning `'empty'` if all dialect
- * entries were dropped.
+ * Maps dialect aliases onto the 9 allowed SQL dialects, as the tables
+ * `sources` read them, and drops unsupported non-SQL dialects on a field or
+ * metric, returning `'empty'` if all dialect entries were dropped.
  */
 function normalizeExpressionDialects(
-    obj: Record<string, any>, label: string, doc: ImportDocument): 'ok'|
-    'empty' {
+    obj: Record<string, any>, label: string, doc: ImportDocument,
+    sources: string[]): 'ok'|'empty' {
   if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects) ||
       obj.expression.dialects.length === 0) {
     return 'ok';
@@ -887,7 +912,7 @@ function normalizeExpressionDialects(
       continue;
     }
     const upper = entry.dialect.trim().toUpperCase();
-    const mapped = DIALECT_ALIASES[upper] ??
+    const mapped = aliasedDialect(upper, sources) ??
         (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
@@ -996,10 +1021,10 @@ function truncateDescription(
  */
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument,
-    abstract = false): void {
+    sources: string[], abstract = false): void {
   const fLabel = `field '${dsName}.${f.name}'`;
   normalizeDatatype(f, fLabel, doc);
-  if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
+  if (normalizeExpressionDialects(f, fLabel, doc, sources) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
           `${fLabel}: 'expression' has no entry in a supported SQL dialect, ` +
@@ -1117,8 +1142,11 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 2. Cap the dataset's `description` at 2,000 characters and repair each of
   // its `fields`.
   truncateDescription(ds, dsLabel, doc);
+  const sources = typeof ds.source === 'string' && ds.source.trim() ?
+      [ds.source] :
+      modelSources(doc);
   for (const f of asRecords(ds.fields)) {
-    repairField(f, String(ds.name ?? ''), doc, abstract);
+    repairField(f, String(ds.name ?? ''), doc, sources, abstract);
   }
 }
 
@@ -1133,7 +1161,8 @@ function repairMetric(
     translatesLater = false): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
-  if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
+  if (normalizeExpressionDialects(mt, mtLabel, doc, modelSources(doc)) ===
+      'empty') {
     doc.errors.push(
         `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
         `add one.`);
