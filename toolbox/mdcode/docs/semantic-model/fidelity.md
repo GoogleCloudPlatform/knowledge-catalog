@@ -409,8 +409,11 @@ smaller units into seconds, so `current_date() + 3 * INTERVAL 1 DAY` gives a
 TIMESTAMP and becomes `TIMESTAMP(CURRENT_DATE) + 3 * INTERVAL 1 DAY`.
 Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
 `DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
-years, or weeks and smaller units, as Databricks does. A single INTERVAL
-alone stays untranslated. So does AVG of an INTERVAL and an INTERVAL divided
+years, or weeks and smaller units, as Databricks does. A single INTERVAL,
+alone or compared, becomes BigQuery's INTERVAL. BigQuery compares a month as
+30 days and a day as 24 hours, as PostgreSQL does. Databricks compares no
+INTERVAL of months or years with one of smaller units, so that comparison
+stays untranslated. So does AVG of an INTERVAL and an INTERVAL divided
 by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
 and Databricks round to the nearest microsecond, and Databricks gives a
 year-month INTERVAL in whole months.

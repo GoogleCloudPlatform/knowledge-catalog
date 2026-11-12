@@ -603,6 +603,11 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['DATABRICKS', 'd + 3 * INTERVAL 1 DAY', {error: 'kcmd does not translate + INTERVAL 1 DAY times an amount on a value that may be a TIMESTAMP'}],
     ['DATABRICKS', 'current_date() + (n * INTERVAL 1 MONTH - 3 * INTERVAL 1 YEAR)', {sql: 'DATE_ADD(CURRENT_DATE, INTERVAL (-36 + (n)) MONTH)'}],
     ['DATABRICKS', 'INTERVAL 1 MONTH + INTERVAL 1 DAY', {error: 'kcmd does not translate + of INTERVAL 1 MONTH and INTERVAL 1 DAY'}],
+    // A single INTERVAL alone or compared.
+    ['POSTGRES', "x > INTERVAL '1 day'", {sql: 'x > INTERVAL 1 DAY'}],
+    ['DATABRICKS', 'INTERVAL 1 MONTH > INTERVAL 30 DAYS', {error: 'kcmd does not translate > on a year-month INTERVAL and a day-time INTERVAL'}],
+    ['POSTGRES', "CURRENT_DATE > INTERVAL '1 day'", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
+    ['POSTGRES', "INTERVAL '1 day' || 'x'", {error: 'kcmd does not translate || of a value that is not text'}],
     ['DATABRICKS', 'AVG(COALESCE(i, 2 * INTERVAL 1 MONTH))', {error: 'kcmd does not translate AVG of an INTERVAL'}],
     ['DATABRICKS', '(INTERVAL 1 MONTH + INTERVAL 1 YEAR) / 2', {error: 'kcmd does not translate / of an INTERVAL'}],
     ['SNOWFLAKE', "DATEADD(hour, 1, CURRENT_DATE) + INTERVAL '1 day'", {sql: "DATE_ADD((CURRENT_DATE('America/Los_Angeles') + INTERVAL 1 HOUR), INTERVAL 1 DAY)"}],

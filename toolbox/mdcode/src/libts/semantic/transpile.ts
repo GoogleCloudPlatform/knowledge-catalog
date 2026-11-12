@@ -863,8 +863,10 @@ interface DateTable {
   compounds?: Record<string, Unit[]>;
   // The groups of units that one INTERVAL value may join, in a dialect whose
   // INTERVALs are values: a sum or difference of INTERVALs, such as INTERVAL
-  // '1 day' + INTERVAL '2 hours', or an INTERVAL times an amount.
-  sums?: Unit[][];
+  // '1 day' + INTERVAL '2 hours', or an INTERVAL times an amount. Each group is
+  // a type, by its name for a message, which the dialect compares with no
+  // other.
+  sums?: Record<string, Unit[]>;
   // The finest unit of an INTERVAL value of weeks or shorter units that holds
   // a product, in a dialect whose product of such an INTERVAL is of that unit.
   products?: Unit;
@@ -982,7 +984,7 @@ const DATE_TABLES: Record<string, DateTable> = {
       [10n, ['decade', 'decades', 'dec', 'decs']], [100n, ['century', 'centuries', 'c', 'cent']],
       [1000n, ['millennium', 'millennia', 'mil', 'mils']],
     ] as [bigint, string[]][]).flatMap(([n, words]) => words.map(w => [w, ['YEAR', n]]))),
-    severalUnits: true, fields: true, sums: [[...UNITS]], stamps: true,
+    severalUnits: true, fields: true, sums: {INTERVAL: [...UNITS]}, stamps: true,
     rows: {
       column: {name: MAY_BE_TIMESTAMP, units: adds([...SUB_DAY, 'DAY', 'WEEK', 'MONTH', 'YEAR'], '+', 'column')},
       date: {
@@ -1078,7 +1080,8 @@ const DATE_TABLES: Record<string, DateTable> = {
     partReads: {row: 'TIMESTAMP', rows: ['DATE', 'TIMESTAMP']},
     notes: Object.fromEntries(SUB_DAY.map(
         unit => [unit, 'which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'])),
-    sums: [['MONTH', 'YEAR'], [...SUB_DAY, 'DAY', 'WEEK']], products: 'SECOND', stamps: true,
+    sums: {'year-month INTERVAL': ['MONTH', 'YEAR'], 'day-time INTERVAL': [...SUB_DAY, 'DAY', 'WEEK']},
+    products: 'SECOND', stamps: true,
     rows: {
       column: {
         name: MAY_BE_TIMESTAMP, units: {...adds(['DAY', 'MONTH', 'YEAR'], 'DATE_ADD', 'column'), ...weeksAsDays('column')},
@@ -1467,7 +1470,7 @@ function intervalValue(node: any, read: string, table: DateTable): IntervalValue
   if (typeof left === 'string') return left;
   if (typeof right === 'string') return right;
   const parts = [...left.parts, ...right.parts.map(p => ({...p, negative: p.negative !== (kind === 'sub')}))];
-  const group = table.sums.find(g => g.includes(parts[0].unit))!;
+  const group = Object.values(table.sums).find(g => g.includes(parts[0].unit))!;
   const other = parts.find(p => !group.includes(p.unit));
   if (other) return `${OPERATORS[kind]} of ${parts[0].text} and ${other.text}`;
   return {parts, values: [...left.values, ...right.values]};
@@ -1985,6 +1988,14 @@ function nextNodes(kind: string, value: any, read: string):
       ['like', 'i_like', 'regexp_like', 'regexp_i_like'].includes(wrapped!) ?
       [wrapped!, value.this[wrapped!], 'NOT '] :
       [kind, value, ['in', 'between'].includes(kind) && value.not ? 'NOT ' : ''];
+  // In a dialect whose INTERVALs are values, an INTERVAL that import reads,
+  // alone or compared, is BigQuery's INTERVAL of its units (see forBigQuery).
+  const table = DATE_TABLES[read];
+  const added = table?.sums && isNode(node) ? intervalOf(node, read) : undefined;
+  if (added) {
+    const parsed = readInterval(added, table);
+    return typeof parsed === 'string' ? parsed : parsed.map(p => p.amount);
+  }
   // MySQL reads a comparison as the number 1 or 0 outside a condition, and
   // BigQuery gives a BOOL there. For a kind import translates from no dialect,
   // such as IS TRUE, the message names the node instead (see constructName).
@@ -2179,7 +2190,7 @@ function returned(node: any): any[] {
 const NOT_TEXT = new Set([
   ...BOOLEANS, 'neg', 'add', 'sub', 'mul', 'div', 'sum', 'count', 'avg', 'abs', 'floor',
   'ceil', 'length', 'extract', ...Object.keys(PARTS), ...CURRENT, ...DATE_FUNCTIONS, 'ROUND',
-  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF',
+  'DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'TIMESTAMPDIFF', 'interval',
 ]);
 
 // The message for `op`, || or CONCAT in the engine's dialect `read`, when one
@@ -2204,7 +2215,8 @@ function joinProblem(op: string, parts: any[], read: string): string|undefined {
 // The groups of visible types that BigQuery compares with each other, or gives
 // as results of one COALESCE, NVL, IF or CASE. The sources also compare a
 // TIMESTAMP with a DATE or a DATETIME, and MySQL a date or a time with a
-// number (see valueForms).
+// number (see valueForms). Each type of INTERVAL in a dialect's `sums` is a
+// group of its own.
 const COMPARED = [['DATE', 'DATETIME'], ['TIMESTAMP'], ['number']];
 
 // The values a node of `kind`, a comparison, BETWEEN, IN or a CASE with an
@@ -2349,13 +2361,13 @@ function exactForm(node: any, read: string): any {
 // gives each number written.
 function valueForms(values: any[], read: string, results: boolean): Map<any, any>|string {
   const order = COMPARED.flat();
-  const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : undefined);
+  const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
   const types = [...new Set(values.map(typeOf))]
       .filter((t): t is string => !!t).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  const group = COMPARED.find(g => g.includes(types[0])) ?? [];
+  const group = COMPARED.find(g => g.includes(types[0])) ?? [types[0]];
   const other = types.find(t => !group.includes(t));
   if (!other) return new Map();
-  const problem = `a ${types[0]} and a ${other}`;
+  const problem = `${article(types[0])} ${types[0]} and ${article(other)} ${other}`;
   if (DATE_TABLES[read]?.stamps && types.every(t => WIDER.includes(t))) {
     const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
     return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
@@ -2382,6 +2394,15 @@ function valueForms(values: any[], read: string, results: boolean): Map<any, any
     }
   }
   return swap;
+}
+
+// The name in `sums` of the type of `node`, a source value in the engine's
+// dialect `read`, when it is visibly an INTERVAL value, or undefined.
+function intervalType(node: any, read: string): string|undefined {
+  const table = DATE_TABLES[read];
+  const joined = table?.sums && intervalValue(bare(node), read, table);
+  const unit = typeof joined === 'object' ? joined.parts[0].unit : undefined;
+  return unit && Object.keys(table.sums!).find(name => table.sums![name].includes(unit));
 }
 
 // The node to write in place of NULLIF(a, b), whose arguments are `args`, in
