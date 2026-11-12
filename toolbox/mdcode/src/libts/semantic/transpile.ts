@@ -956,7 +956,9 @@ const DATE_TABLES: Record<string, DateTable> = {
         units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'DATETIME')},
       },
       DATETIME: {type: 'DATETIME', name: 'a DATETIME', units: adds(UNITS, 'DATE_ADD', 'DATETIME')},
-      'DATE text': {name: 'a string', units: {...asText(DAY_OR_LONGER, 'DATE_ADD'), ...asText(['SECOND', 'MINUTE', 'HOUR'], '+')}},
+      'DATE text': {
+        name: 'a string', units: {...asText(DAY_OR_LONGER, 'DATE_ADD'), ...asText(['SECOND', 'MINUTE', 'HOUR'], '+')},
+      },
       'DATETIME text': {name: 'a string', units: asText(['SECOND', 'MINUTE', 'HOUR', ...DAY_OR_LONGER], 'DATE_ADD')},
       text: {name: 'a string', units: {}},
     },
@@ -1016,8 +1018,8 @@ const DATE_TABLES: Record<string, DateTable> = {
   // or less. An INTERVAL that names its unit outside its string is of another
   // type, which gives a timestamp for a DATE plus a day. Snowflake adds a whole
   // number to a DATE as days and rejects it beside a timestamp. A week is 7
-  // days, so a column gets weeks as days. Its current
-  // timestamp is a TIMESTAMP_LTZ, which the repairs write as the DATETIME in
+  // days, so a column gets weeks as days. Its current timestamp is a
+  // TIMESTAMP_LTZ, which the repairs write as the DATETIME in
   // America/Los_Angeles. Snowflake adds a day to it in local time, as BigQuery
   // adds one to a DATETIME. Import adds no hour, minute or second to it, which
   // Snowflake may add as elapsed time, unlike a DATETIME near a daylight saving
@@ -1065,9 +1067,9 @@ const DATE_TABLES: Record<string, DateTable> = {
   // whole number to a DATE as days. Its current timestamp is a TIMESTAMP, and
   // a day there is 24 hours in UTC. It adds a month or a year to it in UTC.
   // Its timestampadd, and its three-argument dateadd and date_add, whose part
-  // is a name, read a DATE as a TIMESTAMP at midnight UTC and give a TIMESTAMP. They keep the type of
-  // a TIMESTAMP_NTZ, which a column may be, so a column gets no part. They add
-  // a quarter, which an INTERVAL does not name.
+  // is a name, read a DATE as a TIMESTAMP at midnight UTC and give a
+  // TIMESTAMP. They keep the type of a TIMESTAMP_NTZ, which a column may be, so
+  // a column gets no part. They add a quarter, which an INTERVAL does not name.
   databricks: {
     date: 'DATE', today: ['CURRENT_DATE', 'CURDATE'], now: {functions: ['NOW', 'CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
     functions: {DATE_ADD: 'days or part', DATE_SUB: 'days', DATEADD: 'days or part', TIMESTAMPADD: 'part'},
@@ -2151,7 +2153,7 @@ function arithmetic(kind: string, value: any, read: string): unknown[]|string {
       [bare(s)?.add, bare(s)?.sub].some(v => v && (intervalOf(v.left, read) || intervalOf(v.right, read) ||
                                                    date(v.left) || date(v.right)));
   // MySQL reads a date or a time beside a number as the number of its digits.
-  const digits = kind === 'mul' ? undefined : valueForms(sides, read, false);
+  const digits = kind === 'mul' ? undefined : valueForms(sides, read, 'added');
   if (typeof digits === 'object' && digits.size) return sides;
   if (sides.some(date)) return `${op} of a date`;
   if (kind === 'mul' && !CONVERTING.has(read)) return sides;
@@ -2338,28 +2340,32 @@ function exactForm(node: any, read: string): any {
   if (name === 'NULLIF' && args.length === 2) return nullifForm(args, read);
   const merged = ['coalesce', 'nvl', 'if_func', 'case'].includes(kind) ? returned(node) : [];
   const added = kind === 'add' || kind === 'sub' ? [value.left, value.right] : [];
-  const pairs: [any[], string, boolean][] = [
-    [comparedValues(kind, value) ?? [], OPERATORS[kind], false], [added, OPERATORS[kind], false],
-    [merged, valueName(node), true],
+  const pairs: [any[], string, Use][] = [
+    [comparedValues(kind, value) ?? [], OPERATORS[kind], 'compared'], [added, OPERATORS[kind], 'added'],
+    [merged, valueName(node), 'results'],
   ];
   const swap = new Map();
-  for (const [values, how, results] of pairs) {
-    const forms = valueForms(values, read, results);
+  for (const [values, how, use] of pairs) {
+    const forms = valueForms(values, read, use);
     if (typeof forms === 'string') return `${how} on ${forms}`;
     forms.forEach((f, v) => swap.set(v, f));
   }
   return swap.size ? swapped(node, swap) : undefined;
 }
 
-// The FORM_CALL in place of each of `values`, the values a node compares or
-// adds or, with `results`, its results, by value, or the types BigQuery does
-// not compare, for a message. BigQuery compares the visible types of one group
-// of COMPARED. A dialect that `stamps` compares a DATE or a DATETIME with a
-// TIMESTAMP as TIMESTAMP(x). MySQL compares a DATE or a DATETIME with a
-// number, and adds a number to it, as the number of its digits, such as
-// 20240101 or 20240101093000, and gives it among numbers as its text, as it
-// gives each number written.
-function valueForms(values: any[], read: string, results: boolean): Map<any, any>|string {
+// How a node uses the values valueForms gets: it compares them, adds them
+// with `+` or `-`, or gives them as its results.
+type Use = 'compared'|'added'|'results';
+
+// The FORM_CALL in place of each of `values`, the values a node uses as `use`
+// says, by value, or the types BigQuery does not compare, for a message.
+// BigQuery compares the visible types of one group of COMPARED. A dialect that
+// `stamps` compares a DATE or a DATETIME with a TIMESTAMP, and gives them as
+// results, as TIMESTAMP(x). MySQL compares a DATE or a DATETIME with a number,
+// and adds a number to it, as the number of its digits, such as 20240101 or
+// 20240101093000, and gives it among numbers as its text, as it gives each
+// number written.
+function valueForms(values: any[], read: string, use: Use): Map<any, any>|string {
   const order = COMPARED.flat();
   const typeOf = (v: any) => timeType(v, read) ?? (isNumber(v) ? 'number' : intervalType(v, read));
   const types = [...new Set(values.map(typeOf))]
@@ -2368,11 +2374,12 @@ function valueForms(values: any[], read: string, results: boolean): Map<any, any
   const other = types.find(t => !group.includes(t));
   if (!other) return new Map();
   const problem = `${article(types[0])} ${types[0]} and ${article(other)} ${other}`;
-  if (DATE_TABLES[read]?.stamps && types.every(t => WIDER.includes(t))) {
+  if (DATE_TABLES[read]?.stamps && use !== 'added' && types.every(t => WIDER.includes(t))) {
     const stamped = values.filter(v => v && ['DATE', 'DATETIME'].includes(typeOf(v)!));
     return new Map(stamped.map(v => [v, formCall('TIMESTAMP(_1)', [v])]));
   }
   if (read !== 'mysql' || types.length !== 2 || other !== 'number') return problem;
+  const results = use === 'results';
   const digits = types[0] === 'DATE' ? "FORMAT_DATE('%Y%m%d', _1)" : "FORMAT_DATETIME('%Y%m%d%H%M%S', _1)";
   // The digits and the text need each value COALESCE or a similar function
   // gives to be visibly of the one type. A column may be a DATETIME, which
@@ -2421,14 +2428,14 @@ function nullifForm(args: any[], read: string): any {
   if (types.length === 1 && !(read === 'mysql' && time)) return undefined;
   const times = givenValues(a).map(v => timeType(v, read));
   if (read === 'mysql' && times.every(t => t === 'DATE' || t === 'DATETIME')) {
-    const forms = valueForms([a, b], read, false);
+    const forms = valueForms([a, b], read, 'compared');
     return typeof forms === 'string' ? `NULLIF on ${forms}` :
         formCall('CAST(IF(_1, NULL, _2) AS STRING)', [equal(a, b), a]);
   }
   if (NULLIF_FIRST.has(read)) {
     const stamped = [a, b].map((v, i) => timeType(args[1 - i], read) === 'TIMESTAMP' &&
         ['DATE', 'DATETIME'].includes(timeType(v, read)!) ? formCall('TIMESTAMP(_1)', [v]) : v);
-    const forms = valueForms(stamped, read, false);
+    const forms = valueForms(stamped, read, 'compared');
     return typeof forms === 'string' ? `NULLIF on ${forms}` :
         formCall('IF(_1, NULL, _2)', [equal(stamped[0], stamped[1]), a]);
   }
