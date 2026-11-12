@@ -2,6 +2,7 @@
 //
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
@@ -13,7 +14,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, profileFilesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {checkProfileFileName, fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, parseOverviewSidecar, profileFileNamesBeside, sameOverview, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {SplitLayout} from '../libts/layouts/split';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
@@ -559,26 +560,20 @@ async function scopeTranspileOutcomes(
 // table's dialect from `dialects`, read with `load` for the same files, and
 // calls services with `ctx`. The caller has loaded the SQL parser.
 //
-// `pull` is set for pull's run. That run names the entry group directory in
-// --out, which skips the checks of where the files go. Pull makes those
-// checks itself. With `pull.texts`, the import reads the texts of `docs` and
-// their profile files, and each other profile file on disk that pull leaves.
-// With `pull.forceRemove`, it leaves out what pull --force-remove deletes:
-// the older profile directory and each profile file push reads that pull
-// does not write. Pull's run reads no table's dialect, so its checks read an
-// ANSI_SQL text as pull's own checks do (see DialectLoad.readWithoutDialect).
+// `pull` is set for pull's run, which reads the files in the entry group of
+// `layout` as the pull leaves them. That run names the entry group directory
+// in --out, which skips the checks of where the files go. Pull makes those
+// checks itself. It reads no table's dialect, so its checks read an ANSI_SQL
+// text as pull's own checks do (see DialectLoad.readWithoutDialect).
 async function transpileOutcomes(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs, layout: SemanticModelLayout, load: DialectLoad,
-    dialects: SourceDialects, pull?: {texts: boolean; forceRemove: boolean}):
-    Promise<Map<string, string|null>> {
+    dialects: SourceDialects,
+    pull = false): Promise<Map<string, string|null>> {
   const outcomes = new Map<string, string|null>();
   for (const doc of docs) {
     const model = transpilingModel(doc, profileDocs, load);
     if (!model) continue;
-    const source = pull?.texts ?
-        {text: doc.text, profileFiles: pulledProfileFiles(doc.name)} :
-        undefined;
     const plan = await planImport(
         layout.modelPath(doc.name), {
           flavor: model.version === OSSIE_VERSION ? 'ossie' : 'google',
@@ -587,47 +582,13 @@ async function transpileOutcomes(
           ...pull ? {out: path.dirname(layout.modelPath(doc.name))} : {},
         },
         {
-          source,
           readDialects: async () => dialects,
           api: () => ctx,
-          withoutProfileDir: pull?.forceRemove,
-          readWithoutDialect: !!pull,
+          readWithoutDialect: pull,
         });
     outcomes.set(doc.name, 'errors' in plan ? plan.errors[0] ?? null : null);
   }
   return outcomes;
-
-  // The profile files beside model `name` once pull has written its own:
-  // those it writes and each other one it leaves, in the order the import
-  // reads them (see profileFileNamesBeside).
-  function pulledProfileFiles(name: string): SerializedFile[] {
-    const dir = path.dirname(layout.modelPath(name));
-    const stem = path.basename(layout.modelPath(name), '.yaml');
-    const written = profileDocs(name).map(
-        p => ({fileName: path.basename(p.path), content: p.text}));
-    const gone = new Set([
-      ...written.map(f => f.fileName),
-      ...pull!.forceRemove ?
-          layout.localProfileFiles(name).map(f => path.basename(f.path)) :
-          [],
-    ]);
-    const left =
-        profileFileNamesBeside(dir, stem)
-            .filter(f => !gone.has(f))
-            .map(f => ({
-                   fileName: f,
-                   content: fs.readFileSync(path.join(dir, f), 'utf8'),
-                 }));
-    const named = new Set(
-        profileFilesBeside(dir, stem).map(p => path.basename(p.path)));
-    const profileOf = (f: SerializedFile) =>
-        f.fileName.slice(`${stem}.profile.`.length, -'.yaml'.length);
-    return [
-      ...left.filter(f => !named.has(f.fileName)),
-      ...[...left.filter(f => named.has(f.fileName)), ...written].sort(
-          (a, b) => profileOf(a).localeCompare(profileOf(b))),
-    ];
-  }
 }
 
 // The dialect of each source the files `texts` write, read with the clients
@@ -1171,15 +1132,6 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
-  // The overview sidecars to check in place of those on disk: the catalog's,
-  // by entry id, and the local ones to read from disk.
-  overviews?: {
-    catalog: Map<string, OverviewSidecar>;
-    local: Array<{entryId: string; path: string}>;
-  };
-  // Set when the model and profile texts are the ones pull writes. Pull
-  // writes them as UTF-8, so their bytes on disk are not checked.
-  pulled?: boolean;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
@@ -1341,11 +1293,8 @@ async function checkBeforeWrites(
       fileName: fileNameOf(layout, base.document, modelPath),
       text: docs.find(d => d.name === base.document)!.text,
     };
-    // Pull writes its files as UTF-8, so their bytes are not checked.
     for (const file of [modelFile, ...profileDocs(base.document)]) {
-      const error = scope.pulled ?
-          undefined :
-          checkUtf8(file.path, file.fileName, file.text);
+      const error = checkUtf8(file.path, file.fileName, file.text);
       if (error) return fail(error);
     }
     const changed =
@@ -1355,7 +1304,7 @@ async function checkBeforeWrites(
   // The catalog writes each overview sidecar, which must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
   if (docs.length === 1) {
-    const local = scope.overviews?.local ?? layout.overviewSidecarPaths();
+    const local = layout.overviewSidecarPaths();
     try {
       for (const {path: sidecar} of local) {
         const error = checkUtf8(
@@ -1363,10 +1312,7 @@ async function checkBeforeWrites(
             fs.readFileSync(sidecar, 'utf8'));
         if (error) return fail(error);
       }
-      overviews = new Map([
-        ...scope.overviews?.catalog ?? [],
-        ...layout.overviewSidecars(local),
-      ]);
+      overviews = layout.overviewSidecars(local);
     } catch (err: any) {
       return fail(err.message);
     }
@@ -2022,7 +1968,8 @@ async function pullSemanticModel(
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
-  let removed = 0;
+  // Each file of a stale local model that pull removes.
+  const removed: string[] = [];
   if (staleLocal.length) {
     // A local model's files: its model file, then each of its profile files
     // with its profile name, which a file in the older `<model>.profiles/`
@@ -2204,98 +2151,131 @@ async function pullSemanticModel(
       for (const p of paths) {
         console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
       }
-      removed += paths.length;
+      removed.push(...paths);
     }
   }
 
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
   const updated = updatedFiles(layout, source, pulled.name, pulledFiles);
   updated.push(...sidecars);
-  const code = writePulledFiles(layout, pulled.name, updated, options, removed);
-  const modelFile = updated.find(f => f.fileName === `${pulled.name}.yaml`);
-  // Under --dry-run the sidecars on disk are not the ones pull leaves, so the
-  // check reads the catalog's, and each local one that pull keeps because
-  // the catalog lacks it.
-  let overviews: TwoPhaseScope['overviews'];
-  if (options.dryRun) {
-    const catalog = new Map([...result.overviews ?? []].filter(
-        ([id]) => pulledFileTarget(
-            layout, pulled.name, `${id}.overview.md`, true)));
-    const local = options.forceRemove ?
-        [] :
-        layout.overviewSidecarPaths().filter(s => !catalog.has(s.entryId));
-    overviews = {catalog, local};
-  }
-  const refusal = modelFile && await pushRefusal(
-      ctx, layout, source, {name: pulled.name, text: modelFile.content},
-      pulledProfileDocs(layout, pulled, updated), overviews,
-      options.forceRemove);
+  const code =
+      writePulledFiles(layout, pulled.name, updated, options, removed.length);
+  // Push's checks read the files the entry group holds after the pull. Under
+  // --dry-run those on disk are not the ones pull leaves, so the checks read
+  // a copy of the entry group directory with the pull's writes and deletions
+  // made.
+  const groupDir = path.dirname(layout.modelPath(pulled.name));
+  const fileNames = updated.map(f => f.fileName);
+  const refusal = await afterPull(
+      groupDir, after => pushRefusal(ctx, after, source),
+      options.dryRun ? {
+        model: pulled.name,
+        written: updated,
+        deleted: [
+          ...removed,
+          ...options.forceRemove ?
+              unwrittenFiles(layout, pulled.name, fileNames).map(f => f.path) :
+              [],
+        ],
+      } :
+                       undefined);
   if (refusal) {
+    const file = path.join(groupDir, refusal.file);
+    const writes = writtenPaths(layout, pulled.name, fileNames)
+                       .has(path.resolve(file));
+    // An error of several lines ends the warning at its last line.
+    const error = refusal.error.trimEnd();
     console.warn(
-        `Warning: push refuses ${layout.modelPath(pulled.name)} as pull ` +
-        `writes it: ${/[.!?]$/.test(refusal) ? refusal : `${refusal}.`}`);
+        `Warning: push refuses ${file} as pull ${
+            writes ? 'writes' : 'leaves'} it: ${
+            /[.!?]$/.test(error) ? error : `${error}.`}`);
   }
   return code;
 }
 
 
-// Push's first error for the model file `doc` and the profile files
-// `profiles`, or undefined when push accepts them. Like push, it loads the SQL
-// parser and runs push's checks that call no service. It reads no table's SQL
+// Runs `check` on the layout push reads in the entry group directory
+// `groupDir` once pull has written its files. Given `dryRun`, it reads a copy
+// of that directory in a new temporary directory instead, with
+// `dryRun.deleted` removed and the files `dryRun.written` of model
+// `dryRun.model` written where pull writes them, and deletes the copy
+// afterwards.
+async function afterPull<T>(
+    groupDir: string, check: (layout: SemanticModelLayout) => Promise<T>,
+    dryRun?: {model: string; written: SerializedFile[]; deleted: string[]}):
+    Promise<T> {
+  const root = dryRun ? fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-pull-')) :
+                        path.join(groupDir, '..', '..');
+  const layout = new SemanticModelLayout(root, path.basename(groupDir));
+  try {
+    if (dryRun) {
+      const copy = path.join(root, 'EntryGroups', path.basename(groupDir));
+      // The copy holds each linked file's content, so a write to it changes
+      // nothing outside the copy.
+      if (fs.existsSync(groupDir)) {
+        fs.cpSync(groupDir, copy, {recursive: true, dereference: true});
+      }
+      for (const p of dryRun.deleted) {
+        fs.rmSync(path.join(copy, path.relative(groupDir, p)), {force: true});
+      }
+      for (const {fileName, content} of dryRun.written) {
+        pulledFileTarget(layout, dryRun.model, fileName, true)?.write(content);
+      }
+    }
+    await layout.init();
+    return await check(layout);
+  } finally {
+    if (dryRun) fs.rmSync(root, {recursive: true, force: true});
+  }
+}
+
+
+// Push's first error for the model, profile and overview sidecar files in the
+// entry group of `layout`, with the name push gives the file it is in, or
+// undefined when push accepts them. It runs push's checks of those files that
+// call no service, as push runs them. It reads no table's SQL
 // dialect, since that calls a service, so only push runs the checks that need
 // one. Where no table's dialect is known, it reads an ANSI_SQL text as generic
 // SQL for the checks of which fields and entities an expression reads, and
 // skips each name whose reading depends on the dialect. It refuses an
-// action's SQL statement only when every dialect refuses it. It reads the
-// overview sidecars on disk, as push does, unless given `overviews`. Like
-// push, it runs the import that the advice to add a BigQuery text suggests,
-// writing nothing, and that import reads no table's dialect either. The
-// import reads the files on disk, which pull has written, unless given
-// `overviews`, which pull gives under --dry-run. It then reads `doc` and
-// `profiles`, and each other profile file on disk that pull leaves. With
-// `forceRemove`, it leaves out what pull --force-remove deletes: the older
-// profile directory, and each profile file push reads that pull does not
-// write.
+// action's SQL statement only when every dialect refuses it. Like push, it
+// runs the import that the advice to add a BigQuery text suggests, writing
+// nothing, and that import reads no table's dialect either. The caller has
+// loaded the SQL parser.
 async function pushRefusal(
     ctx: context.ApiContext, layout: SemanticModelLayout,
-    source: SemanticModelSource, doc: {name: string; text: string},
-    profiles: ReturnType<ProfileDocs>, overviews?: TwoPhaseScope['overviews'],
-    forceRemove = false): Promise<string|undefined> {
-  const parserError = await sqlParserError();
-  if (parserError) return parserError;
-  const docs = [doc];
-  const profileDocs = () => profiles;
+    source: SemanticModelSource):
+    Promise<{error: string; file: string}|undefined> {
+  const docs = layout.modelDocuments();
+  const profileDocs = profileDocsReader(layout);
   const noDialects: SourceDialects =
       {dialects: new Map(), databases: new Map(), errors: [], unread: []};
   const load = {
     readWithoutDialect: true,
     transpileOutcomes: await transpileOutcomes(
-        ctx, docs, profileDocs, layout, {}, noDialects,
-        {texts: overviews !== undefined, forceRemove}),
+        ctx, docs, profileDocs, layout, {}, noDialects, true),
   };
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load, overviews,
-           pulled: true},
-      true);
-  return 'errors' in checked ? checked.errors[0]?.error : undefined;
-}
-
-
-// The profile files among `files` that pull writes for `pulled`, as push
-// reads them, in name order.
-function pulledProfileDocs(
-    layout: SemanticModelLayout, pulled: SemanticModel,
-    files: SerializedFile[]): ReturnType<ProfileDocs> {
-  return (pulled.profiles ?? [])
-      .flatMap(({name}) => {
-        const fileName = `${pulled.name}.profile.${name}.yaml`;
-        const file = files.find(f => f.fileName === fileName);
-        const target = pulledFileTarget(layout, pulled.name, fileName, false);
-        return file && target ?
-            [{name, text: file.content, path: target.path, fileName}] :
-            [];
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+  const first = 'errors' in checked ? checked.errors[0] : undefined;
+  if (!first) return undefined;
+  // The error is in the file its leading label names, as `[<file>] ...` or
+  // `<Kind> '<file>' ...`, when push reads that file, and else in the model
+  // file.
+  const name = (p: string) => fileNameOf(layout, docs[0].name, p);
+  const files = [
+    ...docs.flatMap(
+        d => [layout.modelPath(d.name), ...layout.profileFilePaths(d.name)]),
+    ...layout.overviewSidecarPaths().map(s => s.path),
+  ].map(name);
+  const label = /^(?:\[([^\]]+)\]|[A-Z][a-z]*(?: [a-z]+)* '([^']+)')/.exec(
+      first.error);
+  const named = (label?.[1] ?? label?.[2])?.split(path.sep).join('/');
+  const doc = docs.find(d => d.name === first.document) ?? docs[0];
+  return {
+    error: first.error,
+    file: files.find(f => f === named) ?? name(layout.modelPath(doc.name)),
+  };
 }
 
 
@@ -2512,15 +2492,24 @@ function localProfiles(
 function unwrittenFiles(
     layout: SemanticModelLayout, model: string, fileNames: string[]):
     Array<{path: string; profileName?: string; kind: string}> {
-  const written = new Set(fileNames.flatMap(fileName => {
-    const target = pulledFileTarget(layout, model, fileName, true);
-    return target ? [path.resolve(target.path)] : [];
-  }));
+  const written = writtenPaths(layout, model, fileNames);
   return [
     ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
     ...layout.overviewSidecarPaths().map(
         f => ({path: f.path, kind: 'overview sidecar'})),
   ].filter(f => !written.has(path.resolve(f.path)));
+}
+
+
+// The resolved path of each of the files `fileNames` of `model` that pull
+// writes.
+function writtenPaths(
+    layout: SemanticModelLayout, model: string,
+    fileNames: string[]): Set<string> {
+  return new Set(fileNames.flatMap(fileName => {
+    const target = pulledFileTarget(layout, model, fileName, true);
+    return target ? [path.resolve(target.path)] : [];
+  }));
 }
 
 
@@ -2827,9 +2816,6 @@ interface ImportSource {
 // BigQuery text.
 interface ImportIo {
   source?: ImportSource;
-  // Set when the older `<model>.profiles/` directory beside the input is gone
-  // by the time the import would run, as after pull --force-remove.
-  withoutProfileDir?: boolean;
   // Set for an import that reads no table's dialect, as pull's run does (see
   // ImportSemanticModelOptions.readWithoutDialect).
   readWithoutDialect?: boolean;
@@ -2921,7 +2907,7 @@ async function planOneImport(
   const stem = path.basename(file).replace(YAML_FILE, '');
   // Push refuses the older `<model>.profiles/` directory, which import does
   // not read.
-  if (!io.withoutProfileDir && legacyProfileFiles(dir, stem).length) {
+  if (legacyProfileFiles(dir, stem).length) {
     if (input === 'first-party') return fail(legacyProfileDirError(stem));
     warnings.push(legacyProfileDirError(stem));
   }
