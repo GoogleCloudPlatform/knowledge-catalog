@@ -2296,6 +2296,27 @@ describe('a pull', () => {
     'commerce.profile.prod.yaml');
   });
 
+  // Push names a profile file in the parentheses after the model's name when
+  // it refuses an action statement in it, so the warning names that file.
+  test('names a profile file pull leaves when push refuses a statement in it',
+       async () => {
+         await sqlParser.loadSqlEngine();
+         const [model] = loaderMod.loadModels(
+             MODEL_YAML.replace('    entities:', '    actions:\n      - name: purge\n' +
+                                '        parameters: [{name: k, type: Integer}]\n    entities:'),
+             {bindingOptional: true}).models;
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         fs.writeFileSync(
+             local('commerce.profile.dev.yaml'),
+             'name: dev\nactions:\n  - name: purge\n    executor:\n      sql:\n' +
+                 "        statements:\n          - UPDATE c SET doc = doc #- '{d}' WHERE k = @k\n");
+         expect(await pullModel(model)).toBe(0);
+         expect(messages(console.warn)).toContain(
+             `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
+             "leaves it: action 'purge' in model 'commerce' (commerce.profile.dev.yaml) " +
+             'has a sql executor whose statement 1 has a comment on the same line');
+       });
+
   // An error of several lines, such as a parse error with its code frame,
   // ends the warning at its last line.
   test('ends the warning at the last line of an error of several lines',

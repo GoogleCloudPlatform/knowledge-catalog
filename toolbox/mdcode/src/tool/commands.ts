@@ -2316,9 +2316,10 @@ async function pushRefusal(
       {}, {ctx, layout, source, docs, profileDocs, load}, true);
   const first = 'errors' in checked ? checked.errors[0] : undefined;
   if (!first) return undefined;
-  // The error is in the file its leading label names, as `[<file>] ...` or
-  // `<Kind> '<file>' ...`, when push reads that file, and else in the model
-  // file.
+  // The error is in the file a label in it names, when push reads that file:
+  // a leading `[<file>] ...` or `<Kind> '<file>' ...`, or the `(<file>)` after
+  // the model's name in `... in model '<name>' (<file>)`, which names a
+  // profile file there. Otherwise it is in the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
   const files = [
     ...docs.flatMap(
@@ -2327,11 +2328,14 @@ async function pushRefusal(
   ].map(name);
   const label = /^(?:\[([^\]]+)\]|[A-Z][a-z]*(?: [a-z]+)* '([^']+)')/.exec(
       first.error);
-  const named = (label?.[1] ?? label?.[2])?.split(path.sep).join('/');
+  const inModel = / in model '[^']*' \(([^)]+)\)/.exec(first.error);
+  const named = [label?.[1], label?.[2], inModel?.[1]]
+                    .map(n => n?.split(path.sep).join('/'))
+                    .find(n => n !== undefined && files.includes(n));
   const doc = docs.find(d => d.name === first.document) ?? docs[0];
   return {
     error: first.error,
-    file: files.find(f => f === named) ?? name(layout.modelPath(doc.name)),
+    file: named ?? name(layout.modelPath(doc.name)),
   };
 }
 
