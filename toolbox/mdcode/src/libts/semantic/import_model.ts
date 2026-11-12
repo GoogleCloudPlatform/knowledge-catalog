@@ -420,7 +420,7 @@ function parseImportDocument(
     parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
-        err?.message ?? err}`;
+        yamlErrorMessage(err, text)}`;
   }
 
   // 2. Verify the top-level document envelope (`version` is a recognized format

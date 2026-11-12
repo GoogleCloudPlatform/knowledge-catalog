@@ -145,6 +145,11 @@ describe('conversion, strict mode, and translation', () => {
   test.each([
     ['malformed YAML', '[', {}, 'could not parse input'],
     [
+      "an unquoted '*'", 'description: *\n', {},
+      "YAML reads an unquoted '*' as an alias; write it in quotes, as in " +
+          'description: "*".'
+    ],
+    [
       'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
       'version'
     ],

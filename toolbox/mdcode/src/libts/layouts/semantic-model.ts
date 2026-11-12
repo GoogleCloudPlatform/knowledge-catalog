@@ -20,7 +20,7 @@ import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
 import {YAML_OPTIONS, yamlErrorMessage} from '../semantic/yaml_options';
 
-import {joinFrontmatter, splitFrontmatter} from './documents';
+import {frontmatterText, joinFrontmatter, splitFrontmatter} from './documents';
 
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
@@ -526,12 +526,14 @@ export function parseOverviewSidecar(
     text: string, file: string): OverviewSidecar {
   const fail = (problem: string) =>
       new Error(`Overview sidecar '${file}': ${problem}`);
+  // Some editors save a byte order mark before the first line.
+  const unmarked = text.replace(/^\uFEFF/, '');
   let split: {metadata?: any; body: string};
   try {
-    // Some editors save a byte order mark before the first line.
-    split = splitFrontmatter(text.replace(/^\uFEFF/, ''));
+    split = splitFrontmatter(unmarked);
   } catch (err: any) {
-    throw fail(`its frontmatter does not parse: ${err?.message ?? err}`);
+    throw fail(`its frontmatter does not parse: ${
+        yamlErrorMessage(err, frontmatterText(unmarked) ?? '')}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

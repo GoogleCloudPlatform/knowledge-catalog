@@ -518,6 +518,11 @@ describe('SemanticModelLayout overview sidecars', () => {
                  'its frontmatter does not parse: Missing closing "quote at ' +
                      'line 1, column 16:\n\ncontentType: "x\n' +
                      '               ^\n'],
+                ['---\ncontentType: *\n---\n',
+                 'its frontmatter does not parse: Alias cannot be an empty ' +
+                     'string at line 1, column 14:\n\ncontentType: *\n' +
+                     "             ^\nYAML reads an unquoted '*' as an alias; " +
+                     'write it in quotes, as in contentType: "*".'],
               ]) {
            expect(() => read(text))
                .toThrow(new Error(`Overview sidecar '${file}': ${problem}`));
