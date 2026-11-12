@@ -2238,10 +2238,12 @@ async function pushRefusal(
   // files push reads so a quote in a file's name does not end it, or the
   // `(<file>)` after the model's name in `... in model '<name>' (<file>)`,
   // which names a profile file there. An entry's overview aspect too large to
-  // store is in that entry's overview sidecar, when push reads one. For any
-  // other error with no such label, the file is that of the named profile
-  // push reports the error under, as for a deployment that uses the profile,
-  // when push reads one, and else the model file.
+  // store is in that entry's overview sidecar, when push reads one. A
+  // file-system error, such as ENOENT or EACCES, is in the file at the path
+  // it quotes, when that path is in the entry group directory. For any other
+  // error with no such label, the file is that of the named profile push
+  // reports the error under, as for a deployment that uses the profile, when
+  // push reads one, and else the model file.
   const name = (p: string) => fileNameOf(layout, docs[0].name, p);
   const sidecars = layout.overviewSidecarPaths();
   const files = [
@@ -2263,13 +2265,17 @@ async function pushRefusal(
       first.profile === undefined || first.profile === DEFAULT_PROFILE ?
       undefined :
       `${doc.name}.profile.${first.profile}.yaml`;
+  const quoted = /^E[A-Z]+: [^,]*, \w+ '(.*)'$/s.exec(first.error)?.[1];
+  const failed = quoted === undefined ? undefined : name(quoted);
+  const failedInGroup = failed !== undefined && !path.isAbsolute(failed) &&
+      failed.split('/')[0] !== '..';
   const named = [
     label, inModel?.[1], sidecar && name(sidecar.path), profileFile,
   ].map(n => n?.split(path.sep).join('/'))
       .find(n => n !== undefined && files.includes(n));
   return {
     error: first.error,
-    file: named ?? name(layout.modelPath(doc.name)),
+    file: (failedInGroup ? failed : named) ?? name(layout.modelPath(doc.name)),
   };
 }
 

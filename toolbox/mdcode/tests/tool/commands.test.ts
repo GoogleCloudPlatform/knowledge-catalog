@@ -2304,7 +2304,8 @@ describe('a pull', () => {
   });
 
   // Push cannot read a sidecar pull leaves that is a link to no file, and the
-  // warning gives push's error. A dry run reads that link on disk as well.
+  // warning names it with push's error. A dry run reads that link on disk as
+  // well.
   for (const dryRun of [false, true]) {
     test(`gives push's error for a sidecar pull leaves that links to no file${
              dryRun ? ', under --dry-run' : ''}`,
@@ -2313,9 +2314,8 @@ describe('a pull', () => {
            fs.symlinkSync('missing.md', local(SIDECAR));
            expect(await pullModel(SECOND_GEN, {dryRun})).toBe(0);
            expect(messages(console.warn)).toEndWith(
-               `Warning: push refuses ${shown('commerce.yaml')} as pull ` +
-               `writes it: ENOENT: no such file or directory, open '${
-                   shown(SIDECAR)}'.`);
+               `Warning: push refuses ${shown(SIDECAR)} as pull leaves it: ` +
+               `ENOENT: no such file or directory, open '${shown(SIDECAR)}'.`);
          });
   }
 
@@ -2950,7 +2950,8 @@ describe('a pull', () => {
   // it removes, the paths in the workspace that stay]
   test.each([
     ['a link to no file beside a Google-flavor model', SECOND_GEN, dangling,
-     notInCatalog('profile file', 'commerce.profile.dev.yaml'),
+     `Warning: push refuses ${shown('commerce.profile.dev.yaml')} as pull ` +
+         'leaves it: ENOENT: no such file or directory',
      ['commerce.profile.dev.yaml'], []],
     ['a link to no file beside a plain model',
      {...SECOND_GEN, version: '0.2.0.dev0'}, dangling,
