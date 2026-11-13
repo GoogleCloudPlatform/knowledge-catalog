@@ -1980,9 +1980,12 @@ function flowKeysWithoutValue(text: string): Map<string, SplitEntry[]> {
 export function fromDocument(
     doc: unknown, opts: LoadOptions = {}): LoadResult {
   const {authoredText} = opts;
+  // The text is parsed for its keys without a value at most once, when the
+  // first message needs them.
+  let flowKeys: ReadonlyMap<string, SplitEntry[]>|undefined;
   const bareKeys = authoredText === undefined ?
       undefined :
-      () => flowKeysWithoutValue(authoredText);
+      () => flowKeys ??= flowKeysWithoutValue(authoredText);
   // Only `kcmd import` reads a model at the document root, so the load error
   // says to run it.
   const advice = rootModelVersion(doc) ? IMPORT_ADVICE : undefined;
