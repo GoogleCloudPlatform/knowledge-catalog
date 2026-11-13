@@ -519,6 +519,7 @@ test.each([
   ['`orders`."order_amount"', ['order_amount']],
   ['`status` = "open"', ['open']],
   ['CONCAT("c""first", "c_last")', ['c"first', 'c_last']],
+  ['"CURRENT_DATE" > "current_date"', ['CURRENT_DATE', 'current_date']],
 ])('doubleQuotedNames(%s) is %p', (expression, names) => {
   expect(doubleQuotedNames(expression)).toEqual(names);
 });

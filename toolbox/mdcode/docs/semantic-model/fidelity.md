@@ -271,12 +271,22 @@ warning.
 
 `kcmd import --transpile` sees only the SQL text. So it translates only common
 SQL that gives the same value in BigQuery for ordinary data, whatever the
-column types are. It translates aggregates, CASE, COALESCE and other NULL
-handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
-basic casts, and a few string and date functions. Its warning about any other
-text names the first part it does not translate. It names a function and a
-date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
-part `w`.
+column types are. An `OSSIE_SQL_2026` text has rules of its own, in "How
+import translates OSSIE_SQL_2026" below. It translates aggregates, CASE,
+COALESCE and other NULL handling, arithmetic beside a number or a SUM, COUNT
+or AVG, most comparisons, basic casts, and a few string and date functions.
+Its warning about any other text names the first part it does not translate.
+It names a function and a date part as the author wrote them, such as
+`CHAR_LENGTH` or `DATEPART` with part `w`. A quoted name stays a column, even
+where the word without quotes is a function, such as `"current_date"` in a
+PostgreSQL text or `[current_date]` in a SQL Server text. The BigQuery text
+writes it in backticks. `NOW`, `CURDATE`, `GETDATE` and `SYSDATE` written
+without parentheses, quoted or not, are columns in backticks too, since each
+database calls these functions only with parentheses. A name that BigQuery
+cannot read without quotes, such as `amt$`, gets backticks as well. A text
+stays untranslated when kcmd's SQL parser reads a column name before an
+operator as a keyword and drops it, such as `if` in `if + 1` or `all` in
+`all + 1`.
 
 It reads each database's SQL under that database's default settings:
 PostgreSQL, MySQL, SQL Server and Databricks in UTC, Snowflake in
@@ -503,7 +513,7 @@ also for NULL. With any
 other value, such as `INTERVAL '1 day' * 2` or a difference of dates, they stay
 untranslated. An equality with a NULL is NULL whatever the other value is, and
 BigQuery's `=` takes no literal NULL, so it becomes a NULL of type BOOL, such
-as `CAST(NULL AS BOOLEAN)`.
+as `CAST(NULL AS BOOL)`.
 
 BigQuery rejects a translated field when a column's BigQuery type is not the
 one the expression needs, such as a DATETIME column compared with PostgreSQL's
@@ -543,6 +553,231 @@ metrics that read it, so that they name its time zone.
 Snowflake's default time zone is written into the current date and time
 functions of a `SNOWFLAKE` text, and UTC into the current timestamp of a
 `MYSQL` or `SQLSERVER` text.
+
+### How import translates OSSIE_SQL_2026
+
+An `OSSIE_SQL_2026` text is Apache Ossie's own SQL. BigQuery is the only
+database kcmd runs it on, so import gives each construct the value Ossie
+defines for it, and BigQuery's own value where Ossie defines none. The last
+column below says which of the two gives the value. Import cannot see a
+column's type, so where a value depends on the type, it is BigQuery's value
+for the column's type in BigQuery.
+
+| `OSSIE_SQL_2026` | BigQuery | Value |
+| --- | --- | --- |
+| `a / b` | `a / b`, which keeps the fraction | Ossie |
+| `a % b` | `MOD(a, b)` | Ossie |
+| `ROUND(x, d)` | `ROUND(x, d)`, which rounds a tie away from zero | Ossie |
+| `LOG(base, x)` | `LOG(x, base)` | Ossie |
+| `TRUNC(x, d)`, `TRUNCATE(x, d)`, `CEIL(x)`, `CEILING(x)` | `TRUNC(x, d)`, `CEIL(x)` | BigQuery |
+| `ABS`, `FLOOR`, `SIGN`, `MOD`, `POWER`, `SQRT`, `EXP`, `LN`, `LOG10`, `SIN`, `COS`, `TAN`, `ASIN`, `ACOS`, `ATAN`, `ATAN2` | the same function | BigQuery |
+| `PI()`, `RADIANS(x)`, `DEGREES(x)` | `ACOS(-1)`, `(x * ACOS(-1) / 180)`, `(x * 180 / ACOS(-1))` | BigQuery |
+| `GREATEST`, `LEAST` | the same function, which gives NULL when a value is NULL | BigQuery |
+| a decimal number, such as `0.29`, or a whole number past INT64 | `NUMERIC '0.29'`, or a `BIGNUMERIC` where a NUMERIC cannot hold it | Ossie |
+| a number with an exponent, such as `1e3` | the same FLOAT64 | BigQuery |
+| `\|\|`, `CONCAT`, `LENGTH`, `LOWER`, `UPPER`, `LEFT`, `RIGHT`, `REPLACE` | the same | BigQuery: `CONCAT` gives NULL when a value is NULL |
+| `SUBSTRING(s, start, n)`, `SUBSTRING(s, start)` | the same for a start that is a whole number from 1, and otherwise `SUBSTRING(s, GREATEST(start, 1), GREATEST(n - GREATEST(1 - start, 0), LEAST(n, 0)))`, which ends at `start + n - 1`, and `SUBSTRING(s, GREATEST(start, 1))` | Ossie, by ANSI SQL:2003 |
+| `TRIM`, `LTRIM`, `RTRIM` | the same, which strip whitespace | Ossie |
+| `SPLIT_PART(s, d, n)` | `SPLIT(s, d)[SAFE_ORDINAL(n)]`, which gives NULL past the last part | BigQuery |
+| `POSITION(a IN s)`, `CHARINDEX(a, s)`, `CONTAINS(s, a)` | `INSTR(s, a)`, `INSTR(s, a)`, `(INSTR(s, a) > 0)` | BigQuery |
+| `STARTSWITH`, `ENDSWITH` | `STARTS_WITH`, `ENDS_WITH` | BigQuery |
+| `s LIKE p` | `s LIKE p`, with each backslash in `p` doubled | Ossie |
+| `s ILIKE p` | `LOWER(s) LIKE LOWER(p)`, with each backslash in `p` doubled | Ossie |
+| `REGEXP_LIKE(s, p)`, `REGEXP_EXTRACT(s, p)`, `REGEXP_REPLACE(s, p, r)` | `REGEXP_CONTAINS(s, p)`, which matches anywhere in `s`, `REGEXP_EXTRACT(s, p, 1)`, `REGEXP_REPLACE(s, p, r)`, all with RE2 | BigQuery |
+| `REGEXP_COUNT(s, p)` | `ARRAY_LENGTH(REGEXP_EXTRACT_ALL(s, p))` | BigQuery |
+| `CASE`, `COALESCE`, `NULLIF`, `IN`, `BETWEEN`, `IS NULL`, `IS DISTINCT FROM`, a comparison, `AND`, `OR`, `NOT` | the same, with a `DATE` or `DATETIME` compared or given with a `TIMESTAMP` cast to `TIMESTAMP`, as below | BigQuery |
+| `IF`, `IFF`, `IFNULL`, `NVL` | `IF`, `IF`, `COALESCE`, `IFNULL` | BigQuery |
+| `NVL2(a, b, c)`, `ZEROIFNULL(x)`, `NULLIFZERO(x)` | `CASE WHEN NOT a IS NULL THEN b ELSE c END`, `COALESCE(x, 0)`, `NULLIF(x, 0)` | BigQuery |
+| `CAST` to `VARCHAR`, `STRING`, `INTEGER`, `INT`, `BIGINT`, `FLOAT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIME` or `TIMESTAMP` | `CAST` to `STRING`, `INT64`, `FLOAT64`, `BOOL`, `DATE`, `TIME` or `TIMESTAMP` | BigQuery: a fraction cast to an integer rounds half away from zero, and a string without a time zone cast to `TIMESTAMP` is in UTC |
+| `CAST` to `DECIMAL` or `NUMERIC` without a precision | `CAST` to `NUMERIC(29)`, whose scale is 0, which rounds half away from zero | Ossie, by ANSI SQL:2003 |
+| `CAST` to `VARCHAR(n)` or `DECIMAL(p, s)` | `CAST` to `STRING(n)`, which rejects a longer string, or to `NUMERIC(p, s)`, or `BIGNUMERIC(p, s)` past a NUMERIC's 29 digits before the point or 9 after it | BigQuery |
+| `CAST` to `TIMESTAMP_NTZ` or to ANSI SQL's `TIMESTAMP WITHOUT TIME ZONE` | `CAST` to `DATETIME` | Ossie, and ANSI SQL:2003 for `TIMESTAMP WITHOUT TIME ZONE` |
+| `TRY_CAST` | `SAFE_CAST`, and for `VARCHAR(n)` or `DECIMAL(p, s)` an `IF` that gives NULL for a value that does not fit, as below | Ossie |
+| `DATE '...'`, `TIME '...'`, `TIMESTAMP '...'`, `TIMESTAMP_NTZ '...'` and `TIMESTAMP WITHOUT TIME ZONE '...'` | `CAST('...' AS DATE)`, `TIME '...'`, `CAST('...' AS TIMESTAMP)`, `CAST('...' AS DATETIME)` | BigQuery |
+| `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `CURRENT_TIME` | the same, in UTC | BigQuery |
+| `YEAR`, `QUARTER`, `MONTH`, `DAY`, `DAYOFYEAR`, `HOUR`, `MINUTE`, `SECOND` | `EXTRACT` of the part | BigQuery |
+| `EXTRACT` and `DATE_PART` of `YEAR`, `QUARTER`, `MONTH`, `WEEK`, `DAY`, `DAYOFWEEK`, `DAYOFYEAR`, `HOUR`, `MINUTE`, `SECOND` or `MILLISECOND` | `EXTRACT` of the part, with `ISOWEEK` for `WEEK` | BigQuery, with weeks that start on Monday |
+| `DATE_TRUNC(part, x)` | `DATE_TRUNC(x, PART)`, with `ISOWEEK` for `week`, and `TIME_TRUNC(x, PART)` for a `TIME` | Ossie |
+| `DATEADD(part, n, x)` | by the type of `x`, below | BigQuery |
+| `DATEDIFF(part, a, b)` | `DATE_DIFF(b, a, PART)`, with `ISOWEEK` for `week`, and with `a` and `b` cast to `DATETIME` for a week or longer, the other cast to `TIMESTAMP` beside a `TIMESTAMP`, both cast to `DATETIME` beside a `DATE`, or plus `INTERVAL 0 HOUR` for an hour or less, as below, and `TIME_DIFF(b, a, PART)` for a `TIME` | BigQuery, with weeks that start on Monday |
+| `TO_DATE(s)`, `TO_TIMESTAMP(s)` | `CAST(s AS DATE)`, `CAST(s AS TIMESTAMP)` | BigQuery |
+| `TO_DATE(s, f)`, `TO_TIMESTAMP(s, f)`, `TO_CHAR(x, f)` | `PARSE_DATE`, `PARSE_TIMESTAMP`, and `FORMAT_TIME`, `FORMAT_TIMESTAMP`, `FORMAT_DATETIME` or `FORMAT_DATE` by the type of `x`, with `f` translated | BigQuery |
+| `SUM`, `COUNT`, `AVG`, `MIN`, `MAX`, `STDDEV`, `STDDEV_POP`, `STDDEV_SAMP`, `VARIANCE`, `VAR_POP`, `VAR_SAMP`, `APPROX_COUNT_DISTINCT`, with or without `DISTINCT` | the same | BigQuery |
+| `agg(x) FILTER (WHERE p)`, `COUNT(*) FILTER (WHERE p)` | `agg(IF(p, x, NULL))`, `COUNT(IF(p, 1, NULL))` | Ossie |
+| `MEDIAN(x)`, and `PERCENTILE_CONT(f)` and `PERCENTILE_DISC(f)` with `WITHIN GROUP (ORDER BY x)` | offsets into `ARRAY_AGG` of the values of `x` in order, with the type BigQuery's own `PERCENTILE_CONT` and `PERCENTILE_DISC` give | Ossie |
+| `APPROX_PERCENTILE(x, f)` | `APPROX_QUANTILES(x, n)[SAFE_OFFSET(k)]`, with 100 buckets or the power of 10 that holds `f` exactly | BigQuery |
+| a window function, with `PARTITION BY`, `ORDER BY` and a `ROWS` or `RANGE` frame | the same | BigQuery |
+| a window's `ORDER BY` item without `NULLS FIRST` or `NULLS LAST` | the item with NULL last for `ASC` and first for `DESC`, as below | Ossie |
+| `MEDIAN`, `PERCENTILE_CONT` and `PERCENTILE_DISC` with `OVER (PARTITION BY ...)` | BigQuery's `PERCENTILE_CONT(x / 1, NUMERIC 'f')` and `PERCENTILE_DISC(x, NUMERIC 'f')` with `OVER`, or `BIGNUMERIC 'f'` for a fraction of more than 9 decimal places, with `1 - f` for a descending `PERCENTILE_CONT`, which give the type of the forms without `OVER` | BigQuery |
+| a call of a function outside Ossie's tables, or with another number of arguments | the call as written | BigQuery |
+
+Ossie names ANSI SQL:2003 as its base, so where that standard defines a
+construct Ossie uses, import follows the standard over BigQuery. That gives
+`SUBSTRING` with a start below 1 the characters from position 1 up to
+`start + n - 1`, so `SUBSTRING('abcdef', 0, 3)` is `'ab'`, where BigQuery's
+`SUBSTRING` reads 0 as 1. Without `n`, such a start gives the whole string, so
+`SUBSTRING('abcdef', -2)` is `'abcdef'`, where BigQuery counts a negative
+start from the end. It gives `DECIMAL` and `NUMERIC` without a
+precision a scale of 0, so `CAST(2.75 AS DECIMAL)` is 3.
+
+An `OSSIE_SQL_2026` text names fields and columns as a text in any other
+dialect does. A metric names a field as `<entity>.<field>`, and a field names
+a column of its entity's table by the column's name alone. When import
+converts an Ossie file, it rewrites the names in each `sql` text this way and
+reports each edit. The translation names each field and column as the text
+does.
+
+Import writes each form in the table as one value. A form or an operand that
+holds an operator goes in parentheses where another operator stands beside it,
+so `10 / MEDIAN(x)` divides by the whole median, and `RADIANS(a + b)` becomes
+`((a + b) * ACOS(-1) / 180)`.
+
+A call outside Ossie's tables gets the value of BigQuery's function of that
+name, since Ossie's specification says to pass unknown functions through.
+Push's BigQuery check rejects a name that BigQuery lacks, such as `NOW()`.
+`TRY_CAST` gives NULL for a value that does not fit its type, and BigQuery's
+`SAFE_CAST` raises an error for a value too long for `STRING(n)` or out of the
+range of `NUMERIC(p, s)`. So `TRY_CAST(x AS VARCHAR(3))` becomes
+`IF(LENGTH(SAFE_CAST(x AS STRING)) <= 3, CAST(SAFE_CAST(x AS STRING) AS
+STRING(3)), NULL)`, and `TRY_CAST(x AS DECIMAL(4, 2))` becomes
+`IF(SAFE.ABS(SAFE.ROUND(SAFE_CAST(x AS NUMERIC), 2)) < 100,
+CAST(ROUND(SAFE_CAST(x AS NUMERIC), 2) AS NUMERIC(4, 2)), NULL)`. It rounds as
+the cast does, through `NUMERIC` for a `NUMERIC(p, s)` type and through
+`BIGNUMERIC` for a `BIGNUMERIC(p, s)` type, and checks the rounded value. The
+check uses `SAFE.ROUND` and `SAFE.ABS`, so a value whose rounding passes the
+largest `NUMERIC` or `BIGNUMERIC` gives NULL too. So `TRY_CAST` gives the
+value `CAST` gives whenever `CAST` succeeds.
+`CAST` keeps BigQuery's error, since Ossie says nothing about a value that does
+not fit.
+
+A window's `ORDER BY` places NULL as the largest value unless it says
+otherwise: last for `ASC` and first for `DESC`. Import writes `NULLS LAST` or
+`NULLS FIRST` for a ranking function, `LAG`, `LEAD` and a `ROWS` frame.
+BigQuery refuses the placement it does not use by itself in a `RANGE` frame,
+which is also the frame an aggregate, `FIRST_VALUE`, `LAST_VALUE` or
+`NTH_VALUE` gets with `ORDER BY` and no frame. There, `ORDER BY x` becomes
+`ORDER BY x IS NULL, x`, and `ORDER BY x DESC` becomes `ORDER BY x IS NULL
+DESC, x DESC`, which leave the same rows equal. A `RANGE` frame with an
+offset, such as `2 PRECEDING`, takes one item, so `x` becomes `-x DESC` and
+`x DESC` becomes `-x`, which frame the same rows and place NULL as Ossie does.
+`RESPECT NULLS` is left out, since it is the default in ANSI SQL and in
+BigQuery, whose `LAG` and `LEAD` take none.
+
+`DAYOFWEEK` numbers Sunday as 1, as BigQuery does, since Ossie says nothing
+about it. `DOW` and `DOY` are not Ossie's parts, so `EXTRACT` and `DATE_PART`
+with either stay untranslated, with a warning that names Ossie's part,
+`DAYOFWEEK` or `DAYOFYEAR`. A week starts on Monday only in `DATE_TRUNC`,
+`EXTRACT(WEEK)`, `DATE_PART('week')` and `DATEDIFF` by week. A date part may be
+a string, such as `'month'`, or a word, such as `month`, in every date
+function. A part in double quotes is a column, so such a call stays
+untranslated.
+
+A comparison, `IS DISTINCT FROM`, `BETWEEN`, `IN` and a `CASE` with a value
+cast each value that is visibly a `DATE` or a `DATETIME` to `TIMESTAMP` when
+another value they compare is visibly a `TIMESTAMP`, since BigQuery compares
+neither with a `TIMESTAMP`. The cast reads a `DATE` at midnight and a
+`DATETIME` at its wall-clock time in UTC, and BigQuery then compares
+`TIMESTAMP`s. So `CAST(x AS TIMESTAMP_NTZ) > CURRENT_TIMESTAMP` becomes
+`CAST(CAST(x AS DATETIME) AS TIMESTAMP) > CURRENT_TIMESTAMP`. A value whose
+type import cannot see, such as a column, is compared as written.
+`COALESCE`, `IFNULL`, `NVL`, `IF`, `CASE`, `GREATEST` and `LEAST` cast the
+values they give the same way, so `COALESCE(CURRENT_DATE, CURRENT_TIMESTAMP)`
+gives a `TIMESTAMP`. `NULLIF(a, b)` becomes `IF(a = b, NULL, a)` with the
+casts in the comparison only, so it keeps the type of `a`.
+
+`DATEADD` adds by the type of its value. To a `DATE`, it adds a day or longer
+with `DATE_ADD`, which gives a `DATE`, and an hour or less with `+`, which
+gives a `DATETIME`. To a `TIMESTAMP_NTZ`, it adds every unit with `DATE_ADD`.
+To a `TIME`, such as `CURRENT_TIME` or `CAST(s AS TIME)`, it adds an hour or
+less with `TIME_ADD`.
+To a `TIMESTAMP`, it adds a day or less and a week with `+`, and a month, a
+quarter or a year to its wall-clock time in UTC, since BigQuery's `DATE_ADD`
+adds none of those to a `TIMESTAMP`: `DATEADD(month, 1, CURRENT_TIMESTAMP)`
+becomes `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP, 'UTC') + INTERVAL 1 MONTH,
+'UTC')`. A value whose type import cannot see, such as a column or
+`COALESCE(a, b)`, gets forms that run for a `DATE`, a `DATETIME` and a
+`TIMESTAMP` alike: `DATE_ADD` for a day, a week as 7 days, `+` for an hour or
+less, and for a month, a quarter or a year, `DATE_ADD` of the days that the
+unit adds to the value's date. So `DATEADD(month, 1, d)` becomes
+`DATE_ADD(d, INTERVAL DATE_DIFF(DATE_ADD(CAST(d AS DATE), INTERVAL 1 MONTH),
+CAST(d AS DATE), DAY) DAY)`, which keeps the type of `d`. BigQuery's
+`DATE_DIFF` counts no week, month, quarter or year between `TIMESTAMP`s, so
+`DATEDIFF` by one of those counts between the values cast to `DATETIME`,
+unless both values are visibly `DATE`s or both `DATETIME`s. That keeps the
+count for a `DATE` and a `DATETIME`. BigQuery's `DATE_DIFF` takes no `DATE`
+or `DATETIME` beside a `TIMESTAMP` either. So for a day or less, a value
+beside one that is visibly a `TIMESTAMP` is cast to `TIMESTAMP`, as in a
+comparison, and `DATEDIFF(day, CURRENT_TIMESTAMP, d)` becomes
+`DATE_DIFF(CAST(d AS TIMESTAMP), CURRENT_TIMESTAMP, DAY)`. It counts as
+BigQuery does between `TIMESTAMP`s whether `d` is a `DATE`, a `DATETIME` or a
+`TIMESTAMP`, and reads a `DATE` or a `DATETIME` in UTC.
+`DATEDIFF(day, CURRENT_TIMESTAMP, CAST(d AS DATE))` counts the same way. When
+one value is visibly a `DATE` and the other is not visibly a `TIMESTAMP`,
+`DATEDIFF` by any part counts between the values cast to `DATETIME`. So
+`DATEDIFF(day, CURRENT_DATE, ts)` becomes `DATE_DIFF(CAST(ts AS DATETIME),
+CAST(CURRENT_DATE AS DATETIME), DAY)`, which counts the days to the date of
+`ts` whether `ts` is a `DATE`, a `DATETIME` or a `TIMESTAMP`. Where none of
+those casts applies, `DATEDIFF` by an hour or less counts between each
+value plus `INTERVAL 0 HOUR`, unless both values are visibly `DATETIME`s or both
+`TIMESTAMP`s. A `DATE` plus no hours is its
+`DATETIME`, and a `DATETIME` or a `TIMESTAMP` plus none is itself. So
+`DATEDIFF(hour, a, b)` counts 24 hours a day between `DATE`s. These forms read
+the date and wall-clock time of a `TIMESTAMP` in BigQuery's default time zone,
+UTC, as import reads each database under its default settings.
+
+A format in `TO_CHAR`, `TO_DATE` or `TO_TIMESTAMP` translates Ossie's core
+tokens, in any letter case, to BigQuery's elements: `YYYY` `%Y`, `YY` `%y`, `MM`
+`%m`, `MON` `%b`, `MONTH` `%B`, `DD` `%d`, `DY` `%a`, `DAY` `%A`, `HH24` `%H`,
+`HH12` and `HH` `%I`, `MI` `%M`, `SS` `%S`, and `AM` and `PM` `%p`. Each `%`
+is doubled, and BigQuery copies every other character. `TO_CHAR` of a value
+whose type import cannot see, such as a column, formats `TIME(x)` when the
+format has a time element and no date element. BigQuery's `TIME` takes a
+`DATE`, a `TIME`, a `DATETIME` and a `TIMESTAMP` alike, and gives midnight for
+a `DATE`. With any other format, it formats the `DATETIME` the value casts to,
+which BigQuery casts from a `DATE`, a `DATETIME` and a `TIMESTAMP`.
+
+These stay untranslated, with a warning that names them:
+
+- `AGG()`, which Ossie reserves.
+- Text outside Ossie's grammar that the generic SQL reader reads anyway: an
+  `INTERVAL`, a cast written with `::`, a subquery, `LIKE ... ESCAPE`,
+  `SUBSTRING(s FROM a FOR b)`, a comparison inside another without
+  parentheses, `ILIKE` and `IS DISTINCT FROM` included, and a window name,
+  `GROUPS`, `EXCLUDE` or `IGNORE NULLS` in a window function.
+- A cast to a type outside Ossie's list, such as `SMALLINT`, or to a size no
+  BigQuery type holds, such as `DECIMAL(50, 2)` or `VARCHAR(0)`. A cast to
+  `TIME WITH TIME ZONE` is among them, since BigQuery has no such type.
+- On a value that is visibly a `TIME`, a date element in the format of
+  `TO_CHAR` and a unit longer than an hour in `DATE_TRUNC`, `DATEADD` and
+  `DATEDIFF`, since a `TIME` has no date.
+- A format that is not a string, whose tokens are known only when the query
+  runs, and a percentile fraction that is not a number from 0 to 1, or that
+  has more than 38 decimal places, or more than 5 for `APPROX_PERCENTILE`.
+- `FILTER` and `WITHIN GROUP` on a function outside Ossie's tables, whose
+  handling of NULL import cannot know.
+- A ranking or offset function without `OVER`, and over a window, the
+  approximate aggregates, `MEDIAN`, `PERCENTILE_CONT` and `PERCENTILE_DISC`
+  with `DISTINCT`, and a descending `PERCENTILE_DISC`, which BigQuery has no
+  form for there.
+- `MEDIAN`, `PERCENTILE_CONT` and `PERCENTILE_DISC` over a window with
+  `ORDER BY` or a frame, such as a running median, since BigQuery has no
+  percentile over an ordered window.
+- A frame offset that is not a number, such as `ROWS n PRECEDING`, since
+  BigQuery takes only a number there.
+- The word `current_datetime` without parentheses, which kcmd reads as
+  BigQuery's `CURRENT_DATETIME` function. From an Ossie file, import writes a
+  column of that name as `"CURRENT_DATETIME"`, which translates to the column.
+
+A BigQuery graph takes only part of these translations. On a BigQuery
+deployment, push refuses a field of a concrete leaf entity whose BigQuery text
+calls a window function outside a subquery, since BigQuery takes no analytic
+function in a node table's properties. A metric
+must be a measure of `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, so push refuses a
+metric whose translation uses any other aggregate, such as `STDDEV`,
+`APPROX_COUNT_DISTINCT`, or the `ARRAY_AGG` and `APPROX_QUANTILES` forms of the
+percentiles. `FILTER` on the five measure aggregates translates to a form a
+measure takes. A Knowledge Catalog push with no deployment stores every
+translation.
 
 ## To Spanner
 

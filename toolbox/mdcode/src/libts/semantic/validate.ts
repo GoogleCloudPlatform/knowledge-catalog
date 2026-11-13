@@ -26,9 +26,9 @@ import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, list
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, profileSources, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, boundDeclaration, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, profileSources, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, holdsSubquery, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
+import {columnsForSource, holdsSubquery, holdsWindowFunction, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -93,6 +93,7 @@ export function validatePushRequirements(
     if (deployInfo.bigQuery.length > 0) {
       errors.push(...measurePlacementErrors(
           model, document, flaggedMetrics, opts.transpileOutcomes));
+      errors.push(...windowFieldErrors(model, document));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -344,6 +345,50 @@ function measurePlacementErrors(
            const advice = transpileAdvice(model, document, metric, outcomes);
            return advice ? `, or ${advice}` : '';
          }).map(p => p.problem);
+}
+
+// One message for each field whose BigQuery text calls a window function and
+// reaches the properties of a concrete leaf entity with a table, as its own
+// field or one it inherits. BigQuery refuses a window function in a graph
+// property ("Analytic function not allowed in PROPERTIES clause"). Only a
+// concrete leaf, an entity that is not abstract and that no other entity
+// extends, has a node table (see generateGraphDdl), whose properties hold the
+// fields it inherits. The message names the field on the entity that writes
+// the text (see boundDeclaration). For an inherited text it also names the
+// leaves that inherit it.
+function windowFieldErrors(model: SemanticModel, document: string): string[] {
+  const entities = resolvedEntities(model);
+  const extended = new Set(entities.flatMap(e => e.extends ?? []));
+  // The leaves that inherit each window text, by the field that writes it.
+  const heirs = new Map<string, string[]>();
+  for (const e of entities.filter(
+           e => !e.abstract && !extended.has(e.name) && e.dataSource)) {
+    for (const f of e.fields ?? []) {
+      const text = expressionForDialect(f, 'BIGQUERY');
+      // Read with the entity's qualifier renamed, as measureProblem reads it.
+      if (text === undefined ||
+          !holdsWindowFunction(
+              requalified(text, e.name, unusedName(text, 'kcmd_entity')),
+              'BIGQUERY')) {
+        continue;
+      }
+      const owner = boundDeclaration(model, e.name, f.name)?.owner ?? e.name;
+      const key = `${owner}.${f.name}`;
+      const list = heirs.get(key) ?? [];
+      if (owner !== e.name) list.push(e.name);
+      heirs.set(key, list);
+    }
+  }
+  return [...heirs].map(([field, leaves]) => {
+    const inherited = leaves.length ?
+        `, and ${plural(leaves.length, 'entity', 'entities')} ${
+            listed(leaves.map(l => `'${l}'`))} ${
+            plural(leaves.length, 'inherits', 'inherit')} it` :
+        '';
+    return `field '${field}' in model '${model.name}' (${document}): its ` +
+        `BigQuery expression calls a window function, which a BigQuery ` +
+        `graph property cannot hold${inherited}; write the field without one.`;
+  });
 }
 
 // Checks that the model file's tables are all in one database, as a profile's

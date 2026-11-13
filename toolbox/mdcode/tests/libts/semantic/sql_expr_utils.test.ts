@@ -96,6 +96,20 @@ describe('columnReferences', () => {
             {qualifier: 'orders', name: 'end_date'},
           ]);
     }
+    // Ossie's and Snowflake's DATE_TRUNC and DATE_PART take an unquoted part
+    // first. The other dialects take a string there, so a word is a column.
+    for (const [fn, dialect, read] of [
+           ['DATE_TRUNC', 'OSSIE_SQL_2026', []],
+           ['DATE_PART', 'OSSIE_SQL_2026', []],
+           ['DATE_TRUNC', 'ANSI_SQL', [{name: 'week'}]],
+           ['DATE_TRUNC', 'POSTGRES', [{name: 'week'}]],
+           ['DATE_PART', 'ALLOYDB', [{name: 'week'}]],
+           ['DATE_TRUNC', 'DATABRICKS', [{name: 'week'}]],
+           ['DATE_PART', 'MYSQL', [{name: 'week'}]],
+         ] as const) {
+      expect(columnReferences(`COUNT(DISTINCT ${fn}(week, orders.d))`, dialect))
+          .toEqual([...read, {qualifier: 'orders', name: 'd'}]);
+    }
     // BigQuery's `DATE_DIFF(end_col, start_col, DAY)` puts the column first,
     // so a bare column name in the first argument is still collected, even when
     // its name matches a short date-part keyword such as `d`.
@@ -111,6 +125,23 @@ describe('columnReferences', () => {
           {name: 'd'},
           {qualifier: 'orders', name: 'start_date'},
         ]);
+  });
+
+  test.each([
+    ['(WITH customers AS (SELECT customers.id FROM x) SELECT MAX(id) FROM customers)', [{qualifier: 'customers', name: 'id'}]],
+    ['(WITH RECURSIVE t AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM x WHERE n < (SELECT MAX(t.n) FROM y)) SELECT MAX(n) FROM t)', []],
+  ])('binds a CTE name once its body is read, and before it under WITH RECURSIVE: %s', (text, columns) => {
+    expect(columnReferences(text, 'BIGQUERY')).toEqual(columns);
+  });
+
+  test.each([
+    ['BIGQUERY', '(SELECT MAX(o.amount) FROM t AS O)', []],
+    ['BIGQUERY', '(WITH Customers AS (SELECT 7 AS id) SELECT MAX(customers.id) FROM Customers)', []],
+    ['POSTGRES', '(SELECT MAX(o.amount) FROM t AS O)', []],
+    ['POSTGRES', '(SELECT MAX(o.amount) FROM t AS "O")', [{qualifier: 'o', name: 'amount'}]],
+    ['SNOWFLAKE', '(SELECT MAX(o.amount) FROM t AS O)', []],
+  ])('binds a qualifier in %s as the database matches the name an alias or a CTE gives: %s', (dialect, text, columns) => {
+    expect(columnReferences(text, dialect)).toEqual(columns);
   });
 
   test('ignores subquery/UNNEST/CTE/JOIN/OFFSET/SELECT aliases, subquery FROM bare columns, and lambda parameters', () => {
@@ -197,6 +228,15 @@ describe('columnReferences', () => {
     // Only the last argument is a date part, so a bare `d` before it is read.
     expect(columnReferences('SAFE.DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'))
         .toEqual(columnReferences('DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'));
+    // A TRUNC function takes the part second and a time zone third, and WEEK
+    // takes a day.
+    for (const [text, read] of [
+           ['TIMESTAMP_TRUNC(orders.ts, MONTH, s)', ['ts', 's']],
+           ["SAFE.TIMESTAMP_TRUNC(orders.ts, MONTH, 'UTC')", ['ts']],
+           ['DATE_TRUNC(orders.d, WEEK(orders.start_day))', ['d', 'start_day']],
+         ] as const) {
+      expect(columnReferences(text, 'BIGQUERY')?.map(c => c.name)).toEqual([...read]);
+    }
   });
 
   test('reads the expression a chained function call applies to', () => {
@@ -251,6 +291,11 @@ describe('columnReferences', () => {
 
   test('matches case-sensitively', () => {
     expect(read('Orders.amount', 'BIGQUERY', 'orders')).toEqual([]);
+  });
+
+  test('reads a literal whose type the engine reads only in a cast', () => {
+    expect(columnReferences("orders.ts >= timestamp_ntz '2026-01-01'", 'OSSIE_SQL_2026'))
+        .toEqual([{qualifier: 'orders', name: 'ts'}]);
   });
 
   test('an empty expression reads nothing', () => {

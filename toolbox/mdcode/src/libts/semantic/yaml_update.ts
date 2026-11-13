@@ -10,7 +10,9 @@ import {YAML_OPTIONS} from './yaml_options';
 
 /**
  * Parses `text` for `updateText`. A JSON file, which is one flow mapping, is
- * first rewritten as block YAML, which the returned `text` holds.
+ * first rewritten as block YAML, which the returned `text` holds. A number
+ * keeps its text there when that is a JSON number, such as `1.50`, `1e400` or
+ * an integer past 2^53.
  */
 export function parseForUpdate(text: string):
     {document: yaml.Document.Parsed, text: string} {
@@ -25,6 +27,7 @@ export function parseForUpdate(text: string):
   // collection's first item is dropped, since it would print as a line of
   // spaces or a `- ` alone on its line. A string a YAML 1.1 reader takes for
   // another type, such as `yes`, is quoted, as in every changed part.
+  const numbers = numbersHeld(document, text);
   yaml.visit(document, {
     Collection: (_, n) => {
       n.flow = n.items.length === 0;
@@ -35,8 +38,39 @@ export function parseForUpdate(text: string):
     Scalar: (_, n) => void delete n.type,
   });
   document.setSchema('1.2', {...YAML_OPTIONS, compat: 'yaml-1.1'});
-  const yamlText = document.toString({lineWidth: 0});
+  const yamlText = numbers(document.toString({lineWidth: 0}));
   return {document: parse(yamlText), text: yamlText};
+}
+
+/**
+ * Sets each number of `doc`, which parses `text`, whose text is a JSON number
+ * to a placeholder string that neither `text` nor a string of `doc` holds, and
+ * gives a function that writes each placeholder in a text written from `doc`
+ * as its number's text. So a number such as `1.50`, `1e400` or an integer past
+ * 2^53 keeps its text.
+ */
+function numbersHeld(doc: yaml.Document, text: string):
+    (written: string) => string {
+  // A string can hold what its text does not, through an escape such as
+  // `\u005f`.
+  const texts = [text];
+  yaml.visit(doc, {
+    Scalar: (_, n) => void (typeof n.value === 'string' && texts.push(n.value)),
+  });
+  let stem = 'kcmd_number_';
+  while (texts.some(s => s.includes(stem))) stem += '_';
+  const numbers: string[] = [];
+  yaml.visit(doc, {
+    Scalar: (_, n) => {
+      const source = scalarSource(n);
+      if (typeof n.value === 'number' && JSON_NUMBER.test(source)) {
+        n.value = stem + numbers.length;
+        numbers.push(source);
+      }
+    },
+  });
+  return written => written.replace(
+             new RegExp(`${stem}(\\d+)`, 'g'), (_, k) => numbers[Number(k)]);
 }
 
 /**
@@ -92,19 +126,28 @@ export function updateText(
     copies: new Map([...links].map(([v, n]) => [n, v])),
     edits: [],
     dirty: new Set(),
+    values: new Map(),
     aliases: [],
     nl: /\r?\n/.exec(text)?.[0] ?? '\n',
     ...indents(doc, text),
   };
   hold(u, value, doc.contents);
   patch(u, value, doc.contents, {col: 0, prefix: '', flow: false});
-  // An alias whose anchor changed or went is written out.
+  // An alias stays when its value is its anchor's value: the anchor's old
+  // value when the anchor's text stays, or its new value when its text
+  // changed and keeps its `&` mark. Any other alias is written out.
+  const touched = (a: number, b: number) =>
+      u.edits.some(([p, q]) => p < b && q > a);
   for (const [alias, v, slot] of u.aliases) {
     const anchor = alias.resolve(doc) as yaml.Node;
     const [a, b] = anchor.range!;
-    if (u.dirty.has(anchor) || u.edits.some(([p, q]) => p < b && q > a)) {
-      replace(u, v, alias, slot);
-    }
+    const mark = text.lastIndexOf(`&${anchor.anchor}`, a);
+    const stays = !u.dirty.has(anchor) && !touched(a, b) ?
+        canonical(anchor.toJS(doc)) === canonical(v) :
+        mark >= 0 && !touched(mark, mark + 1 + anchor.anchor!.length) &&
+            u.values.has(anchor) &&
+            canonical(u.values.get(anchor)) === canonical(v);
+    if (!stays) replace(u, v, alias, slot);
   }
   // The empty lines after a block scalar that keeps its final line breaks, as
   // `|+` does, are its text. An edit that removes the text right after one
@@ -153,7 +196,9 @@ interface Update {
   edits: Array<[number, number, string]>;
   /** Nodes whose text changed. */
   dirty: Set<unknown>;
-  /** Each alias whose value stays, with that value and where it sits. */
+  /** Each node `patch` wrote, with the value it wrote there. */
+  values: Map<unknown, unknown>;
+  /** Each alias, with its new value and where it sits. */
   aliases: Array<[yaml.Alias, unknown, Slot]>;
   nl: string;
   /** Columns from a key to its keys under it, and to its list's `-`. */
@@ -173,8 +218,13 @@ interface Slot {
   col: number;
   /** `:` after a key, or `-`. */
   prefix: string;
-  /** The offset after that `:` or `-`. Unset for the root. */
+  /**
+   * The offset after that `:` or `-`. Unset for the root, and for a key
+   * written with no `:`, as `b` in `{a: 1, b}`.
+   */
   after?: number;
+  /** For a key written with no `:`, the offset after the key. */
+  keyEnd?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
 }
@@ -200,7 +250,11 @@ function hold(u: Update, value: unknown, node: unknown): void {
 }
 
 function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
+  // A key written with no value, as `b` in `{a: 1, b}`, has no value node.
+  // Its value stays unwritten while it stays null.
+  if (node === null && value === null) return;
   const edits = u.edits.length;
+  u.values.set(node, value);
   // A flow collection over several lines that changes is written again in
   // block style.
   if (yaml.isCollection(node) && node.flow && spansLines(u.text, node) &&
@@ -216,8 +270,7 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
       isObject(value) && !isFull(value) && yaml.isCollection(node) &&
       node.items.length === 0 && Array.isArray(value) === yaml.isSeq(node)) {
     // An empty list or mapping that stays empty keeps its text.
-  } else if (
-      yaml.isAlias(node) && canonical(node.toJS(u.doc)) === canonical(value)) {
+  } else if (yaml.isAlias(node)) {
     u.aliases.push([node, value, slot]);
   } else {
     replace(u, value, node, slot);
@@ -258,7 +311,11 @@ function patchItems(
         item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
         g[i].start;
     const prefix = yaml.isPair(item) ? ':' : '-';
-    return {col, prefix, after: sep === undefined ? sep : sep + 1, flow};
+    const keyEnd = yaml.isPair(item) && yaml.isNode(item.key) ?
+        item.key.range?.[1] :
+        undefined;
+    return sep === undefined ? {col, prefix, keyEnd, flow} :
+                               {col, prefix, after: sep + 1, flow};
   };
   // Removes each run of items no entry keeps.
   for (let a = 0; a < items.length; a++) {
@@ -375,7 +432,8 @@ function matchItems(
 }
 
 function geometry(
-    u: Update, node: yaml.YAMLMap|yaml.YAMLSeq, flow: boolean): Item[] {
+    u: Pick<Update, 'text'|'doc'>, node: yaml.YAMLMap|yaml.YAMLSeq,
+    flow: boolean): Item[] {
   const t = u.text;
   const dash = flow ? [] : dashes(node);
   let prevEnd = 0;
@@ -482,6 +540,17 @@ function setScalar(
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
+  // A key written with no `:` takes `: ` and the value after it, on its line.
+  // Only the root, at the start of an empty text, has no other place.
+  if (!(yaml.isNode(node) && node.range) && slot.after === undefined &&
+      slot.prefix) {
+    if (slot.keyEnd !== undefined) {
+      u.edits.push([
+        slot.keyEnd, slot.keyEnd, `: ${scalarText(u, value, slot.col, true)}`,
+      ]);
+    }
+    return;
+  }
   const [from, to, lead] = yaml.isNode(node) && node.range ?
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
@@ -514,6 +583,18 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
                                        '';
+  // The anchor and tag of a node under its key line are on the key line. A
+  // collection's tag does not apply to a scalar that replaces it, so it is
+  // dropped, and the anchor stays.
+  const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
+  const props =
+      from > keyLine ? /^([ \t]+[&!][^ \t\r\n]*)*/.exec(tail)![0] : '';
+  const kept = yaml.isCollection(node) && !isFull(value) ?
+      props.replace(/[ \t]+![^ \t\r\n]*/g, '') :
+      props;
+  if (under && kept !== props) {
+    u.edits.push([slot.after, slot.after + props.length, kept]);
+  }
   if (under && !isFull(value)) {
     // As a block scalar, text of several lines would take the text after it.
     const type = typeof value === 'string' && value.includes('\n') ?
@@ -527,9 +608,13 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
-  const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
+  // A node under its key line keeps the text after its key on that line, and
+  // its anchor and tag go before the new value.
   const head = first.slice(col + slot.prefix.length);
-  u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
+  u.edits.push([
+    slot.after, end,
+    [kept + head + tail.slice(props.length), ...rest].join(u.nl),
+  ]);
 }
 
 /**
@@ -694,6 +779,424 @@ export function spliced(
     at = to;
   }
   return out + text.slice(at);
+}
+
+/**
+ * `text` from offset `from` to `to`, with each line that starts after `from`,
+ * and the first line too when `from` starts it, moved `shift` columns right,
+ * or left up to its first character. A blank line stays blank.
+ */
+function shifted(text: string, from: number, to: number, shift: number): string {
+  const whole = lineStart(text, from) === from;
+  return text.slice(from, to)
+      .split('\n')
+      .map((l, i) => i === 0 && !whole || l === '' || l === '\r' ? l :
+               shift >= 0 ? ' '.repeat(shift) + l :
+                            l.slice(Math.min(-shift, indentOf(l))))
+      .join('\n');
+}
+
+/**
+ * The text of item `i` of `node`, a mapping or list of `doc` that `text`
+ * holds, moved so that the key or `-` that starts it sits at column `col`:
+ * `above`, the comments and blank lines above the item, and `item`, its own
+ * text from its key or `-`, without the spaces before it. An item of a flow
+ * collection becomes an item of a block list: `- `, the item, and the comment
+ * after it on its line. With `keyLine` set, a comment after the bracket that
+ * closes the collection is not the item's, since the caller keeps it on the
+ * line of the collection's key. With `key`, a pair's key is written as
+ * `key`. Each line keeps its text and moves by the same number of columns, so
+ * the item keeps its quoting, escapes, block scalars and comments. Each part
+ * is empty or ends with a line break.
+ */
+export function movedItem(
+    text: string, doc: yaml.Document.Parsed, node: yaml.YAMLMap|yaml.YAMLSeq,
+    i: number, col: number, key?: string,
+    keyLine = false): {above: string; item: string} {
+  const nl = /\r?\n/.exec(text)?.[0] ?? '\n';
+  const ended = (s: string) => s === '' || s.endsWith('\n') ? s : s + nl;
+  const at = (p: number) => p - lineStart(text, p);
+  const g = geometry({text, doc}, node, !!node.flow);
+  const {head, start, end} = g[i];
+  if (!node.flow) {
+    const shift = col - at(start);
+    const pair = node.items[i];
+    const k = key !== undefined && yaml.isPair(pair) && yaml.isNode(pair.key) ?
+        pair.key.range! :
+        undefined;
+    const above = head < lineStart(text, start) ?
+        shifted(text, head, lineStart(text, start), shift) :
+        '';
+    const item = k ? key + shifted(text, k[1], end, shift) :
+                     shifted(text, start, end, shift);
+    return {above, item: ended(item)};
+  }
+  // The comment lines between the item before it, or the bracket, and it.
+  const from = nextLine(text, i > 0 ? g[i - 1].end : node.range![0]);
+  const above = text.slice(from, Math.max(from, lineStart(text, start)))
+                    .split(/(?<=\n)/)
+                    .filter(l => /^[ \t]*(#.*)?\r?\n?$/.test(l))
+                    .map(l => l.replace(/^[ \t]*(?=#)/, ' '.repeat(col)))
+                    .join('');
+  // The comment after the item, when no other item or value follows it on
+  // its line.
+  const rest = text.slice(end, lineEnd(text, end));
+  const close = node.range![1];
+  const comment = keyLine && close > end && close <= end + rest.length ?
+      null :
+      /^[\s,\]}]*?([ \t]*)(#.*)$/.exec(rest);
+  // The lines after the first keep at least the indentation a flow
+  // collection in a block list item needs.
+  const lines = shifted(text, start, end, col + 2 - at(start))
+                    .split('\n')
+                    .map((l, j) => j && l.trim() && indentOf(l) <= col ?
+                             ' '.repeat(col + 1) + l.trimStart() :
+                             l)
+                    .join('\n');
+  const item =
+      `- ${lines}${comment ? (comment[1] || ' ') + comment[2] : ''}`;
+  return {above: ended(above), item: ended(item)};
+}
+
+/**
+ * `text`, which `doc` parses, with each key of its root mapping except those
+ * in `kept` moved into a mapping that is the one item of a new list under
+ * `key`, written after the kept keys in the file's list style. The moved
+ * lines keep their text, each indented by the same amount, so their comments,
+ * blank lines and block scalars stay as written. The comments and blank lines
+ * above the first moved key stay above `key`, and a kept key after it moves
+ * there with the comments above it. A document end marker and what follows
+ * it stay after the model. Expects a block mapping at the root with a key to
+ * move.
+ */
+export function wrappedRoot(
+    text: string, doc: yaml.Document.Parsed, key: string,
+    kept: readonly string[]): string {
+  const root = doc.contents as yaml.YAMLMap;
+  const g = geometry({text, doc}, root, false);
+  const {seqIndent, itemIndent, itemAlone} = indents(doc, text);
+  const nl = /\r?\n/.exec(text)?.[0] ?? '\n';
+  const keep = root.items.map(p => kept.includes(keyOf(p)));
+  const at = lineStart(text, g[keep.indexOf(false)].start);
+  const rootCol = g[0].start - lineStart(text, g[0].start);
+  const marker = /^\.\.\.(?=[ \t\r\n]|$)/m.exec(text.slice(root.range![1]));
+  const stop = doc.directives?.docEnd && marker ?
+      root.range![1] + marker.index :
+      text.length;
+  const above: string[] = [];
+  const edits: Array<[number, number, string]> = [];
+  g.forEach(({head, end}, i) => {
+    if (!keep[i] || head < at) return;
+    const lines = text.slice(head, end);
+    above.push(lines.endsWith('\n') ? lines : lines + nl);
+    edits.push([head - at, end - at, '']);
+  });
+  // The columns from the root's keys to the moved keys, and the `-` that
+  // starts the moved mapping, with the spaces after it.
+  const inner = seqIndent + (itemAlone ? itemIndent : Math.max(itemIndent, 2));
+  const dash = ' '.repeat(rootCol + seqIndent) + '-' +
+      (itemAlone ? nl + ' '.repeat(rootCol + inner) :
+                   ' '.repeat(inner - seqIndent - 1));
+  const body = spliced(text.slice(at, stop), edits);
+  const [first, ...rest] =
+      shifted(body, 0, body.length, inner).split('\n');
+  const moved = [dash + first.trimStart(), ...rest].join('\n');
+  const out = text.slice(0, at) + above.join('') + ' '.repeat(rootCol) + key +
+      ':' + nl + moved + text.slice(stop);
+  return text.endsWith('\n') ? out : out.replace(/\r?\n$/, '');
+}
+
+/**
+ * `text`, which `doc` parses, with the items of the list under `key` in each
+ * of the mappings `sources` moved, in order, to the end of the block list
+ * under `key` in the block mapping `target`. When `target` has no `key`, it is
+ * added as the last key of `target`, and when its value is empty or a flow
+ * list, it becomes a block list. Each emptied `key` is removed. The items move
+ * by text (see movedItem), and so do the comments above each removed key and
+ * on its line, which go above its first item. `text` itself when no source has
+ * `key`. Undefined when a value under `key` is neither a list nor empty, or a
+ * removed key is the only key of its mapping.
+ */
+export function movedItems(
+    text: string, doc: yaml.Document.Parsed, sources: yaml.YAMLMap[],
+    target: yaml.YAMLMap, key: string): string|undefined {
+  const nl = /\r?\n/.exec(text)?.[0] ?? '\n';
+  const col = (p: number) => p - lineStart(text, p);
+  const empty = (v: unknown) => v === null || yaml.isScalar(v) && v.value === null;
+  const found = sources.map(s => s.items.findIndex(p => keyOf(p) === key));
+  if (found.every(i => i < 0)) return text;
+  if (target.flow || target.items.length === 0) return undefined;
+  const own = target.items.find(p => keyOf(p) === key);
+  const list = own?.value;
+  const keyCol = col((target.items[0].key as yaml.Node).range![0]);
+  const block = yaml.isSeq(list) && !list.flow && list.items.length > 0;
+  const to = block ? col(dashes(list)[0]) :
+                     keyCol + indents(doc, text).seqIndent;
+  const edits: Array<[number, number, string]> = [];
+  let moved = '';
+  let count = 0;
+  let refused = false;
+  sources.forEach((source, n) => {
+    const i = found[n];
+    if (i < 0) return;
+    const pair = source.items[i];
+    const value = pair.value;
+    const g = geometry({text, doc}, source, !!source.flow);
+    if (!yaml.isSeq(value) && !empty(value) || g.length === 1) {
+      refused = true;
+      return;
+    }
+    const {head, start, end, inline} = g[i];
+    const next = g[i + 1];
+    if (source.flow) {
+      edits.push(next ? [start, next.start, ''] : [g[i - 1].end, end, '']);
+    } else if (inline) {
+      // The next key moves up onto the `- ` line, and its comments go above
+      // that line.
+      const line = lineStart(text, start);
+      const ownLine = lineStart(text, next.start);
+      const indent = /^[ \t]*/.exec(text.slice(line))![0];
+      const comments = text.slice(skipBlank(text, next.head, ownLine), ownLine)
+                           .replace(/^[ \t]*(?=#)/gm,
+                                    w => w.length > indent.length ? indent : w);
+      edits.push([line, line, comments], [start, next.start, '']);
+    } else {
+      // The comments above the key go above its first item.
+      moved += text.slice(head, lineStart(text, start))
+                   .replace(/^[ \t]*(?=#)/gm, ' '.repeat(to));
+      edits.push([head, end, '']);
+    }
+    // So does the comment on the key's line, unless an item follows the key
+    // there.
+    const firstLine = yaml.isSeq(value) && value.items[0] ?
+        lineStart(text, (value.items[0] as yaml.Node).range![0]) :
+        Infinity;
+    const keyLine = text.slice(start, lineEnd(text, start));
+    const comment = /\s(#.*)$/.exec(keyLine.slice(keyLine.indexOf(':')));
+    if (!source.flow && comment && firstLine > start) {
+      moved += `${' '.repeat(to)}${comment[1]}${nl}`;
+    }
+    const items = yaml.isSeq(value) ? value : undefined;
+    for (let j = 0; j < (items?.items.length ?? 0); j++) {
+      const {above, item} = movedItem(text, doc, items!, j, to);
+      moved += above + ' '.repeat(to) + item;
+      count++;
+    }
+  });
+  if (refused) return undefined;
+  let at: number;
+  if (count === 0) {
+    at = text.length;
+  } else if (block) {
+    at = geometry({text, doc}, list, false).at(-1)!.end;
+  } else if (own) {
+    // An empty value or a flow list under `key` becomes a block list, its
+    // items moved by text before the new ones.
+    if (!yaml.isSeq(list) && !empty(list)) return undefined;
+    const colon = (own.srcToken as yaml.CST.BlockMap['items'][number])
+                      ?.sep?.find(s => s.type === 'map-value-ind')?.offset;
+    if (colon === undefined) return undefined;
+    const valueEnd =
+        (list as yaml.Node|null)?.range?.[1] ?? colon + 1;
+    edits.push([colon + 1, Math.max(colon + 1, valueEnd), '']);
+    at = nextLine(text, valueEnd);
+    let kept = '';
+    for (let j = 0; j < (yaml.isSeq(list) ? list.items.length : 0); j++) {
+      const {above, item} =
+          movedItem(text, doc, list as yaml.YAMLSeq, j, to, undefined, true);
+      kept += above + ' '.repeat(to) + item;
+    }
+    moved = kept + moved;
+  } else {
+    at = geometry({text, doc}, target, false).at(-1)!.end;
+    moved = `${' '.repeat(keyCol)}${key}:${nl}${moved}`;
+  }
+  // The edits before `at` move it.
+  const shift = edits.filter(([, e]) => e <= at)
+                    .reduce((n, [s, e, r]) => n + r.length - (e - s), 0);
+  const out = spliced(text, edits);
+  const p = at + shift;
+  const lead = count > 0 && p > 0 && out[p - 1] !== '\n' ? nl : '';
+  const result = out.slice(0, p) + (count > 0 ? lead + moved : '') + out.slice(p);
+  return text.endsWith('\n') ? result : result.replace(/\r?\n$/, '');
+}
+
+/**
+ * `text`, which `doc` parses, with the value of key `from` of each of `maps`
+ * moved into a new first item of the list under key `to` of the same
+ * mapping, as the value of `key`, after the keys and values of `entry`. The
+ * value moves by text (see movedItem), with the comment after it on its line,
+ * and the comments above `from` go above the new item. When the mapping has
+ * no `to`, the text of `from` becomes `to`, so the comments above it stay. In
+ * a block mapping, a flow list under `to` becomes a block list, its items
+ * moved by text. Also gives each mapping it changed; a mapping whose `to`
+ * holds no list, or whose `from` follows a `-` on its line, stays as written.
+ */
+export function valuesListed(
+    text: string, doc: yaml.Document.Parsed, maps: yaml.YAMLMap[],
+    from: string, to: string, entry: Record<string, string>,
+    key: string): {text: string; changed: yaml.YAMLMap[]} {
+  const nl = /\r?\n/.exec(text)?.[0] ?? '\n';
+  const col = (p: number) => p - lineStart(text, p);
+  const file = indents(doc, text);
+  const keys = Object.entries(entry).map(([k, v]) => `${k}: ${v}`);
+  const edits: Array<[number, number, string]> = [];
+  const changed: yaml.YAMLMap[] = [];
+  for (const map of maps) {
+    const i = map.items.findIndex(p => keyOf(p) === from);
+    const j = map.items.findIndex(p => keyOf(p) === to);
+    const pair = map.items[i];
+    const list = map.items[j]?.value;
+    if (!pair || j >= 0 && !yaml.isSeq(list) ||
+        !yaml.isNode(pair.key) || !yaml.isNode(pair.value)) {
+      continue;
+    }
+    const g = geometry({text, doc}, map, !!map.flow);
+    if (map.flow) {
+      const [v0, v1] = pair.value.range!;
+      const pad = file.pad.map;
+      const value = `{${pad}${[...keys, `${key}: ${text.slice(v0, v1)}`].join(', ')}${pad}}`;
+      if (!yaml.isSeq(list)) {
+        const [k0, k1] = pair.key.range!;
+        edits.push([k0, k1, to], [v0, v1, `[${file.pad.seq}${value}${file.pad.seq}]`]);
+      } else {
+        const next = g[i + 1];
+        edits.push(next ? [g[i].start, next.start, ''] : [g[i - 1].end, g[i].end, '']);
+        const first = list.items[0] as yaml.Node|undefined;
+        edits.push(first ? [first.range![0], first.range![0], `${value}, `] :
+                           [list.range![0] + 1, list.range![0] + 1, value]);
+      }
+      changed.push(map);
+      continue;
+    }
+    const {head, start, end, inline} = g[i];
+    if (inline) continue;
+    // The new item's `-` and its keys sit as the first item of a block list
+    // under `to` does, or else as the file's list items do.
+    const firstItem = yaml.isSeq(list) && !list.flow ? list.items[0] : undefined;
+    const firstKey = yaml.isMap(firstItem) && !firstItem.flow ?
+        (firstItem.items[0]?.key as yaml.Node|undefined)?.range?.[0] :
+        undefined;
+    const dash = firstItem ? col(dashes(list as yaml.YAMLSeq)[0]) :
+        col(start) + file.seqIndent;
+    const alone = firstKey !== undefined ?
+        lineStart(text, firstKey) !== lineStart(text, dashes(list as yaml.YAMLSeq)[0]) :
+        file.itemAlone;
+    const at = firstKey !== undefined ? col(firstKey) : dash + file.itemIndent;
+    const [k0, ...ks] = keys;
+    const lines = (alone ? `${' '.repeat(dash)}-${nl}${' '.repeat(at)}` :
+                           `${' '.repeat(dash)}-${' '.repeat(Math.max(1, at - dash - 1))}`) +
+        k0 + nl + ks.map(k => ' '.repeat(at) + k + nl).join('');
+    const moved = movedItem(text, doc, map, i, at, key);
+    const item = lines + ' '.repeat(at) + moved.item;
+    if (!yaml.isSeq(list)) {
+      edits.push([start, end, `${to}:${nl}${item}`]);
+    } else if (firstItem) {
+      edits.push([head, end, '']);
+      const above =
+          moved.above.replace(/^[ \t]*(?=#)/gm, ' '.repeat(dash));
+      const listHead = geometry({text, doc}, list, false)[0].head;
+      edits.push([listHead, listHead, above + item]);
+    } else {
+      // A flow list becomes a block list.
+      const toPair = map.items[j];
+      const colon = (toPair.srcToken as yaml.CST.BlockMap['items'][number])
+                        ?.sep?.find(s => s.type === 'map-value-ind')?.offset;
+      if (colon === undefined) continue;
+      edits.push([head, end, '']);
+      const valueEnd = list.range![1];
+      let rest = '';
+      for (let n = 0; n < list.items.length; n++) {
+        const m = movedItem(text, doc, list, n, dash, undefined, true);
+        rest += m.above + ' '.repeat(dash) + m.item;
+      }
+      const above =
+          moved.above.replace(/^[ \t]*(?=#)/gm, ' '.repeat(dash));
+      const after = nextLine(text, valueEnd);
+      const lead = after === text.length && !text.endsWith('\n') ? nl : '';
+      edits.push([colon + 1, valueEnd, ''], [after, after, lead + above + item + rest]);
+    }
+    changed.push(map);
+  }
+  const out = spliced(text, edits);
+  return {
+    text: text.endsWith('\n') ? out : out.replace(/\r?\n$/, ''),
+    changed,
+  };
+}
+
+/**
+ * `text` with each alias that comes before its anchor, which YAML cannot
+ * read, written as the anchor's value, in flow style on one line, the names
+ * of those anchors, and for each alias written, its anchor's name and the
+ * keys and indexes from the document root to it. A number in a value so
+ * written keeps its text when that is a JSON number, such as `1.50`.
+ */
+export function aliasesWritten(text: string): {
+  text: string; anchors: string[];
+  sites: Array<{anchor: string; path: Array<string|number>}>;
+} {
+  const anchors: string[] = [];
+  const sites: Array<{anchor: string; path: Array<string|number>}> = [];
+  // A value written so may hold another such alias, so each pass writes the
+  // aliases whose anchor's value reads.
+  for (let pass = 0; pass < 10; pass++) {
+    const doc = yaml.parseDocument(text, YAML_OPTIONS);
+    const numbers = numbersHeld(doc, text);
+    const nodes: yaml.Node[] = [];
+    yaml.visit(doc, {Node: (_, n) => void nodes.push(n)});
+    const edits: Array<[number, number, string]> = [];
+    yaml.visit(doc, {
+      Alias: (_, alias, path) => {
+        if (alias.resolve(doc) || !alias.range) return;
+        const anchor = nodes.find(
+            n => n.anchor === alias.source && n.range &&
+                n.range[0] > alias.range![0]);
+        let value: unknown;
+        try {
+          value = anchor?.toJS(doc);
+        } catch {
+          return;
+        }
+        if (!anchor) return;
+        // A string with a line break is written in double quotes, which hold
+        // it on one line.
+        const node = new yaml.Document(value, YAML_OPTIONS);
+        yaml.visit(node, {
+          Scalar: (_, n) => {
+            if (typeof n.value === 'string' && /[\n\r]/.test(n.value)) {
+              n.type = 'QUOTE_DOUBLE';
+            }
+          },
+        });
+        const written = numbers(node.toString({
+          collectionStyle: 'flow',
+          flowCollectionPadding: false,
+          lineWidth: 0,
+          doubleQuotedMinMultiLineLength: Number.MAX_SAFE_INTEGER,
+        }).trimEnd());
+        edits.push([alias.range[0], alias.range[1], written]);
+        if (!anchors.includes(alias.source)) anchors.push(alias.source);
+        sites.push({anchor: alias.source, path: keysTo(path, alias)});
+      },
+    });
+    if (!edits.length) break;
+    text = spliced(text, edits);
+  }
+  return {text, anchors, sites};
+}
+
+/**
+ * The keys and indexes from the document root to `node`, whose ancestors
+ * yaml.visit gives as `path`.
+ */
+function keysTo(
+    path: readonly unknown[], node: unknown): Array<string|number> {
+  const chain = [...path, node];
+  return chain.flatMap((n, i): Array<string|number> => {
+    if (yaml.isSeq(n)) return [n.items.indexOf(chain[i + 1] as yaml.Node)];
+    return yaml.isPair(n) && yaml.isScalar(n.key) ? [String(n.key.value)] : [];
+  });
 }
 
 /** Whether `node` is or holds a block scalar that keeps its final line breaks. */
@@ -926,6 +1429,68 @@ function isJson(value: unknown): value is string {
 /** `json`, a JSON text, without the whitespace outside its strings. */
 function compactJson(json: string): string {
   return json.replace(/("(?:[^"\\]|\\.)*")|[ \t\n\r]+/g, (_, s) => s ?? '');
+}
+
+// A number as JSON writes one.
+const JSON_NUMBER = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$/;
+
+/**
+ * The value of `node`, a node of `doc`, as one line of JSON as compactJson
+ * writes it. A mapping keeps its keys in the order written. A key that is not
+ * a string is written as its text, a key written as an alias as its anchor's
+ * value, and a list or mapping as a key as its JSON. A number keeps its text
+ * when that is a JSON number, such as `1.50`, an integer past 2^53 or `1e400`,
+ * which is past the range of a double, and is written as its value otherwise,
+ * so `+1` is `1`. An alias is written as its anchor's value. For a value JSON
+ * has no form for, `.inf`, `-.inf` or `.nan`, gives its text and its path: the
+ * keys and list indexes that lead to it, as in `a.b[2]`. For two keys of a
+ * mapping that JSON writes alike, such as `1` and `"1"`, gives that key and
+ * the mapping's path, with `key` set.
+ */
+export function nodeJson(node: unknown, doc: yaml.Document):
+    string|{text: string; path: string; key?: boolean} {
+  let bad: {text: string; path: string; key?: boolean}|undefined;
+  const write = (n: unknown, path: string): string => {
+    if (yaml.isAlias(n)) return write(n.resolve(doc), path);
+    if (yaml.isMap(n)) {
+      const keys = new Set<string>();
+      return `{${n.items.map(p => {
+        const k = yaml.isAlias(p.key) ? p.key.resolve(doc) : p.key;
+        const key = !yaml.isScalar(k) ? write(k, path) :
+            typeof k.value === 'string' ? k.value :
+            k.value === null            ? '' :
+                                          scalarSource(k);
+        if (keys.has(key)) bad ??= {text: key, path, key: true};
+        keys.add(key);
+        return `${JSON.stringify(key)}:${
+            write(p.value, path ? `${path}.${key}` : key)}`;
+      }).join(',')}}`;
+    }
+    if (yaml.isSeq(n)) {
+      return `[${n.items.map((v, i) => write(v, `${path}[${i}]`)).join(',')}]`;
+    }
+    const value = yaml.isScalar(n) ? n.value : null;
+    if (typeof value !== 'number') return JSON.stringify(value ?? null);
+    const text = scalarSource(n as yaml.Scalar);
+    if (JSON_NUMBER.test(text)) return text;
+    if (!Number.isFinite(value)) bad ??= {text, path};
+    return JSON.stringify(value);
+  };
+  const json = write(node, '');
+  return bad ?? json;
+}
+
+/**
+ * The text a scalar is written as, or for a scalar made rather than parsed,
+ * its value as YAML writes it, as `.inf` for Infinity.
+ */
+function scalarSource(n: yaml.Scalar): string {
+  const {value} = n;
+  return (n as yaml.Scalar.Parsed).source ??
+      (typeof value !== 'number' || Number.isFinite(value) ? String(value) :
+           Number.isNaN(value)                             ? '.nan' :
+           value > 0                                       ? '.inf' :
+                                                             '-.inf');
 }
 
 function entriesOf(value: object): Array<[string|number, unknown]> {

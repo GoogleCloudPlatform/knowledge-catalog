@@ -41,6 +41,70 @@ function model(over: Partial<SemanticModel> = {}, targets?: string[]):
 }
 
 describe('validatePushRequirements', () => {
+  test('refuses a field whose BigQuery text calls a window function only on a BigQuery deployment', () => {
+    const windowed = (targets?: string[]) => model({
+      entities: [{
+        name: 'o', dataSource: 'p.d.o', keys: ['p'],
+        fields: [
+          {name: 'p', expression: 'p'},
+          {name: 'rank_in_day', dialects: [{dialect: 'BIGQUERY', expression: 'RANK() OVER (PARTITION BY d ORDER BY p)'}]},
+        ],
+      }],
+    }, targets);
+
+    expect(validatePushRequirements([loaded(windowed([BQ_TARGET]))])).toEqual([
+      "field 'o.rank_in_day' in model 'm' (doc): its BigQuery expression calls a window function, " +
+          'which a BigQuery graph property cannot hold; write the field without one.',
+    ]);
+    expect(validatePushRequirements([loaded(windowed())])).toEqual([]);
+    expect(validatePushRequirements([loaded(windowed([SPANNER_TARGET]))])).toEqual([]);
+  });
+
+  test('refuses a window field that names its entity by a word BigQuery reads otherwise', () => {
+    const m = model({
+      entities: [{
+        name: 'Date', dataSource: 'p.d.o', keys: ['p'],
+        fields: [{name: 'p', expression: 'p'}, {name: 'r', dialects: [{dialect: 'BIGQUERY', expression: 'SUM(Date.p) OVER ()'}]}],
+      }],
+    }, [BQ_TARGET]);
+
+    expect(validatePushRequirements([loaded(m)])).toEqual([
+      "field 'Date.r' in model 'm' (doc): its BigQuery expression calls a window function, " +
+          'which a BigQuery graph property cannot hold; write the field without one.',
+    ]);
+  });
+
+  test('accepts a window field of an entity another extends, which has no node table', () => {
+    const fields = (rank: string) => [{name: 'p', expression: 'p'}, {name: 'r', dialects: [{dialect: 'BIGQUERY' as const, expression: rank}]}];
+    const m = model({
+      entities: [
+        {name: 'o', dataSource: 'p.d.o', keys: ['p'], fields: fields('RANK() OVER (ORDER BY p)')},
+        {name: 'c', dataSource: 'p.d.c', keys: ['p'], extends: ['o'], fields: fields('r_col')},
+      ],
+    }, [BQ_TARGET]);
+
+    expect(validatePushRequirements([loaded(m)])).toEqual([]);
+  });
+
+  test('names the field that writes a window text the leaves inherit', () => {
+    const m = model({
+      entities: [
+        {name: 'o', dataSource: 'p.d.o', keys: ['p'], fields: [
+          {name: 'p', expression: 'p'},
+          {name: 'r', dialects: [{dialect: 'BIGQUERY', expression: 'ROW_NUMBER() OVER ()'}]},
+        ]},
+        {name: 'c1', dataSource: 'p.d.c1', keys: ['p'], extends: ['o'], fields: [{name: 'p', expression: 'p'}]},
+        {name: 'c2', dataSource: 'p.d.c2', keys: ['p'], extends: ['o'], fields: [{name: 'p', expression: 'p'}]},
+      ],
+    }, [BQ_TARGET]);
+
+    expect(validatePushRequirements([loaded(m)])).toEqual([
+      "field 'o.r' in model 'm' (doc): its BigQuery expression calls a window function, which a " +
+          "BigQuery graph property cannot hold, and entities 'c1' and 'c2' inherit it; write the " +
+          'field without one.',
+    ]);
+  });
+
   test('a model with a deployment target and resolved metrics passes', () => {
     const m = model(
         {
@@ -2074,6 +2138,28 @@ ${extraMetric}`;
           .toContain("field 'orders.bad_cross' in model 'm' (doc) references entity 'customer'");
     });
 
+    test('accepts a field expression whose CTE gives an entity\'s name in another letter case', () => {
+      const m = model({
+        entities: [
+          {
+            ...orders(),
+            fields: [
+              ...orders().fields,
+              {
+                name: 'probe',
+                dialects: [{
+                  dialect: 'BIGQUERY',
+                  expression: '(WITH Customer AS (SELECT 7 AS id) SELECT MAX(customer.id) FROM Customer)',
+                }],
+              },
+            ],
+          },
+          customer(),
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {fieldsPruned: true})).toEqual([]);
+    });
+
     test('rejects a field expression that references a missing sibling field on its own entity', () => {
       const m = model({
         entities: [{
@@ -2836,6 +2922,29 @@ ${extraMetric}`;
       expect(validatePushRequirements([loaded(m)])
                  .join('\n'))
           .toContain("entity 'orders' has no field 'no_such_field'");
+    });
+
+    // An OSSIE_SQL_2026 text is read like a text in any other dialect: a
+    // qualified name in a field names a field of its entity, and a metric
+    // names each field as 'entity.field'. Table orders names no database, so
+    // every text is read.
+    const ossie = (expression: string) =>
+        [{dialect: 'OSSIE_SQL_2026' as const, expression}];
+    test.each<[string, Field[], Metric[], string]>([
+      ['a field that names a field its entity does not have',
+       [{name: 'net', dialects: ossie('orders.o_net')}], [],
+       "field 'orders.net' in model 'm' (doc) references 'orders.o_net', which " +
+           "is not a declared or inherited field of 'orders'."],
+      ['a metric that names a field without its entity',
+       [], [{name: 'rev', entity: 'orders', authoredEntity: 'orders', dialects: ossie('SUM(net_amount)')}],
+       "metric 'rev' in model 'm' (doc): 'net_amount' must be written as " +
+           "'entity.field'; a metric reads fields, never columns."],
+    ])('checks an OSSIE_SQL_2026 text in %s', (_, fields, metrics, expected) => {
+      const m = model({
+        entities: [{...orders(), dataSource: 'orders', fields: [...orders().fields, ...fields]}],
+        metrics,
+      });
+      expect(validatePushRequirements([loaded(m)])).toEqual([expected]);
     });
   });
 });

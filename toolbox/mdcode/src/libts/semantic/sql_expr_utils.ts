@@ -10,12 +10,14 @@
 // aggregates, `withoutQualifier` makes an expression table-local,
 // `qualifiedColumns` finds the sibling fields it names and
 // `withSiblingsSpliced` puts their SQL in their place, and `requalified` moves
-// an inherited expression onto the entity inheriting it.
+// an inherited expression onto the entity inheriting it. `columnName` and
+// `qualifiedName` write a name so that a dialect reads it as that name, and
+// `columnKey` and `sameColumns` compare column names across dialects.
 //
 
 import {Field, fieldBinding} from './ir';
-import {quoteIfReserved} from './sql_identifiers';
-import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
+import {ANY_CASE_DIALECTS, isSimpleIdentifier, nameKey, quoteIfReserved, readsAsKeyword, storedName} from './sql_identifiers';
+import {soleColumn, SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
 // text with no dialect, is read as BigQuery.
@@ -64,6 +66,569 @@ function qualifiersIn(
   const at = !columns ? candidates : candidates.filter(
       (_, k) => columns.some(c => c.qualifier?.toLowerCase() === stem + k));
   return {tokens, at};
+}
+
+// A name as an expression writes it: its text as written, the name without
+// its quotes, and whether quotes wrap it.
+export interface WrittenName {
+  written: string;
+  name: string;
+  quoted: boolean;
+}
+
+// `expression`, read in `dialect`, with each column it reads, written as
+// `<qualifier>.<column>` or as a bare column, replaced by the text `rewrite`
+// gives for it, or kept as written when that is undefined. The rest of the
+// text stays as written. Only a column whose name or qualifier `names` holds
+// in lower case is found, and only where the SQL parser reads that name as
+// part of a column, so a keyword, a function name, a date part or a name a
+// subquery binds is left alone. A name is part of a column when the text
+// with that name alone read as a placeholder reads the same columns, with
+// the placeholder in place of the name. A quoted name that stands alone is
+// read as a name even where the parser reads it as a function, as it reads
+// `current_date` in backticks in BigQuery, when the dialect's database reads
+// its quotes as a name's (see NAME_QUOTES). When the parser cannot read the
+// text itself, as with a qualifier it reserves as a keyword, such as `order`
+// in `order.id`, each such name beside a dot is read as a placeholder in
+// every reading. A struct path gives its first two parts. `rewrite` also learns whether the column
+// sits in a subquery with its own FROM, at a place where a column of that
+// FROM's tables may take the place of its name, and whether that FROM may
+// name the table of the column's qualifier (see subqueryTables), and where
+// the column stands in the text, with each name read as a placeholder beside
+// a dot read so outside the column. Returns `expression` when the engine
+// cannot read it so.
+export function columnsRewritten(
+    expression: string, dialect: string, names: ReadonlySet<string>,
+    rewrite: (column: {
+      qualifier?: WrittenName; name: WrittenName; inSubquery: boolean;
+      bound: boolean; at: NameInText;
+    }) => string | undefined): string {
+  const tokens = sqlTokens(expression, dialect);
+  if (!tokens) return expression;
+  const chars = Array.from(expression);
+  const written = (t: SqlToken): WrittenName => {
+    const text = chars.slice(t.span.start, t.span.end).join('');
+    const quoted = t.token_type === 'QUOTED_IDENTIFIER';
+    return {written: text, name: quoted ? t.text : text, quoted};
+  };
+  // The text with each of `edits` made: each replaces the characters from
+  // one offset to another, in order. A space keeps a new name apart from a
+  // word written against the text it replaces, as `WHEN` is in
+  // `WHEN"orders".f`.
+  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
+  const edited = (edits: Array<[number, number, string]>) => {
+    let out = '';
+    let end = 0;
+    for (const [from, to, s] of edits) {
+      const before = word(chars[from - 1]) && word(s[0]) ? ' ' : '';
+      const after = word(chars[to]) && word(s.at(-1)) ? ' ' : '';
+      out += chars.slice(end, from).join('') + before + s + after;
+      end = to;
+    }
+    return out + chars.slice(end).join('');
+  };
+  const candidates = tokens.flatMap(
+      (t, i) => names.has(written(t).name.toLowerCase()) ? [i] : []);
+  if (!candidates.length) return expression;
+  // A placeholder stem the text does not hold.
+  const stem = unusedName(expression, 'kcmd_name_');
+  const placeholder = (name: string|undefined, k: number) =>
+      name?.toLowerCase() === stem + k;
+  const reading = (columns: ReadonlyArray<SqlColumn>) =>
+      columns.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
+  // The names read as a placeholder in every reading, one per name, by the
+  // index of each token that writes it, and each name by its placeholder.
+  const standInStem = unusedName(expression, 'kcmd_stand_in_');
+  const standIns = new Map<string, string>();
+  const standInNames = new Map<string, string>();
+  const misread = new Map<number, string>();
+  const standIn = (i: number) => {
+    const name = written(tokens[i]).name;
+    if (!standIns.has(name)) {
+      standIns.set(name, standInStem + standIns.size);
+      standInNames.set(standIns.get(name)!, name);
+    }
+    misread.set(i, standIns.get(name)!);
+  };
+  // A quoted name the parser reads as something other than a column, such as
+  // `current_date` in backticks in BigQuery, is one. Only a name that stands
+  // alone counts, with no dot or `(` beside it.
+  tokens.forEach((t, i) => {
+    const next = tokens[i + 1]?.token_type;
+    if (t.token_type !== 'QUOTED_IDENTIFIER' ||
+        !opensName(chars[t.span.start], dialect) ||
+        tokens[i - 1]?.token_type === 'DOT' || next === 'DOT' ||
+        next === 'L_PAREN' || soleColumn(written(t).written, dialect)) {
+      return;
+    }
+    standIn(i);
+  });
+  // The columns of the text with each name in `misread` read as its
+  // placeholder, and with token `at`, when given, read as `as`. Each
+  // placeholder of `misread` is read back as its name.
+  const readAs = (at?: number, as?: string) => {
+    const edits: Array<[number, number, string]> =
+        [...misread].filter(([i]) => i !== at)
+            .map(([i, p]) => [tokens[i].span.start, tokens[i].span.end, p]);
+    if (at !== undefined) {
+      edits.push([tokens[at].span.start, tokens[at].span.end, as!]);
+    }
+    edits.sort((a, b) => a[0] - b[0]);
+    const unread = (n: string) => standInNames.get(n.toLowerCase()) ?? n;
+    return columnReferences(edits.length ? edited(edits) : expression, dialect)
+        ?.map(c => ({
+                ...(c.qualifier === undefined ?
+                        {} :
+                        {qualifier: unread(c.qualifier)}),
+                name: unread(c.name),
+              }));
+  };
+  const dot = (i: number) => tokens[i]?.token_type === 'DOT';
+  // When the parser cannot read the text, as with a qualifier it reserves as
+  // a keyword, such as `order` in `order.id`, each candidate beside a dot is
+  // read as a placeholder too. The others stay as written, so the `DATE` of
+  // `DATE '2026-01-01'` still reads as a keyword.
+  let columns = readAs();
+  let besideDots: number[] = [];
+  if (!columns) {
+    besideDots = candidates.filter(i => dot(i - 1) || dot(i + 1));
+    besideDots.forEach(standIn);
+    columns = readAs();
+    if (!columns) return expression;
+  }
+  // Where the code points from `from` to `to` stand in the text with each of
+  // `besideDots` outside them read as its placeholder, so the parser reads
+  // the text around a column as it reads it above.
+  const placed = (from: number, to: number): NameInText => {
+    const outside = besideDots
+        .filter(i => tokens[i].span.end <= from || tokens[i].span.start >= to)
+        .map((i): [number, number, string] =>
+                 [tokens[i].span.start, tokens[i].span.end, misread.get(i)!]);
+    const start = Array.from(edited(outside.filter(([s]) => s < from))).length -
+        (chars.length - from);
+    return {text: edited(outside), start, end: start + to - from};
+  };
+  // Each candidate the parser reads as part of a column: as its qualifier,
+  // or as its name, with or without a qualifier.
+  const roles = new Map<number, 'qualifier'|'qualified'|'bare'>();
+  const role = (c: SqlColumn) => placeholder(c.qualifier, 0) ?
+      'qualifier' :
+      c.qualifier === undefined ? 'bare' : 'qualified';
+  for (const i of candidates) {
+    const read = readAs(i, stem + 0);
+    const hits = read?.filter(
+        c => placeholder(c.qualifier, 0) || placeholder(c.name, 0)) ?? [];
+    const name = written(tokens[i]).name;
+    const back = read?.map(c => ({
+      qualifier: placeholder(c.qualifier, 0) ? name : c.qualifier,
+      name: placeholder(c.name, 0) ? name : c.name,
+    }));
+    if (hits.length === 1 && reading(back!) === reading(columns)) {
+      roles.set(i, role(hits[0]));
+    }
+  }
+  const binding = bindingSubqueries(tokens);
+  const inSubquery = (i: number) => binding[i].length > 0;
+  const bound = subqueryTables(chars, tokens, dialect);
+  const spans = new Map<number, [number|undefined, number]>();
+  for (const [i, r] of roles) {
+    if (r !== 'qualifier') {
+      spans.set(i, [r === 'qualified' && dot(i - 1) ? i - 2 : undefined, i]);
+    } else if (dot(i + 1) && tokens[i + 2]) {
+      spans.set(i + 2, [i, i + 2]);
+    }
+  }
+  const edits: Array<[number, number, string]> = [];
+  let end = 0;
+  for (const [q, n] of [...spans.values()].sort((a, b) => a[1] - b[1])) {
+    const from = tokens[q ?? n].span.start;
+    const to = tokens[n].span.end;
+    const replacement = from < end ? undefined : rewrite({
+      qualifier: q === undefined ? undefined : written(tokens[q]),
+      name: written(tokens[n]),
+      inSubquery: inSubquery(n),
+      bound: q !== undefined && bound(q, written(tokens[q])),
+      at: placed(from, to),
+    });
+    if (replacement === undefined) continue;
+    edits.push([from, to, replacement]);
+    end = to;
+  }
+  return edits.length ? edited(edits) : expression;
+}
+
+// The tokens a subquery's first FROM item holds outside its parentheses: a
+// table's name and the dots in it, a function such as UNNEST and the
+// parenthesis that opens its arguments, and the item's alias.
+const FROM_ITEM_TOKENS =
+    new Set(['VAR', 'QUOTED_IDENTIFIER', 'DOT', 'AS', 'L_PAREN']);
+
+// For each of `tokens`, the subqueries whose own FROM may give a table in
+// place of a name it holds, each by the index of the parenthesis that opens
+// it: each subquery around the token that has a FROM, unless the token sits
+// in that subquery's first FROM item, which reads only the names of the
+// query around it, as UNNEST(orders.items) does, or in the WITH clause the
+// subquery opens with. A subquery is a parenthesis that opens with SELECT or
+// WITH.
+export function bindingSubqueries(tokens: SqlToken[]): number[][] {
+  // Each subquery's phase is -1 in the WITH clause it opens with, 0 before
+  // its FROM, 1 in its first FROM item, and 2 after it.
+  type Query = {at: number; phase: number; from: boolean};
+  const open: Array<Query|undefined> = [];
+  const exposed: Query[][] = [];
+  tokens.forEach((t, i) => {
+    const type = t.token_type;
+    const top = open.at(-1);
+    if (top?.phase === -1 && type === 'SELECT') top.phase = 0;
+    if (top?.phase === 1 && !FROM_ITEM_TOKENS.has(type)) top.phase = 2;
+    if (top && type === 'FROM' && top.phase === 0) {
+      top.phase = 1;
+      top.from = true;
+    }
+    exposed.push(open.filter(
+        (q): q is Query => !!q && q.phase !== 1 && q.phase !== -1));
+    if (type === 'L_PAREN') {
+      const next = tokens[i + 1]?.token_type;
+      open.push(
+          next === 'SELECT' ? {at: i, phase: 0, from: false} :
+          next === 'WITH'   ? {at: i, phase: -1, from: false} :
+                              undefined);
+    } else if (type === 'R_PAREN') {
+      open.pop();
+    }
+  });
+  return exposed.map(qs => qs.filter(q => q.from).map(q => q.at));
+}
+
+// Whether a qualifier named `name`, token `i` of `tokens`, read in `dialect`,
+// whose text's characters are `chars`, may name a table of a subquery
+// around it: a table or alias its own FROM names, compared as nameKey
+// compares two names of the text, where that FROM's tables may take the
+// place of a name (see bindingSubqueries). `original` gives the name a
+// placeholder name of the text stands for, and undefined for any other
+// name. A subquery the parser cannot read alone is taken to name every
+// qualifier in it.
+export function subqueryTables(
+    chars: string[], tokens: SqlToken[], dialect: string,
+    original: (name: string) => {name: string; quoted: boolean}|undefined =
+        () => undefined):
+    (i: number, name: {name: string; quoted: boolean}) => boolean {
+  const binding = bindingSubqueries(tokens);
+  // The token that closes each parenthesis, by the token that opens it.
+  const closes = new Map<number, number>();
+  const open: number[] = [];
+  tokens.forEach((t, i) => {
+    if (t.token_type === 'L_PAREN') open.push(i);
+    if (t.token_type === 'R_PAREN' && open.length) closes.set(open.pop()!, i);
+  });
+  // The names each subquery's FROM gives, by the token that opens it.
+  const names = new Map<number, Set<string>|undefined>();
+  const namesAt = (at: number) => {
+    if (!names.has(at)) {
+      const end = tokens[closes.get(at) ?? tokens.length - 1].span.end;
+      const text = chars.slice(tokens[at].span.start, end).join('');
+      names.set(
+          at, fromNames(sqlExpressionTree(text, dialect), dialect, original));
+    }
+    return names.get(at);
+  };
+  return (i, name) => binding[i].some(at => {
+    const named = namesAt(at);
+    return !named || named.has(nameKey(name, dialect));
+  });
+}
+
+// The names of the tables and aliases that the FROM of the subquery `tree`,
+// the parser's tree of one in a text of `dialect`, names, with its JOINs and
+// its WITH, in each SELECT of a UNION, INTERSECT or EXCEPT, each as nameKey
+// gives it. A placeholder name stands for the name `original` gives for it.
+// Undefined when `tree` is not a subquery.
+function fromNames(
+    tree: any, dialect: string,
+    original: (name: string) => {name: string; quoted: boolean}|undefined):
+    Set<string>|undefined {
+  const query = tree?.subquery?.this;
+  if (!query) return undefined;
+  const names = new Set<string>();
+  const add = (n: any) => {
+    if (typeof n?.name !== 'string') return;
+    const name = original(n.name) ?? {name: n.name, quoted: n.quoted === true};
+    names.add(nameKey(name, dialect));
+  };
+  const visit = (item: any) => {
+    if (item?.alias) {
+      add(item.alias.alias);
+      visit(item.alias.this);
+    }
+    add(item?.table?.name);
+    for (const kind of ['table', 'unnest', 'subquery']) {
+      add(item?.[kind]?.alias);
+    }
+  };
+  const read = (q: any) => {
+    const set = q?.union ?? q?.intersect ?? q?.except;
+    const select = q?.select;
+    for (const cte of (set ?? select)?.with?.ctes ?? []) add(cte?.alias);
+    if (set) {
+      read(set.left);
+      read(set.right);
+    }
+    for (const item of select?.from?.expressions ?? []) visit(item);
+    for (const join of select?.joins ?? []) visit(join?.this);
+  };
+  read(query);
+  return names;
+}
+
+// `name` in the quotes a text of `dialect` writes a name in: backticks in
+// GoogleSQL, MySQL and Databricks, brackets in T-SQL, and double quotes in
+// the others. An ANSI_SQL text on a table of `tableDialect` writes it as that
+// dialect does. A quote character in `name` is escaped as the dialect escapes
+// one.
+export function quotedName(
+    name: string, dialect: string, tableDialect?: string): string {
+  switch (namingDialect(dialect, tableDialect)) {
+    case 'BIGQUERY':
+    case 'SPANNER':
+      return `\`${name.replace(/[\\`]/g, '\\$&')}\``;
+    case 'MYSQL':
+    case 'DATABRICKS':
+      return `\`${name.replace(/`/g, '``')}\``;
+    case 'SQLSERVER':
+      return `[${name.replace(/]/g, ']]')}]`;
+    default:
+      return `"${name.replace(/"/g, '""')}"`;
+  }
+}
+
+// The dialect whose rules read and write a name in a text of `dialect`: an
+// ANSI_SQL text on a table of `tableDialect` runs as that dialect's SQL.
+function namingDialect(dialect: string, tableDialect?: string): string {
+  const d = dialect.toUpperCase();
+  return d === 'ANSI_SQL' && tableDialect ? tableDialect.toUpperCase() : d;
+}
+
+// Where a name stands in an expression: alone, before a dot, or after one.
+type NamePlace = 'alone'|'qualifier'|'member';
+
+// The characters that open a quoted name in each dialect that reads a name
+// in quotes other than double quotes. SQL Server reads both brackets and
+// double quotes. Every other dialect reads double quotes only.
+const NAME_QUOTES: Readonly<Record<string, string>> = {
+  BIGQUERY: '`',
+  SPANNER: '`',
+  MYSQL: '`',
+  DATABRICKS: '`',
+  SQLSERVER: '["',
+};
+
+// Whether `quote` opens a quoted name in a text of `dialect` (see
+// NAME_QUOTES).
+function opensName(quote: string|undefined, dialect: string): boolean {
+  return !!quote &&
+      (NAME_QUOTES[dialect.toUpperCase()] ?? '"').includes(quote);
+}
+
+// Whether a text of `dialect` on a table of `tableDialect` reads `quote` as
+// the quote that opens a name, as BigQuery reads a backtick and not a double
+// quote. An ANSI_SQL text reads quotes as its table's dialect does.
+export function quotesName(
+    quote: string|undefined, dialect: string, tableDialect?: string): boolean {
+  return opensName(quote, namingDialect(dialect, tableDialect));
+}
+
+// The dialects whose database reads any word after a dot as a name, as
+// BigQuery reads `t.order`. In the other dialects, a word the database reads
+// as a keyword alone is quoted after a dot too, as SQL Server needs
+// `t.[order]`.
+const MEMBER_KEYWORD_DIALECTS =
+    new Set(['BIGQUERY', 'SPANNER', 'POSTGRES', 'ALLOYDB', 'MYSQL']);
+
+// The name `text` reads as in a text of `dialect` when it stands at `at`, and
+// whether it is quoted, or undefined when it is not one name that reads as a
+// name there. A quoted name reads as the name inside its quotes, as the
+// tokenizer gives it, since the parser reads one such as "current_date" as
+// the function, when the dialect's database reads those quotes as a name's
+// (see NAME_QUOTES). A name without quotes reads as itself when the parser
+// reads it as a column there and the dialect's database does not read it as
+// a keyword or a function (see readsAsKeyword), which after a dot only some
+// databases do not (see MEMBER_KEYWORD_DIALECTS).
+function nameRead(text: string, dialect: string, at: NamePlace):
+    {name: string; quoted: boolean}|undefined {
+  const tokens = sqlTokens(text, dialect);
+  if (tokens?.length !== 1) return undefined;
+  if (tokens[0].token_type === 'QUOTED_IDENTIFIER') {
+    return opensName(text[0], dialect) ? {name: tokens[0].text, quoted: true} :
+                                         undefined;
+  }
+  if ((at !== 'member' || !MEMBER_KEYWORD_DIALECTS.has(dialect.toUpperCase())) &&
+      readsAsKeyword(text, dialect)) {
+    return undefined;
+  }
+  const other = unusedName(text, 'kcmd_name_');
+  const column = soleColumn(
+      at === 'alone'     ? text :
+      at === 'qualifier' ? `${text}.${other}` :
+                           `${other}.${text}`,
+      dialect);
+  const read = !column || column.quoted ? undefined :
+      at === 'alone'     ? !column.qualifier && column.name :
+      at === 'qualifier' ? column.name === other && column.qualifier :
+                           column.qualifier === other && column.name;
+  return read === text ? {name: text, quoted: false} : undefined;
+}
+
+// `part`, a name an expression writes at `at`, as a text of `dialect` writes
+// it there so that it reads as a name `same` accepts, given the text: as
+// written when it reads so, else as `plain` without quotes when that is a
+// plain identifier that reads so, and else as `quoted`.
+function partWritten(
+    part: WrittenName, dialect: string, at: NamePlace,
+    same: (read: {name: string; quoted: boolean}, text: string) => boolean,
+    plain: string, quoted: string): string {
+  const reads = (text: string) => {
+    const read = nameRead(text, dialect, at);
+    return !!read && same(read, text);
+  };
+  if (reads(part.written)) return part.written;
+  return isSimpleIdentifier(plain) && reads(plain) ? plain : quoted;
+}
+
+// Where a name stands in a text: the text, and the code points from the
+// start of the name's qualifier, or of the name when it has none, to the end
+// of the name, end exclusive.
+export interface NameInText {
+  text: string;
+  start: number;
+  end: number;
+}
+
+// Whether `written`, a column written without a qualifier, reads as the
+// column `name` where `at` places it, in a text of `dialect`. It does when
+// the text with `written` in that place reads the columns it reads with a
+// placeholder name there, with `name` in the placeholder's place. So `day`
+// does not read as a column as the first argument of DATEDIFF, nor `if`
+// before `+ 1`. It does not either when the text reads no column at the
+// placeholder, as SQL Server reads any name there as a date part. True when
+// the parser cannot read the text with the placeholder.
+function readsInPlace(
+    written: string, name: string, at: NameInText, dialect: string): boolean {
+  const chars = Array.from(at.text);
+  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
+  const placed = (s: string) => chars.slice(0, at.start).join('') +
+      (word(chars[at.start - 1]) ? ' ' : '') + s +
+      (word(chars[at.end]) ? ' ' : '') + chars.slice(at.end).join('');
+  const stem = unusedName(at.text + written, 'kcmd_place_');
+  const before = columnReferences(placed(stem), dialect);
+  if (!before) return true;
+  const is = (part: string|undefined) => part?.toLowerCase() === stem;
+  if (!before.some(c => is(c.qualifier) || is(c.name))) return false;
+  const after = columnReferences(placed(written), dialect);
+  const key = (cs: ReadonlyArray<SqlColumn>) =>
+      cs.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
+  return !!after &&
+      key(after) ===
+      key(before.map(c => ({
+                       ...(c.qualifier === undefined ?
+                               {} :
+                               {qualifier: is(c.qualifier) ? name : c.qualifier}),
+                       name: is(c.name) ? name : c.name,
+                     })));
+}
+
+// Column `original`, as a text of `dialect` writes it, written with no
+// qualifier so that the dialect reads the same column: as written when it
+// reads as that column alone, and where `at` places it when given, and
+// otherwise in the dialect's quotes, since a name such as `current_date`
+// reads as a function without its qualifier, one such as `order` as a
+// keyword, and `day` as a date part as the first argument of DATEDIFF. When the dialect's database stores
+// a name written without quotes in another letter case, the quotes hold the
+// name in that case, so `current_date` in a SNOWFLAKE text becomes
+// "CURRENT_DATE" and `CURRENT_USER` in a POSTGRES text becomes
+// "current_user". A quoted name
+// whose quotes the dialect does not read as a name, such as "amount" in an
+// ANSI_SQL text on a BIGQUERY table, is written without quotes when it is a
+// plain identifier that reads as that column, and else in the dialect's
+// quotes. An ANSI_SQL text on a table of `tableDialect` is written as that
+// dialect writes it, and one on a table of no known dialect as standard SQL
+// writes it: in double quotes, with a name written without quotes in upper
+// case.
+export function columnName(
+    original: WrittenName, dialect: string, tableDialect?: string,
+    at?: NameInText): string {
+  const d = namingDialect(dialect, tableDialect);
+  const stored = storedName(original.name, original.quoted, d);
+  return partWritten(
+      original, d, 'alone',
+      (read, text) => storedName(read.name, read.quoted, d) === stored &&
+          (!at || readsInPlace(text, read.name, at, d)),
+      stored, quotedName(stored, d));
+}
+
+// `<qualifier>.<name>`, a field or a column with the qualifier of its dataset
+// or table, written so that a text of `dialect` reads it as those two names:
+// each part as written when it reads so in its place, and otherwise in the
+// dialect's quotes, so a qualifier such as `date`, which does not read as a
+// name before a dot, becomes "date" in a POSTGRES text and `date` in
+// backticks in a BIGQUERY text. Each part keeps its letter case, since kcmd
+// matches these names as written. A quoted part whose quotes the dialect
+// does not read as a name is written without quotes when it is a plain
+// identifier that reads so. An ANSI_SQL text on a table of `tableDialect` is
+// written as that dialect writes it.
+export function qualifiedName(
+    qualifier: WrittenName, name: WrittenName, dialect: string,
+    tableDialect?: string): string {
+  const d = namingDialect(dialect, tableDialect);
+  const part = (p: WrittenName, at: NamePlace) => partWritten(
+      p, d, at, read => read.name === p.name, p.name, quotedName(p.name, d));
+  return `${part(qualifier, 'qualifier')}.${part(name, 'member')}`;
+}
+
+// A column's name as the database of a text's dialect matches it, as
+// columnKey gives it, for comparing column names across dialects with
+// sameColumns.
+export interface ColumnKey {
+  // The name as the database stores it.
+  stored: string;
+  // Whether the database matches the name in any letter case.
+  anyCase: boolean;
+  // Whether a name written without quotes is stored so, as `amount` is in
+  // POSTGRES and `AMOUNT` in SNOWFLAKE.
+  folded: boolean;
+}
+
+// Column `column`, written in a text of `dialect` with or without quotes, as
+// that dialect's database matches it. BIGQUERY, SPANNER, MYSQL, DATABRICKS
+// and SQLSERVER match a column in any letter case. POSTGRES and ALLOYDB store
+// a name written without quotes in lower case, and other dialects, such as
+// SNOWFLAKE, in upper case; each stores a quoted name as written. An ANSI_SQL
+// text on a table of `tableDialect` is matched as that dialect matches it.
+export function columnKey(
+    column: {name: string; quoted: boolean}, dialect: string,
+    tableDialect?: string): ColumnKey {
+  const d = namingDialect(dialect, tableDialect);
+  const stored = storedName(column.name, column.quoted, d);
+  return {
+    stored,
+    anyCase: ANY_CASE_DIALECTS.has(d),
+    folded: /^[\p{L}_][\p{L}\p{N}_$]*$/u.test(stored) &&
+        storedName(stored, false, d) === stored,
+  };
+}
+
+// Whether every two of `keys` can name the same column. Two keys do when
+// either database ignores case and the names are equal in any case, when
+// the stored names are equal, or when both are the stored form of one name
+// written without quotes, as `amount` in POSTGRES and `AMOUNT` in SNOWFLAKE
+// are. Every pair is compared, since the relation is not transitive: a
+// BIGQUERY `tax` matches both `tax` and "Tax" in POSTGRES, which do not
+// match each other.
+export function sameColumns(keys: readonly ColumnKey[]): boolean {
+  const same = (a: ColumnKey, b: ColumnKey) =>
+      a.anyCase || b.anyCase || a.folded && b.folded ?
+      a.stored.toLowerCase() === b.stored.toLowerCase() :
+      a.stored === b.stored;
+  return keys.every((a, i) => keys.slice(i + 1).every(b => same(a, b)));
 }
 
 // `base`, a lowercase name, with underscores added until `text` does not hold
@@ -633,6 +1198,21 @@ export function holdsSubquery(expression: string, dialect: string): boolean {
     return Object.entries(node).some(
         ([kind, value]) =>
             kind === 'subquery' || kind === 'select' || holds(value));
+  };
+  return holds(sqlExpressionTree(expression, dialect));
+}
+
+// Whether `expression`, read in `dialect`, calls a window function outside
+// any subquery, as RANK() OVER (...) and SUM(x) OVER () do. False when the
+// SQL parser cannot read it.
+export function holdsWindowFunction(
+    expression: string, dialect: string): boolean {
+  const holds = (node: unknown): boolean => {
+    if (Array.isArray(node)) return node.some(holds);
+    if (node === null || typeof node !== 'object') return false;
+    return Object.entries(node).some(
+        ([kind, value]) => kind === 'window_function' ||
+            kind !== 'subquery' && kind !== 'select' && holds(value));
   };
   return holds(sqlExpressionTree(expression, dialect));
 }
