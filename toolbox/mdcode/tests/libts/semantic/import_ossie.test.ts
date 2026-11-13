@@ -1472,6 +1472,34 @@ semantic_model:
     expect(res.warnings.filter(w => w.includes('empty'))).toEqual([]);
   });
 
+  test('names the dataset each metric moves from when a dataset repeats through an alias', async () => {
+    const res = await importSemanticModelYaml(`version: 0.3.0.dev0
+name: retail
+datasets:
+  - &o
+    name: orders
+    source: ${TABLES}/orders
+    metrics:
+      - {name: total, expression: {sql: COUNT(*)}}
+  - name: returns
+    source: ${TABLES}/returns
+    metrics:
+      - {name: refunds, expression: {sql: COUNT(*)}}
+  - name: items
+    source: ${TABLES}/items
+    metrics: {x: 1}
+  - *o
+`, {flavor: 'google'});
+
+    expect(res.errors).toEqual([`model 'retail': duplicate entity name 'orders'; names must be unique.`]);
+    expect(res.warnings.filter(w => w.includes(' of dataset '))).toEqual([
+      `Wrote the 'sql' of these expressions as an 'OSSIE_SQL_2026' entry of 'dialects', as ` +
+          `'0.2.0.dev0/google' reads it: metric 'total' of dataset 'orders', metric 'refunds' of dataset 'returns'.`,
+      `metric 'total' of dataset 'orders': renamed to 'orders_total', since another metric or a field of ` +
+          `dataset 'orders' has its name.`,
+    ]);
+  });
+
   const sourceDataset = (m: any) => m.datasets.push(
       {name: 'source', source: `${TABLES}/src`, fields: [{name: 'amt', expression: {sql: 'amt'}}]});
   // The name and texts of each field of dataset 'orders' after the two that

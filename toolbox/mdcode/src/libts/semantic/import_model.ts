@@ -788,23 +788,32 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
 /**
  * The metrics `input`, a model at the document root as written, declares in
  * its datasets, each with the name of its dataset, as they sit at the end of
- * the metrics of `doc`, which holds the same model wrapped. Metrics the parse
- * step could not move by a text edit move to the end of the model's
- * `metrics` here. A dataset an alias repeats moves its metrics once, so it
- * counts once.
+ * the metrics of `doc`, which holds the same model wrapped. The parse step
+ * moves them by a text edit, which moves the metrics of a dataset an alias
+ * repeats once, so that dataset counts once. Metrics the parse step could
+ * not move so move to the end of the model's `metrics` here, each with the
+ * name of the dataset it moves from.
  */
 function movedDatasetMetrics(
     doc: ImportDocument, input: Record<string, any>):
     Array<{metric: Record<string, any>; dataset: string; name: string}> {
-  const declared = [...new Set(asRecords(input.datasets))].flatMap(
-      ds => asRecords(ds.metrics).map(() => String(ds.name)));
   if (doc.datasets.some(ds => 'metrics' in ds)) {
-    const moved = doc.datasets.flatMap(ds => asRecords(ds.metrics));
-    if (moved.length) doc.model.metrics = [...doc.metrics, ...moved];
-    for (const ds of doc.datasets) delete ds.metrics;
+    const moved = [];
+    for (const ds of doc.datasets) {
+      if (!('metrics' in ds)) continue;
+      moved.push(...asRecords(ds.metrics).map(
+          metric => ({metric, dataset: String(ds.name), name: metric.name})));
+      delete ds.metrics;
+    }
+    if (moved.length) {
+      doc.model.metrics = [...doc.metrics, ...moved.map(m => m.metric)];
+    }
     doc.metrics = asRecords(doc.model.metrics);
     doc.modified = true;
+    return moved;
   }
+  const declared = [...new Set(asRecords(input.datasets))].flatMap(
+      ds => asRecords(ds.metrics).map(() => String(ds.name)));
   return doc.metrics.slice(doc.metrics.length - declared.length)
       .map((metric, i) => ({metric, dataset: declared[i], name: metric.name}));
 }
