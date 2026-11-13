@@ -30,7 +30,7 @@
 //
 
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {columnReferences, entitiesReached, quotedName, unusedName} from './sql_expr_utils';
+import {columnReferences, entitiesReached, isWordChar, quotedName, unusedName} from './sql_expr_utils';
 import {bareColumnName, isReservedKeyword, isSimpleIdentifier} from './sql_identifiers';
 import {expressionStatement, forParser, loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree, withoutEngineMessages} from './sql_parser';
 
@@ -522,13 +522,12 @@ function placedNames(engine: PolyglotEngine, sql: string, read: string):
   const names = new Map<string, PlacedName>();
   // A space keeps a placeholder apart from a word written against the name,
   // as WHEN is in WHEN"x".
-  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   let [text, end] = ['', 0];
   for (const t of quotedNameTokens(engine, sql, read)) {
     const placeholder = stem + names.size;
     names.set(placeholder, {written: chars.slice(t.span.start, t.span.end).join(''), bigQuery: quotedName(t.text, 'BIGQUERY')});
-    text += chars.slice(end, t.span.start).join('') + (word(chars[t.span.start - 1]) ? ' ' : '') + placeholder +
-        (word(chars[t.span.end]) ? ' ' : '');
+    text += chars.slice(end, t.span.start).join('') + (isWordChar(chars[t.span.start - 1]) ? ' ' : '') + placeholder +
+        (isWordChar(chars[t.span.end]) ? ' ' : '');
     end = t.span.end;
   }
   return {text: text + chars.slice(end).join(''), names};

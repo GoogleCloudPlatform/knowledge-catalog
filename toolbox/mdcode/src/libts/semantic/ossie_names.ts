@@ -12,7 +12,7 @@
 //   refers to nothing.
 // A written name matches a declared name as ossieMatches says.
 
-import {bindingSubqueries, columnKey, columnReferences, NameInText, quotesName, sameColumns, subqueryTables, unusedName, WrittenName} from './sql_expr_utils';
+import {bindingSubqueries, columnKey, columnListKey, columnReferences, isWordChar, NameInText, quotesName, sameColumns, subqueryTables, unusedName, WrittenName} from './sql_expr_utils';
 import {OSSIE_RESERVED} from './sql_identifiers';
 import {soleColumn, SqlColumn, sqlDateParts, sqlExpressionTree, SqlToken, sqlTokens} from './sql_parser';
 
@@ -143,7 +143,6 @@ export function ossieNamesRewritten(
     undefined {
   const names = namesRead(text, ctx.datasets);
   if (!names) return undefined;
-  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   let [out, end] = ['', 0];
   for (const n of names) {
     const target = resolved(n, ctx);
@@ -163,8 +162,10 @@ export function ossieNamesRewritten(
       source,
     });
     if (replacement === undefined) continue;
-    const before = word(text[n.start - 1]) && word(replacement[0]) ? ' ' : '';
-    const after = word(text[n.end]) && word(replacement.at(-1)) ? ' ' : '';
+    const before =
+        isWordChar(text[n.start - 1]) && isWordChar(replacement[0]) ? ' ' : '';
+    const after =
+        isWordChar(text[n.end]) && isWordChar(replacement.at(-1)) ? ' ' : '';
     out += text.slice(end, n.start) + before + replacement + after;
     end = n.end;
   }
@@ -686,14 +687,13 @@ function subqueryTokens(tokens: SqlToken[]): boolean[] {
 function withNames(
     chars: string[], tokens: SqlToken[], at: number[],
     name: (k: number) => string): string {
-  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   let out = '';
   let end = 0;
   at.forEach((i, k) => {
     const {start, end: next} = tokens[i].span;
     out += chars.slice(end, start).join('') +
-        (word(chars[start - 1]) ? ' ' : '') + name(k) +
-        (word(chars[next]) ? ' ' : '');
+        (isWordChar(chars[start - 1]) ? ' ' : '') + name(k) +
+        (isWordChar(chars[next]) ? ' ' : '');
     end = next;
   });
   return out + chars.slice(end).join('');
@@ -708,12 +708,10 @@ function roleOf(
   const is = (n: string|undefined) => n?.toLowerCase() === stem;
   const hits = read.filter(c => is(c.qualifier) || is(c.name));
   if (hits.length !== 1) return undefined;
-  const key = (cs: ReadonlyArray<SqlColumn>) =>
-      cs.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
   const back = read.map(
       c => ({qualifier: is(c.qualifier) ? name : c.qualifier,
              name: is(c.name) ? name : c.name}));
-  if (key(back) !== key(columns)) return undefined;
+  if (columnListKey(back) !== columnListKey(columns)) return undefined;
   return is(hits[0].qualifier)        ? 'qualifier' :
       hits[0].qualifier === undefined ? 'bare' :
                                         'qualified';

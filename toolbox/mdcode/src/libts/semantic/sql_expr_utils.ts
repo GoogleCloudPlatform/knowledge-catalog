@@ -25,6 +25,19 @@ function graphReading(dialect?: string): string {
   return !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect;
 }
 
+// Whether `c` is a character a word can hold: a letter, a digit, `_` or `$`.
+// A name written into a text against such a character needs a space to stay
+// apart from it.
+export function isWordChar(c: string|undefined): boolean {
+  return !!c && /[\p{L}\p{N}_$]/u.test(c);
+}
+
+// `columns` as one string that is the same for any order of them, to compare
+// the columns that two readings of a text give.
+export function columnListKey(columns: ReadonlyArray<SqlColumn>): string {
+  return columns.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
+}
+
 // Each `<name>.` qualifier that `expression`, read in `dialect`, writes before
 // a column, for a name in `names`, as indexes into the text's tokens, in the
 // order written. A name matches case-sensitively, bare or quoted as the
@@ -115,13 +128,12 @@ export function columnsRewritten(
   // one offset to another, in order. A space keeps a new name apart from a
   // word written against the text it replaces, as `WHEN` is in
   // `WHEN"orders".f`.
-  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   const edited = (edits: Array<[number, number, string]>) => {
     let out = '';
     let end = 0;
     for (const [from, to, s] of edits) {
-      const before = word(chars[from - 1]) && word(s[0]) ? ' ' : '';
-      const after = word(chars[to]) && word(s.at(-1)) ? ' ' : '';
+      const before = isWordChar(chars[from - 1]) && isWordChar(s[0]) ? ' ' : '';
+      const after = isWordChar(chars[to]) && isWordChar(s.at(-1)) ? ' ' : '';
       out += chars.slice(end, from).join('') + before + s + after;
       end = to;
     }
@@ -134,8 +146,6 @@ export function columnsRewritten(
   const stem = unusedName(expression, 'kcmd_name_');
   const placeholder = (name: string|undefined, k: number) =>
       name?.toLowerCase() === stem + k;
-  const reading = (columns: ReadonlyArray<SqlColumn>) =>
-      columns.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
   // The names read as a placeholder in every reading, one per name, by the
   // index of each token that writes it, and each name by its placeholder.
   const standInStem = unusedName(expression, 'kcmd_stand_in_');
@@ -223,7 +233,7 @@ export function columnsRewritten(
       qualifier: placeholder(c.qualifier, 0) ? name : c.qualifier,
       name: placeholder(c.name, 0) ? name : c.name,
     }));
-    if (hits.length === 1 && reading(back!) === reading(columns)) {
+    if (hits.length === 1 && columnListKey(back!) === columnListKey(columns)) {
       roles.set(i, role(hits[0]));
     }
   }
@@ -514,26 +524,23 @@ export interface NameInText {
 function readsInPlace(
     written: string, name: string, at: NameInText, dialect: string): boolean {
   const chars = Array.from(at.text);
-  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
   const placed = (s: string) => chars.slice(0, at.start).join('') +
-      (word(chars[at.start - 1]) ? ' ' : '') + s +
-      (word(chars[at.end]) ? ' ' : '') + chars.slice(at.end).join('');
+      (isWordChar(chars[at.start - 1]) ? ' ' : '') + s +
+      (isWordChar(chars[at.end]) ? ' ' : '') + chars.slice(at.end).join('');
   const stem = unusedName(at.text + written, 'kcmd_place_');
   const before = columnReferences(placed(stem), dialect);
   if (!before) return true;
   const is = (part: string|undefined) => part?.toLowerCase() === stem;
   if (!before.some(c => is(c.qualifier) || is(c.name))) return false;
   const after = columnReferences(placed(written), dialect);
-  const key = (cs: ReadonlyArray<SqlColumn>) =>
-      cs.map(c => `${c.qualifier ?? ''}\0${c.name}`).sort().join('\n');
-  return !!after &&
-      key(after) ===
-      key(before.map(c => ({
-                       ...(c.qualifier === undefined ?
-                               {} :
-                               {qualifier: is(c.qualifier) ? name : c.qualifier}),
-                       name: is(c.name) ? name : c.name,
-                     })));
+  if (!after) return false;
+  const back = before.map(c => ({
+    ...(c.qualifier === undefined ?
+            {} :
+            {qualifier: is(c.qualifier) ? name : c.qualifier}),
+    name: is(c.name) ? name : c.name,
+  }));
+  return columnListKey(after) === columnListKey(back);
 }
 
 // Column `original`, as a text of `dialect` writes it, written with no
