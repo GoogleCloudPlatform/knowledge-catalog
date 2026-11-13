@@ -914,7 +914,8 @@ describe('profile checks', () => {
   // when every table that runs its text is a GoogleSQL Spanner table or an
   // AlloyDB table. For a field, that is its entity's own table, once
   // '--source-prefix' completes it and the lookup reads its dialect. For a
-  // metric, it is the tables of the entities the metric reads.
+  // metric, it is the tables of the entities the metric reads, or every table
+  // when it reads none.
   const GOOGLE_SPANNER = lookup({spanner: 'GOOGLE_STANDARD_SQL'});
   const LABELED = (dialect: string) => AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`);
   const METRIC = (dialects: string) =>
@@ -929,6 +930,10 @@ describe('profile checks', () => {
      "field 'orders.amount': write dialect 'GoogleSQL' as 'BIGQUERY'."],
     ['a metric on a GoogleSQL Spanner table',
      model(METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id)}'), SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['an unanchored metric on a model whose every table is a GoogleSQL Spanner table',
+     model('      - name: party\n        abstract: true\n' +
+           METRIC('{dialect: GoogleSQL, expression: SUM(amount)}').replace('entity: orders, ', ''), SPANNER_TABLE),
      {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
     ['a metric that reads a Spanner and a BigQuery table',
      model(CUSTOMERS_BQ + METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id) + COUNT(customers.id)}'),

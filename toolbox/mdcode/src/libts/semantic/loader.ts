@@ -2062,27 +2062,27 @@ function fieldWarnings(
       .filter((w): w is string => w !== undefined);
 }
 
-// The warning `metric`'s expression gives on the tables of the `reached`
-// entities, in that order, or on every table when it reaches none. On a table
-// of the `preferred` dialect it is expressionWarning's; otherwise it is the
-// first tableWarning a table gives.
+// The warning `metric`'s expression gives on the tables of the entities
+// metricTableEntities gives, in that order. On a table of the `preferred`
+// dialect it is expressionWarning's; otherwise it is the first tableWarning a
+// table gives.
 function metricWarning(
     metric: Pick<
         Metric,
-        'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
-        'importedDialect'>,
-    reached: ReadonlyArray<string|undefined>,
+        'name'|'authoredEntity'|'expression'|'dialects'|'stringForm'|
+        'importedExpression'|'importedDialect'>,
     model: Pick<SemanticModel, 'version'|'thirdPartyImport'>&
     {entities: Entity[]},
-    preferred: string, document: string,
+    preferred: string, impliedDialect: string|null|undefined, document: string,
     outcomes?: TranspileOutcomes): string|undefined {
   const entities = model.entities;
   const subject =
       {ctx: `metric '${metric.name}'`, metric: true, model, document, outcomes};
-  const named =
-      entities.filter(e => reached.includes(e.name))
-          .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
-  const tables = named.length ? named : entities;
+  const names = metricTableEntities(
+      metric, entities.map(e => e.name), preferred, impliedDialect);
+  const tables =
+      entities.filter(e => names.includes(e.name))
+          .sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name));
   if (tables.some(e => runsDialect(e, preferred))) {
     return expressionWarning(
         metric, subject, preferred.toUpperCase(), preferred);
@@ -2153,6 +2153,20 @@ export function inferMetricEntities(
   return {referenced};
 }
 
+// The entities whose tables run `metric`, of those named in `entityNames`: its
+// authored anchor, then each entity inferMetricEntities finds its expressions
+// reach. When it names none of them, every one in `entityNames`.
+export function metricTableEntities(
+    metric: Parameters<typeof inferMetricEntities>[0], entityNames: string[],
+    preferred: string = DEFAULT_DIALECT,
+    impliedDialect?: string|null): string[] {
+  const {referenced} =
+      inferMetricEntities(metric, entityNames, preferred, impliedDialect);
+  const named = [...new Set([metric.authoredEntity, ...referenced])].filter(
+      (n): n is string => n !== undefined && entityNames.includes(n));
+  return named.length ? named : entityNames;
+}
+
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each field's expression warning, then each metric's
 // expression warning and its warning when it names no entity. A metric a
@@ -2171,11 +2185,10 @@ export function entityAndMetricWarnings(
   const excluded = new Set(model.excludedMetrics);
   for (const m of model.metrics ?? []) {
     if (excluded.has(m.name)) continue;
-    const {referenced, warning: mw} = inferMetricEntities(
+    const {warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
-        m, [m.authoredEntity, ...referenced], {...model, entities}, preferred,
-        document, outcomes);
+        m, {...model, entities}, preferred, impliedDialect, document, outcomes);
     if (w) out.push(w);
     if (mw) out.push(mw);
   }
@@ -2670,9 +2683,15 @@ function convertMetric(
       },
       entityNames, dialect, impliedDialect, version);
   const ew = metricWarning(
-      {name: mt.name, dialects, stringForm, ...picked},
-      [authored, ...referenced], {entities, version, thirdPartyImport},
-      dialect, document, outcomes);
+      {
+        name: mt.name,
+        authoredEntity: authored,
+        dialects,
+        stringForm,
+        ...picked
+      },
+      {entities, version, thirdPartyImport}, dialect, impliedDialect, document,
+      outcomes);
   if (ew) warnings.push(ew);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};

@@ -7,7 +7,7 @@ import {checkProfileFileName, ProfileFileError, profileNameError, profileParseEr
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, metricTableEntities, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
@@ -978,26 +978,31 @@ function relabelVendorDialects(
   });
 }
 
-// The entities metric `mt` reads: its anchor, and each entity that qualifies
-// a column in one of its texts. A vendor label's text is read in the first
-// dialect DIALECT_ALIASES gives it.
+// The entities whose tables run metric `mt`, as push reads them with
+// metricTableEntities. A vendor label's text is read in the first dialect
+// DIALECT_ALIASES gives it.
 function metricEntities(
     mt: Record<string, any>, doc: ImportDocument): Array<Record<string, any>> {
-  const anchors =
+  const anchor =
       [mt.entity, ...parseGoogleBlocks(mt.custom_extensions).map(b => b.entity)]
-          .filter(a => typeof a === 'string');
-  const columns = asRecords(mt.expression?.dialects).flatMap(e => {
-    if (typeof e.dialect !== 'string' || typeof e.expression !== 'string') {
-      return [];
-    }
-    const dialect =
-        DIALECT_ALIASES[e.dialect.trim().toUpperCase()]?.[0] ?? e.dialect;
-    return columnsForSource(e.expression, dialect, doc.impliedDialect) ?? [];
-  });
+          .find((a): a is string => typeof a === 'string');
+  const dialects =
+      asRecords(mt.expression?.dialects)
+          .filter(
+              e => typeof e.dialect === 'string' &&
+                  typeof e.expression === 'string')
+          .map(
+              e => ({
+                dialect: DIALECT_ALIASES[e.dialect.trim().toUpperCase()]?.[0] ??
+                    e.dialect,
+                expression: e.expression,
+              }));
   const names = doc.datasets.map(ds => ds.name)
                     .filter((n): n is string => typeof n === 'string');
-  const read = [...anchors, ...entitiesReached(columns, names)];
-  return doc.datasets.filter(ds => read.includes(ds.name));
+  const run = metricTableEntities(
+      {name: String(mt.name), authoredEntity: anchor, dialects}, names,
+      undefined, doc.impliedDialect);
+  return doc.datasets.filter(ds => run.includes(ds.name));
 }
 
 /**
@@ -1216,8 +1221,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
  * Repairs a metric's datatype, SQL dialect list, and description, returning
  * `false` when the metric is unanchored and reaches 0 or >1 entities so the
  * caller prunes it from `doc.metrics`. A vendor label names its dialect by
- * the tables of the entities the metric reads, with the dialects `load` gives
- * them. `translatesLater` is as for `unanchoredMetricProblem`.
+ * the tables that run the metric (see metricEntities), with the dialects
+ * `load` gives them. `translatesLater` is as for `unanchoredMetricProblem`.
  */
 function repairMetric(
     mt: Record<string, any>, doc: ImportDocument, load: DialectLoad,
@@ -1230,9 +1235,12 @@ function repairMetric(
         `add one.`);
     return true;
   }
+  // An entity with no table, such as an abstract one, runs nothing.
   relabelVendorDialects(
       mt, mtLabel, doc,
-      metricEntities(mt, doc).map(ds => tableDialect(ds, load)));
+      metricEntities(mt, doc)
+          .map(ds => tableDialect(ds, load))
+          .filter(t => t !== undefined));
   if (!keepsMetric(mt, doc, translatesLater)) return false;
   truncateDescription(mt, mtLabel, doc);
   return true;
