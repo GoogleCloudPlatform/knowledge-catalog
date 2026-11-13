@@ -2056,6 +2056,130 @@ describe('profile rules', () => {
         "without the qualifier: 'lifetimeValue'");
   });
 
+  // A field names itself only in the text the profile's database runs: its
+  // entry for the profile's dialect, else its ANSI_SQL one. Read as
+  // PostgreSQL, the ANSI_SQL entry here names `party.code`, but no AlloyDB
+  // table runs it.
+  test.each([
+    ['c_code', 0],
+    ["party.code || 'x'", 1],
+  ])('a profile field on AlloyDB tables names itself only in its ALLOYDB entry: %s', (alloydb, count) => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{name: 'party', dataSource: '', keys: ['id'],
+                  fields: [{name: 'id'}, {name: 'data'}, {name: 'code'}]}],
+      relationships: [],
+      metrics: [],
+    };
+    const errors = validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [{
+        name: 'party', primaryKey: ['id'],
+        source: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/party',
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'data', expression: 'data'},
+          {name: 'code', dialects: [
+            {dialect: 'ALLOYDB', expression: alloydb},
+            {dialect: 'ANSI_SQL', expression: 'party.data # party.code'},
+          ]},
+        ],
+      }],
+      relationships: [],
+    });
+    expect(errors.filter(e => e.includes('names itself'))).toHaveLength(count);
+  });
+
+  // The fields the profile restates and those it inherits from the model file
+  // are read together, in the text the profile's database runs. A cycle the
+  // caller reports in the model file, through the same texts, is left out.
+  // With no lookup of the tables' dialect, no text is read.
+  const AD = (t: string) => `alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/${t}`;
+  const SP = 'spanner.googleapis.com/projects/p/instances/i/databases/d/tables/party';
+  test.each<[string, Partial<Field>, Field, string, string[], CompletenessOptions]>([
+    ['an inherited ALLOYDB entry', {dialects: [
+      {dialect: 'BIGQUERY', expression: 'party.data'},
+      {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
+    ]}, {name: 'data', expression: 'data'}, AD('party'), ["field 'party.code' names itself"], {}],
+    ['through a restated field', {expression: 'party.data'}, {name: 'data', expression: 'party.code'}, AD('party'), [
+      "field 'party.data' names itself through 'party.code'",
+      "field 'party.code' names itself through 'party.data'",
+    ], {}],
+    ['a model file cycle the caller reports', {expression: 'party.code'}, {name: 'data', expression: 'data'}, BQ('party'), [], {}],
+    ['a restated text beside the cycle the caller reports', {expression: 'party.code'}, {name: 'code', expression: 'party.code * 2'}, BQ('party'), [
+      "field 'party.code' names itself",
+    ], {}],
+    ['a cycle the caller reports in an AlloyDB text', {dialects: [
+      {dialect: 'BIGQUERY', expression: 'party.code + 1'},
+      {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
+    ]}, {name: 'data', expression: 'data'}, AD('party'), [], {ownSqlOnly: {}}],
+    ['a cycle the caller reports in a BigQuery text', {dialects: [
+      {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
+      {dialect: 'BIGQUERY', expression: 'party.code + 1'},
+    ]}, {name: 'data', expression: 'data'}, BQ('party'), [], {ownSqlOnly: {}}],
+    ['tables whose dialect no lookup read', {dialects: [
+      {dialect: 'SPANNER', expression: 'c_code'},
+      {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
+    ]}, {name: 'data', expression: 'data'}, SP, [], {readWithoutDialect: true, ownSqlOnly: {dialect: 'SPANNER'}}],
+  ])('a field names itself under a profile: %s', (_, code, restated, source, expected, opts) => {
+    // A bare expression, as the loader reads it.
+    const bare = (name: string): Field =>
+        ({name, expression: name, dialects: [{dialect: 'ANSI_SQL', expression: name}]});
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{name: 'party', dataSource: '', keys: ['id'], fields: [
+        bare('id'),
+        bare('data'),
+        {name: 'code', ...code},
+      ]}],
+      relationships: [],
+      metrics: [],
+    };
+    const errors = validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: [{name: 'party', primaryKey: ['id'], source, fields: [
+        {name: 'id', expression: 'id'},
+        restated,
+      ]}],
+      relationships: [],
+    }, [], {ownSqlOnly: {dialect: 'BIGQUERY'}, ...opts});
+    expect(errors.filter(e => e.includes('names itself'))
+               .map(e => e.slice(0, e.indexOf(';'))))
+        .toEqual(expected.map(e => `profile 'prod': ${e}`));
+  });
+
+  // A binding no table of the profile runs forms no cycle: an abstract
+  // supertype's, or one a concrete supertype excludes, that the subtype
+  // restates.
+  test.each([true, false])('a supertype binding no table runs names nothing under a profile: abstract %p', abstract => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        {name: 'Party', dataSource: '', keys: abstract ? [] : ['id'], abstract, fields: [
+          {name: 'id', ...abstract ? {} : {expression: 'id'}},
+          {name: 'code', dialects: [
+            {dialect: 'BIGQUERY', expression: 'c_code'},
+            {dialect: 'ALLOYDB', expression: "Party.code || 'x'"},
+          ]},
+        ]},
+        {name: 'Customer', dataSource: '', keys: ['id'], extends: ['Party'],
+         fields: [{name: 'id', expression: 'id'}]},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const customer = {name: 'Customer', primaryKey: ['id'], source: AD('customer'),
+                      fields: [{name: 'id', expression: 'id'}, {name: 'code', expression: 'c_code'}]};
+    const party = {name: 'Party', primaryKey: ['id'], source: AD('party'),
+                   fields: [{name: 'id', expression: 'id'}], fieldsExclude: ['code']};
+    const errors = validateProfileCompleteness(model, {
+      name: 'prod',
+      entities: abstract ? [customer] : [party, customer],
+      relationships: [],
+    }, [], {ownSqlOnly: {dialect: 'BIGQUERY'}});
+    expect(errors.filter(e => e.includes('names itself'))).toEqual([]);
+  });
+
   // Only the allowlisted dialects, each once.
   test('a profile expression may use only allowlisted dialects, each once', () => {
     const file = (dialects: string) =>

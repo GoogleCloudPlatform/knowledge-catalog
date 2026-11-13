@@ -29,6 +29,7 @@
 
 import * as yaml from 'yaml';
 
+import {selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
@@ -1362,15 +1363,15 @@ export function expressionSources(
   return out;
 }
 
-// The texts a profile of `dialect` evaluates for a field or metric, each with
-// the dialect to read it in. A profile has one dialect, so it evaluates the
-// entry for that dialect, or the ANSI_SQL entry when there is none, and its
+// The texts a database of tables whose sources imply `dialect` runs for a field
+// or metric, each with the dialect to read it in. Tables of one dialect run the
+// entry for that dialect, or the ANSI_SQL entry when there is none, and their
 // database runs an ANSI_SQL text as its own SQL. A field held without a
-// dialect list offers its imported text when that is in the profile's dialect,
-// and otherwise the text the loader picked. With no known dialect, every text
+// dialect list offers its imported text when that is in `dialect`, and
+// otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in. With a null dialect, which
 // no lookup read, the text the database runs is not known, and none counts.
-function textsFor(
+export function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
@@ -1679,7 +1680,9 @@ export interface CompletenessOptions extends DialectLoad {
   // about the model file's SQL is left out when the caller also warns about
   // each text this check cannot read: an entry in a dialect other than
   // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
-  // the caller cannot read it either.
+  // the caller cannot read it either. The caller also reports each field of
+  // the model file that names itself, read in `dialect`, and this check
+  // leaves that report out.
   ownSqlOnly?: {dialect?: string|null};
   // The model file's document, which push's messages that the advice to add a
   // BigQuery text quotes name. Defaults to the model's name.
@@ -1826,13 +1829,26 @@ export function validateProfileCompleteness(
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
-          } else if (ref === pf.name) {
-            errors.push(`${at}: ${selfReferenceMessage(pe.name, [pf.name])}`);
           }
         }
       }
     }
   }
+  // A field that names itself, among the fields the profile restates and
+  // those it inherits from the model file, read in the text the profile's
+  // database runs, as push reads a model file's fields (see selfReferences).
+  // A cycle the caller reports in the model file, through the same texts, is
+  // left out, and each other cycle is reported once.
+  const callerReports = new Set(
+      opts.ownSqlOnly ?
+          selfReferences(baseModel, opts.ownSqlOnly.dialect)
+              .map(c => JSON.stringify(c)) :
+          []);
+  const cycles = new Set(
+      selfReferences(profiled, dialect)
+          .filter(c => !callerReports.has(JSON.stringify(c)))
+          .map(c => `${at}: ${selfReferenceMessage(c.entity, c.cycle)}`));
+  errors.push(...cycles);
 
   // A profile's key columns are physical column names.
   for (const pe of profile.entities) {
@@ -2353,7 +2369,7 @@ function metricLabel(name: string): string {
 // that declares it: the entity's own when it binds the field, otherwise, of
 // the ancestors that bind it, the one with the most ancestors. Undefined when
 // none binds it.
-function boundDeclaration(
+export function boundDeclaration(
     model: SemanticModel, entityName: string,
     field: string): {owner: string; field: Field}|undefined {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
