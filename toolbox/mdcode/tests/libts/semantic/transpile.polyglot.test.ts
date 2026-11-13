@@ -367,6 +367,11 @@ describe('polyglotTranspiler (transformations)', () => {
     ['OSSIE_SQL_2026', 'EXTRACT(EPOCH FROM d)', {error: "kcmd does not translate EXTRACT with part 'EPOCH'"}],
     ['OSSIE_SQL_2026', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DOW', since Ossie names that part DAYOFWEEK, which counts Sunday as 1 in BigQuery"}],
     ['OSSIE_SQL_2026', "DATE_PART('doy', d)", {error: "kcmd does not translate DATE_PART with part 'doy', since Ossie names that part DAYOFYEAR"}],
+    // EXTRACT's first argument is a date part, also when quoted.
+    ['OSSIE_SQL_2026', 'EXTRACT("week" FROM d) + EXTRACT("YEAR" FROM d)', {sql: 'EXTRACT(ISOWEEK FROM d) + EXTRACT(YEAR FROM d)'}],
+    ['OSSIE_SQL_2026', 'EXTRACT("dow" FROM d)', {error: `kcmd does not translate EXTRACT with part '"dow"'`}],
+    ['POSTGRES', 'EXTRACT("year" FROM d)', {sql: 'EXTRACT(YEAR FROM d)'}],
+    ['MYSQL', 'EXTRACT(`year` FROM d)', {sql: 'EXTRACT(YEAR FROM d)'}],
     // An aggregate with FILTER (WHERE p) is the aggregate of IF(p, x, NULL).
     ['OSSIE_SQL_2026', "SUM(x) FILTER (WHERE status = 'done') + COUNT(*) FILTER (WHERE p) + COUNT(DISTINCT c) FILTER (WHERE p) + AVG(x) FILTER (WHERE p) + MIN(x) FILTER (WHERE p) + MAX(x) FILTER (WHERE p)", {sql: "SUM(IF(status = 'done', x, NULL)) + COUNT(IF(p, 1, NULL)) + COUNT(DISTINCT IF(p, c, NULL)) + AVG(IF(p, x, NULL)) + MIN(IF(p, x, NULL)) + MAX(IF(p, x, NULL))"}],
     ['OSSIE_SQL_2026', 'STDDEV(x) + STDDEV_POP(x) + STDDEV_SAMP(x) + VARIANCE(x) + VAR_POP(x) + VAR_SAMP(x) FILTER (WHERE p) + APPROX_COUNT_DISTINCT(c) FILTER (WHERE p)', {sql: 'STDDEV(x) + STDDEV_POP(x) + STDDEV_SAMP(x) + VARIANCE(x) + VAR_POP(x) + VAR_SAMP(IF(p, x, NULL)) + APPROX_COUNT_DISTINCT(IF(p, c, NULL))'}],

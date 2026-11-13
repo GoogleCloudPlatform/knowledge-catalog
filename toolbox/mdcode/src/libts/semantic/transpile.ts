@@ -406,8 +406,9 @@ function transpileWith(
   try {
     // A text already in the target dialect needs no translation.
     if (read === write && !spanner) return {id: r.id, sql: r.expression};
-    const prepared = read === 'mysql' ? mysqlCompounds(engine, mysqlForEngine(r.expression)) :
+    const engineText = read === 'mysql' ? mysqlCompounds(engine, mysqlForEngine(r.expression)) :
         rules === 'ossie' && write === 'bigquery' ? ossieText(engine, r.expression) : r.expression;
+    const prepared = write === 'bigquery' ? bareExtractParts(engine, engineText, r.dialect, read, rules) : engineText;
     const placed = write === 'bigquery' ? placedNames(engine, prepared, read) : {text: prepared, names};
     const source = placed.text;
     names = placed.names;
@@ -531,6 +532,42 @@ function placedNames(engine: PolyglotEngine, sql: string, read: string):
     end = t.span.end;
   }
   return {text: text + chars.slice(end).join(''), names};
+}
+
+// `sql`, a text in `dialect` that the engine reads as `read`, with each quoted
+// first argument of EXTRACT written without quotes when the word is a date
+// part that EXTRACT translates by the lists' `rules`. EXTRACT's first argument
+// is always a date part, so `EXTRACT("year" FROM d)` in PostgreSQL and
+// EXTRACT(`year` FROM d) in MySQL read the year. Any other quoted first
+// argument stays as written, so a message names it with its quotes.
+function bareExtractParts(engine: PolyglotEngine, sql: string, dialect: string, read: string, rules: string):
+    string {
+  const chars = [...sql];
+  const tokens = engine.tokenize(sql, read).tokens ?? [];
+  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
+  let [text, end] = ['', 0];
+  for (const [i, t] of tokens.entries()) {
+    if (t.token_type !== 'QUOTED_IDENTIFIER' || String(tokens[i - 2]?.text).toUpperCase() !== 'EXTRACT' ||
+        tokens[i - 1].token_type !== 'L_PAREN' || tokens[i + 1]?.token_type !== 'FROM' ||
+        !extractPart(String(t.text), dialect, rules)) {
+      continue;
+    }
+    text += chars.slice(end, t.span.start).join('') + (word(chars[t.span.start - 1]) ? ' ' : '') + t.text +
+        (word(chars[t.span.end]) ? ' ' : '');
+    end = t.span.end;
+  }
+  return text + chars.slice(end).join('');
+}
+
+// Whether `word`, the first argument of EXTRACT in a text of `dialect`, names
+// a date part that EXTRACT translates by the lists' `rules`. An OSSIE_SQL_2026
+// part is checked as written (see misreadToken).
+function extractPart(word: string, dialect: string, rules: string): boolean {
+  if (!/^[A-Za-z_]\w*$/.test(word)) return false;
+  if (rules === 'ossie') return !!OSSIE_PARTS[word.toLowerCase()];
+  const part = String(partName(sqlExpressionTree(`EXTRACT(${word} FROM x)`, dialect)?.extract?.field));
+  return rules === 'spanner' ? SPANNER_PARTS.has(part) :
+      !!PARTS[part.toLowerCase()] || !!(DATE_TABLES[rules]?.intervalParts && INTERVAL_PARTS[part.toLowerCase()]);
 }
 
 // `text` with each placeholder of `names` in place of its name as `as` gives
@@ -676,12 +713,16 @@ function misreadToken(engine: PolyglotEngine, sql: string, read: string, rules: 
   const quoted = read === 'bigquery' ? undefined :
       tokens.map((t, i) => t.token_type === 'QUOTED_IDENTIFIER' ? partFunction(i) : undefined).find(f => f);
   if (quoted) return `${quoted} with a quoted part`;
+  const chars = [...sql];
+  const spelled = (t: SqlToken|undefined) => t ? chars.slice(t.span.start, t.span.end).join('') : '';
   const part = rules !== 'ossie' ? -1 : tokens.findIndex((t, i) => String(t.text).toUpperCase() === 'EXTRACT' &&
       tokens[i + 1]?.token_type === 'L_PAREN' && tokens[i + 3]?.token_type === 'FROM' &&
       !OSSIE_PARTS[String(tokens[i + 2].text).toLowerCase()]);
-  if (part >= 0) return ossiePart(tokens[part].text, tokens[part + 2].text);
-  const chars = [...sql];
-  const spelled = (t: SqlToken|undefined) => t ? chars.slice(t.span.start, t.span.end).join('') : '';
+  if (part >= 0) {
+    // A quoted part is named with its quotes (see bareExtractParts).
+    const field = tokens[part + 2];
+    return ossiePart(tokens[part].text, field.token_type === 'QUOTED_IDENTIFIER' ? spelled(field) : field.text);
+  }
   // BigQuery has no time of day with a time zone.
   const zoned = rules !== 'ossie' ? -1 :
       tokens.findIndex((_, i) => tokens.slice(i, i + 4).map(spelled).join(' ').toUpperCase() === 'TIME WITH TIME ZONE');

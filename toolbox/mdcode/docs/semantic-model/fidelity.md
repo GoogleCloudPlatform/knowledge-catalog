@@ -280,7 +280,9 @@ It names a function and a date part as the author wrote them, such as
 `CHAR_LENGTH` or `DATEPART` with part `w`. A quoted name stays a column, even
 where the word without quotes is a function, such as `"current_date"` in a
 PostgreSQL text or `[current_date]` in a SQL Server text. The BigQuery text
-writes it in backticks. `NOW`, `CURDATE`, `GETDATE` and `SYSDATE` written
+writes it in backticks. The first argument of `EXTRACT` is always a date part,
+so a quoted one, such as `"year"` in `EXTRACT("year" FROM d)`, is the part.
+`NOW`, `CURDATE`, `GETDATE` and `SYSDATE` written
 without parentheses, quoted or not, are columns in backticks too, since each
 database calls these functions only with parentheses. A name that BigQuery
 cannot read without quotes, such as `amt$`, gets backticks as well. A text
@@ -670,7 +672,8 @@ with either stay untranslated, with a warning that names Ossie's part,
 `EXTRACT(WEEK)`, `DATE_PART('week')` and `DATEDIFF` by week. A date part may be
 a string, such as `'month'`, or a word, such as `month`, in every date
 function. A part in double quotes is a column, so such a call stays
-untranslated.
+untranslated. `EXTRACT` is the exception, since its first argument is always
+a part, so `EXTRACT("week" FROM d)` is `EXTRACT(week FROM d)`.
 
 A comparison, `IS DISTINCT FROM`, `BETWEEN`, `IN` and a `CASE` with a value
 cast each value that is visibly a `DATE` or a `DATETIME` to `TIMESTAMP` when
