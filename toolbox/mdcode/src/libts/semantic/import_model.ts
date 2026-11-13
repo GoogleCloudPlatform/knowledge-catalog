@@ -1371,6 +1371,20 @@ function rewriteMetricNames(
         }
         return named();
       };
+  // The column field `f` of `ds` reads on a table of dialect `on`, as
+  // fieldColumn gives it. Each dataset name, table dialect and list of the
+  // field's texts is read once, so a field import adds is read again once it
+  // gains an entry for another dialect.
+  const columns = new Map<string, FieldColumn[]|undefined>();
+  const columnOf =
+      (f: Record<string, any>, ds: Record<string, any>, on?: string) => {
+        const key = JSON.stringify([
+          String(ds.name), on ?? null,
+          ...expressionTexts(f).map(t => [t.dialect, t.text]),
+        ]);
+        if (!columns.has(key)) columns.set(key, fieldColumn(f, ds, ossie, on));
+        return columns.get(key);
+      };
   // The field of `ds` whose one column is `column`, as a text of its dialect
   // names it, as columnField finds it, comparing the texts on the dataset's
   // table.
@@ -1381,7 +1395,7 @@ function rewriteMetricNames(
       name: String(ds.name),
       fields: fields.map(f => ({
                            name: String(f.name),
-                           column: fieldColumn(f, ds, ossie, on),
+                           column: columnOf(f, ds, on),
                          })),
     };
     const name = columnField(column, read, column.dialect, on);

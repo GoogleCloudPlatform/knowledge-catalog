@@ -1662,6 +1662,19 @@ datasets:
     ]);
   });
 
+  test('adds a field for a quoted POSTGRES column that an added field does not read once it gains a POSTGRES entry', async () => {
+    const res = await importSemanticModelYaml(declaring([
+      {name: 'total', expression: {dialects: [
+        {dialect: 'BIGQUERY', expression: 'SUM(source.tax)'}, {dialect: 'POSTGRES', expression: 'SUM(source.tax)'}]}},
+      {name: 'quoted', expression: {dialects: [{dialect: 'POSTGRES', expression: 'SUM(source."Tax")'}]}},
+    ]), {flavor: 'google'});
+
+    expect(res.errors).toEqual([]);
+    expect(metrics(res.files[0].content).map(m => m.dialects))
+        .toEqual([['SUM(orders.tax)', 'SUM(orders.tax)'], ['SUM(orders.source_Tax)']]);
+    expect(addedFields(res.files[0].content)).toEqual([['tax', 'tax', 'tax'], ['source_Tax', '"Tax"']]);
+  });
+
   test('stops when the field import would add for source.column breaks the name rule', async () => {
     const res = await importSemanticModelYaml(declaring([metric('total', `SUM(source.${'c'.repeat(301)})`)]), {flavor: 'google'});
 
