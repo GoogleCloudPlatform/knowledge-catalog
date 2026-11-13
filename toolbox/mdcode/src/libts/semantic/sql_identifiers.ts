@@ -183,6 +183,15 @@ export function quoteColumnIfReserved(sql: string): string {
   return VALUE_KEYWORDS.has(sql.toUpperCase()) ? sql : quoteIfReserved(sql);
 }
 
+const words = (text: string) => text.trim().split(/\s+/);
+
+// The words Ossie's grammar reserves, which are never a name unquoted. Kept
+// in upper case.
+export const OSSIE_RESERVED: ReadonlySet<string> = new Set(words(`
+  AND AS BETWEEN BY CASE CAST CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP
+  DISTINCT ELSE END EXTRACT FALSE FROM ILIKE IN IS LIKE NOT NULL OR ORDER THEN
+  TRUE TRY_CAST WHEN WHERE`));
+
 // The words each dialect's database reads, written bare, as a keyword or a
 // function rather than a name: its reserved words, and the functions it calls
 // without parentheses, such as CURRENT_DATE. For OSSIE_SQL_2026, the words
@@ -190,12 +199,8 @@ export function quoteColumnIfReserved(sql: string): string {
 // them as a column, such as `order` in BigQuery and `user` in PostgreSQL, so
 // the name writers in sql_expr_utils.ts check this table as well as the
 // parser.
-const words = (text: string) => text.trim().split(/\s+/);
 const BARE_KEYWORDS: Readonly<Record<string, ReadonlySet<string>>> = {
-  OSSIE_SQL_2026: new Set(words(`
-    AND AS BETWEEN BY CASE CAST CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP
-    DISTINCT ELSE END EXTRACT FALSE FROM ILIKE IN IS LIKE NOT NULL OR ORDER
-    THEN TRUE TRY_CAST WHEN WHERE`)),
+  OSSIE_SQL_2026: OSSIE_RESERVED,
   BIGQUERY: new Set([
     ...RESERVED_KEYWORDS,
     ...words('CURRENT_DATE CURRENT_DATETIME CURRENT_TIME CURRENT_TIMESTAMP'),

@@ -13,6 +13,7 @@
 // A written name matches a declared name as ossieMatches says.
 
 import {bindingSubqueries, columnKey, columnReferences, NameInText, quotesName, sameColumns, subqueryTables, unusedName, WrittenName} from './sql_expr_utils';
+import {OSSIE_RESERVED} from './sql_identifiers';
 import {soleColumn, SqlColumn, sqlDateParts, sqlExpressionTree, SqlToken, sqlTokens} from './sql_parser';
 
 const OSSIE_SQL = 'OSSIE_SQL_2026';
@@ -420,12 +421,6 @@ const OSSIE_BARE_FUNCTIONS =
 // `DATE_TRUNC(week, d)`.
 const DATE_PART_FUNCTIONS =
     new Set(['DATE_PART', 'DATE_TRUNC', 'DATEDIFF', 'DATEADD']);
-
-// The words Ossie's grammar reserves, which are never a name unquoted.
-const OSSIE_RESERVED = new Set(`
-  AND AS BETWEEN BY CASE CAST CURRENT_DATE CURRENT_TIME CURRENT_TIMESTAMP
-  DISTINCT ELSE END EXTRACT FALSE FROM ILIKE IN IS LIKE NOT NULL OR ORDER THEN
-  TRUE TRY_CAST WHEN WHERE`.trim().split(/\s+/));
 
 // The words Ossie's grammar gives a meaning of their own: those it reserves,
 // and those that are names except where they have that meaning, such as
