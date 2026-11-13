@@ -1235,12 +1235,16 @@ function repairMetric(
         `add one.`);
     return true;
   }
-  // An entity with no table, such as an abstract one, runs nothing.
+  // An abstract entity or one with no source runs nothing, as push's
+  // sourcesDialect reads it. An entity with a source counts whether or not
+  // the source is in an accepted form. A table of unknown dialect keeps the
+  // label from naming SPANNER or ALLOYDB.
   relabelVendorDialects(
       mt, mtLabel, doc,
       metricEntities(mt, doc)
-          .map(ds => tableDialect(ds, load))
-          .filter(t => t !== undefined));
+          .filter(
+              ds => !ds.abstract && typeof ds.source === 'string' && ds.source)
+          .map(ds => tableDialect(ds, load)));
   if (!keepsMetric(mt, doc, translatesLater)) return false;
   truncateDescription(mt, mtLabel, doc);
   return true;

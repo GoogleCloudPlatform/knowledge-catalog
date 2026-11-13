@@ -939,6 +939,10 @@ describe('profile checks', () => {
      model(CUSTOMERS_BQ + METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id) + COUNT(customers.id)}'),
            SPANNER_TABLE),
      {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'BIGQUERY'."],
+    ['a metric that reads a Spanner table and a source in no accepted form',
+     model(CUSTOMERS_BQ.replace(/source: .*/, 'source: prod.customers') +
+           METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id) + COUNT(customers.id)}'), SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'BIGQUERY'."],
   ] as Array<[string, string, object, string]>)(
       'reads a vendor label on %s', async (_, input, opts, needed) => {
         const res = await importSemanticModelYaml(input, {...strict, flavor: 'google', ...opts});
