@@ -577,7 +577,8 @@ ${metrics}`;
       expect(() => loadModels(shop(`{name: notes, expression: ${qualifier}}`)))
           .toThrow(`field 'orders.notes': 'expression' is only the qualifier 'orders.'; ${fix}`);
     }
-    for (const [dialect, text] of [['POSTGRES', 'orders.'], ['MYSQL', '# todo\\norders.']]) {
+    // An OSSIE_SQL_2026 text is read like a text in any other dialect.
+    for (const [dialect, text] of [['POSTGRES', 'orders.'], ['MYSQL', '# todo\\norders.'], ['OSSIE_SQL_2026', '\\"orders\\".']]) {
       expect(() => loadModels(shop(entries(`{dialect: ${dialect}, expression: "${text}"}`))))
           .toThrow(`field 'orders.notes': the ${dialect} entry of 'expression' is only the qualifier 'orders.'`);
     }
@@ -800,6 +801,38 @@ describe('document-level handling', () => {
         }],
       }],
     })).toThrow(/Semantic model load error/);
+  });
+
+  test('a text a comma split gives its own entry as the example', () => {
+    const text = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - {name: a, expression: ROUND(x, 2)}
+          - {name: b, expression: ROUND(y, 2)}
+`;
+    expect(() => loadModels(text))
+        .toThrow(/field 'orders\.b': [^\n]*for example 'expression: "ROUND\(y, 2\)"'/);
+  });
+
+  test('a text a comma split keeps the text of each key after the comma in its example', () => {
+    const text = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - {name: a, expression: COALESCE(x, 0.0, NULL, 1)}
+          - {name: b, expression: y, NULL}
+`;
+    expect(() => loadModels(text)).toThrow(
+        /'orders\.a': [^\n]*'expression: "COALESCE\(x, 0\.0, NULL, 1\)"'\nfield 'orders\.b': [^\n]*'expression: "y, NULL"'/);
   });
 
   test('duplicate dataset names are a hard load error', () => {
@@ -1069,8 +1102,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all nine allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
-    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS'];
+  test('all ten allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS', 'OSSIE_SQL_2026'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',

@@ -143,6 +143,12 @@ an entry in a supported dialect, and the error for the source asks for a table.
 On an abstract entity, each asks to remove the `expression` or `source`
 instead, since an abstract entity has no table and its fields take no
 expression.
+When import writes vanilla, it removes a field that has no entry in a supported
+SQL dialect, since vanilla requires an `expression` on every field. It also
+removes each metric that reads that field. In either flavor, import removes a
+metric that has no entry in a supported SQL dialect. Removing such a field or
+metric is a repair. Under `--input first-party`, its error asks for an entry in
+a supported dialect.
 The other changes convert the file between flavors and are not reported. A
 conversion moves each value the two flavors place differently, such as a
 dataset's `extends`, between its own key and a `GOOGLE` block, as written. A
@@ -199,13 +205,137 @@ A value that import would write as a `|+` block scalar is double-quoted
 instead, and a `|+` block scalar that it moves is written again. A profile file
 written beside the model is rewritten the same way. A profile file's comments
 are dropped when its contents move into the model file. A JSON file is written
-as YAML, and import reports the conversion. Without `--out`, the files go into
+as YAML, and import reports the conversion. Each number in it keeps its text,
+such as `1.50`, `1e400` or an integer past 2^53. Without `--out`, the files go into
 the scope's entry group folder, and an import that would leave one of the
 model's profile files there unwritten is refused. Without `--out`, an import is
 also refused when the entry group folder already holds another model's file,
 since an entry group holds one model. It is refused too when the input file is
 a `.yaml` file in that folder other than `<model>.yaml`, since the model would
 then have two files.
+
+A third-party Apache Ossie file may hold its model at the document root, with
+`datasets` and no `semantic_model` list: a `0.3.0.dev0` file, or a
+`0.2.0.dev0` file as the Ossie converters write it. Import moves the model's
+keys into the one item of a new `semantic_model` list, each line indented by
+the same amount and otherwise kept as written. `version` goes above the list,
+written as the version of the output's flavor. Import then converts what kcmd
+writes another way:
+
+1. Each `nonportable_extensions` list becomes `custom_extensions`. A block's
+   object `data` becomes one line of compact JSON, which keeps its key order.
+   A number keeps its text when that text is a JSON number, and is written as
+   its value otherwise, so `+1` becomes `1`. Comments inside the data are
+   dropped. A `.inf`, `-.inf` or `.nan` in it stops the import, and so do two
+   keys that JSON writes alike, such as `1` and `"1"`.
+2. An expression's `sql` becomes its first `dialects` entry, in the dialect
+   `OSSIE_SQL_2026`, with its text, quoting and comments as written. A
+   `dialects` flow list in the same block mapping is written in block style.
+   An `OSSIE_SQL_2026` entry beside `sql` is dropped, since `sql` takes
+   precedence. A `sql` that holds no SQL stops the import.
+3. A `primary_key`, `unique_keys`, `from_columns` or `to_columns` entry that
+   names a field of its dataset, in any letter case, becomes the column the
+   field reads, which each of the field's texts must name. An `OSSIE_SQL_2026`
+   text is read as written, by Ossie's rules, so it may qualify the column
+   with its own dataset in any letter case. A name that matches no field
+   stays as written.
+   kcmd keys and join columns name columns, so a primary or unique key with an
+   entry on a field whose expression is not a single column is removed whole.
+   So is a relationship with such a join column, or whose `to_columns` then
+   cover no key of its target.
+4. Import converts the names in every text, the `OSSIE_SQL_2026` text
+   included, to kcmd's naming, and leaves the rest of each text as written.
+   In a field text, a qualifier that names the field's own dataset is
+   removed, so the name reads as a column. A column that does not read as
+   that column where it stands, as written or without the qualifier, is
+   written as the text's dialect reads the column: in quotes, in the letter
+   case its database stores the name in. Such a column is `current_date`,
+   which reads as a function, `if` before `+ 1`, or `day` as the first
+   argument of `DATEDIFF`, which reads as a date part. An `ANSI_SQL` text on
+   a table of a known dialect is written as that dialect writes it, so on a
+   BigQuery table the name goes in backticks. An `OSSIE_SQL_2026` text writes
+   such a name in double quotes in upper case, as Ossie stores a name written
+   without quotes, so `orders.current_date` and `sysdate` become
+   `"CURRENT_DATE"` and `"SYSDATE"`. A qualifier in a subquery with its own
+   `FROM` stays, with a warning, since without it the name may read a column
+   of the subquery's tables. A qualifier there that names another dataset
+   stays too, with a warning, since it may name a table of that `FROM`. Any
+   other qualifier that names another dataset stops the import. In a text of
+   a dialect other than `OSSIE_SQL_2026`, a dataset qualifier or field name
+   matches the declared name it spells, or else one its database reads as the
+   same name, by the letter-case rules given in item 6. So `ORDERS` in a
+   `SNOWFLAKE` text names dataset `orders`, and `"ORDERS"` in a `POSTGRES`
+   text does not. Import writes each such name as declared.
+5. The names in an `OSSIE_SQL_2026` text are read by Ossie's rules. A dataset
+   qualifier or field name matches its declaration as follows. An unquoted
+   name matches in any letter case. A quoted name matches the declared name
+   it spells, as `"amount"` matches `amount`. It also matches a declared name
+   of letters, digits, underscores and dollar signs, starting with a letter or
+   an underscore, whose upper case it spells, as `"AMOUNT"` matches `amount`. Import writes each such name as declared. In
+   a metric a dataset declares, a bare name is a field of that dataset, and
+   `source.column` is a column of its source. A word written without quotes
+   or a qualifier that kcmd's parser reads as a date part where it stands is
+   a date part and stays as written, as `day` does in
+   `TIMESTAMPDIFF(day, a, b)`, a function Ossie passes through. An
+   `OSSIE_SQL_2026` text that kcmd cannot parse stays as written, with a
+   warning.
+6. Each metric a dataset declares moves to the end of the model's `metrics`
+   with its text and comments, anchored on the dataset. In each of its texts,
+   its unqualified field names are qualified with the dataset's name, and a
+   `source.column` reference becomes the field that reads that column, which
+   import adds when no field reads the column. An added field is never named
+   `source`, since the metrics would then read `source.column` as that field.
+   So when the dataset declares or inherits a field named `source`, import
+   leaves `source.column` in its metrics as written and adds no field. Push
+   then stops on such a metric, since `source` names no entity. A text names
+   `source`, or a field, by its own rules: Ossie's in an `OSSIE_SQL_2026`
+   text, and its database's letter-case rules, given below, in another text.
+   So a quoted `"Source"` is not `source` in an `OSSIE_SQL_2026` or
+   `POSTGRES` text.
+   A field reads the column only when each of its texts names it. Two texts
+   name the same column when their databases store its name alike. A database
+   stores a quoted name as written. It stores an unquoted name in upper case,
+   or in lower case in `POSTGRES` and `ALLOYDB`. `BIGQUERY`, `SPANNER`,
+   `MYSQL`, `DATABRICKS` and `SQLSERVER` match a name in any letter case. Two
+   names that are each stored as their database stores an unquoted name match
+   in any letter case. So `"Tax"` and `tax` in `POSTGRES` texts are two
+   columns, and `tax` in a `BIGQUERY` text matches both. A dataset or field
+   name that does not read as a name without quotes, such as a dataset named
+   `date`, is written in the quotes the text's dialect uses for a name. A
+   moved metric whose name a field of its dataset, or another metric that
+   import keeps, has becomes `<dataset>_<metric>`, then `<dataset>_<metric>_2`
+   and so on. An empty `metrics` list of a dataset is removed, and so is an
+   entry of it that is not a metric, or a `metrics` value that is not a list.
+
+Each name rewrite changes only a name the SQL parser reads as a column, or in
+an `OSSIE_SQL_2026` text a name Ossie's rules read as a column or a field, so
+a keyword, a function name, a date part or a name a subquery binds stays as
+written. An expression written as a string is read as an `ANSI_SQL` text. A
+word in double quotes in an `ANSI_SQL` text is a name, with or without
+`--transpile`. BigQuery reads such a word as text, so import reports each one
+it edits in a text on a BigQuery table. In a field text of any dialect other
+than `OSSIE_SQL_2026`, a name without a qualifier stays as written, so
+`kind = "customers"` keeps its quotes when a dataset is named `customers`. An
+alias that a move would put before its anchor is written as the anchor's value.
+One text can need two sets of names, as when two dataset metrics share it
+through an alias. Such an expression is written out in full for the metric or
+field whose names import writes differently, and import reports it. So is one
+whose translation with `--transpile` differs.
+
+Import reports each of these edits, and leaves out each edit inside a field,
+metric or relationship that it then removes. It also removes a field it added
+for a column that only removed metrics read, and takes the name and entries of
+a field it adds from the metrics it keeps. When it cannot write a new name in a
+metric that reads the field, as in a text kcmd cannot parse, the field keeps its
+first name, and import reports it. When another metric, or a field of the
+metric's entity, has the name of a metric import removes, the advice says to
+add the metric back under a name no other metric or field of its entity has.
+It refuses such a file under `--input first-party`, a `GOOGLE`
+block in it, and an object with both `custom_extensions` and
+`nonportable_extensions`. It also refuses a `0.3.0.dev0` file with a
+`semantic_model` list. Every other command refuses a file with its model at
+the document root. The load error says to run `kcmd import`, unless a profile
+file beside the model is reported first.
 
 | Flag | Effect |
 |------|--------|
@@ -841,13 +971,15 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around
   them must be a BigQuery built-in function whose name has no dot, or one with
   the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
-  text. A BigQuery or Spanner graph cannot hold an entity and a relationship
-  whose names match ignoring case. The `graphs/<g>` segment of a Spanner
-  target names the graph. Spanner takes a graph name that starts with a
-  letter, holds only letters, digits and underscores, and is at most 128
-  characters long. The name cannot be that of a table the graph reads,
-  ignoring case. The expression of a Spanner graph property cannot hold a
-  subquery. A BigQuery graph also cannot hold a metric
+  text. The BigQuery text of a field of a concrete leaf entity cannot call a
+  window function outside a subquery, since BigQuery refuses one in a graph
+  property. A BigQuery or Spanner graph
+  cannot hold an entity and a relationship whose names match ignoring case.
+  The `graphs/<g>` segment of a Spanner target names the graph. Spanner takes
+  a graph name that starts with a letter, holds only letters, digits and
+  underscores, and is at most 128 characters long. The name cannot be that of
+  a table the graph reads, ignoring case. The expression of a Spanner graph
+  property cannot hold a subquery. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line

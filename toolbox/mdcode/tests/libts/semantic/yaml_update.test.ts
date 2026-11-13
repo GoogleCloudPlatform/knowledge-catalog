@@ -4,7 +4,7 @@ import {expect, test} from 'bun:test';
 import * as yaml from 'yaml';
 
 import {plainCopy} from '../../../src/libts/semantic/resolve_profiles';
-import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic/yaml_update';
+import {aliasesWritten, linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic/yaml_update';
 
 // Each row changes a plain copy of `input`. The nodes kept from the input keep
 // their quoting and flow style, and the text must still read back as the new
@@ -23,6 +23,8 @@ test.each<[string, string, (value: any) => void, string?]>([
     'empty flow collections with a space or a comment inside, beside a changed key',
     'a: [ ]\nb: {\n  # c\n}\nd: 1\n', v => v.d = 2, 'a: [ ]\nb: {\n  # c\n}\nd: 2\n'
   ],
+  ['a flow mapping key with no value, beside a changed key', 'm: {a: 1, b}\nc: 1\n', v => v.c = 2, 'm: {a: 1, b}\nc: 2\n'],
+  ['a flow mapping key with no value given one', 'm: {a: 1, b}\n', v => v.m.b = 2, 'm: {a: 1, b: 2}\n'],
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   [
@@ -318,6 +320,15 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.a = {k: 1}, v.b = 'z', v.m = {c: 1}, v.l = {a: 1}, v.p = {k: 1}),
     'a:  # c\n  k: 1\nb: z  # d\nm: {c: 1}  # e\nl: {a: 1}\np:\n  k: 1\nq: 1\n'
   ],
+  [
+    'an anchored block mapping and its alias set to a string',
+    'a: &x  # c\n  k: 1\nb: *x\n', v => (v.a = v.b = 'z'), 'a: &x z  # c\nb: z\n'
+  ],
+  [
+    'tagged collections set to strings',
+    'a: &x !!map  # c\n  k: 1\nb: *x\nc: !!seq\n  [1]\n', v => (v.a = v.b = v.c = 'z'),
+    'a: &x z  # c\nb: z\nc:\n  z\n'
+  ],
 ])('%s reads back as the new value', (_, input, change, ...[expected]) => {
   const {document, text} = parseForUpdate(input);
   const value = plainCopy(document.toJS());
@@ -345,3 +356,14 @@ function endsInKeptBlock(text: string): boolean {
   });
   return found;
 }
+
+test('an alias written as its anchor\'s value keeps the text of each JSON number', () => {
+  const anchor = '&x {big: 12345678901234567890123, f: 1.50, huge: 1e400}';
+  expect(aliasesWritten(`a: *x\nb: ${anchor}\n`).text)
+      .toBe(`a: {big: 12345678901234567890123, f: 1.50, huge: 1e400}\nb: ${anchor}\n`);
+});
+
+test('a JSON string that spells a number placeholder through an escape stays', () => {
+  expect(parseForUpdate(String.raw`{"a": "kcmd\u005fnumber_0", "b": 1.50}`).text)
+      .toBe('a: kcmd_number_0\nb: 1.50\n');
+});

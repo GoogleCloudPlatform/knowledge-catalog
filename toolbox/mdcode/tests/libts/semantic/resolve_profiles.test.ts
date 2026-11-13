@@ -4644,7 +4644,7 @@ entities:
           "profile 'prod': entity 'base': field 'note': Unknown dialect " +
               "'NOPE' in expression dialects. Expected one of ANSI_SQL, " +
               'BIGQUERY, SPANNER, MYSQL, POSTGRES, ALLOYDB, SQLSERVER, ' +
-              'SNOWFLAKE, DATABRICKS.',
+              'SNOWFLAKE, DATABRICKS, OSSIE_SQL_2026.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.

@@ -30,9 +30,9 @@
 //
 
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {columnReferences, entitiesReached} from './sql_expr_utils';
-import {isSimpleIdentifier} from './sql_identifiers';
-import {loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
+import {columnReferences, entitiesReached, isWordChar, quotedName, unusedName} from './sql_expr_utils';
+import {bareColumnName, isReservedKeyword, isSimpleIdentifier} from './sql_identifiers';
+import {expressionStatement, forParser, loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree, withoutEngineMessages} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -89,74 +89,27 @@ interface Pending {
 }
 
 /**
- * Returns true if `expression`, read as generic SQL (`ANSI_SQL`), quotes a
- * column, table qualifier, or struct field with double quotes (`"..."`).
- *
- * The `ANSI_SQL` parser marks both `"..."` and `` `...` `` column identifiers
- * with `quoted: true`, whereas `BIGQUERY` marks only `` `...` `` as `quoted:
- * true` and treats `"..."` as a string literal (or fails to parse `."..."`).
- * Comparing how many `quotedNames` the two ASTs hold yields three cases:
- *   - `ANSI_SQL > BIGQUERY`: at least one column identifier is double-quoted
- *     (e.g., `"orders"."amount"` or `"amount"`).
- *   - `ANSI_SQL < BIGQUERY`: `expression` uses BigQuery-only syntax (such as a
- *     `# "comment"` line comment in `` `orders`.`col` # "comment" ``) that
- *     `BIGQUERY` parses while `ANSI_SQL` fails to parse (`count = 0`).
- *   - `ANSI_SQL === BIGQUERY`: any `"` is inside a string literal or comment
- *     (e.g., `` `orders`.`note` = 'a "quoted" ` string' ``), and any quoted
- *     column identifiers use backticks in both dialects.
+ * Returns true if `expression`, an `ANSI_SQL` text, writes the name of a
+ * column, table qualifier or struct field in double quotes (`"..."`), which
+ * BigQuery reads as a string (see doubleQuotedNames).
  */
 export function hasDoubleQuotedColumn(expression: string): boolean {
-  if (!expression.includes('"')) return false;
-  return quotedNames(sqlExpressionTree(expression, 'ANSI_SQL')).length >
-      quotedNames(sqlExpressionTree(expression, 'BIGQUERY')).length;
+  return doubleQuotedNames(expression).length > 0;
 }
 
 /**
- * Returns the names that `expression` double-quotes, each once, for a
- * message: those the `ANSI_SQL` parser marks quoted that `expression` writes
- * in double quotes, else the first name it marks quoted.
+ * Returns the names that `expression`, an `ANSI_SQL` text, writes in double
+ * quotes, each once. It finds the quoted names as the translator does (see
+ * quotedNameTokens), so a quoted name that the parser reads as a function,
+ * such as `"CURRENT_DATE"`, counts too. A text that the `ANSI_SQL` reader
+ * cannot read, such as one with BigQuery's `#` comment, has none.
  */
 export function doubleQuotedNames(expression: string): string[] {
-  const names = quotedNames(sqlExpressionTree(expression, 'ANSI_SQL'));
-  const written =
-      names.filter(n => expression.includes(`"${n.replaceAll('"', '""')}"`));
-  return [...new Set(written.length ? written : names.slice(0, 1))];
-}
-
-/**
- * Returns the names of the quoted column, table qualifier, and struct field
- * identifiers (`quoted: true`) in a `@polyglot-sql/sdk` AST `node`, in tree
- * order, with a table qualifier before its column name.
- *
- * `@polyglot-sql/sdk` represents simple or table-qualified column references as
- * `{column: {name: {name, quoted}, table?: {name, quoted}}}` and chained
- * struct field accesses (such as `orders.addr."city"`) as
- * `{dot: {this: <base>, field: {name, quoted}}}`. When `sqlExpressionTree`
- * cannot parse an expression in the requested dialect, it returns `undefined`,
- * for which this function returns `[]`.
- */
-function quotedNames(node: unknown): string[] {
-  // Base case: `undefined` (when `sqlExpressionTree` fails to parse), `null`,
-  // or primitive AST leaf values (`string`, `number`, `boolean`) have no quoted
-  // column identifiers.
-  if (!node || typeof node !== 'object') return [];
-  const obj = node as Record<string, any>;
-  const quoted = (id: any): string[] => id?.quoted === true ? [id.name] : [];
-  // A `{column: {name, table}}` node represents a bare (`"col"`) or
-  // table-qualified (`"orders"."col"`) column reference; take the optional
-  // table qualifier and the column name separately whenever `quoted === true`.
-  if (obj.column) {
-    return [...quoted(obj.column.table), ...quoted(obj.column.name)];
-  }
-  // A `{dot: {this, field}}` node represents a struct subfield access (e.g.
-  // `orders.addr."city"`); recurse into `this` for the base column or outer
-  // struct path, and take `field` if `quoted === true`.
-  if (obj.dot) {
-    return [...quotedNames(obj.dot.this), ...quoted(obj.dot.field)];
-  }
-  // For any other AST container node (such as `sum`, `eq`, `case`) or array of
-  // child AST nodes, recursively collect the names across all child values.
-  return Object.values(obj).flatMap(quotedNames);
+  if (!expression.includes('"') || !sqlExpressionTree(expression, 'ANSI_SQL')) return [];
+  const chars = [...expression];
+  const names = quotedNameTokens(loadedSqlEngine()!, expression, 'generic')
+      .filter(token => chars[token.span.start] === '"').map(token => token.text);
+  return [...new Set(names)];
 }
 
 /**
@@ -385,6 +338,7 @@ function fmtSet(names: string[]): string {
 // degrades to a per-request error (the imported form + warning).
 const POLYGLOT_DIALECTS: Record<string, string> = {
   ANSI_SQL: 'generic',  // the engine's dialect-neutral parser
+  OSSIE_SQL_2026: 'generic',  // read under the rules of "OSSIE_SQL_2026 texts"
   BIGQUERY: 'bigquery',
   SPANNER: 'bigquery',
   POSTGRES: 'postgresql',
@@ -438,64 +392,219 @@ function transpileWith(
   const read = polyglotDialect(r.dialect);
   if (read === undefined)
     return {id: r.id, error: `unsupported source dialect '${r.dialect}'`};
-  // A SPANNER text is BigQuery's SQL, and the lists below name its rules
-  // 'spanner'.
-  const spanner = r.dialect.toUpperCase() === 'SPANNER';
+  // The lists below name the rules of a text by the engine's dialect, except
+  // for a SPANNER text, which the engine reads as BigQuery's SQL, and an
+  // OSSIE_SQL_2026 text, which it reads as generic SQL.
+  const dialect = r.dialect.toUpperCase();
+  const spanner = dialect === 'SPANNER';
+  const rules = spanner ? 'spanner' : dialect === 'OSSIE_SQL_2026' ? 'ossie' : read;
+  // A message names each quoted name the engine reads as a placeholder as
+  // written, and the BigQuery text names it as BigQuery writes it (see
+  // placedNames).
+  let names = new Map<string, PlacedName>();
+  const spelled = (s: string, as: keyof PlacedName) => withNames(s, names, as);
   try {
     // A text already in the target dialect needs no translation.
     if (read === write && !spanner) return {id: r.id, sql: r.expression};
-    const source = read === 'mysql' ? mysqlCompounds(engine, mysqlForEngine(r.expression)) : r.expression;
+    const engineText = read === 'mysql' ? mysqlCompounds(engine, mysqlForEngine(r.expression)) :
+        rules === 'ossie' && write === 'bigquery' ? ossieText(engine, r.expression) : r.expression;
+    const prepared = write === 'bigquery' ? bareExtractParts(engine, engineText, r.dialect, read, rules) : engineText;
+    const placed = write === 'bigquery' ? placedNames(engine, prepared, read) : {text: prepared, names};
+    const source = placed.text;
+    names = placed.names;
     // A comment that starts the text keeps the engine from translating the
     // functions in it, so the engine reads the text after it.
     const {text, comments} = sqlComments(engine, source, read);
     let repaired: {sql: string}|{error: string};
     if (write === 'bigquery') {
       const tree = sourceTree(text, r.dialect, read);
-      const rules = spanner ? 'spanner' : read;
       const named = () => {
         const found = unknownConstruct(engine, tree, rules);
         return found && writtenName(engine, text, r.dialect, read, rules, found);
       };
-      const unknown = misreadToken(engine, source, read) ??
+      const unknown = misreadToken(engine, prepared, read, rules) ?? lostName(engine, text, r.dialect, read, spanner ? tree : undefined) ??
           (tree ? named() : 'a text it cannot read as one expression');
-      if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
+      if (unknown) return {id: r.id, error: `kcmd does not translate ${spelled(unknown.replaceAll(PASS, ''), 'written')}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }
-    repaired ??= engineTranslation(engine, text, r.dialect, read, write);
-    if ('error' in repaired) return {id: r.id, error: repaired.error};
-    // Each comment the engine did not keep goes last. The engine may space a
-    // comment it keeps another way.
-    const squash = (s: string) => s.replace(/\s+/g, '');
-    const dropped = comments.filter(c => !squash(repaired.sql).includes(squash(c)));
-    return {id: r.id, sql: [repaired.sql, ...dropped].join(' ')};
+    repaired ??= engineTranslation(engine, text, r.dialect, read, write, rules);
+    if ('error' in repaired) return {id: r.id, error: spelled(repaired.error, 'written')};
+    // Each comment the engine did not keep goes last, as often as the text
+    // writes it more than the translation does. Both count, by the engine's
+    // tokens, only the comments outside strings.
+    const sql = commentsAsWritten(engine, repaired.sql, write, comments);
+    const kept = sqlComments(engine, sql, write).comments.map(squash);
+    const dropped = comments.filter(c => {
+      const i = kept.indexOf(squash(c));
+      if (i >= 0) kept.splice(i, 1);
+      return i < 0;
+    });
+    return {id: r.id, sql: spelled([sql, ...dropped].join(' '), 'bigQuery')};
   } catch (err) {
-    return {id: r.id, error: errMessage(err)};
+    return {id: r.id, error: spelled(errMessage(err), 'written')};
   }
+}
+
+// The tokens the engine reads as an operator between two values.
+const INFIX = new Set([
+  'PLUS', 'DASH', 'STAR', 'SLASH', 'PERCENT', 'D_PIPE', 'EQ', 'NEQ', 'LT', 'LTE', 'GT', 'GTE', 'NULLSAFE_EQ',
+  'AND', 'OR', 'XOR', 'IS', 'NOT', 'IN', 'BETWEEN', 'LIKE', 'I_LIKE', 'R_LIKE', 'I_R_LIKE', 'NOT_R_LIKE',
+  'TILDE', 'AMP', 'PIPE', 'CARET', 'LT_LT', 'GT_GT',
+]);
+
+// A keyword of `text`, an expression in `dialect` that the engine reads as
+// `read`, written before an operator, that the engine leaves out of the tree
+// it translates, named for a message, or undefined. Such a word names a
+// column, and the engine reads it as a keyword: ANSI_SQL's `if + 1` as 1, and
+// SQL Server's `true + 1`, where true is a column, as 1 + 1. Only a word that
+// `dialect` allows as a bare column name counts (see bareColumnName). The
+// engine may write a word `dialect` reserves another way or leave it out, as
+// ALL in SUM(ALL -x). The engine keeps a word when it writes the word back
+// from the tree in `read` as often as `text` writes it. Both count only the
+// words outside strings and comments.
+function lostName(engine: PolyglotEngine, text: string, dialect: string, read: string, translated?: unknown):
+    string|undefined {
+  const chars = [...text];
+  const tokens = engine.tokenize(text, read).tokens ?? [];
+  const spelled = (t: SqlToken) => chars.slice(t.span.start, t.span.end).join('').toLowerCase();
+  const keywords = tokens.filter((t, i) => t.token_type !== 'VAR' && /^[\p{L}_][\p{L}\p{N}_$]*$/u.test(spelled(t)) &&
+      bareColumnName(spelled(t), dialect) && INFIX.has(tokens[i + 1]?.token_type));
+  if (!keywords.length) return undefined;
+  // The engine translates the text alone where it reads it as push does,
+  // else after SELECT (see engineTranslation). A SPANNER text is translated
+  // from its tree, `translated`.
+  const tree = translated ? [translated] : readsAlone(engine, text, dialect, read) ?
+      withoutEngineMessages(() => engine.parse(text, read)).ast :
+      [expressionStatement(text, dialect)?.tree].filter(t => t);
+  if (!tree?.length) return undefined;
+  // The words of `sql`, by the engine's tokens, which leave out its comments,
+  // apart from its strings. The engine may write a kept word back as a quoted
+  // name, which counts as the word.
+  const words = (sql: string) => (engine.tokenize(sql, read).tokens ?? [])
+      .filter(t => !t.token_type.endsWith('STRING')).map(t => t.text.toLowerCase());
+  const count = (list: string[], word: string) => list.filter(w => w === word).length;
+  const written = (withoutEngineMessages(() => engine.generate(tree, read)).sql ?? []).flatMap(words);
+  const inText = tokens.filter(t => !t.token_type.endsWith('STRING')).map(spelled);
+  const lost = keywords.find(t => count(written, spelled(t)) < count(inText, spelled(t)));
+  if (!lost) return undefined;
+  return `the name ${chars.slice(lost.span.start, lost.span.end).join('')}, which kcmd's SQL parser reads as a keyword`;
+}
+
+// A quoted name a text reads, as the text writes it and as BigQuery writes it.
+interface PlacedName {
+  written: string;
+  bigQuery: string;
+}
+
+// The quoted names of `sql`, a text in the engine's dialect `read`, as the
+// tokens that hold them. A quoted word before a parenthesis is a function,
+// and one after AS or :: is a type, as in CAST(x AS [date]), so neither is a
+// name.
+function quotedNameTokens(engine: PolyglotEngine, sql: string, read: string): SqlToken[] {
+  const tokens = engine.tokenize(sql, read).tokens ?? [];
+  return tokens.filter((token, i) => {
+    const [before, after] = [tokens[i - 1]?.token_type, tokens[i + 1]?.token_type];
+    return token.token_type === 'QUOTED_IDENTIFIER' && after !== 'L_PAREN' && before !== 'AS' && before !== 'D_COLON';
+  });
+}
+
+// `sql`, a text in the engine's dialect `read`, with each quoted name (see
+// quotedNameTokens) in place of a placeholder, a bare name the engine keeps as
+// it is, and the name each placeholder stands for. The engine reads some
+// quoted names, such as "current_date" in PostgreSQL or [current_date] in SQL
+// Server, as a function, where the source reads the column. BigQuery writes
+// each in backticks, with a backtick or a backslash in it escaped, also after
+// a dot, as in orders."a`b".
+function placedNames(engine: PolyglotEngine, sql: string, read: string):
+    {text: string; names: Map<string, PlacedName>} {
+  const chars = [...sql];
+  const stem = unusedName(sql, 'kcmd_name_');
+  const names = new Map<string, PlacedName>();
+  // A space keeps a placeholder apart from a word written against the name,
+  // as WHEN is in WHEN"x".
+  let [text, end] = ['', 0];
+  for (const t of quotedNameTokens(engine, sql, read)) {
+    const placeholder = stem + names.size;
+    names.set(placeholder, {written: chars.slice(t.span.start, t.span.end).join(''), bigQuery: quotedName(t.text, 'BIGQUERY')});
+    text += chars.slice(end, t.span.start).join('') + (isWordChar(chars[t.span.start - 1]) ? ' ' : '') + placeholder +
+        (isWordChar(chars[t.span.end]) ? ' ' : '');
+    end = t.span.end;
+  }
+  return {text: text + chars.slice(end).join(''), names};
+}
+
+// `sql`, a text in `dialect` that the engine reads as `read`, with each quoted
+// first argument of EXTRACT written without quotes when the word is a date
+// part that EXTRACT translates by the lists' `rules`. EXTRACT's first argument
+// is always a date part, so `EXTRACT("year" FROM d)` in PostgreSQL and
+// EXTRACT(`year` FROM d) in MySQL read the year. Any other quoted first
+// argument stays as written, so a message names it with its quotes.
+function bareExtractParts(engine: PolyglotEngine, sql: string, dialect: string, read: string, rules: string):
+    string {
+  const chars = [...sql];
+  const tokens = engine.tokenize(sql, read).tokens ?? [];
+  const word = (c: string|undefined) => !!c && /[\p{L}\p{N}_$]/u.test(c);
+  let [text, end] = ['', 0];
+  for (const [i, t] of tokens.entries()) {
+    if (t.token_type !== 'QUOTED_IDENTIFIER' || String(tokens[i - 2]?.text).toUpperCase() !== 'EXTRACT' ||
+        tokens[i - 1].token_type !== 'L_PAREN' || tokens[i + 1]?.token_type !== 'FROM' ||
+        !extractPart(String(t.text), dialect, rules)) {
+      continue;
+    }
+    text += chars.slice(end, t.span.start).join('') + (word(chars[t.span.start - 1]) ? ' ' : '') + t.text +
+        (word(chars[t.span.end]) ? ' ' : '');
+    end = t.span.end;
+  }
+  return text + chars.slice(end).join('');
+}
+
+// Whether `word`, the first argument of EXTRACT in a text of `dialect`, names
+// a date part that EXTRACT translates by the lists' `rules`. An OSSIE_SQL_2026
+// part is checked as written (see misreadToken).
+function extractPart(word: string, dialect: string, rules: string): boolean {
+  if (!/^[A-Za-z_]\w*$/.test(word)) return false;
+  if (rules === 'ossie') return !!OSSIE_PARTS[word.toLowerCase()];
+  const part = String(partName(sqlExpressionTree(`EXTRACT(${word} FROM x)`, dialect)?.extract?.field));
+  return rules === 'spanner' ? SPANNER_PARTS.has(part) :
+      !!PARTS[part.toLowerCase()] || !!(DATE_TABLES[rules]?.intervalParts && INTERVAL_PARTS[part.toLowerCase()]);
+}
+
+// `text` with each placeholder of `names` in place of its name as `as` gives
+// it.
+function withNames(text: string, names: Map<string, PlacedName>, as: keyof PlacedName): string {
+  if (!names.size) return text;
+  // The longest first, so that kcmd_name_1 does not match in kcmd_name_10.
+  const pattern = new RegExp([...names.keys()].sort((a, b) => b.length - a.length).join('|'), 'gi');
+  return text.replace(pattern, p => names.get(p.toLowerCase())![as]);
 }
 
 // The engine's translation of `text`, an expression in `dialect` that the
 // engine reads as `read`, into the engine's dialect `write`, repaired for
-// BigQuery, or an error.
+// BigQuery by the lists' `rules` for the text, or an error.
 function engineTranslation(
     engine: PolyglotEngine, text: string, dialect: string, read: string,
-    write: string): {sql: string}|{error: string} {
-  const prepared = write === 'bigquery' ? forBigQuery(engine, text, dialect, read) : {sql: text};
+    write: string, rules: string): {sql: string}|{error: string} {
+  const prepared = write === 'bigquery' ? forBigQuery(engine, text, dialect, read, rules) : {sql: text};
   if ('error' in prepared) return prepared;
   const sql = prepared.sql;
   // The engine reads some expressions only after SELECT, such as one that
-  // starts with `((`. T-SQL reads `SELECT a = b` as an alias, so the engine
-  // reads the expression alone first. After SELECT, the engine writes the
+  // starts with `((`, and some alone as a statement (see readsAlone). Where
+  // it does not read the text alone as push does, it reads the SELECT
+  // statement push reads (see expressionStatement), whose parentheses, if
+  // push adds them, are taken off again. After SELECT, the engine writes the
   // functions of a comparison or a CASE before a comment as the source does,
   // so it reads the expression there without its comments. transpileWith puts
   // them last.
-  let res = engine.transpile(sql, read, write);
+  let res = readsAlone(engine, sql, dialect, read) ? engine.transpile(sql, read, write) : {success: false};
   if (!res.success) {
     const chars = [...sql];
     const code = (engine.tokenize(sql, read).tokens ?? [])
         .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
-    const selected = engine.transpile(`SELECT ${code}`, read, write);
+    const statement = expressionStatement(code, dialect);
+    const selected = statement ? engine.transpile(statement.sql, read, write) : {success: false};
+    const wrapped = statement?.sql.startsWith('SELECT (\n');
     if (selected.success) {
-      res = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
+      res = {...selected, sql: selected.sql?.map(s => wrapped ? s.replace(/^SELECT \((.*)\)$/s, '$1') : s.replace(/^SELECT /, ''))};
     }
   }
   if (!res.success || !res.sql || res.sql.length === 0)
@@ -505,8 +614,22 @@ function engineTranslation(
   // lone expression; taking [0] would silently drop the rest, so reject it.
   if (res.sql.length > 1)
     return {error: `expected a single expression but got ${res.sql.length} statements`};
-  return write === 'bigquery' ? repairForBigQuery(engine, res.sql[0], read) :
+  return write === 'bigquery' ? repairForBigQuery(engine, res.sql[0], rules) :
                                 {sql: res.sql[0]};
+}
+
+// Whether the engine reads `sql`, an expression in `dialect` that the engine
+// reads as `read`, alone as push reads it (see sqlExpressionTree): as one
+// tree of the same kind, apart from parentheses and comments. The engine
+// reads some texts alone as a statement, such as PostgreSQL's `desc IS NULL`
+// as DESCRIBE, where push reads the column desc. Push reads some texts in
+// parentheses, such as T-SQL's `a = b`, which it reads after SELECT as an
+// alias.
+function readsAlone(engine: PolyglotEngine, sql: string, dialect: string, read: string): boolean {
+  const alone = withoutEngineMessages(() => engine.parse(sql, read));
+  if (!alone.success || alone.ast?.length !== 1) return false;
+  const pushed = sqlExpressionTree(sql, dialect);
+  return !pushed || kindOf(bare(alone.ast[0])) === kindOf(bare(pushed));
 }
 
 // The text after the comments that start `sql`, in the engine's dialect
@@ -523,6 +646,39 @@ function sqlComments(engine: PolyglotEngine, sql: string, read: string):
   return {text: [...sql].slice(start).join(''), comments};
 }
 
+// `s` without white space. The engine may space a comment it keeps another
+// way than sqlComments writes it.
+function squash(s: string): string {
+  return s.replace(/\s+/g, '');
+}
+
+// `sql`, the engine's translation into its dialect `write` of a text with
+// `comments` (see sqlComments), with each of those comments as often as the
+// text writes it. The engine writes a comment once for each node that ends
+// where it stands, so `x = y -- c` becomes `x = y /* c */ /* c */`, and it may
+// write a copy after the next operator. Each copy past that count is
+// removed, with the spaces before it. The text between two tokens holds only
+// spaces and comments.
+function commentsAsWritten(engine: PolyglotEngine, sql: string, write: string, comments: string[]): string {
+  const tokens = engine.tokenize(sql, write).tokens;
+  if (!tokens) return sql;
+  const left = new Map<string, number>();
+  comments.forEach(c => left.set(squash(c), (left.get(squash(c)) ?? 0) + 1));
+  const chars = [...sql];
+  let out = '';
+  let end = 0;
+  for (const {span} of [...tokens, {span: {start: chars.length, end: chars.length}}]) {
+    out += chars.slice(end, span.start).join('').replace(/\s*(\/\*[\s\S]*?\*\/)/g, (copy, c) => {
+      const n = left.get(squash(c));
+      if (n !== undefined) left.set(squash(c), n - 1);
+      return n === undefined || n > 0 ? copy : '';
+    });
+    out += chars.slice(span.start, span.end).join('');
+    end = span.end;
+  }
+  return out;
+}
+
 // The first token of `sql`, a text in the engine's dialect `read`, that the
 // engine reads another way than the source, named for a message, or undefined.
 // A date part written as a quoted name, such as DATEADD("day", 1, d),
@@ -534,25 +690,45 @@ function sqlComments(engine: PolyglotEngine, sql: string, read: string):
 // reads a /*+ comment as an optimizer hint. MySQL and Databricks keep the
 // backslash of \% and \_ in a string, which LIKE reads as a literal % or _,
 // and the engine drops it. Databricks reads 'it''s' as two strings joined,
-// and the engine as one string with a quote.
-function misreadToken(engine: PolyglotEngine, sql: string, read: string):
+// and the engine as one string with a quote. The engine reads EXTRACT's part
+// DOW as DAYOFWEEK and DOY as DAYOFYEAR, so the part of EXTRACT in an
+// OSSIE_SQL_2026 text is checked as written. The engine holds a size,
+// precision or scale of a type as a 32-bit number, and kcmd reads one past
+// 2^31 - 1 as negative (see ossieCast). `rules` names the lists' rules for the
+// text.
+function misreadToken(engine: PolyglotEngine, sql: string, read: string, rules: string):
     string|undefined {
   const tokens = engine.tokenize(sql, read).tokens ?? [];
-  const table = DATE_TABLES[read];
+  const table = DATE_TABLES[rules];
   // The date-part function whose first argument starts at token `i`, perhaps
   // in parentheses, or undefined.
   const partFunction = (i: number) => {
     let j = i - 1;
     while (tokens[j]?.token_type === 'L_PAREN') j--;
     const fn = String(tokens[j]?.text).toUpperCase();
-    const part = table?.functions[fn] ? table.functions[fn] === 'part' : !!PART_FUNCTIONS[fn]?.includes(read);
+    const part = table?.functions[fn] ? table.functions[fn] === 'part' : !!PART_FUNCTIONS[fn]?.includes(rules);
     return tokens[j]?.token_type === 'VAR' && part ? fn : undefined;
   };
   const quoted = read === 'bigquery' ? undefined :
       tokens.map((t, i) => t.token_type === 'QUOTED_IDENTIFIER' ? partFunction(i) : undefined).find(f => f);
   if (quoted) return `${quoted} with a quoted part`;
-  if (read !== 'mysql' && read !== 'databricks') return undefined;
   const chars = [...sql];
+  const spelled = (t: SqlToken|undefined) => t ? chars.slice(t.span.start, t.span.end).join('') : '';
+  const part = rules !== 'ossie' ? -1 : tokens.findIndex((t, i) => String(t.text).toUpperCase() === 'EXTRACT' &&
+      tokens[i + 1]?.token_type === 'L_PAREN' && tokens[i + 3]?.token_type === 'FROM' &&
+      !OSSIE_PARTS[String(tokens[i + 2].text).toLowerCase()]);
+  if (part >= 0) {
+    // A quoted part is named with its quotes (see bareExtractParts).
+    const field = tokens[part + 2];
+    return ossiePart(tokens[part].text, field.token_type === 'QUOTED_IDENTIFIER' ? spelled(field) : field.text);
+  }
+  // BigQuery has no time of day with a time zone.
+  const zoned = rules !== 'ossie' ? -1 :
+      tokens.findIndex((_, i) => tokens.slice(i, i + 4).map(spelled).join(' ').toUpperCase() === 'TIME WITH TIME ZONE');
+  if (zoned >= 0) return `the type ${tokens.slice(zoned, zoned + 4).map(spelled).join(' ')}, which BigQuery does not have`;
+  const sized = sizedType(tokens, chars);
+  if (sized) return `the type ${sized}, with a number larger than kcmd's SQL parser holds`;
+  if (read !== 'mysql' && read !== 'databricks') return undefined;
   for (const t of tokens) {
     const comments = [...t.comments, ...t.trailing_comments];
     if (read === 'mysql' && comments.some(c => c.startsWith('/*!'))) {
@@ -569,6 +745,48 @@ function misreadToken(engine: PolyglotEngine, sql: string, read: string):
     }
   }
   return undefined;
+}
+
+// The words after a type's first word that belong to its name, as in
+// CHARACTER VARYING(10) or INTERVAL DAY TO SECOND(6).
+const TYPE_NAME_WORDS = new Set(['VARYING', 'PRECISION', 'CHARACTER', 'CHAR', 'LARGE', 'OBJECT', 'YEAR',
+  'MONTH', 'DAY', 'HOUR', 'MINUTE', 'SECOND', 'TO']);
+
+// A type of `tokens`, a text's tokens, whose `chars` are the text's, as
+// written, with a number past 2^31 - 1 in the parentheses right after its
+// name, such as VARCHAR(4294967297), or undefined. A type follows :: or the AS
+// of a CAST, TRY_CAST or SAFE_CAST. A word of its name may start with PASS
+// (see ossieText).
+function sizedType(tokens: SqlToken[], chars: string[]): string|undefined {
+  const word = (t: SqlToken|undefined) => !!t && /^[A-Za-z_]\w*$/.test(String(t.text));
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].token_type !== 'D_COLON' && !(tokens[i].token_type === 'AS' && isCastAs(tokens, i))) continue;
+    if (!word(tokens[i + 1])) continue;
+    let open = i + 2;
+    while (word(tokens[open]) && TYPE_NAME_WORDS.has(String(tokens[open].text).replace(PASS, '').toUpperCase())) open++;
+    if (tokens[open]?.token_type !== 'L_PAREN') continue;
+    let close = open + 1;
+    let big = false;
+    for (let depth = 1; close < tokens.length; close++) {
+      const {token_type: type, text} = tokens[close];
+      if (type === 'L_PAREN') depth++;
+      if (type === 'R_PAREN' && --depth === 0) break;
+      big ||= depth === 1 && type === 'NUMBER' && /^\d+$/.test(String(text)) && BigInt(text) >= 2n ** 31n;
+    }
+    if (big) return chars.slice(tokens[i + 1].span.start, tokens[close]?.span.end ?? chars.length).join('');
+  }
+  return undefined;
+}
+
+// Whether `tokens[i]`, an AS, is that of a CAST, TRY_CAST or SAFE_CAST.
+function isCastAs(tokens: SqlToken[], i: number): boolean {
+  for (let k = i - 1, depth = 0; k > 0; k--) {
+    if (tokens[k].token_type === 'R_PAREN') depth++;
+    if (tokens[k].token_type === 'L_PAREN' && depth-- === 0) {
+      return ['CAST', 'TRY_CAST', 'SAFE_CAST'].includes(String(tokens[k - 1].text).toUpperCase());
+    }
+  }
+  return false;
 }
 
 function errMessage(err: unknown): string {
@@ -588,9 +806,14 @@ function errMessage(err: unknown): string {
 // below rewrite what it writes wrong.
 
 // The dialects that import translates from, by the engine's name, and
-// 'spanner' for a SPANNER text, which the engine reads as BigQuery's SQL.
+// 'spanner' for a SPANNER text, which the engine reads as BigQuery's SQL. An
+// OSSIE_SQL_2026 text has rules of its own, named 'ossie' (see "OSSIE_SQL_2026
+// texts" below).
 const DIALECTS = ['postgresql', 'mysql', 'tsql', 'snowflake', 'databricks', 'generic', 'spanner'];
 const except = (...left: string[]) => DIALECTS.filter(d => !left.includes(d));
+
+// The engine's dialect for each name of rules that is not one.
+const ENGINE_DIALECTS: Record<string, string> = {spanner: 'bigquery', ossie: 'generic'};
 
 // The dialects that convert text, numbers and dates into each other where
 // BigQuery needs a cast.
@@ -608,7 +831,7 @@ const CONVERTING = new Set(['mysql', 'tsql']);
 // BigQuery's value except where Spanner applies its default time zone (see
 // "SPANNER texts" below).
 const KINDS: Record<string, string[]> = Object.fromEntries([
-  ...['annotated', 'column', 'literal', 'boolean', 'paren', 'neg', 'add', 'sub',
+  ...['annotated', 'column', 'literal', 'boolean', 'null', 'paren', 'neg', 'add', 'sub',
       'mul', 'eq', 'neq', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not', 'between',
       'in', 'is_null', 'case', 'coalesce', 'sum', 'count', 'min', 'max', 'trim',
       'upper', 'lower', 'like', 'abs', 'floor', 'ceil', 'cast',
@@ -767,26 +990,31 @@ const UNITS = [
 type Unit = typeof UNITS[number];
 
 // What import writes for an amount added to an operand: BigQuery's DATE_ADD or
-// DATE_SUB, or its `+` or `-`, and the row of the result in the same table.
+// DATE_SUB, its TIME_ADD or TIME_SUB, or its `+` or `-`, and the row of the
+// result in the same table.
 // With `timestamp`, BigQuery adds to TIMESTAMP(x), the operand at midnight UTC.
 // With `utc`, BigQuery adds to DATETIME(x, 'UTC'), the wall-clock time in UTC
 // of a TIMESTAMP, and reads the result back with TIMESTAMP(y, 'UTC'), as a
 // source adds a month to a timestamp in its time zone, UTC. With `inDays`,
 // BigQuery adds each week as 7 days, which its DATE_ADD also adds to a
-// TIMESTAMP.
+// TIMESTAMP. With `dayCount`, BigQuery's DATE_ADD adds the days from the
+// operand's date to that date plus the amount, which keeps the type of a
+// DATE, a DATETIME and a TIMESTAMP alike, and reads the date of a TIMESTAMP
+// in BigQuery's default time zone, UTC.
 interface Addition {
-  form: 'DATE_ADD'|'+';
+  form: 'DATE_ADD'|'TIME_ADD'|'+';
   gives: string;
   timestamp?: true;
   utc?: true;
   inDays?: true;
+  dayCount?: true;
 }
 
 // One row of a dialect's table: an operand of one type in the source.
 interface DateRow {
   // The operand's type in BigQuery. A column has none, since import cannot see
   // its type.
-  type?: 'DATE'|'DATETIME'|'TIMESTAMP';
+  type?: 'DATE'|'DATETIME'|'TIMESTAMP'|'TIME';
   // How a message names the operand.
   name: string;
   // The units import adds to the operand.
@@ -813,6 +1041,15 @@ interface DateTable {
   date: string;
   // The row of a cast to each other type that has one, by castType's name.
   casts?: Record<string, string>;
+  // The row of a literal of each other type that has one, such as a
+  // TIMESTAMP literal, by the engine's literal type.
+  literals?: Record<string, string>;
+  // The row of the value of each function that gives one type whatever its
+  // arguments are, such as TO_DATE.
+  typed?: Record<string, string>;
+  // True when a value whose type import cannot see, such as COALESCE(a, b),
+  // gets the row `column`, since BigQuery gives its own value for each type.
+  anyOperand?: true;
   // Why a string beside an INTERVAL stays untranslated, for a message, where
   // the dialect gives the sum as text.
   stringNote?: string;
@@ -913,7 +1150,7 @@ interface DateTable {
 }
 
 // `units`, each added in `form`, giving the row `gives`.
-function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
+function adds(units: readonly Unit[], form: Addition['form'], gives: string):
     Partial<Record<Unit, Addition>> {
   return Object.fromEntries(units.map(u => [u, {form, gives}]));
 }
@@ -921,6 +1158,12 @@ function adds(units: readonly Unit[], form: 'DATE_ADD'|'+', gives: string):
 // Weeks added with DATE_ADD as days (see Addition), giving the row `gives`.
 function weeksAsDays(gives: string): Partial<Record<Unit, Addition>> {
   return {WEEK: {form: 'DATE_ADD', gives, inDays: true}};
+}
+
+// `units`, each added as a number of days with DATE_ADD (see Addition),
+// giving the row `gives`.
+function asDays(units: readonly Unit[], gives: string): Partial<Record<Unit, Addition>> {
+  return Object.fromEntries(units.map(u => [u, {form: 'DATE_ADD', gives, dayCount: true}]));
 }
 
 // `units`, each added with `+` to the wall-clock time in UTC (see Addition),
@@ -1168,6 +1411,42 @@ const DATE_TABLES: Record<string, DateTable> = {
         type: 'DATETIME', name: 'a datetime', units: adds(UNITS.filter(u => u !== 'MICROSECOND'), 'DATE_ADD', 'datetime'),
         days: {form: 'DATE_ADD', gives: 'datetime'}, fractionStep: 10000n,
       },
+    },
+  },
+  // An OSSIE_SQL_2026 text adds a unit with DATEADD(part, n, x), which gives
+  // BigQuery's own value and type for each type of x. A column, or any other
+  // value whose type import cannot see, gets forms that BigQuery runs for a
+  // DATE, a DATETIME and a TIMESTAMP alike: DATE_ADD for a day, a week as 7
+  // days, a month, a quarter or a year as the days it adds to the value's date
+  // (see Addition), and `+` for an hour or less, which gives a DATETIME for a
+  // DATE. BigQuery's DATE_ADD adds no month, quarter or year to a TIMESTAMP, so
+  // a TIMESTAMP gets them in UTC (see Addition). A TIMESTAMP_NTZ is a
+  // DATETIME. A TIME, such as the current time, gets TIME_ADD for an hour or
+  // less, and no longer unit, since it holds no date.
+  ossie: {
+    date: 'DATE', today: ['CURRENT_DATE'], now: {functions: ['CURRENT_TIMESTAMP'], row: 'TIMESTAMP'},
+    casts: lookup({timestamp: 'TIMESTAMP', TIMESTAMPNTZ: 'TIMESTAMP_NTZ', time: 'TIME'}),
+    literals: {timestamp: 'TIMESTAMP', time: 'TIME'},
+    typed: {TO_DATE: 'DATE', TO_TIMESTAMP: 'TIMESTAMP', CURRENT_TIME: 'TIME'}, keepsType: ['DATE_TRUNC'], anyOperand: true,
+    functions: {DATEADD: 'part'}, words: named(Object.fromEntries(UNITS.map(u => [u, []]))),
+    rows: {
+      column: {
+        name: MAY_BE_TIMESTAMP,
+        units: {
+          ...adds(['DAY'], 'DATE_ADD', 'column'), ...weeksAsDays('column'), ...asDays(['MONTH', 'QUARTER', 'YEAR'], 'column'),
+          ...adds(SUB_DAY, '+', 'column'),
+        },
+      },
+      DATE: {
+        type: 'DATE', name: 'a DATE',
+        units: {...adds(DAY_OR_LONGER, 'DATE_ADD', 'DATE'), ...adds(SUB_DAY, '+', 'TIMESTAMP_NTZ')},
+      },
+      TIMESTAMP_NTZ: {type: 'DATETIME', name: 'a TIMESTAMP_NTZ', units: adds(UNITS, 'DATE_ADD', 'TIMESTAMP_NTZ')},
+      TIMESTAMP: {
+        type: 'TIMESTAMP', name: 'a TIMESTAMP',
+        units: {...adds([...SUB_DAY, 'DAY', 'WEEK'], '+', 'TIMESTAMP'), ...inUtc(['MONTH', 'QUARTER', 'YEAR'], 'TIMESTAMP')},
+      },
+      TIME: {type: 'TIME', name: 'a TIME', units: adds(SUB_DAY, 'TIME_ADD', 'TIME')},
     },
   },
   generic: {
@@ -1743,7 +2022,7 @@ function valueOn(table: DateTable, read: string, sum: {
   const addition = row.units[product ? table.products! : finest.unit];
   const note = table.notes?.[finest.unit];
   if (!addition) return note ? `${spelled(finest)}, ${note}` : `${spelled(finest)} on ${found.name}`;
-  if (addition.form === 'DATE_ADD') {
+  if (addition.form !== '+') {
     const fold = folded(joined.parts);
     const one = fold && row.units[fold.unit];
     if (!one) return `${spelled(finest)} on ${found.name}`;
@@ -1808,17 +2087,20 @@ function operandName(node: any, table: DateTable): string {
 
 // The row in `table`, the table of the engine's dialect `read`, of `node`, a
 // source value import adds a unit to, with the name a message gives it: a
-// column, a cast to DATE or to a type in `casts`, a DATE literal, the current
-// date or timestamp, or a date arithmetic import translates, whose row is the
-// one its addition gives. MIN, MAX and a function of `keepsType` take the row
-// of the value whose type they keep. Otherwise a message about the date
-// arithmetic in `node`, or undefined.
+// column, a cast to DATE or to a type in `casts`, a DATE literal or a literal
+// in `literals`, the current date or timestamp, a function in `typed`, or a
+// date arithmetic import translates, whose row is the one its addition gives.
+// MIN, MAX and a function of `keepsType` take the row of the value whose type
+// they keep. Otherwise a message about the date arithmetic in `node`, or
+// undefined. Where the table has `anyOperand`, it is the row of the widest
+// type that COALESCE or a similar function visibly returns, or else the row
+// `column`.
 function operandRow(node: any, read: string, table: DateTable):
     {row: string; name: string}|string|undefined {
   const b = bare(node);
   if (b?.column) return {row: 'column', name: table.rows.column.name};
   if (isDate(b)) return {row: table.date, name: valueName(b)};
-  const cast = table.casts?.[castType((b?.cast ?? b?.try_cast)?.to)];
+  const cast = table.casts?.[castType((b?.cast ?? b?.try_cast)?.to)] ?? table.literals?.[b?.literal?.literal_type];
   if (cast) return {row: cast, name: valueName(b)};
   const name = String(b?.function?.name).toUpperCase();
   const kept = b?.min?.this ?? b?.max?.this ?? (table.keepsType?.includes(name) ? b.function.args?.at(-1) : undefined);
@@ -1826,7 +2108,14 @@ function operandRow(node: any, read: string, table: DateTable):
   if (b?.function && !b.function.args?.length && table.now.functions.includes(name)) {
     return {row: table.now.row, name};
   }
+  if (b?.function && table.typed?.[name]) return {row: table.typed[name], name};
   const sum = dateSum(b, read);
+  if (sum === undefined && table.anyOperand) {
+    const types = returned(b).map(v => timeType(v, read));
+    const widest = WIDER.filter(t => types.includes(t)).at(-1);
+    const row = Object.keys(table.rows).find(r => widest && table.rows[r].type === widest) ?? 'column';
+    return {row, name: table.rows[row].name};
+  }
   if (typeof sum !== 'object') return sum;
   return {row: sum.addition.gives, name: table.rows[sum.addition.gives].name};
 }
@@ -1868,14 +2157,14 @@ const DATE_FUNCTIONS = new Set(Object.values(DATE_TABLES).flatMap(t => Object.ke
 // lists as 'part', with the dialects that read it so. MySQL's and Databricks'
 // DATEDIFF(end, start) take two dates.
 const PART_FUNCTIONS: Record<string, string[]> = {
-  DATE_TRUNC: DIALECTS, DATE_PART: DIALECTS, DATEPART: DIALECTS, DATEDIFF: except('mysql', 'databricks'),
-  TIMESTAMPDIFF: ['databricks'],
+  DATE_TRUNC: [...DIALECTS, 'ossie'], DATE_PART: [...DIALECTS, 'ossie'], DATEPART: DIALECTS,
+  DATEDIFF: [...except('mysql', 'databricks'), 'ossie'], TIMESTAMPDIFF: ['databricks'],
 };
 
 // The functions written only with parentheses. Without them, quoted or not,
-// NOW, CURDATE and GETDATE name a column, which the engine reads as the
-// function.
-const CALLED_ONLY = new Set(['NOW', 'CURDATE', 'GETDATE']);
+// NOW, CURDATE, GETDATE and SYSDATE name a column, which the engine reads as
+// the function.
+const CALLED_ONLY = new Set(['NOW', 'CURDATE', 'GETDATE', 'SYSDATE']);
 
 // The engine's tree of `text`, a source text in `dialect` that the engine
 // reads as `read`, as the source reads it: a function of CALLED_ONLY without
@@ -1950,6 +2239,11 @@ const COMPARISONS = new Set(['eq', 'neq', 'lt', 'lte', 'gt', 'gte']);
 // The kinds of node that compare, which BigQuery does not chain.
 const COMPARING = new Set([...COMPARISONS, 'is_null', 'like', 'in', 'between']);
 
+// The kinds of node that compare in an OSSIE_SQL_2026 text, which Ossie's
+// grammar does not chain without parentheses: those of COMPARING, ILIKE and
+// IS [NOT] DISTINCT FROM.
+const OSSIE_COMPARING = new Set([...COMPARING, 'i_like', 'null_safe_eq', 'null_safe_neq']);
+
 // The kinds in COMPARING that each source dialect binds, tightest first, as
 // its documentation orders them. The engine reads them all at one level from
 // left to right, so import translates one without parentheses as an operand of
@@ -1969,14 +2263,16 @@ const BINDING: Record<string, string[][]> = {
 const OPERATORS: Record<string, string> = {
   add: '+', sub: '-', mul: '*', neg: '-', eq: '=', neq: '<>', lt: '<', lte: '<=',
   gt: '>', gte: '>=', between: 'BETWEEN', in: 'IN', case: 'CASE', like: 'LIKE',
-  is_null: 'IS NULL',
+  is_null: 'IS NULL', i_like: 'ILIKE', null_safe_eq: 'IS NOT DISTINCT FROM', null_safe_neq: 'IS DISTINCT FROM',
 };
 
-// The kind in COMPARING of `node`, an engine node, or undefined. The engine
-// reads `s NOT LIKE p` as NOT of a LIKE.
-function comparingKind(node: any): string|undefined {
-  const kind = kindOf(node?.not?.this) === 'like' ? 'like' : kindOf(node);
-  return COMPARING.has(kind!) ? kind : undefined;
+// The kind in `kinds`, COMPARING unless given, of `node`, an engine node, or
+// undefined. The engine reads `s NOT LIKE p` as NOT of a LIKE, and `s NOT
+// ILIKE p` as NOT of an ILIKE.
+function comparingKind(node: any, kinds = COMPARING): string|undefined {
+  const negated = kindOf(node?.not?.this);
+  const kind = negated === 'like' || negated === 'i_like' ? negated : kindOf(node);
+  return kinds.has(kind!) ? kind : undefined;
 }
 
 // The operands of a node of `kind` in COMPARING, by name, first operand first.
@@ -1988,8 +2284,8 @@ function operandNames(kind: string): string[] {
 
 // The operator of `node`, a node comparingKind names, as written, for a message.
 function operatorName(node: any): string {
-  const kind = comparingKind(node)!;
-  if (node.not) return 'NOT LIKE';
+  const kind = comparingKind(node, OSSIE_COMPARING)!;
+  if (node.not) return `NOT ${OPERATORS[kind]}`;
   const not: Record<string, string> =
       {is_null: 'IS NOT NULL', in: 'NOT IN', between: 'NOT BETWEEN'};
   return node[kind].not ? not[kind] : OPERATORS[kind];
@@ -2000,21 +2296,25 @@ function operatorName(node: any): string {
 // the pair, or undefined. Without parentheses, the source may group the two
 // operators another way than the engine (see BINDING). BigQuery's LIKE also
 // takes no BOOL, and its IN and BETWEEN take a BOOL only beside another BOOL,
-// where some sources convert it.
+// where some sources convert it. Ossie's grammar needs the parentheses, and
+// an OSSIE_SQL_2026 text gets BigQuery's types.
 function nestedComparison(node: any, read: string): string|undefined {
-  const kind = comparingKind(node)!;
+  const kinds = read === 'ossie' ? OSSIE_COMPARING : COMPARING;
+  const kind = comparingKind(node, kinds)!;
   const value = (node.not?.this ?? node)[kind];
   const levels = BINDING[read];
   const level = (k: string) => levels.findIndex(l => l.includes(k));
   for (const [i, name] of operandNames(kind).entries()) {
-    const inner = comparingKind(value[name]);
+    const inner = comparingKind(value[name], kinds);
     const grouped = !inner || (levels && (level(inner) < level(kind) ||
         (i === 0 && read === 'mysql' && level(inner) === level(kind))));
     if (grouped) continue;
     const [outer, operand] = [operatorName(node), operatorName(value[name])];
     const [first, second] = i === 0 ? [operand, outer] : [outer, operand];
-    return `${first} and ${second} without parentheses, which databases group in different orders`;
+    const why = read === 'ossie' ? "Ossie's grammar requires" : 'databases group in different orders';
+    return `${first} and ${second} without parentheses, which ${why}`;
   }
+  if (read === 'ossie') return undefined;
   const values = comparedValues(kind, value) ?? [value.left, value.right];
   return ['like', 'in', 'between'].includes(kind) && values.some(v => comparingKind(bare(v))) ?
       `${operatorName(node)} of a comparison` : undefined;
@@ -2145,12 +2445,12 @@ function treeWithoutComments(node: any): any {
 }
 
 // Whether `v` is an engine node: an object with one key, its kind, whose value
-// is an object.
+// is an object, or null for a node with no parts, such as PI() or NULL.
 function isNode(v: any): boolean {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const values = Object.values(v);
-  return values.length === 1 && !!values[0] && typeof values[0] === 'object' &&
-      !Array.isArray(values[0]);
+  return values.length === 1 && (values[0] === null ||
+      (typeof values[0] === 'object' && !Array.isArray(values[0])));
 }
 
 // The kind of `node`, an engine node, or undefined.
@@ -2163,6 +2463,9 @@ function kindOf(node: any): string|undefined {
 // not translate the node.
 function nextNodes(kind: string, value: any, read: string):
     unknown[]|string|undefined {
+  if (read === 'ossie') return ossieNodes(kind, value);
+  // A node with no parts, such as NULL.
+  if (value === null) return KINDS[kind]?.includes(read) ? [] : undefined;
   const node = {[kind]: value};
   const nested = comparingKind(node) ? nestedComparison(node, read) : undefined;
   if (nested) return nested;
@@ -2422,12 +2725,13 @@ function comparedValues(kind: string, value: any): any[]|undefined {
 }
 
 // BigQuery's type for `node`, a source value in the engine's dialect `read`,
-// when the translation is visibly a DATE, a DATETIME or a TIMESTAMP: a DATE
-// literal, a cast on the list, the current date or timestamp, date arithmetic
-// import translates, by its row in DATE_TABLES, PostgreSQL's DATE_TRUNC of a
-// DATE, Databricks' date_trunc, or the widest type of the values that
-// COALESCE or a similar function returns, in the order of WIDER. A SPANNER
-// text's current timestamp is a TIMESTAMP.
+// when the translation is visibly a DATE, a DATETIME, a TIMESTAMP or, in an
+// OSSIE_SQL_2026 text, a TIME: a DATE literal, a cast on the list, the current
+// date, time or timestamp, a literal or function the dialect's table in
+// DATE_TABLES gives a row, date arithmetic import translates, by its row,
+// PostgreSQL's DATE_TRUNC of a DATE, Databricks' date_trunc, or the widest
+// type of the values that COALESCE or a similar function returns, in the
+// order of WIDER. A SPANNER text's current timestamp is a TIMESTAMP.
 function timeType(node: any, read: string): string|undefined {
   if (isDate(node)) return 'DATE';
   const b = bare(node);
@@ -2456,8 +2760,9 @@ function timeType(node: any, read: string): string|undefined {
 // The types of values that one COALESCE, IF or CASE can give, each giving
 // way to those after it: BigQuery merges a DATE into a DATETIME, and import a
 // DATE or a DATETIME into a TIMESTAMP where it writes TIMESTAMP(x) around it
-// (see valueForms).
-const WIDER = ['DATE', 'DATETIME', 'TIMESTAMP'];
+// (see valueForms). BigQuery merges a TIME with no other type, so one TIME
+// among the values makes them all TIMEs, or BigQuery refuses them.
+const WIDER = ['DATE', 'DATETIME', 'TIMESTAMP', 'TIME'];
 
 // The values `node`, a source value, can give: `node`, or each value it gives
 // as its own, such as COALESCE's operands.
@@ -2921,8 +3226,8 @@ function typeName(type: string, read: string): string {
 
 // The name of the construct `node` is, for a message: the name of a function
 // as written, such as MEDIAN, or an operator, such as `/`, as the engine writes
-// it in `read`, or else the engine's kind of node.
-function constructName(engine: PolyglotEngine, node: any, read: string): string {
+// it in the dialect of the lists' `rules`, or else the engine's kind of node.
+function constructName(engine: PolyglotEngine, node: any, rules: string): string {
   const [kind, value] = Object.entries(node)[0] as [string, any];
   // A `raw` node is SQL the engine kept as one unparsed string, such as a
   // prefix NOT before LIKE in most dialects, so there is no operand to swap
@@ -2930,15 +3235,16 @@ function constructName(engine: PolyglotEngine, node: any, read: string): string 
   if (kind === 'raw') return value.sql;
   // A `not` node here wraps an operator import does not translate, such as
   // ILIKE in `s NOT ILIKE p` (see nextNodes).
-  if (kind === 'not') return `NOT ${constructName(engine, value.this, read)}`;
-  const written = [value.original_name, value.name].find(n => typeof n === 'string');
+  if (kind === 'not') return `NOT ${constructName(engine, value.this, rules)}`;
+  const written = [value?.original_name, value?.name].find(n => typeof n === 'string');
   if (written) return written.toUpperCase();
   if (kind === 'window_function') return 'OVER';
-  // The node with a column `x` for each node in it.
+  // The node with a column `x` for each node in it. A node such as PI() has
+  // none.
   const x = {column: {name: {name: 'x', quoted: false}, table: null}};
-  const bareNode = Object.fromEntries(Object.entries(value).map(([k, v]) =>
+  const bareNode = value && Object.fromEntries(Object.entries(value).map(([k, v]) =>
       [k, Array.isArray(v) ? v.map(e => isNode(e) ? x : e) : isNode(v) ? x : v]));
-  const sql = engine.generate([{[kind]: bareNode}], read === 'spanner' ? 'bigquery' : read).sql?.[0] ?? '';
+  const sql = engine.generate([{[kind]: bareNode}], ENGINE_DIALECTS[rules] ?? rules).sql?.[0] ?? '';
   const called = /^([A-Za-z_]\w*)\s*\(/.exec(sql)?.[1];
   const operator = sql.replace(/\bx\b/g, '').trim();
   const plain = /^[^()[\].,]+$/.test(operator) ? operator : kind.replaceAll('_', ' ');
@@ -2956,19 +3262,20 @@ const EXTRACT_FIRST = new Set(['mysql', 'snowflake', 'databricks', 'tsql']);
 const DATE_CALL = 'KCMD_DATE_ARITHMETIC';
 
 // `sql`, in the engine's dialect `read`, ready for the engine to translate to
-// BigQuery, or an error. Each date arithmetic in DATE_TABLES with a unit is a
-// DATE_CALL (see dateCall), and each construct exactForm gives a form for has
-// its FORM_CALL. A whole number added to a column has no unit and is
-// kept, since the engine writes it as written. In a dialect of EXTRACT_FIRST,
-// YEAR(d) and the other functions of PARTS are written as EXTRACT, whose
-// argument the engine translates.
-function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read: string):
+// BigQuery by the lists' `rules` for the text, or an error. Each date
+// arithmetic in DATE_TABLES with a unit is a DATE_CALL (see dateCall), and
+// each construct exactForm, or ossieForm for an OSSIE_SQL_2026 text, gives a
+// form for has its FORM_CALL. A whole number added to a column has no unit
+// and is kept, since the engine writes it as written. In a dialect of
+// EXTRACT_FIRST, YEAR(d) and the other functions of PARTS are written as
+// EXTRACT, whose argument the engine translates.
+function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read: string, rules: string):
     {sql: string}|{error: string} {
   let changed = false;
   const rewrite = (node: any, whole = false): any => {
     if (!node || typeof node !== 'object') return node;
     if (Array.isArray(node)) return node.map(n => rewrite(n));
-    const sum = isNode(node) ? dateSum(node, read) : undefined;
+    const sum = isNode(node) ? dateSum(node, rules) : undefined;
     // A function that adds an INTERVAL value becomes `+` or `-`, in parentheses
     // unless it is the `whole` text.
     if (typeof sum === 'object' && !sum.unit && sum.call) {
@@ -2980,19 +3287,19 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     }
     if (typeof sum === 'object' && sum.unit) {
       changed = true;
-      // An operand of DATE_ADD, or of a function that reads it, needs no
-      // parentheses.
+      // An operand of DATE_ADD or TIME_ADD, or of a function that reads it,
+      // needs no parentheses.
       let operand = sum.operand;
-      while ((sum.addition.form === 'DATE_ADD' || readsOf(sum).length) && operand?.paren) {
+      while ((sum.addition.form !== '+' || readsOf(sum).length) && operand?.paren) {
         operand = operand.paren.this;
       }
       return dateCall(sum, rewrite(operand), rewrite(sum.amount), whole, dialect);
     }
     // An INTERVAL that import keeps as the source writes it, in an INTERVAL
     // value, is BigQuery's INTERVAL of each of its units.
-    const table = DATE_TABLES[read];
-    const added = table && isNode(node) && intervalOf(node, read);
-    const parsed = added && readInterval(added, table, read);
+    const table = DATE_TABLES[rules];
+    const added = table && isNode(node) && intervalOf(node, rules);
+    const parsed = added && readInterval(added, table, rules);
     if (parsed && typeof parsed === 'object') {
       changed = true;
       // Months first, then days, then time, as the sources add them.
@@ -3007,18 +3314,19 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
     const reads = typeof sum === 'object' ? readsOf(sum) : [];
     const stamped = typeof sum === 'object' && reads.length ?
         swapped(node, new Map([[sum.operand, formCall(readSql(reads), [inner])]])) : undefined;
-    const exact = stamped ?? (isNode(node) ? exactForm(node, read) : undefined);
+    const exact = stamped ??
+        (!isNode(node) ? undefined : rules === 'ossie' ? ossieForm(node) : exactForm(node, rules));
     if (exact && typeof exact === 'object') changed = true;
     const source = exact && typeof exact === 'object' ? exact : node;
     const out: any = Object.fromEntries(Object.entries(source).map(([k, v]) => [k, rewrite(v)]));
     if (reads.includes('UTC')) return formCall(UTC_BACK, [out]);
-    const part = EXTRACT_FIRST.has(read) && Object.keys(PARTS).find(k => out[k]?.this);
+    const part = EXTRACT_FIRST.has(rules) && Object.keys(PARTS).find(k => out[k]?.this);
     if (!part) return out;
     changed = true;
     return {extract: {this: out[part].this, field: extractField(part)}};
   };
-  // The engine reads a column named NOW, CURDATE or GETDATE as the function,
-  // quoted or not, so it gets a form that writes the quoted column.
+  // The engine reads a column named NOW, CURDATE, GETDATE or SYSDATE as the
+  // function, quoted or not, so it gets a form that writes the quoted column.
   const tree = mapTree(rewrite(sourceTree(sql, dialect, read), true), node => {
     const name = node.column?.table ? undefined : node.column?.name?.name;
     if (!CALLED_ONLY.has(String(name).toUpperCase())) return undefined;
@@ -3039,7 +3347,8 @@ function forBigQuery(engine: PolyglotEngine, sql: string, dialect: string, read:
 function dateCall(sum: DateSum, operand: unknown, amount: unknown, whole: boolean, dialect: string): unknown {
   const op = sum.first ? 'INTERVAL +' : sum.subtract ? '-' : '+';
   const reads = readsOf(sum);
-  const form = sum.addition.form === 'DATE_ADD' ? (sum.subtract ? 'DATE_SUB' : 'DATE_ADD') :
+  const form = sum.addition.dayCount ? (sum.subtract ? 'DAYS_SUB' : 'DAYS_ADD') :
+      sum.addition.form !== '+' ? sum.addition.form.replace('ADD', sum.subtract ? 'SUB' : 'ADD') :
       sum.call && !whole && !reads.includes('UTC') ? `(${op})` : op;
   const call = sqlExpressionTree(`${DATE_CALL}(x, 1, 'x', 'x')`, dialect).function;
   const text = (value: string) => ({literal: {literal_type: 'string', value}});
@@ -3116,21 +3425,34 @@ const SNOWFLAKE_TYPES: Record<string, unknown> = {
   TIMESTAMPNTZ: {data_type: 'custom', name: 'DATETIME'},
 };
 
-// `sql`, the engine's BigQuery output from the engine's dialect `read`, with
-// the forms above rewritten, or an error when the engine cannot write the
-// result. A text the engine cannot read back is returned as it is;
+// Sets `node`, an engine node read from BigQuery's SQL, to be written as it
+// was read. The engine reads BigQuery's TIMESTAMP as a timestamp without time
+// zone, which it writes as DATETIME, writes BOOL as BOOLEAN, and writes
+// DAYOFWEEK and DAYOFYEAR as DOW and DOY.
+function asWritten(node: any): void {
+  if (node.data_type === 'timestamp') node.timezone = true;
+  if (node.data_type === 'boolean') Object.assign(node, {data_type: 'custom', name: 'BOOL'});
+  const part = node.extract && partName(node.extract.field);
+  if (part === 'DAYOFWEEK' || part === 'DAYOFYEAR') node.extract.field = {Custom: part};
+}
+
+// `sql`, the engine's BigQuery output from a text with the lists' rules
+// `read`, with the forms above rewritten, or an error when the engine cannot
+// write the result. A text the engine cannot read back is returned as it is;
 // transpileModel's qualifier check reports it.
 function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     {sql: string}|{error: string} {
   const tree = sqlExpressionTree(sql, 'BIGQUERY');
   if (!tree) return {sql};
   let changed = false;
-  const result = mapTree(tree, node => {
-    // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
-    // which it writes as DATETIME.
-    if (node.data_type === 'timestamp') node.timezone = true;
+  const result = mapTree(tree, visited => {
+    const named = withQuotedNames(visited);
+    const written = named ?? visited;
+    const wrapped = spliced(written);
+    const node: any = wrapped ?? written;
+    asWritten(node);
     const dated = withPlainDates(node);
-    const repaired = repairNode(dated ?? node, read) ?? dated;
+    const repaired = repairNode(dated ?? node, read) ?? dated ?? wrapped ?? named;
     if (repaired !== undefined) changed = true;
     return repaired;
   });
@@ -3140,6 +3462,28 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     return {error: written.error ?? 'the repaired SQL could not be written'};
   }
   return {sql: written.sql[0]};
+}
+
+// Whether BigQuery reads `name` as a name without quotes: a letter or
+// underscore followed by letters, digits and underscores, and no reserved
+// word.
+function plainBigQueryName(name: string): boolean {
+  return isSimpleIdentifier(name) && !isReservedKeyword(name);
+}
+
+// `node`, an engine node of BigQuery SQL, with the name of its column, its
+// table or its struct field quoted where BigQuery cannot read the name without
+// quotes, or undefined when no name needs them. The engine writes a name as
+// the source writes it, such as amt$, which BigQuery refuses.
+function withQuotedNames(node: any): unknown {
+  const plain = (id: any) => !id || id.quoted || plainBigQueryName(id.name);
+  const quoted = (id: any) => plain(id) ? id : {...id, quoted: true};
+  const column = node.column;
+  if (column && !(plain(column.name) && plain(column.table))) {
+    return {...node, column: {...column, name: quoted(column.name), table: quoted(column.table)}};
+  }
+  if (node.dot && !plain(node.dot.field)) return {...node, dot: {...node.dot, field: quoted(node.dot.field)}};
+  return undefined;
 }
 
 // The node to put in place of `node`, an engine node of BigQuery SQL from the
@@ -3153,6 +3497,12 @@ function repairNode(node: any, read: string): unknown {
   }
   if (name === DATE_CALL) return dateSql(args);
   if (name === FORM_CALL) return formSql(args);
+  // A call outside Ossie's tables keeps its name (see ossieText), and a
+  // window's ORDER BY item gets its NULL placement (see windowForm).
+  if (read === 'ossie' && name.startsWith(PASS)) return {function: {...fn, name: fn.name.slice(PASS.length)}};
+  const placed = read === 'ossie' && 'nulls_first' in node ?
+      NULLS_CALLS.indexOf(String(node.this?.function?.name).toUpperCase()) : -1;
+  if (placed >= 0) return {...node, this: node.this.function.args[0], nulls_first: placed === 0};
   // Snowflake divides and averages a NUMBER, and PostgreSQL averages an
   // integer or a NUMERIC, as an exact decimal, and BigQuery as a FLOAT64 unless
   // a value is a NUMERIC. A Snowflake FLOAT or PostgreSQL double precision
@@ -3183,7 +3533,7 @@ function repairNode(node: any, read: string): unknown {
     // without its quotes, so put it back as a column, quoted if it must be.
     const col = args[1].var?.this;
     const date = col === undefined ? args[1] : {
-      column: {name: {name: col, quoted: !isSimpleIdentifier(col)}, table: null},
+      column: {name: {name: col, quoted: !plainBigQueryName(col)}, table: null},
     };
     return {function: {...fn, args: [date, {var: {this: truncPart}}]}};
   }
@@ -3197,17 +3547,19 @@ function repairNode(node: any, read: string): unknown {
   if (node.data_type === 'custom' && SNOWFLAKE_TYPES[node.name]) {
     return SNOWFLAKE_TYPES[node.name];
   }
-  // BigQuery's TRIM(s) removes every kind of whitespace, and the sources' TRIM
-  // only spaces.
-  if (node.trim && node.trim.characters === null) {
+  // BigQuery's TRIM(s) removes every kind of whitespace, as Ossie's does, and
+  // the other sources' TRIM only spaces.
+  if (node.trim && node.trim.characters === null && read !== 'ossie') {
     const characters = {literal: {literal_type: 'string', value: ' '}};
     return {trim: {...node.trim, characters, sql_standard_syntax: false}};
   }
   // A decimal number is exact in the sources, and a FLOAT64 in BigQuery, so it
   // becomes a NUMERIC, or a BIGNUMERIC when a NUMERIC cannot hold it. The engine
-  // writes a `var` node's text as it is.
-  const decimal = node.literal?.literal_type === 'number' &&
-      /^(\d*)\.(\d*)$/.exec(node.literal.value);
+  // writes a `var` node's text as it is. So does a whole number past INT64 in
+  // an OSSIE_SQL_2026 text.
+  const number = node.literal?.literal_type === 'number' ? String(node.literal.value) : '';
+  const whole = read === 'ossie' && /^\d+$/.test(number) && BigInt(number) >= 2n ** 63n;
+  const decimal = /^(\d*)\.(\d*)$/.exec(number) ?? (whole ? [number, number, ''] : undefined);
   if (decimal) {
     const big = decimal[1].replace(/^0+/, '').length > 29 || decimal[2].length > 9;
     return {var: {this: `${big ? 'BIGNUMERIC' : 'NUMERIC'} '${node.literal.value}'`}};
@@ -3217,9 +3569,10 @@ function repairNode(node: any, read: string): unknown {
 
 // BigQuery's SQL for a DATE_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the operand, the amount, the unit and BigQuery's form, and
-// how BigQuery reads the operand first, if it does (see READS). A form in
-// parentheses puts the sum in parentheses, since it stands where the source
-// calls a function.
+// how BigQuery reads the operand first, if it does (see READS). The form is
+// DATE_ADD, DATE_SUB, `+`, `-`, or DAYS_ADD or DAYS_SUB for an amount added
+// as days (see Addition). A form in parentheses puts the sum in parentheses,
+// since it stands where the source calls a function.
 function dateSql(args: any[]): unknown {
   const [operand, amount, unit, form, ...given] = args;
   const text = (n: any) => String(bare(n)?.literal?.value);
@@ -3232,7 +3585,11 @@ function dateSql(args: any[]): unknown {
     interval: {this: amount, unit: {type: 'simple', unit: extractField(name.toLowerCase()), use_plural: false}},
   };
   const how = text(form);
-  if (how === 'DATE_ADD' || how === 'DATE_SUB') {
+  if (how === 'DAYS_ADD' || how === 'DAYS_SUB') {
+    const shifted = `${how === 'DAYS_ADD' ? 'DATE_ADD' : 'DATE_SUB'}(CAST(_1 AS DATE), INTERVAL _2 ${name})`;
+    return back(formSql([sql(`DATE_ADD(_1, INTERVAL DATE_DIFF(${shifted}, CAST(_1 AS DATE), DAY) DAY)`), date, amount]));
+  }
+  if (['DATE_ADD', 'DATE_SUB', 'TIME_ADD', 'TIME_SUB'].includes(how)) {
     const call = sqlExpressionTree(`${how}(x, y)`, 'BIGQUERY');
     return back({function: {...call.function, args: [date, added]}});
   }
@@ -3258,13 +3615,64 @@ const UTC_BACK = "TIMESTAMP(_1, 'UTC')";
 
 // BigQuery's SQL for a FORM_CALL whose arguments are `args`, engine nodes of
 // BigQuery SQL: the form's SQL, then the operands it names _1, _2 and so on.
-// A quoted NOW, CURDATE or GETDATE in the form is a column, as in BigQuery.
+// A quoted NOW, CURDATE, GETDATE or SYSDATE in the form is a column, as in
+// BigQuery.
+// The form and each operand are written as one value (see spliced).
 function formSql(args: any[]): unknown {
   const [sql, ...operands] = args;
-  return mapTree(calledColumns(sqlExpressionTree(String(bare(sql)?.literal?.value), 'BIGQUERY')), node => {
+  const form = mapTree(calledColumns(sqlExpressionTree(String(bare(sql)?.literal?.value), 'BIGQUERY')), node => {
+    asWritten(node);
     const index = /^_(\d+)$/.exec(node.column?.table ? '' : node.column?.name?.name ?? '')?.[1];
-    return index ? operands[Number(index) - 1] : undefined;
+    if (!index) return spliced(node);
+    const operand = operands[Number(index) - 1];
+    if (operand && typeof operand === 'object') SPLICED.add(operand);
+    return operand;
   });
+  if (form && typeof form === 'object') SPLICED.add(form);
+  return form;
+}
+
+// The forms formSql writes, and the operands it writes into them.
+const SPLICED = new WeakSet<object>();
+
+// The kinds of node, other than those with a `left` and a `right` operand,
+// that are an operator, with the parts that are its operands.
+const OPERANDS: Record<string, string[]> = {
+  neg: ['this'], not: ['this'], bitwise_not: ['this'], is_null: ['this'], is_true: ['this'],
+  is_false: ['this'], in: ['this'], between: ['this', 'low', 'high'], collation: ['this'], at_time_zone: ['this'],
+};
+
+// The parts of `node`, an engine node, that stand beside an operator outside
+// parentheses: the operands of an operator, and the value of a subscript or
+// a field access, such as x in x[OFFSET(0)].
+function operandParts(node: any): string[] {
+  const kind = kindOf(node) ?? '';
+  const value = node?.[kind];
+  if (!value || typeof value !== 'object') return [];
+  if ('left' in value && 'right' in value) return ['left', 'right'];
+  return OPERANDS[kind] ?? (kind === 'subscript' || kind === 'dot' ? ['this'] : []);
+}
+
+// Whether `node`, an engine node, is an operator with its operands, whose text
+// another operator beside it can split. A single token, a call, a subscript, a
+// field access and a value in parentheses are not.
+function isOperator(node: any): boolean {
+  while (node?.annotated) node = node.annotated.this;
+  const kind = kindOf(node);
+  return kind !== 'subscript' && kind !== 'dot' && operandParts(node).length > 0;
+}
+
+// `node`, an engine node of BigQuery SQL, with each of its operands in
+// parentheses that is in SPLICED and is an operator, or undefined when it has
+// none. The engine writes only the parentheses a tree holds, so these keep an
+// operator beside a form, such as the `/` of `10 / MEDIAN(x)`, from binding
+// to part of it.
+function spliced(node: any): unknown {
+  const kind = kindOf(node);
+  const value = kind ? node[kind] : undefined;
+  const parts = operandParts(node).filter(p => SPLICED.has(value[p]) && isOperator(value[p]));
+  if (!parts.length) return undefined;
+  return {[kind!]: {...value, ...Object.fromEntries(parts.map(p => [p, {paren: {this: value[p], trailing_comments: []}}]))}};
 }
 
 // `node`, an engine node of BigQuery SQL, with each cast of a date string to
@@ -3327,7 +3735,9 @@ function asNumeric(node: unknown): unknown {
 // the engine gives as a name such as `Month`, or as {Custom} or
 // {WeekWithModifier} for ISOWEEK or WEEK(MONDAY). Or it is a date function's
 // argument: a string, a bare name, which the engine reads as a `var` or a
-// column, or WEEK(MONDAY), which it reads as a function.
+// column, or WEEK(MONDAY), which it reads as a function. A column with a
+// qualifier gives both names, as `orders.day`, which no date part matches,
+// so a message names it.
 function partName(part: any): string|undefined {
   if (typeof part === 'string') {
     return ({TimezoneHour: 'TIMEZONE_HOUR', TimezoneMinute: 'TIMEZONE_MINUTE'} as
@@ -3338,7 +3748,10 @@ function partName(part: any): string|undefined {
   const b = bare(part);
   if (b?.literal?.literal_type === 'string') return b.literal.value;
   if (b?.var) return b.var.this;
-  if (b?.column && !b.column.table) return b.column.name?.name;
+  if (b?.column) {
+    const table = b.column.table?.name;
+    return table === undefined ? b.column.name?.name : `${table}.${b.column.name?.name}`;
+  }
   const fn = b?.function;
   const day = String(fn?.name).toUpperCase() === 'WEEK' && fn.args?.length === 1 &&
       partName(fn.args[0]);
@@ -3607,18 +4020,744 @@ function spannerForBigQuery(engine: PolyglotEngine, tree: any): {sql: string}|{e
     const zoned = (typeof exact === 'object' && exact) || (isNode(node) && spannerZone(node)) || node;
     return Object.fromEntries(Object.entries(zoned).map(([k, v]) => [k, rewrite(v)]));
   };
-  // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
-  // which it writes as DATETIME, and writes DAYOFWEEK and DAYOFYEAR as DOW and
-  // DOY. Each FORM_CALL becomes its form (see formSql).
+  // Each FORM_CALL becomes its form (see formSql).
   const result = mapTree(rewrite(tree), node => {
-    if (node.data_type === 'timestamp') node.timezone = true;
-    const part = node.extract && partName(node.extract.field);
-    if (part === 'DAYOFWEEK' || part === 'DAYOFYEAR') node.extract.field = {Custom: part};
-    return String(node.function?.name).toUpperCase() === FORM_CALL ? formSql(node.function.args) : undefined;
+    asWritten(node);
+    return String(node.function?.name).toUpperCase() === FORM_CALL ? formSql(node.function.args) : spliced(node);
   });
   const written = engine.generate([result], 'bigquery');
   if (!written.success || written.sql?.length !== 1) {
     return {error: written.error ?? 'the translated SQL could not be written'};
   }
   return {sql: written.sql[0]};
+}
+
+// --- OSSIE_SQL_2026 texts -------------------------------------------------------
+//
+// An OSSIE_SQL_2026 text is Apache Ossie's SQL. BigQuery is the only database
+// kcmd runs it on, so import gives each construct the value Ossie defines, and
+// BigQuery's own value where Ossie defines none. Ossie defines true division,
+// ROUND's ties away from zero, the base first in LOG, `%` and `_` as the only
+// wildcards of LIKE, whose strings have no escapes, FILTER, which an
+// aggregate reads as the aggregate of IF(p, x, NULL), since it skips NULL, and
+// a window's ORDER BY without NULLS FIRST or NULLS LAST, which sorts NULL as
+// the largest value, where BigQuery sorts it as the smallest. A call of a function
+// outside Ossie's tables, or with another number of arguments, is written as
+// it is, so that BigQuery's function of that name gives its value. The engine
+// reads the text as generic SQL, which also reads some text outside Ossie's
+// grammar, such as an INTERVAL or a subquery. Import leaves such text
+// untranslated. Weeks start on Monday in DATE_TRUNC, as Ossie defines, and in
+// EXTRACT, DATE_PART and DATEDIFF, as BigQuery's ISOWEEK numbers them.
+
+// The prefix import gives the name of a call outside Ossie's tables, so that
+// the engine keeps the call as written (see ossieText). The repairs remove it.
+const PASS = 'KCMD_PASS_';
+
+// The functions in Ossie's tables, by name, with the fewest and most
+// arguments of each.
+const OSSIE_CALLS: Record<string, [number, number]> = Object.fromEntries([
+  ...([
+    [0, 0, [
+      'PI', 'CURRENT_DATE', 'CURRENT_TIMESTAMP', 'CURRENT_TIME', 'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'PERCENT_RANK',
+      'CUME_DIST',
+    ]],
+    [1, 1, [
+      'STDDEV', 'STDDEV_POP', 'STDDEV_SAMP', 'VARIANCE', 'VAR_POP', 'VAR_SAMP', 'MEDIAN', 'PERCENTILE_CONT',
+      'PERCENTILE_DISC', 'APPROX_COUNT_DISTINCT', 'NTILE', 'FIRST_VALUE', 'LAST_VALUE',
+      'YEAR', 'QUARTER', 'MONTH', 'DAY', 'DAYOFYEAR', 'HOUR', 'MINUTE', 'SECOND',
+      'SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'LENGTH', 'LOWER', 'UPPER', 'TRIM', 'LTRIM', 'RTRIM', 'ABS',
+      'FLOOR', 'CEIL', 'CEILING', 'SIGN', 'SQRT', 'EXP', 'LN', 'LOG10', 'SIN', 'COS', 'TAN', 'ASIN',
+      'ACOS', 'ATAN', 'RADIANS', 'DEGREES', 'ZEROIFNULL', 'NULLIFZERO',
+    ]],
+    [1, 2, ['ROUND', 'TRUNC', 'TRUNCATE', 'TO_DATE', 'TO_TIMESTAMP']],
+    [1, 3, ['LAG', 'LEAD']],
+    [2, 2, [
+      'APPROX_PERCENTILE', 'NTH_VALUE', 'DATE_PART', 'DATE_TRUNC', 'TO_CHAR',
+      'LEFT', 'RIGHT', 'CHARINDEX', 'CONTAINS', 'STARTSWITH', 'ENDSWITH', 'REGEXP_LIKE', 'REGEXP_EXTRACT',
+      'REGEXP_COUNT', 'MOD', 'POWER', 'LOG', 'ATAN2', 'NULLIF', 'IFNULL', 'NVL',
+    ]],
+    [2, 3, ['SUBSTRING']],
+    [3, 3, ['DATEADD', 'DATEDIFF', 'REPLACE', 'SPLIT_PART', 'REGEXP_REPLACE', 'IF', 'IFF', 'NVL2']],
+    [1, Infinity, ['CONCAT', 'COALESCE', 'GREATEST', 'LEAST']],
+  ] as [number, number, string[]][]).flatMap(([fewest, most, names]) => names.map(n => [n, [fewest, most]])),
+]);
+
+// The words before a parenthesis in an OSSIE_SQL_2026 text that name no
+// function, or a construct of its own, such as CAST. AGG is reserved.
+const OSSIE_WORDS = new Set([
+  'AND', 'OR', 'NOT', 'IN', 'IS', 'LIKE', 'ILIKE', 'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'OVER',
+  'FILTER', 'GROUP', 'BY', 'AS', 'FROM', 'DISTINCT', 'WHERE', 'SELECT', 'EXISTS', 'ANY', 'ALL', 'SOME',
+  'ARRAY', 'STRUCT', 'ROW', 'VALUES', 'INTERVAL', 'CAST', 'TRY_CAST', 'EXTRACT', 'POSITION', 'AGG',
+]);
+
+// `sql`, an OSSIE_SQL_2026 text, with each TIMESTAMP WITHOUT TIME ZONE as
+// TIMESTAMP_NTZ. ANSI SQL:2003 defines that type as a date and a wall-clock
+// time, which is Ossie's TIMESTAMP_NTZ and BigQuery's DATETIME, where the
+// engine reads it as TIMESTAMP.
+function wallClockTypes(engine: PolyglotEngine, sql: string): string {
+  const tokens = engine.tokenize(sql, 'generic').tokens ?? [];
+  const chars = [...sql];
+  const spelled = (t: SqlToken|undefined) => t ? chars.slice(t.span.start, t.span.end).join('').toUpperCase() : '';
+  for (let i = tokens.length - 4; i >= 0; i--) {
+    if (tokens.slice(i, i + 4).map(spelled).join(' ') !== 'TIMESTAMP WITHOUT TIME ZONE') continue;
+    // A comment between the words stays where it is.
+    for (const t of tokens.slice(i + 1, i + 4).reverse()) chars.splice(t.span.start, t.span.end - t.span.start);
+    chars.splice(tokens[i].span.start, tokens[i].span.end - tokens[i].span.start, ...'TIMESTAMP_NTZ');
+  }
+  return chars.join('');
+}
+
+// `sql`, an OSSIE_SQL_2026 text, as import gives it to the engine: as the
+// parser reads it, with each TIMESTAMP_NTZ literal as a cast (see forParser),
+// each TIMESTAMP WITHOUT TIME ZONE as TIMESTAMP_NTZ (see wallClockTypes), and
+// each call outside OSSIE_CALLS, by name and number of arguments, with PASS
+// before its name. A call whose arguments hold FROM or FOR, such as
+// SUBSTRING(s FROM 1 FOR 2), keeps its name, so that the engine reads the
+// construct and the checks name it.
+function ossieText(engine: PolyglotEngine, sql: string): string {
+  const text = forParser(wallClockTypes(engine, sql), 'OSSIE_SQL_2026');
+  const tokens = engine.tokenize(text, 'generic').tokens ?? [];
+  const chars = [...text];
+  const written = (t: SqlToken) => chars.slice(t.span.start, t.span.end).join('');
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const [t, next] = [tokens[i], tokens[i + 1]];
+    const word = written(t);
+    const name = word.toUpperCase();
+    const before = tokens[i - 1]?.token_type;
+    if (next?.token_type !== 'L_PAREN' || !/^[A-Za-z_][\w$]*$/.test(word) || OSSIE_WORDS.has(name) ||
+        before === 'DOT' || before === 'AS') {
+      continue;
+    }
+    // The number of arguments: the commas outside parentheses, plus one.
+    let [args, depth, keywords] = [tokens[i + 2]?.token_type === 'R_PAREN' ? 0 : 1, 0, false];
+    for (let j = i + 2; j < tokens.length && depth >= 0; j++) {
+      const type = tokens[j].token_type;
+      depth += type === 'L_PAREN' ? 1 : type === 'R_PAREN' ? -1 : 0;
+      if (type === 'COMMA' && depth === 0) args++;
+      keywords ||= depth === 0 && (type === 'FROM' || type === 'FOR');
+    }
+    const [fewest, most] = OSSIE_CALLS[name] ?? [1, 0];
+    if (!(keywords && OSSIE_CALLS[name]) && (args < fewest || args > most)) chars.splice(t.span.start, 0, ...PASS);
+  }
+  return chars.join('');
+}
+
+// The kinds of node import translates from an OSSIE_SQL_2026 text and checks
+// every part of.
+const OSSIE_KINDS = new Set([
+  'annotated', 'column', 'dot', 'boolean', 'null', 'paren', 'neg', 'add', 'sub', 'mul', 'div', 'mod',
+  'concat', 'eq', 'neq', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not', 'between', 'in', 'is_null',
+  'null_safe_eq', 'null_safe_neq', 'like', 'i_like', 'case', 'coalesce', 'nvl', 'nvl2', 'if_func', 'sum',
+  'count', 'avg', 'min', 'max', 'abs', 'floor', 'ceil', 'sqrt', 'exp', 'ln', 'log', 'sin', 'cos', 'tan',
+  'asin', 'acos', 'atan', 'atan2', 'radians', 'degrees', 'pi', 'mod_func', 'upper', 'lower', 'length',
+  'trim', 'substring', 'str_position', 'contains', 'starts_with', 'ends_with', 'cast', 'try_cast',
+  'extract', 'year', 'quarter', 'month', 'day', 'day_of_year', 'hour', 'minute', 'second', 'stddev',
+  'stddev_pop', 'stddev_samp', 'variance', 'var_pop', 'var_samp', 'median', 'approx_count_distinct',
+]);
+
+// The kinds of aggregate in an OSSIE_SQL_2026 text that take FILTER, besides
+// the aggregates by name such as APPROX_PERCENTILE.
+const OSSIE_AGGREGATES = [
+  'sum', 'count', 'avg', 'min', 'max', 'stddev', 'stddev_pop', 'stddev_samp', 'variance', 'var_pop', 'var_samp',
+  'median', 'approx_count_distinct',
+];
+
+// BigQuery's name for each date part of EXTRACT and DATE_PART in an
+// OSSIE_SQL_2026 text, by the part in lower case, and for the part of the
+// functions such as YEAR(d), by kind without its underscores.
+const OSSIE_PARTS = lookup({
+  year: 'YEAR', quarter: 'QUARTER', month: 'MONTH', week: 'ISOWEEK', day: 'DAY', dayofweek: 'DAYOFWEEK',
+  dayofyear: 'DAYOFYEAR', hour: 'HOUR', minute: 'MINUTE', second: 'SECOND', millisecond: 'MILLISECOND',
+});
+
+// Ossie's name for each part of EXTRACT and DATE_PART that other dialects
+// name another way, by that name in lower case.
+const OSSIE_PART_NAMES = lookup({dow: 'DAYOFWEEK, which counts Sunday as 1 in BigQuery', doy: 'DAYOFYEAR'});
+
+// The construct `call`, EXTRACT or DATE_PART, with `part`, which is not one of
+// Ossie's parts, for a message.
+function ossiePart(call: string, part: string): string {
+  const named = OSSIE_PART_NAMES[part.toLowerCase()];
+  return `${call} with part '${part}'${named ? `, since Ossie names that part ${named}` : ''}`;
+}
+
+// BigQuery's name for each part of DATE_TRUNC in an OSSIE_SQL_2026 text.
+const OSSIE_TRUNC = lookup({
+  year: 'YEAR', quarter: 'QUARTER', month: 'MONTH', week: 'ISOWEEK', day: 'DAY', hour: 'HOUR',
+  minute: 'MINUTE', second: 'SECOND',
+});
+
+// The parts of each date function of an OSSIE_SQL_2026 text, by the part in
+// lower case. DATEDIFF takes the units of DATEADD.
+const OSSIE_FUNCTION_PARTS: Record<string, Record<string, string>> = {
+  DATE_PART: OSSIE_PARTS, DATE_TRUNC: OSSIE_TRUNC, DATEDIFF: DATE_TABLES.ossie.words,
+};
+
+// The functions of an OSSIE_SQL_2026 text with a format, which import
+// translates only from a string, by the position of the format.
+const OSSIE_FORMATS: Record<string, number> = {TO_CHAR: 1, TO_DATE: 1, TO_TIMESTAMP: 1};
+
+// Ossie's core format tokens, longest first, with BigQuery's format element for
+// each.
+const FORMAT_TOKENS: [string, string][] = [
+  ['MONTH', '%B'], ['YYYY', '%Y'], ['HH24', '%H'], ['HH12', '%I'], ['MON', '%b'], ['DAY', '%A'], ['YY', '%y'],
+  ['MM', '%m'], ['DD', '%d'], ['DY', '%a'], ['HH', '%I'], ['MI', '%M'], ['SS', '%S'], ['AM', '%p'], ['PM', '%p'],
+];
+
+// The elements of a BigQuery format that write part of a date, and those that
+// write part of a time of day.
+const DATE_ELEMENTS = /%[YymbBdaA]/;
+const TIME_ELEMENTS = /%[HIMSp]/;
+
+// Whether `format`, a BigQuery format, holds one of `elements`.
+function holds(format: string, elements: RegExp): boolean {
+  return elements.test(format.replaceAll('%%', ''));
+}
+
+// `format`, an Ossie format, as a BigQuery format: each core token, in any
+// letter case, as its element, each `%` doubled, and any other character as
+// it is, which BigQuery copies.
+function bigQueryFormat(format: string): string {
+  let out = '';
+  for (let i = 0; i < format.length;) {
+    const token = FORMAT_TOKENS.find(([t]) => format.slice(i, i + t.length).toUpperCase() === t);
+    out += token ? token[1] : format[i] === '%' ? '%%' : format[i];
+    i += token ? token[0].length : 1;
+  }
+  return out;
+}
+
+// The parts of a node in an OSSIE_SQL_2026 text, by its kind, that are outside
+// Ossie's grammar, each with its name for a message.
+const OSSIE_AGGREGATE = {order_by: 'ORDER BY', ignore_nulls: 'IGNORE NULLS or RESPECT NULLS'};
+const OSSIE_CLAUSES: Record<string, Record<string, string>> = {
+  ...Object.fromEntries(OSSIE_AGGREGATES.map(k => [k, OSSIE_AGGREGATE])),
+  in: {query: 'a subquery'}, between: {symmetric: 'SYMMETRIC'}, like: {escape: 'ESCAPE', quantifier: 'ANY or ALL'},
+  i_like: {escape: 'ESCAPE', quantifier: 'ANY or ALL'}, trim: {characters: 'characters', position_explicit: 'BOTH, LEADING or TRAILING'},
+  substring: {from_for_syntax: 'FROM or FOR'}, floor: {scale: 'a scale'}, ceil: {decimals: 'a scale'},
+  cast: {format: 'FORMAT'}, try_cast: {format: 'FORMAT'},
+};
+
+// The types an OSSIE_SQL_2026 text casts to, by castType's name: VARCHAR and
+// STRING, INTEGER, INT and BIGINT, DECIMAL and NUMERIC, FLOAT, DOUBLE, BOOLEAN,
+// DATE, TIME, TIMESTAMP and TIMESTAMP_NTZ.
+const OSSIE_CASTS = new Set([
+  'var_char', 'string', 'int', 'big_int', 'decimal', 'float', 'double', 'boolean', 'date', 'time',
+  'timestamp', 'TIMESTAMPNTZ',
+]);
+
+// The parts of a node of `kind` in an OSSIE_SQL_2026 text that import still
+// has to check, the name of a construct in it import does not translate, or
+// undefined when import does not translate the node.
+function ossieNodes(kind: string, value: any): unknown[]|string|undefined {
+  if (OSSIE_WINDOWED[kind]) return `${OSSIE_WINDOWED[kind][0]} without OVER`;
+  if (value === null) return OSSIE_KINDS.has(kind) ? [] : undefined;
+  const node = {[kind]: value};
+  const nested = comparingKind(node, OSSIE_COMPARING) ? nestedComparison(node, 'ossie') : undefined;
+  if (nested) return nested;
+  if (kind === 'function') return ossieArgs(value);
+  if (kind === 'literal') return ossieLiteral(value);
+  if (kind === 'interval') return 'INTERVAL';
+  if (kind === 'aggregate_function' || kind === 'within_group' || kind === 'filter') return ossiePercentile(kind, value);
+  if (kind === 'window_function') return ossieWindow(value);
+  if (!OSSIE_KINDS.has(kind)) return undefined;
+  if (value.double_colon_syntax) return '::';
+  const written = (c: string) => c === 'ignore_nulls' ? c in value :
+      ![null, undefined, false].includes(value[c]) && value[c].length !== 0;
+  const clause = Object.entries(OSSIE_CLAUSES[kind] ?? {}).find(([c]) => written(c));
+  if (clause) return `${kind === 'i_like' ? 'ILIKE' : kind.toUpperCase()} with ${clause[1]}`;
+  if (kind === 'cast' || kind === 'try_cast') {
+    const problem = ossieCast(kind, value.to);
+    return typeof problem === 'string' ? problem : [value.this];
+  }
+  const part = kind === 'extract' && String(partName(value.field));
+  if (part && !OSSIE_PARTS[part.toLowerCase()]) return ossiePart('EXTRACT', part);
+  return Object.values(value);
+}
+
+// The arguments of `fn`, a function call in an OSSIE_SQL_2026 text, that
+// import still has to check, the name of a construct in it import does not
+// translate, or undefined when import does not translate it.
+function ossieArgs(fn: any): unknown[]|string|undefined {
+  const name = String(fn.name).toUpperCase();
+  const args: any[] = fn.args ?? [];
+  if (name === 'AGG') return `${fn.name}, which Ossie reserves`;
+  // A word without parentheses other than the current date and time is a
+  // column, as in BigQuery. BigQuery also reads CURRENT_DATETIME so as its
+  // function, which Ossie's tables do not hold.
+  if (fn.no_parens) return name === 'CURRENT_DATETIME' ? fn.name : [];
+  if (name.startsWith(PASS)) return args;
+  const [fewest, most] = OSSIE_CALLS[name] ?? [1, 0];
+  if (args.length < fewest || args.length > most) return undefined;
+  // A date part is a string, such as 'month', or a word, such as month.
+  const part = String(partName(args[0]) ?? '?');
+  const parts = OSSIE_FUNCTION_PARTS[name];
+  if (parts === OSSIE_PARTS && !parts[part.toLowerCase()]) return ossiePart(fn.name, part);
+  const unit = parts?.[part.toLowerCase()];
+  if (parts && !unit) return `${fn.name} with part '${part}'`;
+  // A TIME has no date, so BigQuery's TIME_TRUNC and TIME_DIFF take an hour or
+  // less.
+  if (parts && parts !== OSSIE_PARTS && args.slice(1).some(isTime) && !SUB_DAY.includes(unit as Unit)) {
+    return `${fn.name} with part '${part}' on a TIME`;
+  }
+  if (parts) return args.slice(1);
+  if (name === 'DATEADD') {
+    const sum = dateSum({function: fn}, 'ossie');
+    return typeof sum === 'object' ? [sum.operand, sum.amount] : sum;
+  }
+  const format = args[OSSIE_FORMATS[name]];
+  if (format && bare(format)?.literal?.literal_type !== 'string') {
+    return `${fn.name} with a format that is not a string, whose tokens are known only when the query runs`;
+  }
+  // BigQuery's FORMAT_TIME writes a date element as it is, such as %Y.
+  if (name === 'TO_CHAR' && isTime(args[0]) && holds(bigQueryFormat(String(bare(format).literal.value)), DATE_ELEMENTS)) {
+    return `${fn.name} of a TIME with a date in its format, since a TIME has no date`;
+  }
+  return args;
+}
+
+// The parts of `value`, a literal in an OSSIE_SQL_2026 text, to check, which
+// are none, or the name of a literal import does not translate. BigQuery
+// reads a number with an exponent, such as 1e3, as a FLOAT64, as Ossie's
+// approximate number. The repairs write a decimal number, and a whole number
+// past INT64, as a NUMERIC or a BIGNUMERIC, which are exact, and no BigQuery
+// type holds more than 38 digits before the point. Ossie's number has digits,
+// a point and an exponent only, so a number the parser reads with another
+// character, such as 1_000, is not translated.
+function ossieLiteral(value: any): unknown[]|string {
+  const type = value.literal_type;
+  const number = /^(\d*)(\.\d*)?(e[+-]?\d+)?$/i.exec(type === 'number' ? value.value : '');
+  if (type === 'number' && !number) return `the number ${value.value}`;
+  if (number && !number[3] && (number[1].replace(/^0+/, '').length > 38 || (number[2]?.length ?? 0) > 39)) {
+    return `the number ${value.value}`;
+  }
+  return ['string', 'number', 'date', 'time', 'timestamp'].includes(type) ? [] :
+      `${article(type)} ${type.replaceAll('_', ' ')} literal`;
+}
+
+// The BigQuery type an OSSIE_SQL_2026 text casts to with `to`, an engine data
+// type, as BigQuery SQL, undefined when the engine writes it, or a message.
+// BigQuery's NUMERIC holds 29 digits before the point and 9 after it, and its
+// BIGNUMERIC 38 and 38. DECIMAL and NUMERIC without a precision have a scale
+// of 0, as in ANSI SQL:2003, Ossie's base, so they become NUMERIC(29), which
+// rounds half away from zero.
+function ossieCast(kind: string, to: any): string|{sql: string}|undefined {
+  const type = castType(to);
+  const name = `${kind === 'cast' ? 'CAST' : 'TRY_CAST'} to ${typeName(type, 'generic')}`;
+  // The engine reads a negative size as 2^32 plus it.
+  const [size, scale = 0] = [to.length ?? to.precision, to.scale].filter(n => n != null)
+      .map(n => n >= 2 ** 31 ? n - 2 ** 32 : n);
+  if (!OSSIE_CASTS.has(type)) return name;
+  if (type === 'timestamp' && size === undefined) return {sql: 'TIMESTAMP'};
+  if (type === 'decimal' && size === undefined) return {sql: 'NUMERIC(29)'};
+  if (size === undefined) return undefined;
+  const sized = `${size}${to.scale == null ? '' : `, ${scale}`}`;
+  if (size < 1 || scale < 0) return `${name}(${sized})`;
+  if (type === 'var_char' || type === 'string') return {sql: `STRING(${size})`};
+  if (type === 'decimal' && scale <= size && scale <= 9 && size - scale <= 29) return {sql: `NUMERIC(${sized})`};
+  if (type === 'decimal' && scale <= size && scale <= 38 && size - scale <= 38) return {sql: `BIGNUMERIC(${sized})`};
+  return `${name}(${sized})`;
+}
+
+// BigQuery's SQL for TRY_CAST(_1 AS <type>) where `type`, as BigQuery SQL,
+// has a length, precision or scale, such as STRING(3), or undefined for
+// another type. Ossie's TRY_CAST gives NULL for a value that does not fit,
+// where BigQuery's SAFE_CAST raises an error, and otherwise CAST's value. So
+// a string is cast to STRING and checked by its length. A number is cast to
+// the type's NUMERIC or BIGNUMERIC and rounded to the scale, half away from
+// zero, as the cast to the type does: a NUMERIC holds 9 digits after the
+// point and a BIGNUMERIC 38. That value is checked by its digits before the
+// point and cast to the type. The check uses SAFE.ROUND and SAFE.ABS, which
+// give NULL where BigQuery's ROUND and ABS raise an error: rounding past the
+// largest NUMERIC or BIGNUMERIC, as for 99999999999999999999999999999.5, and
+// the absolute value of the smallest BIGNUMERIC.
+function fittedCast(type: string): string|undefined {
+  const [, base, size, scale = '0'] = /^(STRING|NUMERIC|BIGNUMERIC)\((\d+)(?:, (\d+))?\)$/.exec(type) ?? [];
+  if (!base) return undefined;
+  const value = 'SAFE_CAST(_1 AS STRING)';
+  if (base === 'STRING') return `IF(LENGTH(${value}) <= ${size}, CAST(${value} AS ${type}), NULL)`;
+  const rounded = `ROUND(SAFE_CAST(_1 AS ${base}), ${scale})`;
+  const digits = Number(size) - Number(scale);
+  const bound = digits <= 18 ? `1${'0'.repeat(digits)}` : `CAST('1${'0'.repeat(digits)}' AS BIGNUMERIC)`;
+  return `IF(SAFE.ABS(SAFE.${rounded}) < ${bound}, CAST(${rounded} AS ${type}), NULL)`;
+}
+
+// BigQuery's SQL for the functions of an OSSIE_SQL_2026 text that BigQuery
+// names or computes another way, by name, with _1, _2 and so on for the
+// arguments.
+const OSSIE_CALL_FORMS: Record<string, string> = {
+  ZEROIFNULL: 'COALESCE(_1, 0)', NULLIFZERO: 'NULLIF(_1, 0)', SPLIT_PART: 'SPLIT(_1, _2)[SAFE_ORDINAL(_3)]',
+  CHARINDEX: 'INSTR(_2, _1)', REGEXP_COUNT: 'ARRAY_LENGTH(REGEXP_EXTRACT_ALL(_1, _2))',
+};
+
+// BigQuery's SQL for the nodes of an OSSIE_SQL_2026 text that BigQuery names or
+// computes another way, by kind, with the parts that are its operands. π is
+// ACOS(-1), which BigQuery gives as the FLOAT64 nearest π.
+const OSSIE_FORMS: Record<string, [string, string[]]> = {
+  mod: ['MOD(_1, _2)', ['left', 'right']], pi: ['ACOS(-1)', []],
+  radians: ['(_1 * ACOS(-1) / 180)', ['this']], degrees: ['(_1 * 180 / ACOS(-1))', ['this']],
+  contains: ['(INSTR(_1, _2) > 0)', ['this', 'expression']],
+};
+
+// The node to write in place of `node`, a node of an OSSIE_SQL_2026 text, with
+// a FORM_CALL for each form it needs, or undefined to translate it as it is.
+// A LIKE or ILIKE pattern reads each backslash as a character, which
+// BigQuery's LIKE reads as one only when doubled. SUBSTRING(s, start, n)
+// follows ANSI SQL:2003, Ossie's base: a start below 1 still ends the
+// substring at start + n - 1, where BigQuery's SUBSTRING reads 0 as 1 and counts
+// a negative start from the end. So a start that is not a whole number from
+// 1 gets a form that starts at 1 and shortens n by the positions before 1.
+// A negative n keeps BigQuery's error, as ANSI raises one. Without n, such a
+// start gives the whole string, from position 1. The values that a
+// comparison, IS [NOT] DISTINCT FROM, BETWEEN, IN or a CASE with an operand
+// compares, and those that COALESCE, IFNULL, NVL, IF, CASE, GREATEST or LEAST
+// gives, get the casts that ossieStamps gives. NULLIF(a, b) compares a and b
+// with those casts and gives a, as ANSI SQL defines it, so a keeps its type.
+function ossieForm(node: any): any {
+  const kind = kindOf(node) ?? '';
+  const value = node[kind];
+  const name = String(value?.name).toUpperCase();
+  if (kind === 'window_function') return windowForm(value);
+  if (kind === 'within_group' || kind === 'filter' || kind === 'aggregate_function' || kind === 'median') {
+    return percentileForm(node);
+  }
+  if (OSSIE_AGGREGATES.includes(kind) && value.filter) return filtered(node);
+  const args: any[] = kind === 'function' ? value.args ?? [] : [];
+  const nullif = name === 'NULLIF' && args.length === 2 ? ossieStamps(args) : undefined;
+  if (nullif?.size) return formCall('IF(_1 = _2, NULL, _3)', [...args.map(a => nullif.get(a) ?? a), args[0]]);
+  const stamps = new Map([
+    ...ossieStamps(comparedValues(kind, value) ??
+        (kind === 'null_safe_eq' || kind === 'null_safe_neq' ? [value.left, value.right] : [])),
+    ...ossieStamps(name === 'GREATEST' || name === 'LEAST' ? args : returned(node)),
+  ]);
+  if (stamps.size) return swapped(node, stamps);
+  if (kind === 'function' && OSSIE_CALL_FORMS[name]) return formCall(OSSIE_CALL_FORMS[name], value.args);
+  if (kind === 'function') return ossieDateForm(name, args);
+  const [sql, parts] = OSSIE_FORMS[kind] ?? [];
+  if (sql) return formCall(sql, parts!.map(p => value[p]));
+  const part = OSSIE_PARTS[kind === 'extract' ? String(partName(value.field)).toLowerCase() : kind.replaceAll('_', '')];
+  if (part) return formCall(`EXTRACT(${part} FROM _1)`, [value.this]);
+  if (kind === 'substring' && !/^0*[1-9]\d*$/.test(numberText(value.start) ?? '')) {
+    return value.length ?
+        formCall('SUBSTRING(_1, GREATEST(_2, 1), GREATEST(_3 - GREATEST(1 - _2, 0), LEAST(_3, 0)))',
+            [value.this, value.start, value.length]) :
+        formCall('SUBSTRING(_1, GREATEST(_2, 1))', [value.this, value.start]);
+  }
+  if (kind === 'literal' && value.literal_type === 'timestamp') {
+    return formCall('CAST(_1 AS TIMESTAMP)', [{literal: {...value, literal_type: 'string'}}]);
+  }
+  const cast = (kind === 'cast' || kind === 'try_cast') && ossieCast(kind, value.to);
+  const sized = typeof cast === 'object' && kind === 'try_cast' && fittedCast(cast.sql);
+  if (sized) return formCall(sized, [value.this]);
+  if (typeof cast === 'object') return formCall(`${kind === 'cast' ? 'CAST' : 'SAFE_CAST'}(_1 AS ${cast.sql})`, [value.this]);
+  if (kind !== 'like' && kind !== 'i_like') return undefined;
+  const pattern = bare(value.right)?.literal;
+  const text = pattern?.literal_type === 'string' ? String(pattern.value) : undefined;
+  const doubled = text?.includes('\\') ? {literal: {...pattern, value: text.replaceAll('\\', '\\\\')}} :
+      pattern || bare(value.right)?.null !== undefined ? undefined : formCall("REPLACE(_1, '\\\\', '\\\\\\\\')", [value.right]);
+  return doubled && {[kind]: {...value, right: doubled}};
+}
+
+// The FORM_CALL in place of each of `values`, by value, for the values that
+// one node of an OSSIE_SQL_2026 text compares or gives. A value that is
+// visibly a DATE or a DATETIME beside one that is visibly a TIMESTAMP is cast
+// to TIMESTAMP, since BigQuery compares neither with a TIMESTAMP or gives
+// both from one function. The cast reads a DATE at midnight and a DATETIME at
+// its wall-clock time in BigQuery's default time zone, UTC, and BigQuery then
+// works with TIMESTAMPs. A value whose type import cannot see, such as a
+// column, stays as written.
+function ossieStamps(values: any[]): Map<any, any> {
+  const types = values.map(v => timeType(v, 'ossie'));
+  const cast = types.includes('TIMESTAMP') ? values.filter((_, i) => types[i] === 'DATE' || types[i] === 'DATETIME') : [];
+  return new Map(cast.map(v => [v, formCall('CAST(_1 AS TIMESTAMP)', [v])]));
+}
+
+// The FORM_CALL for a call of the date function `name` with `args` in an
+// OSSIE_SQL_2026 text, or undefined for another function. DATEDIFF counts as
+// BigQuery's DATE_DIFF does. DATE_DIFF counts no week, month, quarter or year
+// between TIMESTAMPs, so unless both values are visibly DATEs or both
+// DATETIMEs, it counts them between the values cast to DATETIME. That reads the
+// wall-clock time of a TIMESTAMP in BigQuery's default time zone, UTC, as a
+// month is added to one. For a day or less, a value beside one that is visibly
+// a TIMESTAMP is cast to TIMESTAMP, as a comparison casts a DATE or a DATETIME
+// (see ossieStamps), and DATE_DIFF counts between TIMESTAMPs. Otherwise a value
+// that is visibly a DATE beside one that is not gets the casts to DATETIME for
+// every part. That keeps the count for a DATE and a DATETIME, and counts the
+// days to the date of a value whose type import cannot see.
+// TO_CHAR formats a TIME with FORMAT_TIME, a
+// TIMESTAMP in UTC, as FORMAT_TIMESTAMP does, and a DATE as itself where the
+// format has no time of day. A value whose type import cannot see is
+// formatted as its TIME() where the format has a time of day and no date.
+// BigQuery's TIME() takes a DATE, a TIME, a DATETIME and a TIMESTAMP alike,
+// and gives midnight for a DATE. With any other format, the value is
+// formatted as the DATETIME it casts to, which BigQuery casts from a DATE, a
+// DATETIME and a TIMESTAMP, as is any other value.
+function ossieDateForm(name: string, args: any[]): any {
+  const part = String(partName(args[0])).toLowerCase();
+  if (name === 'DATE_PART') return formCall(`EXTRACT(${OSSIE_PARTS[part]} FROM _1)`, [args[1]]);
+  if (name === 'DATE_TRUNC') return formCall(`${isTime(args[1]) ? 'TIME' : 'DATE'}_TRUNC(_1, ${OSSIE_TRUNC[part]})`, [args[1]]);
+  const text = (value: string) => ({literal: {literal_type: 'string', value}});
+  const format = name in OSSIE_FORMATS && args[1] ? bigQueryFormat(String(bare(args[1]).literal.value)) : undefined;
+  if (name === 'DATEDIFF') {
+    const unit = DATE_TABLES.ossie.words[part];
+    if (args.slice(1).some(isTime)) return formCall(`TIME_DIFF(_2, _1, ${unit})`, args.slice(1));
+    const types = new Set(args.slice(1).map(a => timeType(a, 'ossie')));
+    const long = ['WEEK', 'MONTH', 'QUARTER', 'YEAR'].includes(unit);
+    // DATE_DIFF takes no DATE or DATETIME beside a TIMESTAMP, so for a day or
+    // less a value beside one that is visibly a TIMESTAMP is cast to TIMESTAMP.
+    const instant = !long && types.has('TIMESTAMP') && types.size > 1;
+    const stamped = !instant && ((types.has('DATE') && types.size > 1) ||
+        (long && !(types.size === 1 && (types.has('DATE') || types.has('DATETIME')))));
+    const own = (i: number) => timeType(args[i], 'ossie') === 'TIMESTAMP' ? `_${i}` : `CAST(_${i} AS TIMESTAMP)`;
+    // A DATE plus no hours is its DATETIME, and a DATETIME or a TIMESTAMP plus
+    // none is itself, so DATE_DIFF counts hours or less between DATEs too.
+    const hours = !stamped && !instant && SUB_DAY.includes(unit) &&
+        !(types.size === 1 && (types.has('DATETIME') || types.has('TIMESTAMP')));
+    const [end, start] = stamped ? ['CAST(_2 AS DATETIME)', 'CAST(_1 AS DATETIME)'] : instant ? [own(2), own(1)] :
+        hours ? ['_2 + INTERVAL 0 HOUR', '_1 + INTERVAL 0 HOUR'] : ['_2', '_1'];
+    return formCall(`DATE_DIFF(${end}, ${start}, ${unit === 'WEEK' ? 'ISOWEEK' : unit})`, args.slice(1));
+  }
+  if (name === 'TO_DATE' || name === 'TO_TIMESTAMP') {
+    const type = name === 'TO_DATE' ? 'DATE' : 'TIMESTAMP';
+    return format === undefined ? formCall(`CAST(_1 AS ${type})`, [args[0]]) : formCall(`PARSE_${type}(_1, _2)`, [text(format), args[0]]);
+  }
+  if (name !== 'TO_CHAR') return undefined;
+  const type = isTime(args[0]) ? 'TIME' : timeType(args[0], 'ossie');
+  const sql = type === 'TIME' ? 'FORMAT_TIME(_1, _2)' : type === 'TIMESTAMP' ? 'FORMAT_TIMESTAMP(_1, _2)' :
+      type === 'DATETIME' ? 'FORMAT_DATETIME(_1, _2)' :
+      type === 'DATE' && !holds(format!, TIME_ELEMENTS) ? 'FORMAT_DATE(_1, _2)' :
+      type === undefined && holds(format!, TIME_ELEMENTS) && !holds(format!, DATE_ELEMENTS) ?
+      'FORMAT_TIME(_1, TIME(_2))' :
+      'FORMAT_DATETIME(_1, CAST(_2 AS DATETIME))';
+  return formCall(sql, [text(format!), args[0]]);
+}
+
+// Whether `node`, a value in an OSSIE_SQL_2026 text, is visibly a TIME: the
+// current time, a TIME literal, a cast to TIME, a TIME plus an amount, its
+// DATE_TRUNC, or a COALESCE, IF or CASE that gives one (see timeType).
+function isTime(node: any): boolean {
+  return timeType(node, 'ossie') === 'TIME';
+}
+
+// The parts of `value`, a node of `kind` in an OSSIE_SQL_2026 text that is an
+// aggregate by name, WITHIN GROUP or the FILTER of WITHIN GROUP, that import
+// still has to check, or the name of a construct in it import does not
+// translate. PERCENTILE_CONT and PERCENTILE_DISC take WITHIN GROUP with one
+// value, and they and APPROX_PERCENTILE a fraction from 0 to 1, which the
+// forms write into their SQL. The forms write it as a NUMERIC or BIGNUMERIC,
+// which holds 38 decimal places, and APPROX_PERCENTILE's form asks
+// APPROX_QUANTILES for 10 to the power of its decimal places, which BigQuery
+// runs up to 100000.
+function ossiePercentile(kind: string, value: any): unknown[]|string|undefined {
+  if (kind === 'filter') return bare(value.this)?.within_group ? [value.this, value.expression] : undefined;
+  const fn = kind === 'within_group' ? bare(value.this)?.aggregate_function ?? bare(value.this)?.function : value;
+  const name = String(fn?.name).toUpperCase();
+  if (name.startsWith(PASS)) {
+    return `${kind === 'within_group' ? 'WITHIN GROUP' : 'FILTER'} on ${fn.name}, a function outside Ossie's tables`;
+  }
+  const within = name === 'PERCENTILE_CONT' || name === 'PERCENTILE_DISC';
+  if (within && kind !== 'within_group') return `${fn.name} without WITHIN GROUP`;
+  if (!within && name !== 'APPROX_PERCENTILE' || within !== (kind === 'within_group')) return undefined;
+  if (kind === 'within_group' && value.order_by.length !== 1) return `${fn.name} ordered by ${value.order_by.length} values`;
+  const p = fraction(fn.args.at(-1));
+  if (p === undefined) return `${fn.name} with a fraction that is not a number from 0 to 1`;
+  const most = name === 'APPROX_PERCENTILE' ? 5 : 38;
+  if ((/\.0$/.test(p) ? 0 : p.length - p.indexOf('.') - 1) > most) {
+    return `${fn.name} with a fraction of more than ${most} decimal places, ${most === 5 ?
+        "which needs more than 100000 quantiles in BigQuery's APPROX_QUANTILES" : 'more than a BigQuery BIGNUMERIC holds'}`;
+  }
+  return kind === 'within_group' ? [value.order_by[0].this] : [fn.args[0], fn.filter];
+}
+
+// The text of `node`, a number literal from 0 to 1, as a decimal number with
+// a point and no zeros at the end of its fraction, such as 0.5 for 5e-1, or
+// undefined for any other value. A point more than 39 places to the left
+// counts as 39 places. That keeps the text short. A number other than zero
+// then still has more than 38 decimal places, and zero gives 0.0. A point more
+// than 39 places to the right counts as 40 places, so zero still gives 0.0.
+function fraction(node: any): string|undefined {
+  const text = bare(node)?.literal?.literal_type === 'number' ? String(bare(node).literal.value) : '';
+  const match = /^(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(text);
+  if (!text || !match) return undefined;
+  const [, whole = '', part = '', exponent = '0'] = match;
+  // The number is `digits` with its point after `point` of them.
+  const [digits, point] = [whole + part, Math.min(Math.max(whole.length + Number(exponent), -39), 40)];
+  if (point > 39 && /[1-9]/.test(digits)) return undefined;
+  const before = point <= 0 ? '0' : digits.slice(0, point).padEnd(point, '0').replace(/^0+(?=\d)/, '');
+  const after = point <= 0 ? '0'.repeat(-point) + digits : digits.slice(point);
+  return before === '0' || (before === '1' && !/[1-9]/.test(after)) ? `${before}.${after.replace(/0+$/, '') || '0'}` : undefined;
+}
+
+// BigQuery's SQL for the aggregates of an OSSIE_SQL_2026 text that BigQuery
+// computes another way, by name, with _1 for the value, _2 for the fraction,
+// {A} for the values in order and {C} for their count. PERCENTILE_CONT
+// interpolates between the values at the floor and the ceiling of its
+// position, the fraction times {C} - 1. Its difference divided by 1 is a
+// FLOAT64 for INT64 values and a NUMERIC for NUMERIC values, which gives the
+// type BigQuery's own PERCENTILE_CONT gives. PERCENTILE_DISC takes the first
+// value whose position reaches the fraction times {C}.
+const POSITION = '_2 * ({C} - 1)';
+const PERCENTILE_FORMS: Record<string, string> = {
+  MEDIAN: '({A}[SAFE_OFFSET(DIV({C} - 1, 2))] + {A}[SAFE_OFFSET(DIV({C}, 2))]) / 2',
+  PERCENTILE_CONT: `{A}[SAFE_OFFSET(CAST(FLOOR(${POSITION}) AS INT64))] + ({A}[SAFE_OFFSET(CAST(CEIL(${POSITION}) ` +
+      `AS INT64))] - {A}[SAFE_OFFSET(CAST(FLOOR(${POSITION}) AS INT64))]) / 1 * (${POSITION} - FLOOR(${POSITION}))`,
+  PERCENTILE_DISC: '{A}[SAFE_OFFSET(GREATEST(CAST(CEIL(_2 * {C}) AS INT64), 1) - 1)]',
+};
+
+// The FORM_CALL for `node`, MEDIAN, APPROX_PERCENTILE, or PERCENTILE_CONT or
+// PERCENTILE_DISC with WITHIN GROUP, in an OSSIE_SQL_2026 text, with any
+// FILTER and DISTINCT it has. The values in order are ARRAY_AGG's, which skips
+// NULL as the aggregate does. APPROX_PERCENTILE takes the quantile of
+// APPROX_QUANTILES whose number of buckets, 100 or a power of 10, gives the
+// fraction exactly.
+function percentileForm(node: any): any {
+  const kind = kindOf(node)!;
+  const value = node[kind];
+  const within = kind === 'filter' ? bare(value.this).within_group : kind === 'within_group' ? value : undefined;
+  const fn = within ? bare(within.this).aggregate_function : kind === 'aggregate_function' ? value : undefined;
+  const filter = kind === 'filter' ? value.expression : within ? undefined : value.filter;
+  const x = within ? within.order_by[0].this : fn ? fn.args[0] : value.this;
+  const operand = filter ? formCall('IF(_1, _2, NULL)', [filter, x]) : x;
+  const distinct = (fn ?? value).distinct ? 'DISTINCT ' : '';
+  const p = fn && fraction(fn.args.at(-1))!;
+  const name = fn ? String(fn.name).toUpperCase() : 'MEDIAN';
+  if (name === 'APPROX_PERCENTILE') {
+    const [int, frac] = p!.split('.');
+    const decimals = frac === '0' ? 0 : frac.length;
+    const buckets = 10n ** BigInt(Math.max(2, decimals));
+    const quantile = BigInt(int + (frac === '0' ? '' : frac)) * buckets / 10n ** BigInt(decimals);
+    return formCall(`APPROX_QUANTILES(${distinct}_1, ${buckets})[SAFE_OFFSET(${quantile})]`, [operand]);
+  }
+  const values = `ARRAY_AGG(${distinct}_1 IGNORE NULLS ORDER BY _1${within?.order_by[0].desc ? ' DESC' : ''})`;
+  const sql = PERCENTILE_FORMS[name].replaceAll('{A}', values).replaceAll('{C}', `COUNT(${distinct}_1)`);
+  return formCall(sql, p ? [operand, {literal: {literal_type: 'number', value: p}}] : [operand]);
+}
+
+// `node`, an aggregate of an OSSIE_SQL_2026 text with FILTER (WHERE p), as the
+// aggregate of IF(p, x, NULL), which gives the same value, since the
+// aggregate skips NULL. COUNT(*) counts IF(p, 1, NULL).
+function filtered(node: any): any {
+  const kind = kindOf(node)!;
+  const value = node[kind];
+  const counted = value.star ? formCall('IF(_1, 1, NULL)', [value.filter]) :
+      formCall('IF(_1, _2, NULL)', [value.filter, value.this]);
+  return {[kind]: {...value, filter: null, this: counted, ...(value.star ? {star: false} : {})}};
+}
+
+// The functions an OSSIE_SQL_2026 text calls only with OVER, by kind, with
+// the name of each and the parts that are its arguments.
+const OSSIE_WINDOWED: Record<string, [string, string[]]> = {
+  row_number: ['ROW_NUMBER', []], rank: ['RANK', []], dense_rank: ['DENSE_RANK', []],
+  percent_rank: ['PERCENT_RANK', []], cume_dist: ['CUME_DIST', []], n_tile: ['NTILE', ['num_buckets']],
+  lag: ['LAG', ['this', 'offset', 'default']], lead: ['LEAD', ['this', 'offset', 'default']],
+  first_value: ['FIRST_VALUE', ['this']], last_value: ['LAST_VALUE', ['this']], nth_value: ['NTH_VALUE', ['this', 'offset']],
+};
+
+// The parts of `value`, a window function in an OSSIE_SQL_2026 text, that
+// import still has to check, the name of a construct in it import does not
+// translate, or undefined when import does not translate it. The function is
+// one of OSSIE_WINDOWED, an aggregate, or a function outside Ossie's tables.
+// BigQuery computes MEDIAN and the percentiles over a window with its own
+// PERCENTILE_CONT and PERCENTILE_DISC, which order the values ascending, take
+// no DISTINCT, and take a window with neither ORDER BY nor a frame. BigQuery
+// has no approximate aggregate over a window. Ossie's frame is ROWS or RANGE
+// with one or two bounds, and BigQuery takes only a number or a parameter as
+// a bound's offset.
+function ossieWindow(value: any): unknown[]|string|undefined {
+  const fn = value.this;
+  const kind = kindOf(fn)!;
+  const {window_name: named, partition_by: partitions, order_by: items, frame} = value.over;
+  if (named) return 'OVER with a window name';
+  if (frame?.kind === 'Groups' || frame?.exclude) return `OVER with ${frame.exclude ? 'EXCLUDE' : 'GROUPS'}`;
+  const bounds = [frame?.start, frame?.end].flatMap(b => b && typeof b === 'object' ? Object.values(b) : []);
+  const offset = bounds.find(b => bare(b)?.literal?.literal_type !== 'number');
+  if (offset) {
+    const sql = withoutEngineMessages(() => loadedSqlEngine()!.generate([offset], 'generic')).sql?.[0];
+    return `OVER with the frame offset ${sql}, since BigQuery takes only a number there`;
+  }
+  const parts = [...partitions, ...items.map((o: any) => o.this), ...bounds];
+  const windowed = OSSIE_WINDOWED[kind];
+  if (windowed && fn[kind]?.ignore_nulls) return `${windowed[0]} with IGNORE NULLS`;
+  if (windowed) return [...windowed[1].map(p => fn[kind][p]).filter(p => p), ...parts];
+  const within = kind === 'filter' ? bare(fn.filter.this).within_group : fn.within_group;
+  const name = String((within ? bare(within.this).aggregate_function : fn[kind])?.name).toUpperCase();
+  if (name.startsWith('APPROX_')) return `${name} with OVER, since BigQuery has no approximate aggregate over a window`;
+  if (['MEDIAN', 'PERCENTILE_CONT', 'PERCENTILE_DISC'].includes(name) && (items.length || frame)) {
+    return `${name} with ORDER BY or a frame in OVER, since BigQuery has no percentile over an ordered window or a frame`;
+  }
+  const distinct = name === 'MEDIAN' ? fn.median.distinct : within && bare(within.this).aggregate_function?.distinct;
+  if (['MEDIAN', 'PERCENTILE_CONT', 'PERCENTILE_DISC'].includes(name) && distinct) {
+    const own = name === 'PERCENTILE_DISC' ? name : 'PERCENTILE_CONT';
+    return `${name} with DISTINCT and OVER, since BigQuery's ${own} over a window takes no DISTINCT`;
+  }
+  if (name === 'PERCENTILE_DISC' && within?.order_by[0]?.desc) {
+    return "PERCENTILE_DISC with DESC and OVER, since BigQuery's PERCENTILE_DISC over a window orders values ascending";
+  }
+  const passed = kind === 'function' && name.startsWith(PASS);
+  return passed || within || OSSIE_AGGREGATES.includes(kind) || kind === 'aggregate_function' ? [fn, ...parts] : undefined;
+}
+
+// The functions that write the NULL placement of a window's ORDER BY item
+// into its value in the text the engine translates, NULLS FIRST and NULLS
+// LAST, since the engine drops the clause when it translates generic SQL.
+// repairNode writes the clause in its place.
+const NULLS_CALLS = ['KCMD_NULLS_FIRST', 'KCMD_NULLS_LAST'];
+
+// The window functions that take no frame.
+const FRAMELESS = new Set(['row_number', 'rank', 'dense_rank', 'percent_rank', 'cume_dist', 'n_tile', 'lag', 'lead']);
+
+// `value`, a window function in an OSSIE_SQL_2026 text, with each ORDER BY
+// item placing NULL as Ossie does. An item without NULLS FIRST or NULLS LAST
+// places NULL as the largest value: last for ASC and first for DESC. BigQuery
+// takes NULLS FIRST and NULLS LAST, which import writes with a call of
+// NULLS_CALLS, only in a window function without a frame and in a ROWS frame.
+// It refuses the one it does not place NULL by in a RANGE frame, which is also
+// the frame an aggregate or another function gets with ORDER BY and no frame.
+// There, an item is sorted first by whether it is NULL, as in `x IS NULL, x`,
+// which leaves the same rows equal. A RANGE frame with an offset, such as 2
+// PRECEDING, takes one item, so the item is negated and sorted the other way,
+// as `-x DESC` for `x ASC NULLS LAST`, which frames the same rows and places
+// NULL as BigQuery's DESC does. MEDIAN and the percentiles become BigQuery's
+// PERCENTILE_CONT and PERCENTILE_DISC, the fraction of a descending
+// PERCENTILE_CONT taken from 1. PERCENTILE_CONT reads x / 1 and a NUMERIC
+// fraction, which gives a FLOAT64 for INT64 values and a NUMERIC for NUMERIC
+// values, the type of MEDIAN and PERCENTILE_CONT without OVER. RESPECT NULLS
+// is the default in ANSI SQL and in BigQuery, whose LAG and LEAD take none, so
+// it is left out.
+function windowForm(value: any): any {
+  const call = sqlExpressionTree(`${NULLS_CALLS[0]}(x)`, 'BIGQUERY').function;
+  const fn = value.this;
+  const kind = kindOf(fn)!;
+  const frame = value.over.frame;
+  const ranged = frame ? frame.kind === 'Range' : !FRAMELESS.has(kind);
+  const offset = [frame?.start, frame?.end].some(b => b && typeof b === 'object');
+  const items = value.over.order_by.flatMap((o: any) => {
+    const first = o.nulls_first ?? !!o.desc;
+    if (!ranged) return [{...o, nulls_first: null, this: {function: {...call, name: NULLS_CALLS[first ? 0 : 1], args: [o.this]}}}];
+    const item = {...o, nulls_first: null};
+    // BigQuery places NULL first for ASC and last for DESC.
+    if (first !== !!o.desc) return [item];
+    if (offset) return [{...item, desc: !o.desc, explicit_asc: false, this: formCall('-_1', [o.this])}];
+    return [{...item, this: formCall('_1 IS NULL', [o.this])}, item];
+  });
+  const within = kind === 'filter' ? bare(fn.filter.this).within_group : fn.within_group;
+  const filter = kind === 'filter' ? fn.filter.expression : fn.median?.filter;
+  let percentile;
+  if (within || kind === 'median') {
+    const x = within ? within.order_by[0].this : fn.median.this;
+    const aggregate = within && bare(within.this).aggregate_function;
+    const p = aggregate ? fraction(aggregate.args[0])! : '0.5';
+    const [int, frac] = p.split('.');
+    const scale = 10n ** BigInt(frac.length);
+    const desc = within?.order_by[0].desc ? scale - BigInt(int + frac) : BigInt(int + frac);
+    const [whole, part] = [String(desc / scale), String(desc % scale).padStart(frac.length, '0')];
+    const name = aggregate ? String(aggregate.name).toUpperCase() : 'PERCENTILE_CONT';
+    const operand = filter ? formCall('IF(_1, _2, NULL)', [filter, x]) : x;
+    // The repairs write the fraction as a NUMERIC or a BIGNUMERIC, which both
+    // functions take, so it keeps every digit.
+    const share = {literal: {literal_type: 'number', value: `${whole}.${part}`}};
+    percentile = formCall(name === 'PERCENTILE_CONT' ? 'PERCENTILE_CONT(_1 / 1, _2)' : `${name}(_1, _2)`, [operand, share]);
+  }
+  const respected = OSSIE_WINDOWED[kind] && fn[kind]?.ignore_nulls === false ? {[kind]: {...fn[kind], ignore_nulls: null}} : fn;
+  return {window_function: {...value, this: percentile ?? respected, over: {...value.over, order_by: items}}};
 }

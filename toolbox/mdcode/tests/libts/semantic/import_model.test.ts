@@ -278,6 +278,13 @@ describe('conversion, strict mode, and translation', () => {
     ['a vanilla field with no supported dialect',
      ossieDoc({fieldExpr: MDX_ONLY}), 'google',
      "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect; add one."],
+    ['a vanilla field with no supported dialect, imported as vanilla',
+     ossieDoc({fieldExpr: MDX_ONLY}), 'ossie',
+     "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect, and " +
+     "version '0.2.0.dev0' requires an 'expression' on every field; add one."],
+    ['a metric with no supported dialect',
+     googleDoc({extra: `    metrics:\n      - {name: m, entity: orders, expression: ${MDX_ONLY}}\n`}), 'google',
+     "metric 'm': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla query-valued source', ossieDoc({source: '"SELECT * FROM sales.orders"'}), 'google',
      "entity 'orders': source 'SELECT * FROM sales.orders' is a query; name a table."],
     ['a vanilla query-valued source on a dataset marked abstract',
@@ -1821,24 +1828,117 @@ describe('dialects and datatypes', () => {
     for (const line of lines) expect(res.files[0].content).toContain(line);
   });
 
-  test.each([false, true])(
-      'reports an error when a vanilla field or metric is left with no supported dialect, with --input first-party %p',
-      async strict => {
-        const extra =
-            `    metrics:\n      - name: total_orders\n        expression:\n          dialects:\n            - {dialect: MAQL, expression: "SELECT COUNT(order_id)"}\n`;
-        const res = await importSemanticModelYaml(ossieDoc({
-          fieldExpr:
-              '{\n              dialects: [{dialect: MAQL, expression: "1"}]\n            }',
-          extra,
-        }), {strict});
+  const AQL_METRIC =
+      '    metrics:\n      - name: delivered\n        expression: {dialects: [{dialect: HOLISTICS_AQL, ' +
+      'expression: "count(orders.order_id) | where(orders.delivered)"}]}\n';
+  const removedAql =
+      "metric 'delivered': removed metric whose expression is written only in unsupported " +
+      "dialect 'HOLISTICS_AQL'; add the metric back with an entry in a supported SQL dialect.";
+  // [what the input holds, the input, the flavor, the warnings, a name the
+  // written file leaves out].
+  test.each([
+    ['a metric with only a HOLISTICS_AQL entry', ossieDoc({extra: AQL_METRIC}), 'ossie',
+     [removedAql], 'delivered'],
+    ['a Google metric with only a HOLISTICS_AQL entry', googleDoc({extra: AQL_METRIC}), 'google',
+     [removedAql], 'delivered'],
+    ['a vanilla field with only a THOUGHTSPOT entry, and the metric that reads it',
+     ossieDoc({extra:
+         '          - name: amount\n            expression: {dialects: [{dialect: THOUGHTSPOT, ' +
+         'expression: "[orders::amount]"}]}\n    metrics:\n' +
+         '      - {name: total, expression: {dialects: [{dialect: BIGQUERY, expression: SUM(orders.amount)}]}}\n' +
+         '      - {name: n, expression: {dialects: [{dialect: BIGQUERY, expression: COUNT(orders.order_id)}]}}\n'}),
+     'ossie',
+     ["field 'orders.amount': removed field whose expression is written only in unsupported " +
+      "dialect 'THOUGHTSPOT', since version '0.2.0.dev0' requires an 'expression' on every " +
+      'field; add the field back with an entry in a supported SQL dialect.',
+      "metric 'total': removed metric whose expression reads removed field 'orders.amount'; " +
+      'add the metric back with the field.'],
+     'amount'],
+    ['such a field of a Spanner table whose dialect no lookup read, and the ANSI_SQL metric that reads it',
+     ossieDoc({
+       source: SPANNER_TABLE,
+       fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
+       extra:
+         '          - name: amount\n            expression: {dialects: [{dialect: THOUGHTSPOT, ' +
+         'expression: "[orders::amount]"}]}\n    metrics:\n' +
+         '      - {name: total, expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount)}]}}\n'}),
+     'ossie',
+     ["field 'orders.amount': removed field whose expression is written only in unsupported " +
+      "dialect 'THOUGHTSPOT', since version '0.2.0.dev0' requires an 'expression' on every " +
+      'field; add the field back with an entry in a supported SQL dialect.',
+      "metric 'total': removed metric whose expression reads removed field 'orders.amount'; " +
+      'add the metric back with the field.'],
+     'amount'],
+    ['such a field of a Cloud SQL table whose dialect no lookup read, and the metric that reads it in double quotes',
+     ossieDoc({
+       source: `${CLOUDSQL_PREFIX}/tables/orders`,
+       fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
+       extra:
+         '          - name: amount\n            expression: {dialects: [{dialect: THOUGHTSPOT, ' +
+         'expression: "[orders::amount]"}]}\n    metrics:\n' +
+         `      - {name: total, expression: {dialects: [{dialect: ANSI_SQL, expression: 'SUM("orders"."amount")'}]}}\n`}),
+     'ossie',
+     ["field 'orders.amount': removed field whose expression is written only in unsupported " +
+      "dialect 'THOUGHTSPOT', since version '0.2.0.dev0' requires an 'expression' on every " +
+      'field; add the field back with an entry in a supported SQL dialect.',
+      "metric 'total': removed metric whose expression reads removed field 'orders.amount'; " +
+      'add the metric back with the field.'],
+     'amount'],
+  ] as Array<[string, string, 'ossie'|'google', string[], string]>)(
+      'removes %s, and reports it', async (_, input, flavor, warnings, gone) => {
+        const res = await importSemanticModelYaml(input, {flavor});
 
-        expect(res.ok).toBe(false);
-        expect(res.errors).toContain(
-            "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect, and " +
-            "version '0.2.0.dev0' requires an 'expression' on every field; add one.");
-        expect(res.errors).toContain(
-            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one.");
+        expect(res.errors).toEqual([]);
+        expect(res.warnings).toEqual(warnings);
+        expect(res.files[0].content).not.toContain(gone);
       });
+
+  const SPLIT = 'A comma ends an entry of a flow mapping, so if the comma belongs to the text, quote the text, for example';
+  test.each([
+    ['with --flavor ossie', {flavor: 'ossie'}, ossieDoc({fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: ROUND(price, 2)}]}'})],
+    ['with --flavor google', {flavor: 'google'}, ossieDoc({fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: ROUND(price, 2)}]}'})],
+    [
+      'under --input first-party', {flavor: 'ossie', strict: true},
+      googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: ROUND(price, 2)}]}'}),
+    ],
+  ] as const)('stops on a text a comma split in a flow mapping, and says to quote it, %s', async (_, opts, input) => {
+    const res = await importSemanticModelYaml(input, opts);
+
+    expect(res.errors).toEqual([
+      "Semantic model load error: field 'orders.order_id': unknown key '2)' in entry 1 of " +
+          `'dialects' of 'expression'; it takes 'dialect' and 'expression'. ${SPLIT} ` +
+          `'expression: "ROUND(price, 2)"'`,
+    ]);
+  });
+
+  test.each([
+    ['names sql when a comma splits the sql', '{sql: CONCAT(a, b, c)}',
+     "unknown keys 'b' and 'c)' in 'expression'; it takes 'sql' and 'dialects'", 'sql'],
+    ['names the entry of dialects the author wrote', '{sql: a, dialects: [{dialect: SNOWFLAKE, expression: CONCAT(a, b, c)}]}',
+     "unknown keys 'b' and 'c)' in entry 1 of 'dialects' of 'expression'; it takes 'dialect' and 'expression'", 'expression'],
+    ['names an OSSIE_SQL_2026 entry of dialects', '{dialects: [{dialect: OSSIE_SQL_2026, expression: CONCAT(a, b, c)}]}',
+     "unknown keys 'b' and 'c)' in entry 1 of 'dialects' of 'expression'; it takes 'dialect' and 'expression'", 'expression'],
+  ])('%s of an Ossie root model, with no warning about the text before the comma', async (_, expression, problem, key) => {
+    const input = `version: 0.3.0.dev0\nname: retail\ndatasets:\n  - name: orders\n    source: ${BQ_TABLE}\n` +
+        `    fields:\n      - {name: r, expression: ${expression}}\n`;
+    const res = await importSemanticModelYaml(input, {flavor: 'google'});
+
+    expect(res.errors).toEqual([
+      `Semantic model load error: field 'orders.r': ${problem}. ${SPLIT} '${key}: "CONCAT(a, b, c)"'`,
+    ]);
+    expect(res.warnings.filter(w => w.includes('CONCAT(a'))).toEqual([]);
+  });
+
+  test('changes only what it repairs in a Google file with a key that has no value', async () => {
+    const input = googleDoc({
+      modelAiContext: '    ai_context: {instructions: Sales, custom: {owner}}\n',
+      fieldExpr: '{dialects: [{dialect: GOOGLE_SQL, expression: order_id}]}',
+    });
+    const res = await importSemanticModelYaml(input, {flavor: 'google'});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toBe(input.replace('GOOGLE_SQL', 'BIGQUERY'));
+  });
 
   test(
       'rejects a dialect entry missing a dialect name even when other repairs modify the document',

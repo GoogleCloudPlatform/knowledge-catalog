@@ -194,6 +194,16 @@ describe('polyglotTranspiler (transformations)', () => {
   ] as const).map(([p, n]) => `EXTRACT(${p} FROM ${i}) * ${n} + `).join('') +
       `EXTRACT(MICROSECOND FROM ${i}) AS NUMERIC) / 1000000)`;
 
+  // Ossie's MEDIAN and PERCENTILE_CONT as BigQuery computes them from the
+  // values in order, {A}, and their count, {C}, of `x`, with `distinct` before
+  // x and `order` after the ORDER BY.
+  const position = "NUMERIC '0.75' * ({C} - 1)";
+  const MEDIAN = '({A}[SAFE_OFFSET(DIV({C} - 1, 2))] + {A}[SAFE_OFFSET(DIV({C}, 2))]) / 2';
+  const CONT = `{A}[SAFE_OFFSET(CAST(FLOOR(${position}) AS INT64))] + ({A}[SAFE_OFFSET(CAST(CEIL(${position}) AS INT64))] - ` +
+      `{A}[SAFE_OFFSET(CAST(FLOOR(${position}) AS INT64))]) / 1 * (${position} - FLOOR(${position}))`;
+  const ordered = (sql: string, x: string, distinct = '', order = '') =>
+      sql.replaceAll('{A}', `ARRAY_AGG(${distinct}${x} IGNORE NULLS ORDER BY ${x}${order})`).replaceAll('{C}', `COUNT(${distinct}${x})`);
+
   // Each construct import translates, with the BigQuery SQL it writes, and
   // constructs it leaves untranslated. Every construct a `sql` row uses gives
   // the source dialect's value in BigQuery for ordinary data, and every `sql`
@@ -228,6 +238,10 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SNOWFLAKE', 'SUM(a) / AVG(x)', {sql: 'CAST(SUM(a) AS NUMERIC) / AVG(CAST(x AS NUMERIC))'}],
     ['SNOWFLAKE', '((SUM(a) - SUM(b)) / SUM(a)) * 100', {sql: '(CAST((SUM(a) - SUM(b)) AS NUMERIC) / SUM(a)) * 100'}],
     ['SNOWFLAKE', '((NVL(a, 0))) > 1 -- c', {sql: '((COALESCE(a, 0))) > 1 /* c */'}],
+    // The translation holds each comment as often as the text, and a string
+    // that holds a comment's text is no comment.
+    ['POSTGRES', '-- c\nx + 1 -- c', {sql: 'x + 1 /* c */ /* c */'}],
+    ['POSTGRES', "((x = '/*c*/')) -- c", {sql: "((x = '/*c*/')) /* c */"}],
     ['MYSQL', '((COALESCE(ordered_at, NOW()))) IS NULL # when', {sql: "((COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)))) IS NULL /* when */"}],
     ['POSTGRES', 'AVG(x)', {sql: 'AVG(CAST(x AS NUMERIC))'}],
     ['POSTGRES', 'TRIM(FROM s)', {sql: "TRIM(s, ' ')"}],
@@ -280,11 +294,143 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SPANNER', "PARSE_DATE('%F', CAST(CAST(t AS DATE) AS STRING))", {error: 'kcmd does not translate CAST to DATE of a value that may be a TIMESTAMP'}],
     ['SPANNER', "DATE('2024-01-01 03:00:00')", {error: 'kcmd does not translate DATE of a string'}],
     ['SPANNER', "t BETWEEN '2024-01-01' AND '2024-02-01 10:00:00'", {error: 'kcmd does not translate BETWEEN of a date string and a value that may be a TIMESTAMP'}],
+    // OSSIE_SQL_2026 texts, with Ossie's value where Ossie defines one and
+    // BigQuery's elsewhere.
+    ['OSSIE_SQL_2026', 'SUM(x) / COUNT(*) + AVG(x) - MIN(a - b) + 1e3', {sql: 'SUM(x) / COUNT(*) + AVG(x) - MIN(a - b) + 1e3'}],
+    ['OSSIE_SQL_2026', 'a = b = c', {error: "kcmd does not translate = and = without parentheses, which Ossie's grammar requires"}],
+    ['OSSIE_SQL_2026', 'a = b IS DISTINCT FROM c', {error: "kcmd does not translate = and IS DISTINCT FROM without parentheses, which Ossie's grammar requires"}],
+    ['OSSIE_SQL_2026', 's NOT ILIKE p = TRUE', {error: "kcmd does not translate NOT ILIKE and = without parentheses, which Ossie's grammar requires"}],
+    ['OSSIE_SQL_2026', 'x::int', {error: 'kcmd does not translate ::'}],
+    ['OSSIE_SQL_2026', 'TRUNCATE(x, 1) + TRUNC(x) + ROUND(x, 1) + CEILING(x) + LOG(10, x) + LOG(x) + x % 3 + (a + b) % 2', {sql: 'TRUNC(x, 1) + TRUNC(x) + ROUND(x, 1) + CEIL(x) + LOG(x, 10) + LOG(x) + MOD(x, 3) + MOD((a + b), 2)'}],
+    ['OSSIE_SQL_2026', 'PI() * RADIANS(x + 1) + DEGREES(y) + POWER(x, 2) + SQRT(x) + EXP(y) + LN(x) + LOG10(x) + SIGN(y) + MOD(x, 3) + ATAN2(y, x) + ABS(y) + FLOOR(y) + SIN(y) + COS(y) + TAN(y) + ASIN(y) + ACOS(y) + ATAN(y)', {sql: 'ACOS(-1) * ((x + 1) * ACOS(-1) / 180) + (y * 180 / ACOS(-1)) + POWER(x, 2) + SQRT(x) + EXP(y) + LN(x) + LOG10(x) + SIGN(y) + MOD(x, 3) + ATAN2(y, x) + ABS(y) + FLOOR(y) + SIN(y) + COS(y) + TAN(y) + ASIN(y) + ACOS(y) + ATAN(y)'}],
+    ['OSSIE_SQL_2026', 'GREATEST(a, b) + LEAST(a, b) + 9223372036854775808', {sql: "GREATEST(a, b) + LEAST(a, b) + NUMERIC '9223372036854775808'"}],
+    ['OSSIE_SQL_2026', "LEFT(s, 3) || RIGHT(s, 3) || REPLACE(s, 'a', 'b') || SUBSTRING(s, 0, 3) || SUBSTRING(s, 2, n) || SUBSTRING(s, -2) || SUBSTRING(s, 2) || CONCAT(s, t) || TRIM(s) || LTRIM(s) || RTRIM(s) || LOWER(s) || UPPER(s) || REGEXP_EXTRACT(s, 'a(b)') || REGEXP_REPLACE(s, 'a', 'b')", {sql: "LEFT(s, 3) || RIGHT(s, 3) || REPLACE(s, 'a', 'b') || SUBSTRING(s, GREATEST(0, 1), GREATEST(3 - GREATEST(1 - 0, 0), LEAST(3, 0))) || SUBSTRING(s, 2, n) || SUBSTRING(s, GREATEST(-2, 1)) || SUBSTRING(s, 2) || CONCAT(s, t) || TRIM(s) || LTRIM(s) || RTRIM(s) || LOWER(s) || UPPER(s) || REGEXP_EXTRACT(s, 'a(b)', 1) || REGEXP_REPLACE(s, 'a', 'b')"}],
+    ['OSSIE_SQL_2026', "SPLIT_PART(s, '@', n) || CAST(LENGTH(s) + POSITION('@' IN s) + CHARINDEX('@', s) AS STRING)", {sql: "SPLIT(s, '@')[SAFE_ORDINAL(n)] || CAST(LENGTH(s) + INSTR(s, '@') + INSTR(s, '@') AS STRING)"}],
+    ['OSSIE_SQL_2026', "STARTSWITH(s, 'a') AND ENDSWITH(s, 'z') AND CONTAINS(s, 'm') AND REGEXP_LIKE(s, '^A\\d') AND REGEXP_COUNT(s, 'a') > 1", {sql: "STARTS_WITH(s, 'a') AND ENDS_WITH(s, 'z') AND (INSTR(s, 'm') > 0) AND REGEXP_CONTAINS(s, '^A\\\\d') AND ARRAY_LENGTH(REGEXP_EXTRACT_ALL(s, 'a')) > 1"}],
+    // A LIKE pattern reads a backslash as a character.
+    ['OSSIE_SQL_2026', "s LIKE 'a\\%' OR s NOT LIKE p OR s ILIKE 'b%' OR s NOT ILIKE p OR a IS DISTINCT FROM b OR c IS NOT DISTINCT FROM d", {sql: "s LIKE 'a\\\\\\\\%' OR s NOT LIKE REPLACE(p, '\\\\', '\\\\\\\\') OR LOWER(s) LIKE LOWER('b%') OR LOWER(s) NOT LIKE LOWER(REPLACE(p, '\\\\', '\\\\\\\\')) OR a IS DISTINCT FROM b OR c IS NOT DISTINCT FROM d"}],
+    ['OSSIE_SQL_2026', 'IFF(a > 0, NVL(b, 0), IFNULL(c, 1)) + ZEROIFNULL(a) + NULLIFZERO(b) + NULLIF(c, 0) + NVL2(a, b, c)', {sql: 'CASE WHEN a > 0 THEN IFNULL(b, 0) ELSE COALESCE(c, 1) END + COALESCE(a, 0) + NULLIF(b, 0) + NULLIF(c, 0) + CASE WHEN NOT a IS NULL THEN b ELSE c END'}],
+    ['OSSIE_SQL_2026', 'CAST(x AS INTEGER) + CAST(y AS BIGINT) + CAST(z AS DECIMAL(10, 2)) + CAST(z AS DECIMAL(40, 2)) + CAST(z AS NUMERIC) + TRY_CAST(s AS DOUBLE)', {sql: 'CAST(x AS INT64) + CAST(y AS INT64) + CAST(z AS NUMERIC(10, 2)) + CAST(z AS BIGNUMERIC(40, 2)) + CAST(z AS NUMERIC(29)) + SAFE_CAST(s AS FLOAT64)'}],
+    // TRY_CAST gives NULL for a value that does not fit the type's size.
+    ['OSSIE_SQL_2026', "CAST(x AS VARCHAR(10)) || CAST(y AS STRING) || TRY_CAST(s AS VARCHAR(3))", {sql: "CAST(x AS STRING(10)) || CAST(y AS STRING) || IF(LENGTH(SAFE_CAST(s AS STRING)) <= 3, CAST(SAFE_CAST(s AS STRING) AS STRING(3)), NULL)"}],
+    ['OSSIE_SQL_2026', 'TRY_CAST(z AS DECIMAL(4, 2)) + TRY_CAST(z AS NUMERIC(40, 2))', {sql: "IF(SAFE.ABS(SAFE.ROUND(SAFE_CAST(z AS NUMERIC), 2)) < 100, CAST(ROUND(SAFE_CAST(z AS NUMERIC), 2) AS NUMERIC(4, 2)), NULL) + IF(SAFE.ABS(SAFE.ROUND(SAFE_CAST(z AS BIGNUMERIC), 2)) < CAST('100000000000000000000000000000000000000' AS BIGNUMERIC), CAST(ROUND(SAFE_CAST(z AS BIGNUMERIC), 2) AS BIGNUMERIC(40, 2)), NULL)"}],
+    ['OSSIE_SQL_2026', "CAST(flag AS BOOLEAN) AND CAST(ts AS TIMESTAMP) < TIMESTAMP '2024-01-15 10:30:00' AND TRY_CAST(ts AS TIMESTAMP) IS NOT NULL AND t < TIMESTAMP_NTZ '2024-01-15 10:30:00' AND CAST(tm AS TIME) < TIME '10:30:00'", {sql: "CAST(flag AS BOOL) AND CAST(ts AS TIMESTAMP) < CAST('2024-01-15 10:30:00' AS TIMESTAMP) AND NOT SAFE_CAST(ts AS TIMESTAMP) IS NULL AND t < CAST('2024-01-15 10:30:00' AS DATETIME) AND CAST(tm AS TIME) < TIME '10:30:00'"}],
+    ['OSSIE_SQL_2026', "t < TIMESTAMP_NTZ /* utc */ '2024-01-15 10:30:00'", {sql: "t < CAST('2024-01-15 10:30:00' AS DATETIME) /* utc */"}],
+    // ANSI SQL's TIMESTAMP WITHOUT TIME ZONE is a wall-clock time, as TIMESTAMP_NTZ is.
+    ['OSSIE_SQL_2026', "CAST(x AS TIMESTAMP WITHOUT TIME ZONE) < timestamp without time zone '2024-01-15 10:30:00'", {sql: "CAST(x AS DATETIME) < CAST('2024-01-15 10:30:00' AS DATETIME)"}],
+    // A DATE or a DATETIME compared with a value that is visibly a TIMESTAMP is cast to TIMESTAMP.
+    ['OSSIE_SQL_2026', "CAST(x AS TIMESTAMP WITHOUT TIME ZONE) > CURRENT_TIMESTAMP AND CAST(x AS TIMESTAMP_NTZ) <= TIMESTAMP '2024-01-15 10:30:00' AND CAST(d AS DATE) = CURRENT_TIMESTAMP AND CURRENT_DATE <> t", {sql: "CAST(CAST(x AS DATETIME) AS TIMESTAMP) > CURRENT_TIMESTAMP AND CAST(CAST(x AS DATETIME) AS TIMESTAMP) <= CAST('2024-01-15 10:30:00' AS TIMESTAMP) AND CAST(CAST(d AS DATE) AS TIMESTAMP) = CURRENT_TIMESTAMP AND CURRENT_DATE <> t"}],
+    ['OSSIE_SQL_2026', "CURRENT_DATE BETWEEN TIMESTAMP '2024-01-15 10:30:00' AND t AND CURRENT_TIMESTAMP NOT IN (DATE '2024-01-15', t) AND CAST(d AS DATE) IS DISTINCT FROM CURRENT_TIMESTAMP AND CASE CURRENT_DATE WHEN CURRENT_TIMESTAMP THEN TRUE WHEN t THEN FALSE END", {sql: "CAST(CURRENT_DATE AS TIMESTAMP) BETWEEN CAST('2024-01-15 10:30:00' AS TIMESTAMP) AND t AND NOT CURRENT_TIMESTAMP IN (CAST(CAST('2024-01-15' AS DATE) AS TIMESTAMP), t) AND CAST(CAST(d AS DATE) AS TIMESTAMP) IS DISTINCT FROM CURRENT_TIMESTAMP AND CASE CAST(CURRENT_DATE AS TIMESTAMP) WHEN CURRENT_TIMESTAMP THEN TRUE WHEN t THEN FALSE END"}],
+    // So is a DATE or a DATETIME among the values of COALESCE, IFNULL, NVL, IF, CASE, GREATEST or LEAST. NULLIF gives its first value.
+    ['OSSIE_SQL_2026', "GREATEST(COALESCE(CURRENT_DATE, CURRENT_TIMESTAMP), NVL(CAST(x AS TIMESTAMP_NTZ), CURRENT_TIMESTAMP), IFF(p, DATE '2024-01-15', CURRENT_TIMESTAMP), LEAST(CURRENT_DATE, t)) IS NULL OR NULLIF(CAST(d AS DATE), CURRENT_TIMESTAMP) < d", {sql: "GREATEST(COALESCE(CAST(CURRENT_DATE AS TIMESTAMP), CURRENT_TIMESTAMP), IFNULL(CAST(CAST(x AS DATETIME) AS TIMESTAMP), CURRENT_TIMESTAMP), CASE WHEN p THEN CAST(CAST('2024-01-15' AS DATE) AS TIMESTAMP) ELSE CURRENT_TIMESTAMP END, LEAST(CURRENT_DATE, t)) IS NULL OR IF(CAST(CAST(d AS DATE) AS TIMESTAMP) = CURRENT_TIMESTAMP, NULL, CAST(d AS DATE)) < d"}],
+    ['OSSIE_SQL_2026', "CASE WHEN p THEN CURRENT_DATE ELSE CURRENT_TIMESTAMP END > t OR CASE p WHEN TRUE THEN CAST(x AS TIMESTAMP_NTZ) ELSE CURRENT_TIMESTAMP END IS NULL", {sql: "CASE WHEN p THEN CAST(CURRENT_DATE AS TIMESTAMP) ELSE CURRENT_TIMESTAMP END > t OR CASE p WHEN TRUE THEN CAST(CAST(x AS DATETIME) AS TIMESTAMP) ELSE CURRENT_TIMESTAMP END IS NULL"}],
+    ['OSSIE_SQL_2026', 'CAST(x AS TIME WITH TIME ZONE)', {error: 'kcmd does not translate the type TIME WITH TIME ZONE, which BigQuery does not have'}],
+    // The parser holds a type's numbers in 32 bits.
+    ['OSSIE_SQL_2026', 'TRY_CAST(x AS VARCHAR(4294967297))', {error: "kcmd does not translate the type VARCHAR(4294967297), with a number larger than kcmd's SQL parser holds"}],
+    ['OSSIE_SQL_2026', 'CAST(x AS DECIMAL(4294967306, 2))', {error: "kcmd does not translate the type DECIMAL(4294967306, 2), with a number larger than kcmd's SQL parser holds"}],
+    ['OSSIE_SQL_2026', 'CAST(x AS VARCHAR(2147483648))', {error: "kcmd does not translate the type VARCHAR(2147483648), with a number larger than kcmd's SQL parser holds"}],
+    ['OSSIE_SQL_2026', 'CAST(x AS CHARACTER VARYING(4294967297))', {error: "kcmd does not translate the type CHARACTER VARYING(4294967297), with a number larger than kcmd's SQL parser holds"}],
+    // Only the parentheses right after a type's name hold its numbers.
+    ['POSTGRES', 'd::date IS NOT NULL AND id IN (3000000001, 3000000002)', {sql: 'CAST(d AS DATE) IS NOT NULL AND id IN (3000000001, 3000000002)'}],
+    // Ossie's number has no underscore.
+    ['OSSIE_SQL_2026', 'x + 1_000', {error: 'kcmd does not translate the number 1_000'}],
+    ['OSSIE_SQL_2026', 'x + 999999999999999999999999999999999999999_0', {error: 'kcmd does not translate the number 999999999999999999999999999999999999999_0'}],
+    // A function outside Ossie's tables is BigQuery's function of that name.
+    ['OSSIE_SQL_2026', "DATE(t) < CURRENT_DATE AND initcap(s) = FORMAT('%d', x) AND current_user > s", {sql: "DATE(t) < CURRENT_DATE AND initcap(s) = FORMAT('%d', x) AND current_user > s"}],
+    // Weeks start on Monday in DATE_TRUNC, EXTRACT, DATE_PART and DATEDIFF.
+    ['OSSIE_SQL_2026', 'YEAR(d) + QUARTER(d) + MONTH(d) + DAY(d) + DAYOFYEAR(d) + HOUR(t) + MINUTE(t) + SECOND(t)', {sql: 'EXTRACT(YEAR FROM d) + EXTRACT(QUARTER FROM d) + EXTRACT(MONTH FROM d) + EXTRACT(DAY FROM d) + EXTRACT(DAYOFYEAR FROM d) + EXTRACT(HOUR FROM t) + EXTRACT(MINUTE FROM t) + EXTRACT(SECOND FROM t)'}],
+    ['OSSIE_SQL_2026', "EXTRACT(WEEK FROM d) + EXTRACT(DAYOFWEEK FROM d) + EXTRACT(MILLISECOND FROM t) + DATE_PART('second', t) + DATE_PART(week, d)", {sql: 'EXTRACT(ISOWEEK FROM d) + EXTRACT(DAYOFWEEK FROM d) + EXTRACT(MILLISECOND FROM t) + EXTRACT(SECOND FROM t) + EXTRACT(ISOWEEK FROM d)'}],
+    ['OSSIE_SQL_2026', "DATE_TRUNC('month', d) = DATE_TRUNC('quarter', CURRENT_DATE) AND DATE_TRUNC(week, d) < d AND DATE_TRUNC('second', t) <= t", {sql: 'DATE_TRUNC(d, MONTH) = DATE_TRUNC(CURRENT_DATE, QUARTER) AND DATE_TRUNC(d, ISOWEEK) < d AND DATE_TRUNC(t, SECOND) <= t'}],
+    ['OSSIE_SQL_2026', "DATEADD('hour', 1, TO_DATE(s)) < DATEADD(day, n, TIMESTAMP_NTZ '2024-01-01 00:00:00') OR DATEADD(week, 2, TIMESTAMP '2024-01-01 00:00:00') > TO_TIMESTAMP(s)", {sql: "(CAST(s AS DATE) + INTERVAL 1 HOUR) < DATE_ADD(CAST('2024-01-01 00:00:00' AS DATETIME), INTERVAL n DAY) OR (CAST('2024-01-01 00:00:00' AS TIMESTAMP) + INTERVAL 2 WEEK) > CAST(s AS TIMESTAMP)"}],
+    ['OSSIE_SQL_2026', 'DATEDIFF(day, a, b) + DATEDIFF(week, a, b) + DATEDIFF(month, CURRENT_TIMESTAMP, t) + DATEDIFF(year, CURRENT_DATE, CAST(s AS DATE))', {sql: 'DATE_DIFF(b, a, DAY) + DATE_DIFF(CAST(b AS DATETIME), CAST(a AS DATETIME), ISOWEEK) + DATE_DIFF(CAST(t AS DATETIME), CAST(CURRENT_TIMESTAMP AS DATETIME), MONTH) + DATE_DIFF(CAST(s AS DATE), CURRENT_DATE, YEAR)'}],
+    // DATEDIFF by an hour or less counts between each value plus no hours, unless both are visibly DATETIMEs or TIMESTAMPs.
+    ['OSSIE_SQL_2026', 'DATEDIFF(hour, a, b) + DATEDIFF(second, CURRENT_DATE, CAST(s AS DATE)) + DATEDIFF(minute, CAST(s AS TIMESTAMP), CURRENT_TIMESTAMP)', {sql: "DATE_DIFF(b + INTERVAL '0' HOUR, a + INTERVAL '0' HOUR, HOUR) + DATE_DIFF(CAST(s AS DATE) + INTERVAL '0' HOUR, CURRENT_DATE + INTERVAL '0' HOUR, SECOND) + DATE_DIFF(CURRENT_TIMESTAMP, CAST(s AS TIMESTAMP), MINUTE)"}],
+    // DATEDIFF counts between DATETIMEs beside a value that is visibly a DATE, unless the other is visibly a TIMESTAMP.
+    ['OSSIE_SQL_2026', 'DATEDIFF(day, CURRENT_DATE, ts) + DATEDIFF(hour, d, CAST(s AS DATE))', {sql: 'DATE_DIFF(CAST(ts AS DATETIME), CAST(CURRENT_DATE AS DATETIME), DAY) + DATE_DIFF(CAST(CAST(s AS DATE) AS DATETIME), CAST(d AS DATETIME), HOUR)'}],
+    // DATEDIFF by a day or less casts a value beside one that is visibly a TIMESTAMP to TIMESTAMP, a visible DATE too.
+    ['OSSIE_SQL_2026', "DATEDIFF(day, CURRENT_TIMESTAMP, d) + DATEDIFF(minute, CURRENT_TIMESTAMP, TIMESTAMP_NTZ '2024-01-02 00:00:00') + DATEDIFF(day, CURRENT_TIMESTAMP, CAST(d AS DATE)) + DATEDIFF(hour, DATE '2024-01-01', CURRENT_TIMESTAMP)", {sql: "DATE_DIFF(CAST(d AS TIMESTAMP), CURRENT_TIMESTAMP, DAY) + DATE_DIFF(CAST(CAST('2024-01-02 00:00:00' AS DATETIME) AS TIMESTAMP), CURRENT_TIMESTAMP, MINUTE) + DATE_DIFF(CAST(CAST(d AS DATE) AS TIMESTAMP), CURRENT_TIMESTAMP, DAY) + DATE_DIFF(CURRENT_TIMESTAMP, CAST(CAST('2024-01-01' AS DATE) AS TIMESTAMP), HOUR)"}],
+    // A TIME gets TIME_TRUNC, TIME_ADD and TIME_DIFF, for an hour or less.
+    ['OSSIE_SQL_2026', "DATE_TRUNC(hour, CURRENT_TIME) < DATEADD(minute, -30, CAST(s AS TIME)) AND DATEDIFF(second, t, TIME '10:00:00') > 0", {sql: "TIME_TRUNC(CURRENT_TIME, HOUR) < TIME_ADD(CAST(s AS TIME), INTERVAL -30 MINUTE) AND TIME_DIFF(TIME '10:00:00', t, SECOND) > 0"}],
+    ['OSSIE_SQL_2026', 'DATE_TRUNC(day, CURRENT_TIME)', {error: "kcmd does not translate DATE_TRUNC with part 'day' on a TIME"}],
+    ['OSSIE_SQL_2026', 'DATEADD(day, 1, CURRENT_TIME)', {error: "kcmd does not translate DATEADD with part 'day' on CURRENT_TIME"}],
+    ['OSSIE_SQL_2026', "CURRENT_DATE() + 1 > d AND CURRENT_TIME() > TIME '09:00:00' AND CURRENT_TIMESTAMP() > t AND d - e IS NOT NULL", {sql: "CURRENT_DATE + 1 > d AND CURRENT_TIME() > TIME '09:00:00' AND CURRENT_TIMESTAMP() > t AND d - e IS NOT NULL"}],
+    ['OSSIE_SQL_2026', "TO_DATE(s1) = d AND TO_TIMESTAMP(s1) < CURRENT_TIMESTAMP AND TO_DATE(s2, 'DD MON YYYY') < d AND TO_TIMESTAMP(s3, 'YYYY-MM-DD HH12:MI AM') < t", {sql: "CAST(s1 AS DATE) = d AND CAST(s1 AS TIMESTAMP) < CURRENT_TIMESTAMP AND PARSE_DATE('%d %b %Y', s2) < d AND PARSE_TIMESTAMP('%Y-%m-%d %I:%M %p', s3) < t"}],
+    // TO_CHAR formats by the visible type of its value.
+    ['OSSIE_SQL_2026', "TO_CHAR(d, 'YYYY-MM-DD HH24:MI') || TO_CHAR(d, '100% yyyy Q') || TO_CHAR(CURRENT_DATE, 'YYYY') || TO_CHAR(CURRENT_DATE, 'HH24') || TO_CHAR(CURRENT_TIMESTAMP, 'Month DY') || TO_CHAR(CAST(t AS TIMESTAMP_NTZ), 'SS')", {sql: "FORMAT_DATETIME('%Y-%m-%d %H:%M', CAST(d AS DATETIME)) || FORMAT_DATETIME('100%% %Y Q', CAST(d AS DATETIME)) || FORMAT_DATE('%Y', CURRENT_DATE) || FORMAT_DATETIME('%H', CAST(CURRENT_DATE AS DATETIME)) || FORMAT_TIMESTAMP('%B %a', CURRENT_TIMESTAMP) || FORMAT_DATETIME('%S', CAST(t AS DATETIME))"}],
+    ['OSSIE_SQL_2026', "TO_CHAR(CURRENT_TIME, 'HH24:MI') || TO_CHAR(CAST(s AS TIME), 'HH12:MI AM') || TO_CHAR(d, 'HH24:MI')", {sql: "FORMAT_TIME('%H:%M', CURRENT_TIME) || FORMAT_TIME('%I:%M %p', CAST(s AS TIME)) || FORMAT_TIME('%H:%M', TIME(d))"}],
+    ['OSSIE_SQL_2026', "TO_CHAR(d, 'Q')", {sql: "FORMAT_DATETIME('Q', CAST(d AS DATETIME))"}],
+    ['OSSIE_SQL_2026', "TO_CHAR(CURRENT_TIME, 'Day HH24')", {error: 'kcmd does not translate TO_CHAR of a TIME with a date in its format, since a TIME has no date'}],
+    ['OSSIE_SQL_2026', 'TO_CHAR(d, fmt)', {error: 'kcmd does not translate TO_CHAR with a format that is not a string, whose tokens are known only when the query runs'}],
+    ['OSSIE_SQL_2026', "DATE_TRUNC('decade', d)", {error: "kcmd does not translate DATE_TRUNC with part 'decade'"}],
+    ['OSSIE_SQL_2026', 'DATE_PART(T.Week, t.d)', {error: "kcmd does not translate DATE_PART with part 'T.Week'"}],
+    ['OSSIE_SQL_2026', 'DATE_TRUNC("month", d)', {error: 'kcmd does not translate DATE_TRUNC with a quoted part'}],
+    ['OSSIE_SQL_2026', 'EXTRACT(EPOCH FROM d)', {error: "kcmd does not translate EXTRACT with part 'EPOCH'"}],
+    ['OSSIE_SQL_2026', 'EXTRACT(DOW FROM d)', {error: "kcmd does not translate EXTRACT with part 'DOW', since Ossie names that part DAYOFWEEK, which counts Sunday as 1 in BigQuery"}],
+    ['OSSIE_SQL_2026', "DATE_PART('doy', d)", {error: "kcmd does not translate DATE_PART with part 'doy', since Ossie names that part DAYOFYEAR"}],
+    // EXTRACT's first argument is a date part, also when quoted.
+    ['OSSIE_SQL_2026', 'EXTRACT("week" FROM d) + EXTRACT("YEAR" FROM d)', {sql: 'EXTRACT(ISOWEEK FROM d) + EXTRACT(YEAR FROM d)'}],
+    ['OSSIE_SQL_2026', 'EXTRACT("dow" FROM d)', {error: `kcmd does not translate EXTRACT with part '"dow"'`}],
+    ['POSTGRES', 'EXTRACT("year" FROM d)', {sql: 'EXTRACT(YEAR FROM d)'}],
+    ['MYSQL', 'EXTRACT(`year` FROM d)', {sql: 'EXTRACT(YEAR FROM d)'}],
+    // An aggregate with FILTER (WHERE p) is the aggregate of IF(p, x, NULL).
+    ['OSSIE_SQL_2026', "SUM(x) FILTER (WHERE status = 'done') + COUNT(*) FILTER (WHERE p) + COUNT(DISTINCT c) FILTER (WHERE p) + AVG(x) FILTER (WHERE p) + MIN(x) FILTER (WHERE p) + MAX(x) FILTER (WHERE p)", {sql: "SUM(IF(status = 'done', x, NULL)) + COUNT(IF(p, 1, NULL)) + COUNT(DISTINCT IF(p, c, NULL)) + AVG(IF(p, x, NULL)) + MIN(IF(p, x, NULL)) + MAX(IF(p, x, NULL))"}],
+    ['OSSIE_SQL_2026', 'STDDEV(x) + STDDEV_POP(x) + STDDEV_SAMP(x) + VARIANCE(x) + VAR_POP(x) + VAR_SAMP(x) FILTER (WHERE p) + APPROX_COUNT_DISTINCT(c) FILTER (WHERE p)', {sql: 'STDDEV(x) + STDDEV_POP(x) + STDDEV_SAMP(x) + VARIANCE(x) + VAR_POP(x) + VAR_SAMP(IF(p, x, NULL)) + APPROX_COUNT_DISTINCT(IF(p, c, NULL))'}],
+    ['OSSIE_SQL_2026', 'MEDIAN(x) - MEDIAN(DISTINCT x) FILTER (WHERE p)', {sql: `(${ordered(MEDIAN, 'x')}) - (${ordered(MEDIAN, 'IF(p, x, NULL)', 'DISTINCT ')})`}],
+    ['OSSIE_SQL_2026', '1 - PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY x)', {sql: `1 - (${ordered(CONT, 'x')})`}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x DESC) FILTER (WHERE p)', {sql: ordered("{A}[SAFE_OFFSET(GREATEST(CAST(CEIL(NUMERIC '0.5' * {C}) AS INT64), 1) - 1)]", 'IF(p, x, NULL)', '', ' DESC')}],
+    ['OSSIE_SQL_2026', 'APPROX_PERCENTILE(x, 0.975) + APPROX_PERCENTILE(DISTINCT x, 5e-1) FILTER (WHERE p)', {sql: 'APPROX_QUANTILES(x, 1000)[SAFE_OFFSET(975)] + APPROX_QUANTILES(DISTINCT IF(p, x, NULL), 100)[SAFE_OFFSET(50)]'}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)', {error: 'kcmd does not translate PERCENTILE_CONT with a fraction that is not a number from 0 to 1'}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x, y)', {error: 'kcmd does not translate PERCENTILE_CONT ordered by 2 values'}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0.5) OVER ()', {error: 'kcmd does not translate PERCENTILE_DISC without WITHIN GROUP'}],
+    ['OSSIE_SQL_2026', 'SUBSTRING(s FROM 1 FOR 2)', {error: 'kcmd does not translate SUBSTRING with FROM or FOR'}],
+    ['OSSIE_SQL_2026', 'foo(x) WITHIN GROUP (ORDER BY y)', {error: "kcmd does not translate WITHIN GROUP on foo, a function outside Ossie's tables"}],
+    // A window's ORDER BY sorts NULL as the largest value, unless it says
+    // otherwise. BigQuery takes no NULLS FIRST or NULLS LAST in a RANGE frame,
+    // which an aggregate or FIRST_VALUE gets by default.
+    ['OSSIE_SQL_2026', 'ROW_NUMBER() OVER (ORDER BY r) + RANK() OVER (PARTITION BY g ORDER BY r DESC) + DENSE_RANK() OVER (ORDER BY r DESC NULLS LAST) + NTILE(4) OVER (ORDER BY r NULLS FIRST)', {sql: 'ROW_NUMBER() OVER (ORDER BY r NULLS LAST) + RANK() OVER (PARTITION BY g ORDER BY r DESC NULLS FIRST) + DENSE_RANK() OVER (ORDER BY r DESC NULLS LAST) + NTILE(4) OVER (ORDER BY r NULLS FIRST)'}],
+    ['OSSIE_SQL_2026', 'PERCENT_RANK() OVER (ORDER BY r) + CUME_DIST() OVER (ORDER BY r) + LAG(x, 1, 0) OVER (ORDER BY d) + LEAD(x) OVER (ORDER BY d) + FIRST_VALUE(x) OVER (ORDER BY d) + LAST_VALUE(x) OVER (ORDER BY d ROWS 5 PRECEDING) + NTH_VALUE(x, 2) OVER (ORDER BY d)', {sql: 'PERCENT_RANK() OVER (ORDER BY r NULLS LAST) + CUME_DIST() OVER (ORDER BY r NULLS LAST) + LAG(x, 1, 0) OVER (ORDER BY d NULLS LAST) + LEAD(x) OVER (ORDER BY d NULLS LAST) + FIRST_VALUE(x) OVER (ORDER BY d IS NULL, d) + LAST_VALUE(x) OVER (ORDER BY d NULLS LAST ROWS 5 PRECEDING) + NTH_VALUE(x, 2) OVER (ORDER BY d IS NULL, d)'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY d ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) + AVG(x) OVER (ORDER BY d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) + x / SUM(x) OVER () * 100 + COUNT(DISTINCT c) FILTER (WHERE p) OVER (PARTITION BY g)', {sql: 'SUM(x) OVER (ORDER BY d NULLS LAST ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) + AVG(x) OVER (ORDER BY d IS NULL, d RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) + x / SUM(x) OVER () * 100 + COUNT(DISTINCT IF(p, c, NULL)) OVER (PARTITION BY g)'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY d RANGE BETWEEN 2 PRECEDING AND CURRENT ROW) + SUM(x) OVER (ORDER BY d DESC RANGE 2 PRECEDING) + MAX(x) OVER (ORDER BY d DESC) + MIN(x) OVER (ORDER BY d NULLS FIRST)', {sql: 'SUM(x) OVER (ORDER BY -d DESC RANGE BETWEEN 2 PRECEDING AND CURRENT ROW) + SUM(x) OVER (ORDER BY -d RANGE 2 PRECEDING) + MAX(x) OVER (ORDER BY d IS NULL DESC, d DESC) + MIN(x) OVER (ORDER BY d)'}],
+    ['OSSIE_SQL_2026', 'MEDIAN(x) OVER (PARTITION BY g) + PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY x DESC) OVER (PARTITION BY g) + PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x) FILTER (WHERE p) OVER ()', {sql: "PERCENTILE_CONT(x / 1, NUMERIC '0.5') OVER (PARTITION BY g) + PERCENTILE_CONT(x / 1, NUMERIC '0.75') OVER (PARTITION BY g) + PERCENTILE_DISC(IF(p, x, NULL), NUMERIC '0.5') OVER ()"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0.30000000000000001) WITHIN GROUP (ORDER BY x) OVER ()', {sql: "PERCENTILE_DISC(x, BIGNUMERIC '0.30000000000000001') OVER ()"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0e-40) WITHIN GROUP (ORDER BY x) OVER ()', {sql: "PERCENTILE_DISC(x, NUMERIC '0.0') OVER ()"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0e99) WITHIN GROUP (ORDER BY x) OVER ()', {sql: "PERCENTILE_DISC(x, NUMERIC '0.0') OVER ()"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_CONT(0.2_5) WITHIN GROUP (ORDER BY x)', {error: 'kcmd does not translate PERCENTILE_CONT with a fraction that is not a number from 0 to 1'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY NOT p) + SUM(x) OVER (ORDER BY a OR b DESC)', {sql: 'SUM(x) OVER (ORDER BY (NOT p) IS NULL, NOT p) + SUM(x) OVER (ORDER BY (a OR b) IS NULL DESC, a OR b DESC)'}],
+    ['OSSIE_SQL_2026', 'LOGICAL_OR(p) OVER (ORDER BY d)', {sql: 'LOGICAL_OR(p) OVER (ORDER BY d IS NULL, d)'}],
+    ['OSSIE_SQL_2026', 'ROW_NUMBER()', {error: 'kcmd does not translate ROW_NUMBER without OVER'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER w', {error: 'kcmd does not translate OVER with a window name'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY d GROUPS 1 PRECEDING)', {error: 'kcmd does not translate OVER with GROUPS'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY y ROWS BETWEEN (1 + 1) PRECEDING AND CURRENT ROW)', {error: 'kcmd does not translate OVER with the frame offset (1 + 1), since BigQuery takes only a number there'}],
+    ['OSSIE_SQL_2026', 'SUM(x) OVER (ORDER BY y ROWS n PRECEDING)', {error: 'kcmd does not translate OVER with the frame offset n, since BigQuery takes only a number there'}],
+    ['OSSIE_SQL_2026', 'FIRST_VALUE(x IGNORE NULLS) OVER (ORDER BY d)', {error: 'kcmd does not translate FIRST_VALUE with IGNORE NULLS'}],
+    // RESPECT NULLS is the default, and BigQuery's LAG takes none.
+    ['OSSIE_SQL_2026', 'LAG(x, 1) RESPECT NULLS OVER (ORDER BY d) + FIRST_VALUE(x RESPECT NULLS) OVER (ORDER BY d)', {sql: 'LAG(x, 1) OVER (ORDER BY d NULLS LAST) + FIRST_VALUE(x) OVER (ORDER BY d IS NULL, d)'}],
+    ['OSSIE_SQL_2026', 'APPROX_PERCENTILE(x, 0.5) OVER ()', {error: 'kcmd does not translate APPROX_PERCENTILE with OVER, since BigQuery has no approximate aggregate over a window'}],
+    ['OSSIE_SQL_2026', 'MEDIAN(x) OVER (ORDER BY d)', {error: 'kcmd does not translate MEDIAN with ORDER BY or a frame in OVER, since BigQuery has no percentile over an ordered window or a frame'}],
+    ['OSSIE_SQL_2026', 'MEDIAN(DISTINCT x) OVER ()', {error: "kcmd does not translate MEDIAN with DISTINCT and OVER, since BigQuery's PERCENTILE_CONT over a window takes no DISTINCT"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(DISTINCT 0.5) WITHIN GROUP (ORDER BY x) OVER ()', {error: "kcmd does not translate PERCENTILE_DISC with DISTINCT and OVER, since BigQuery's PERCENTILE_DISC over a window takes no DISTINCT"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x DESC) OVER ()', {error: "kcmd does not translate PERCENTILE_DISC with DESC and OVER, since BigQuery's PERCENTILE_DISC over a window orders values ascending"}],
+    ['OSSIE_SQL_2026', 'AGG(x)', {error: 'kcmd does not translate AGG, which Ossie reserves'}],
+    ['OSSIE_SQL_2026', 'foo(x) FILTER (WHERE p)', {error: "kcmd does not translate FILTER on foo, a function outside Ossie's tables"}],
+    ['OSSIE_SQL_2026', 'current_datetime', {error: 'kcmd does not translate current_datetime'}],
+    ['OSSIE_SQL_2026', 'CAST(x AS DECIMAL(50, 2))', {error: 'kcmd does not translate CAST to DECIMAL(50, 2)'}],
+    ['OSSIE_SQL_2026', 'CAST(x AS DECIMAL(4, -2))', {error: 'kcmd does not translate CAST to DECIMAL(4, -2)'}],
+    ['OSSIE_SQL_2026', 'CAST(x AS VARCHAR(0))', {error: 'kcmd does not translate CAST to VARCHAR(0)'}],
+    ['OSSIE_SQL_2026', 'APPROX_PERCENTILE(x, 1e-9)', {error: "kcmd does not translate APPROX_PERCENTILE with a fraction of more than 5 decimal places, which needs more than 100000 quantiles in BigQuery's APPROX_QUANTILES"}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_CONT(1.23456789012345678901234567890123456789e-10) WITHIN GROUP (ORDER BY x)', {error: 'kcmd does not translate PERCENTILE_CONT with a fraction of more than 38 decimal places, more than a BigQuery BIGNUMERIC holds'}],
+    ['OSSIE_SQL_2026', 'PERCENTILE_CONT(1e-40) WITHIN GROUP (ORDER BY x)', {error: 'kcmd does not translate PERCENTILE_CONT with a fraction of more than 38 decimal places, more than a BigQuery BIGNUMERIC holds'}],
+    ['OSSIE_SQL_2026', "s LIKE 'a' ESCAPE '!'", {error: 'kcmd does not translate LIKE with ESCAPE'}],
+    ['OSSIE_SQL_2026', 'd < INTERVAL 1 DAY', {error: 'kcmd does not translate INTERVAL'}],
     // Comments.
     ['SNOWFLAKE', '-- next day\nNVL(d, DATEADD(day, 1, d))', {sql: 'COALESCE(d, DATE_ADD(d, INTERVAL 1 DAY)) /* next day */'}],
     ['POSTGRES', '/* a /* b */ c */ d', {sql: 'd /* a / * b * / c */'}],
     ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
     ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
+    // Each comment is written as often as the text writes it.
+    ['SNOWFLAKE', 'x = y -- c\n-- d', {sql: 'x = y /* c */ /* d */'}],
+    ['POSTGRES', 'x = y -- c\nAND z', {sql: 'x = y /* c */ AND z'}],
+    ['SPANNER', 'x = y /* c */ /* c */', {sql: 'x = y /* c */ /* c */'}],
     ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
     ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: "COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) /* when the order was placed */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
@@ -298,6 +444,8 @@ describe('polyglotTranspiler (transformations)', () => {
     // Constructs off the list.
     ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd does not translate TO_CHAR'}],
     ['SNOWFLAKE', 'MEDIAN(x)', {error: 'kcmd does not translate MEDIAN'}],
+    ['POSTGRES', 'PI() * 2', {error: 'kcmd does not translate PI'}],
+    ['SNOWFLAKE', 'RANDOM()', {error: 'kcmd does not translate RANDOM'}],
     ['SNOWFLAKE', 'SUM(x) OVER (PARTITION BY y)', {error: 'kcmd does not translate OVER'}],
     ['POSTGRES', 'a % b', {error: 'kcmd does not translate %'}],
     ['POSTGRES', 'SUM(a) / COUNT(*)', {error: 'kcmd does not translate /'}],
@@ -404,6 +552,20 @@ describe('polyglotTranspiler (transformations)', () => {
     ['DATABRICKS', 'd + INTERVAL 1 DAY + INTERVAL 2 HOUR', {error: 'kcmd does not translate + INTERVAL 2 HOUR, which gives a TIMESTAMP for a DATE in Databricks and a DATETIME in BigQuery'}],
     ['ANSI_SQL', `"d" + INTERVAL '1' DAY`, {error: 'kcmd does not translate + INTERVAL 1 DAY, which gives a DATE in some databases and a timestamp in others'}],
     ['POSTGRES', 'a AS b', {error: 'kcmd does not translate a text it cannot read as one expression'}],
+    // A column named by a word the engine reads as a keyword and leaves out.
+    ['ANSI_SQL', 'SUM(if + 1)', {error: "kcmd does not translate the name if, which kcmd's SQL parser reads as a keyword"}],
+    ['SNOWFLAKE', 'CASE WHEN if > 0 THEN if - 1 END', {error: "kcmd does not translate the name if, which kcmd's SQL parser reads as a keyword"}],
+    ['POSTGRES', "CASE WHEN s = 'if' THEN 0 ELSE if + 1 END -- if", {error: "kcmd does not translate the name if, which kcmd's SQL parser reads as a keyword"}],
+    ['POSTGRES', 'desc IS NULL', {sql: '`desc` IS NULL'}],
+    // T-SQL reads SELECT name = value as an alias, and push reads it in
+    // parentheses.
+    ['SQLSERVER', 'lock = 1', {sql: 'lock = 1'}],
+    ['SQLSERVER', 'desc = 1', {sql: '`desc` = 1'}],
+    ['SQLSERVER', 'true + 1', {error: "kcmd does not translate the name true, which kcmd's SQL parser reads as a keyword"}],
+    // A word the dialect reserves is a keyword there, which the engine may
+    // leave out or write another way.
+    ['ANSI_SQL', 'SUM(ALL -x)', {sql: 'SUM(-x)'}],
+    ['POSTGRES', 'x NOTNULL AND y ISNULL OR z > 0', {sql: 'NOT x IS NULL AND y IS NULL OR z > 0'}],
     ['POSTGRES', 'flag = n BETWEEN 1 AND 2', {error: 'kcmd does not translate = and BETWEEN without parentheses, which databases group in different orders'}],
     ['MYSQL', 'n BETWEEN 1 AND 2 IS NULL', {error: 'kcmd does not translate BETWEEN and IS NULL without parentheses, which databases group in different orders'}],
     ['DATABRICKS', "s LIKE 'a%' = TRUE", {error: 'kcmd does not translate LIKE and = without parentheses, which databases group in different orders'}],
@@ -436,6 +598,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', "flag = s NOT LIKE 'a%'", {error: 'kcmd does not translate NOT LIKE of a comparison'}],
     ['MYSQL', '(a = b) IS NOT TRUE', {error: 'kcmd does not translate IS NOT TRUE'}],
     ['MYSQL', '(a = b) <=> c', {error: 'kcmd does not translate <=>'}],
+    ['MYSQL', 'x IS NOT DISTINCT FROM y', {error: 'kcmd does not translate <=>'}],
     ['POSTGRES', 'd::date < now()', {sql: 'TIMESTAMP(CAST(d AS DATE)) < CURRENT_TIMESTAMP()'}],
     ['POSTGRES', 'd::date NOT BETWEEN a AND now()', {sql: 'TIMESTAMP(CAST(d AS DATE)) NOT BETWEEN a AND CURRENT_TIMESTAMP()'}],
     ['MYSQL', 'CURDATE() - INTERVAL 1 QUARTER < NOW()', {sql: "DATE_SUB(CURRENT_DATE, INTERVAL 1 QUARTER) < DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"}],
@@ -555,8 +718,9 @@ describe('polyglotTranspiler (date arithmetic)', () => {
   // Each row of each dialect's table: the sum, with {U} or {u} for the unit,
   // the operand as BigQuery writes it, the units BigQuery adds with DATE_ADD
   // and with `+`, and any of the operand of `+` when it differs, the units
-  // BigQuery adds with `+` in UTC, and whether DATE_ADD adds a week as 7 days.
-  // Every other unit stays untranslated.
+  // BigQuery adds with `+` in UTC, whether DATE_ADD adds a week as 7 days, and
+  // the units DATE_ADD adds as the days they add to the operand's date. Every
+  // other unit stays untranslated.
   test.each([
     ['MYSQL', 'd + INTERVAL 1 {U}', 'd', DAY_OR_LONGER, SUB_DAY, {weekDays: true}],
     ['MYSQL', 'CURDATE() + INTERVAL 1 {U}', 'CURRENT_DATE', DAY_OR_LONGER, SUB_DAY],
@@ -576,15 +740,22 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SQLSERVER', 'DATEADD({u}, 1, CAST(d AS DATE))', 'CAST(d AS DATE)', DAY_OR_LONGER, []],
     ['SQLSERVER', 'DATEADD({u}, 1, GETDATE())', "CURRENT_DATETIME('UTC')", UNITS, []],
     ['ANSI_SQL', `CURRENT_DATE + INTERVAL '1' {U}`, '', [], []],
-  ] as [string, string, string, string[], string[], {plusOperand?: string; utc?: string[]; weekDays?: true}?][])(
+    ['OSSIE_SQL_2026', 'DATEADD({u}, 1, d)', 'd', ['DAY', 'WEEK'], SUB_DAY, {weekDays: true, days: ['MONTH', 'QUARTER', 'YEAR']}],
+    ['OSSIE_SQL_2026', 'DATEADD({u}, 1, CAST(d AS DATE))', 'CAST(d AS DATE)', DAY_OR_LONGER, SUB_DAY],
+    ['OSSIE_SQL_2026', 'DATEADD({u}, 1, CAST(t AS TIMESTAMP_NTZ))', 'CAST(t AS DATETIME)', UNITS, []],
+    ['OSSIE_SQL_2026', 'DATEADD({u}, 1, CURRENT_TIMESTAMP)', 'CURRENT_TIMESTAMP', [], [...SUB_DAY, 'DAY', 'WEEK'], {utc: ['MONTH', 'QUARTER', 'YEAR']}],
+  ] as [string, string, string, string[], string[], {plusOperand?: string; utc?: string[]; weekDays?: true; days?: string[]}?][])(
       '%s %s adds the units of its row', async (dialect, sum, operand, dateAdd, plus, more = {}) => {
-    const {plusOperand = operand, utc = [], weekDays} = more;
+    const {plusOperand = operand, utc = [], weekDays, days = []} = more;
+    const date = `CAST(${operand} AS DATE)`;
     const texts = UNITS.map(u => sum.replace('{U}', u).replace('{u}', u.toLowerCase()));
     expect(await translate(dialect, texts))
         .toEqual(UNITS.map(u => dateAdd.includes(u) ?
             `DATE_ADD(${operand}, INTERVAL ${weekDays && u === 'WEEK' ? '7 DAY' : `1 ${u}`})` :
             plus.includes(u) ? `${plusOperand} + INTERVAL 1 ${u}` :
-            utc.includes(u) ? `TIMESTAMP(DATETIME(${operand}, 'UTC') + INTERVAL 1 ${u}, 'UTC')` : 'untranslated'));
+            utc.includes(u) ? `TIMESTAMP(DATETIME(${operand}, 'UTC') + INTERVAL 1 ${u}, 'UTC')` :
+            days.includes(u) ? `DATE_ADD(${operand}, INTERVAL DATE_DIFF(DATE_ADD(${date}, INTERVAL 1 ${u}), ${date}, DAY) DAY)` :
+            'untranslated'));
   });
 
   // Whole numbers of days, the sums Databricks' date_add and date_sub read as
@@ -634,7 +805,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "x > INTERVAL '1 day'", {sql: 'x > INTERVAL 1 DAY'}],
     ['DATABRICKS', 'INTERVAL 1 MONTH > INTERVAL 30 DAYS', {error: 'kcmd does not translate > on a year-month INTERVAL and a day-time INTERVAL'}],
     // IN and a CASE with an operand over an INTERVAL compare with `=`.
-    ['POSTGRES', "x NOT IN (INTERVAL '1 day', NULL)", {sql: '(NOT (x = INTERVAL 1 DAY OR CAST(NULL AS BOOLEAN)))'}],
+    ['POSTGRES', "x NOT IN (INTERVAL '1 day', NULL)", {sql: '(NOT (x = INTERVAL 1 DAY OR CAST(NULL AS BOOL)))'}],
     ['DATABRICKS', 'CASE x WHEN INTERVAL 1 MONTH THEN 1 END', {sql: 'CASE WHEN x = INTERVAL 1 MONTH THEN 1 END'}],
     ['POSTGRES', "CURRENT_DATE > INTERVAL '1 day'", {error: 'kcmd does not translate > on an INTERVAL and a DATE'}],
     ['POSTGRES', "INTERVAL '1 day' || 'x'", {error: 'kcmd does not translate || of a value that is not text'}],
@@ -719,12 +890,36 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SQLSERVER', 'DATEDIFF([day], a, b)', {error: 'kcmd does not translate DATEDIFF with a quoted part'}],
     ['MYSQL', 'DATEDIFF(`a`, `b`)', {error: 'kcmd does not translate DATEDIFF'}],
     ['SPANNER', 'DATE_TRUNC(`d`, MONTH)', {sql: 'DATE_TRUNC(`d`, MONTH)'}],
-    // NOW, CURDATE and GETDATE without parentheses, quoted or not, name a column.
+    // NOW, CURDATE, GETDATE and SYSDATE without parentheses, quoted or not,
+    // name a column.
     ['DATABRICKS', '`curdate` - 7', {sql: '`curdate` - 7'}],
     ['POSTGRES', 'NOW - 7', {sql: '`NOW` - 7'}],
     ['POSTGRES', "DATE_TRUNC('month', NOW)", {sql: 'DATE_TRUNC(`NOW`, MONTH)'}],
     ['SQLSERVER', 'DATEADD(day, 1, GETDATE)', {sql: 'DATE_ADD(`GETDATE`, INTERVAL 1 DAY)'}],
     ['SPANNER', 'd < NOW', {sql: 'd < `NOW`'}],
+    ['SNOWFLAKE', 'sysdate - 1', {sql: '`sysdate` - 1'}],
+    ['OSSIE_SQL_2026', 'sysdate', {sql: '`sysdate`'}],
+    // A quoted name is a column, in backticks, even where the parser reads the
+    // word as a function.
+    ['SNOWFLAKE', '"CURRENT_DATE" < CURRENT_DATE AND "SYSDATE" > "CURRENT_TIMESTAMP"', {sql: "`CURRENT_DATE` < CURRENT_DATE('America/Los_Angeles') AND `SYSDATE` > `CURRENT_TIMESTAMP`"}],
+    ['POSTGRES', 'COALESCE("current_timestamp", "localtime") > "current_date"', {sql: 'COALESCE(`current_timestamp`, `localtime`) > `current_date`'}],
+    ['MYSQL', '`current_date` < `localtime`', {sql: '`current_date` < `localtime`'}],
+    ['DATABRICKS', '`current_timestamp` IS NULL', {sql: '`current_timestamp` IS NULL'}],
+    ['SQLSERVER', '[current_date] = "current_user"', {sql: '`current_date` = `current_user`'}],
+    ['ANSI_SQL', '"CURRENT_DATE" IS NULL', {sql: '`CURRENT_DATE` IS NULL'}],
+    ['SPANNER', '`current_date` < CURRENT_DATE()', {sql: "`current_date` < CURRENT_DATE('America/Los_Angeles')"}],
+    ['OSSIE_SQL_2026', '"current_date" < CURRENT_DATE AND "current_datetime" < CURRENT_TIMESTAMP AND "extract" = "a`b"', {sql: '`current_date` < CURRENT_DATE AND `current_datetime` < CURRENT_TIMESTAMP AND `extract` = `a\\`b`'}],
+    ['OSSIE_SQL_2026', 'SUM("date".amount) + SUM("interval".amount)', {sql: 'SUM(`date`.amount) + SUM(`interval`.amount)'}],
+    // A backtick or a backslash in a quoted name after a dot is escaped.
+    ['POSTGRES', 'orders."a`b"', {sql: 'orders.`a\\`b`'}],
+    ['POSTGRES', 'orders."a\\b"', {sql: 'orders.`a\\\\b`'}],
+    ['POSTGRES', '"x" COLLATE "C"', {error: 'kcmd does not translate COLLATE "C"'}],
+    // A name BigQuery cannot read without quotes gets backticks.
+    ['OSSIE_SQL_2026', 'SUM(t.amt$) + MAX(amt$)', {sql: 'SUM(t.`amt$`) + MAX(`amt$`)'}],
+    ['SNOWFLAKE', 'amt$ + 1', {sql: '`amt$` + 1'}],
+    // A quoted name in a type position is a type.
+    ['SQLSERVER', 'CAST(x AS [date])', {sql: 'CAST(x AS DATE)'}],
+    ['POSTGRES', 'x::"date"', {sql: 'CAST(x AS DATE)'}],
     // NULLIF of two date and time types, and in MySQL of a date, which it gives
     // as text, and of a column beside a date, which has no exact form.
     ['POSTGRES', 'NULLIF(CURRENT_DATE, NOW())', {sql: 'IF(TIMESTAMP(CURRENT_DATE) = CURRENT_TIMESTAMP(), NULL, CURRENT_DATE)'}],
@@ -745,7 +940,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['SPANNER', 't + INTERVAL (1+1) DAY', {sql: 't + INTERVAL (1 + 1) DAY'}],
     ['SPANNER', 'EXTRACT(DAY FROM INTERVAL 1 YEAR)', {sql: "EXTRACT(DAY FROM INTERVAL '1' YEAR)"}],
     ['SPANNER', 't - s > INTERVAL 1 MONTH OR t - s BETWEEN INTERVAL 1 QUARTER AND INTERVAL 1 YEAR', {sql: "t - s > INTERVAL '1' MONTH OR t - s BETWEEN INTERVAL '1' QUARTER AND INTERVAL '1' YEAR"}],
-    ['SPANNER', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: "(x = INTERVAL '1' MONTH OR CAST(NULL AS BOOLEAN))"}],
+    ['SPANNER', 'x IN (INTERVAL 1 MONTH, NULL)', {sql: "(x = INTERVAL '1' MONTH OR CAST(NULL AS BOOL))"}],
     ['SPANNER', "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END", {sql: "CASE a - b WHEN 1 THEN 'x' WHEN NULL THEN 'y' END"}],
     // A SPANNER INTERVAL whose amount is neither a whole number nor an
     // expression, or one outside DATE_ADD, EXTRACT, a comparison and the like
@@ -815,7 +1010,7 @@ describe('polyglotTranspiler (date arithmetic)', () => {
     ['POSTGRES', "AVG(CURRENT_DATE + INTERVAL '1 day')", {error: 'kcmd does not translate AVG of a date'}],
     ['POSTGRES', "CASE x WHEN INTERVAL '1 day' THEN CURRENT_DATE ELSE NOW() END", {sql: 'CASE WHEN x = INTERVAL 1 DAY THEN TIMESTAMP(CURRENT_DATE) ELSE CURRENT_TIMESTAMP() END'}],
     ['POSTGRES', '(CURRENT_DATE - NOW()) IN (x)', {error: 'kcmd does not translate IN over an INTERVAL other than a literal, a sum of literals or a column'}],
-    ['SPANNER', 'NULL IN (INTERVAL 1 MONTH)', {sql: '(CAST(NULL AS BOOLEAN))'}],
+    ['SPANNER', 'NULL IN (INTERVAL 1 MONTH)', {sql: '(CAST(NULL AS BOOL))'}],
     // An INTERVAL that a negation, a sum or COALESCE gives keeps its type in a
     // comparison, in EXTRACT and in NULLIF. BigQuery's NULLIF takes no INTERVAL.
     ['DATABRICKS', '(-INTERVAL 1 MONTH) < INTERVAL 1 DAY', {error: 'kcmd does not translate < on a year-month INTERVAL and a day-time INTERVAL'}],

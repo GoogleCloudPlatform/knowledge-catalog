@@ -62,6 +62,11 @@ export interface LoadOptions {
   // the advice names when it would stop. Without it, the advice names the
   // command alone.
   transpileOutcomes?: TranspileOutcomes;
+  // The text the author wrote for the document, whose keys with no value in a
+  // flow mapping the advice about a text a comma split reads (see
+  // flowKeysWithoutValue). loadModels reads its own text when it is unset.
+  // kcmd import gives its input, which it converts.
+  authoredText?: string;
 }
 
 export interface LoadResult {
@@ -123,6 +128,12 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
 export const GOOGLE_VERSION = '0.2.0.dev0/google';
+// The version of an Apache Ossie file that holds its model at the document
+// root. Only third-party `kcmd import` reads such a file.
+export const OSSIE_ROOT_VERSION = '0.3.0.dev0';
+// The sentence a load error ends with for a document only `kcmd import` reads.
+const IMPORT_ADVICE =
+    `Run 'kcmd import <file> --flavor <ossie|google>' to convert it.`;
 // How a vanilla author declares deployments: in a GOOGLE block on the model,
 // or under `deployments:` after a switch to the Google flavor.
 const DEPLOYMENTS_VERSION_HINT =
@@ -1900,7 +1911,65 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
         `Semantic model load error: could not parse input: ${
             yamlErrorMessage(err, text)}`);
   }
-  return fromDocument(doc, opts);
+  return fromDocument(doc, {authoredText: text, ...opts});
+}
+
+// An entry of a flow mapping that a comma split: its key as the author wrote
+// it, its plain text up to the comma, as `ROUND(price` in
+// `{expression: ROUND(price, 2)}`, and the entry written with the whole text
+// in quotes, as `expression: "ROUND(price, 2)"`. When the mapping is an entry
+// of a list, `position` is its index in the list as the author wrote it.
+interface SplitEntry {
+  key: string;
+  text: string;
+  quoted: string;
+  position?: number;
+}
+
+/**
+ * Each key `text` writes in a flow mapping with no value after an entry whose
+ * value is plain text, as `2)` in `{expression: ROUND(price, 2)}`, where the
+ * comma ends the entry, with every entry such a key ends. Each key is given as
+ * the load reads it, so `0.0` is `0` and `NULL` is empty. The quoted entry
+ * holds each key's text as written.
+ */
+function flowKeysWithoutValue(text: string): Map<string, SplitEntry[]> {
+  const keys = new Map<string, SplitEntry[]>();
+  yaml.visit(yaml.parseDocument(text, YAML_OPTIONS), {
+    Map: (_, map, path) => {
+      if (!map.flow) return;
+      const list = path.at(-1);
+      const position = yaml.isSeq(list) ? list.items.indexOf(map) : undefined;
+      map.items.forEach((pair, i) => {
+        const value = pair.value;
+        if (!yaml.isScalar(value) || value.type !== 'PLAIN' || !value.range) {
+          return;
+        }
+        // Each key with no value after the entry, as the load reads it, and
+        // its text.
+        const bare: Array<[string, string]> = [];
+        for (const next of map.items.slice(i + 1)) {
+          if (next.value !== null) break;
+          const k = next.key;
+          bare.push([
+            yaml.isScalar(k) ? String(k.value ?? '') : String(k),
+            yaml.isNode(k) && k.range ? text.slice(k.range[0], k.range[1]) : '',
+          ]);
+        }
+        const plain = text.slice(value.range[0], value.range[1]);
+        const key = String(yaml.isScalar(pair.key) ? pair.key.value : pair.key);
+        const written = [plain, ...bare.map(([, t]) => t)].join(', ');
+        const entry = {
+          key,
+          text: String(value.value),
+          quoted: `${key}: ${JSON.stringify(written)}`,
+          position,
+        };
+        for (const [k] of bare) keys.set(k, [...keys.get(k) ?? [], entry]);
+      });
+    },
+  });
+  return keys;
 }
 
 /**
@@ -1908,8 +1977,19 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  * on a structurally invalid document; softer, lossy conversions are reported in
  * `warnings` rather than thrown.
  */
-export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
-  const version = readVersion(doc);
+export function fromDocument(
+    doc: unknown, opts: LoadOptions = {}): LoadResult {
+  const {authoredText} = opts;
+  // The text is parsed for its keys without a value at most once, when the
+  // first message needs them.
+  let flowKeys: ReadonlyMap<string, SplitEntry[]>|undefined;
+  const bareKeys = authoredText === undefined ?
+      undefined :
+      () => flowKeys ??= flowKeysWithoutValue(authoredText);
+  // Only `kcmd import` reads a model at the document root, so the load error
+  // says to run it.
+  const advice = rootModelVersion(doc) ? IMPORT_ADVICE : undefined;
+  const version = readVersion(doc, advice);
   const extended = version === GOOGLE_VERSION;
   const proto =
       protoMemberError(doc, extended, opts.messageFlavor ?? version);
@@ -1924,8 +2004,8 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
     throw new SemanticModelError(`Semantic model load error: ${
         schemaProblems(result.error.issues, {
           schema, doc: normalized, authored: doc, extended,
-          subject: 'the document', words: opts.messageFlavor,
-        })}`);
+          subject: 'the document', words: opts.messageFlavor, bareKeys,
+        })}${advice ? `\n${advice}` : ''}`);
   }
 
   const warnings: string[] = [];
@@ -2198,8 +2278,9 @@ export function entityAndMetricWarnings(
 // Reads and validates the top-level `version`. It is REQUIRED and must be one
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
-// error rather than a warning (agreed with Dmitri).
-function readVersion(doc: unknown): FormatVersion {
+// error rather than a warning (agreed with Dmitri). An unknown version's
+// error ends with `advice` when given.
+function readVersion(doc: unknown, advice?: string): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
   if (typeof version !== 'string' || version.length === 0) {
@@ -2211,9 +2292,27 @@ function readVersion(doc: unknown): FormatVersion {
   if (!isFormatVersion(version)) {
     throw new SemanticModelError(
         `Semantic model load error: unknown version ` +
-        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.`);
+        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.` +
+        (advice ? ` ${advice}` : ''));
   }
   return version;
+}
+
+/**
+ * The version of `doc` when it holds an Ossie model at the document root,
+ * with `datasets` and no `semantic_model` list: an Apache Ossie '0.3.0.dev0'
+ * file, or a '0.2.0.dev0' file as the Ossie converters write it. Undefined
+ * for any other document, such as a kcmd file with a misspelled
+ * `semantic_model` or an Ossie ontology or mapping document.
+ */
+export function rootModelVersion(doc: unknown): string|undefined {
+  if (!isRecord(doc) || 'semantic_model' in doc || !('datasets' in doc)) {
+    return undefined;
+  }
+  const {version} = doc;
+  return version === OSSIE_ROOT_VERSION || version === OSSIE_VERSION ?
+      version :
+      undefined;
 }
 
 
@@ -3048,6 +3147,9 @@ interface SchemaInput {
   // The flavor whose word for an entry of `datasets` lines use, when it is not
   // the document's own (LoadOptions.messageFlavor).
   words?: FormatVersion;
+  // Each key the document's text writes in a flow mapping with no value, with
+  // every entry it ends (see flowKeysWithoutValue).
+  bareKeys?: () => ReadonlyMap<string, SplitEntry[]>;
 }
 
 // The noun a message gives an entry of each list of named objects in a model
@@ -3184,6 +3286,16 @@ function schemaProblems(
       .join('\n');
 }
 
+// Every string `value` holds, at any depth.
+function textsIn(value: unknown, out = new Set<string>()): Set<string> {
+  if (typeof value === 'string') {
+    out.add(value);
+  } else if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) textsIn(v, out);
+  }
+  return out;
+}
+
 function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   if (issue.code === 'invalid_union') {
     // When only one alternative takes the value's type, report its problems.
@@ -3203,10 +3315,41 @@ function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   const expected = (type: string) => EXPECTED[type] ?? type;
   switch (issue.code) {
     case 'unrecognized_keys': {
-      const keys = keysAt(input.schema, issue.path).map(k => `'${spelled(k)}'`);
+      // A key with no value in a flow mapping is often the end of a text
+      // that holds a comma. The example is the entry whose text up to the
+      // comma this mapping holds. When none matches and every entry the keys
+      // end reads the same, it is that entry.
+      const split = issue.keys.flatMap(
+          k => (value as any)?.[k] === null ?
+              input.bareKeys?.().get(k) ?? [] :
+              []);
+      const held = textsIn(value);
+      const examples = new Set(split.map(e => e.quoted));
+      const entry = split.find(e => held.has(e.text)) ??
+          (examples.size === 1 ? split[0] : undefined);
+      const example = entry?.quoted;
+      // The keys the mapping takes, which the message lists. The author may
+      // have written the entry the comma split under a key that the load
+      // replaced, as import writes an Ossie expression's sql into 'dialects'.
+      // That key is neither a key the mapping takes nor one of its unknown
+      // keys, and it comes first in the list.
+      const known = keysAt(input.schema, issue.path).map(spelled);
+      const taken = entry && !issue.keys.includes(entry.key) && !known.includes(entry.key) ? [entry.key] : [];
+      const keys = [...taken, ...known].map(k => `'${k}'`);
+      // The message names the mapping's position in the list as the author
+      // wrote it. The load may have put an entry before it, as import puts
+      // an Ossie expression's sql first in 'dialects'.
+      const last = issue.path.length - 1;
+      const shown = entry?.position !== undefined && typeof issue.path[last] === 'number' ?
+          schemaLocation([...issue.path.slice(0, last), entry.position], input).place : place;
       return `${subject}: unknown key${issue.keys.length > 1 ? 's' : ''} ${
-          listed(issue.keys.map(k => `'${k}'`))}${
-          place ? ` in ${place}` : ''}; it takes ${listed(keys)}`;
+                 listed(issue.keys.map(k => `'${k}'`))}${
+                 shown ? ` in ${shown}` : ''}; it takes ${listed(keys)}` +
+          (split.length ?
+               `. A comma ends an entry of a flow mapping, so if the comma ` +
+                   `belongs to the text, quote the text${
+                       example ? `, for example '${example}'` : ''}` :
+               '');
     }
     case 'invalid_type':
       return takes(expected(issue.expected));
