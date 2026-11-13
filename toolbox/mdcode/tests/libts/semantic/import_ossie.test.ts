@@ -1565,6 +1565,24 @@ semantic_model:
   });
 
   test.each([
+    ['SNOWFLAKE', 'ORDERS.amt', 'SUM(ORDERS.AMOUNT)', 'amt', 'SUM(orders.amount)'],
+    ['SNOWFLAKE', '"ORDERS".amt', 'SUM("orders".Amount)', 'amt', 'SUM("orders".amount)'],
+    ['BIGQUERY', '`Orders`.amt', 'SUM(Orders.Amount)', 'amt', 'SUM(orders.amount)'],
+    ['ANSI_SQL', 'Orders.amt', 'SUM(AMOUNT)', 'amt', 'SUM(orders.amount)'],
+    ['POSTGRES', 'ORDERS.amt', 'SUM(Amount)', 'amt', 'SUM(orders.amount)'],
+    ['POSTGRES', '"ORDERS".amt', 'SUM("ORDERS".amount)', '"ORDERS".amt', 'SUM("ORDERS".amount)'],
+  ])('in a %s text, reads a dataset or field name as its database does: field %s, metric %s', async (dialect, read, sql, field, written) => {
+    const text = (expression: string) => ({dialects: [{dialect, expression}]});
+    const res = await importSemanticModelYaml(declaring([{name: 'total', expression: text(sql)}], m => {
+      m.datasets[0].fields[1].expression = text(read);
+    }), {flavor: 'google'});
+
+    expect(res.errors).toEqual([]);
+    expect(loadModels(res.files[0].content).models[0].entities[0].fields[1].dialects?.[0].expression).toBe(field);
+    expect(metrics(res.files[0].content)[0].dialects).toEqual([written]);
+  });
+
+  test.each([
     [
       'in quotes the reserved name an added field takes from a metric import removes', {sql: 'SUM(source.order)'},
       (m: any) => m.metrics = [{name: 'order', expression: {dialects: [{dialect: 'THOUGHTSPOT', expression: '[x]'}]}}],

@@ -260,7 +260,12 @@ writes another way:
    `FROM` stays, with a warning, since without it the name may read a column
    of the subquery's tables. A qualifier there that names another dataset
    stays too, with a warning, since it may name a table of that `FROM`. Any
-   other qualifier that names another dataset stops the import.
+   other qualifier that names another dataset stops the import. In a text of
+   a dialect other than `OSSIE_SQL_2026`, a dataset qualifier or field name
+   matches the declared name it spells, or else one its database reads as the
+   same name, by the letter-case rules given in item 6. So `ORDERS` in a
+   `SNOWFLAKE` text names dataset `orders`, and `"ORDERS"` in a `POSTGRES`
+   text does not. Import writes each such name as declared.
 5. The names in an `OSSIE_SQL_2026` text are read by Ossie's rules. A dataset
    qualifier or field name matches its declaration as follows. An unquoted
    name matches in any letter case. A quoted name matches the declared name

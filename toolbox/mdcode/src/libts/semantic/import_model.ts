@@ -1058,19 +1058,40 @@ function bareName(name: string): WrittenName {
 }
 
 /**
+ * The name of `declared` that `written`, a name a text of `dialect` writes,
+ * names: the one it spells, or else the first one the text's database reads
+ * as the same name, as it reads a column's name (see sameColumns). An
+ * ANSI_SQL text reads a name as the database of the table `tableOf` gives
+ * for that declared name does. An OSSIE_SQL_2026 text gives each name it
+ * matches as declared (see ossieNamesRewritten), so there only the spelling
+ * counts.
+ */
+function declaredName(
+    written: WrittenName, declared: readonly string[], dialect: string,
+    tableOf: (name: string) => string | undefined): string|undefined {
+  const spelled = declared.find(n => n === written.name);
+  if (spelled !== undefined || dialect === OSSIE_SQL) return spelled;
+  return declared.find(n => sameColumns([
+    columnKey(written, dialect, tableOf(n)),
+    columnKey(bareName(n), dialect, tableOf(n)),
+  ]));
+}
+
+/**
  * Removes from each field expression of a model read from the document root the
  * qualifier that names the field's own dataset, so the name reads as a column
  * of the dataset's source, as Apache Ossie reads it, and reports the fields in
  * one warning. The names of an OSSIE_SQL_2026 text are read by Ossie's rules
  * (see ossieNamesRewritten), and those of a text in another dialect by kcmd's
- * (see columnsRewritten), so an ANSI_SQL text's double quotes hold a name. A
- * column that does not read as that column where it stands, as written or
- * without the qualifier, as `current_date` does not, is written as its text's
- * dialect reads it, on the dataset's table, whose dialect `load` gives (see
- * columnName), and reported in one warning. In a text of a dialect other than
- * OSSIE_SQL_2026, a column written without a qualifier stays as written. A
- * double-quoted word of an ANSI_SQL text on a BigQuery table that this edits
- * is reported in one warning (see doubleQuotesReport).
+ * (see columnsRewritten), so an ANSI_SQL text's double quotes hold a name.
+ * There a qualifier names a dataset as the text's database reads names (see
+ * declaredName). A column that does not read as that column where it stands, as
+ * written or without the qualifier, as `current_date` does not, is written as
+ * its text's dialect reads it, on the dataset's table, whose dialect `load`
+ * gives (see columnName), and reported in one warning. In a text of a dialect
+ * other than OSSIE_SQL_2026, a column written without a qualifier stays as
+ * written. A double-quoted word of an ANSI_SQL text on a BigQuery table that
+ * this edits is reported in one warning (see doubleQuotesReport).
  * A qualifier in a subquery with its own FROM stays, since without it the
  * name may read a column of the subquery's tables, and a warning says what
  * to do. So does a qualifier there that names another dataset and a table or
@@ -1109,7 +1130,8 @@ function rewriteFieldExpressions(doc: ImportDocument, load: DialectLoad):
                 `${label} '${c.name.written}' to '${column}'`, f);
             return column;
           }
-          const dataset = datasets.find(n => n === c.qualifier!.name);
+          const dataset =
+              declaredName(c.qualifier, datasets, t.dialect, () => table);
           if (dataset && c.inSubquery && (dataset === ds.name || c.bound)) {
             const before = `${c.qualifier!.written}.${c.name.written}`;
             const left = `${label}: left '${before}' as written, since it ` +
@@ -1248,23 +1270,23 @@ function renameDatasetMetrics(doc: ImportDocument): void {
 }
 
 /**
- * Rewrites the names the metrics of a model read from the document root read
- * in each of their texts. The names of an OSSIE_SQL_2026 text are read by
- * Ossie's rules (see ossieNamesRewritten), and those of a text in another
- * dialect by kcmd's (see columnsRewritten), so an ANSI_SQL text's double
- * quotes hold a name. A metric a dataset declared names that dataset's
- * fields unqualified, which are qualified with the dataset's name, reported
- * in one warning, and a column of its source as
- * `source.column`, which becomes the field that reads that column, reported
- * in one warning. The field is the one columnField finds. When no field
- * reads the column, a field is added, listed in `doc.rootModel.added`, and
- * reported. A dataset or field name that does not read as that name as
- * written, as `date` does not, or as an OSSIE_SQL_2026 name in another
- * letter case does not, is written as its text's dialect reads it (see
- * qualifiedName), and reported in one warning. A double-quoted word of an
- * ANSI_SQL text on a BigQuery table that this edits is reported in one
- * warning (see doubleQuotesReport). An OSSIE_SQL_2026 text kcmd cannot parse
- * stays as written, with a warning.
+ * Rewrites the names the metrics of a model read from the document root read in
+ * each of their texts. The names of an OSSIE_SQL_2026 text are read by Ossie's
+ * rules (see ossieNamesRewritten), and those of a text in another dialect by
+ * kcmd's (see columnsRewritten), so an ANSI_SQL text's double quotes hold a
+ * name. There a dataset or field name names the declared name the text's
+ * database reads as that name (see declaredName). A metric a dataset declared
+ * names that dataset's fields unqualified, which are qualified with the
+ * dataset's name, reported in one warning, and a column of its source as
+ * `source.column`, which becomes the field that reads that column, reported in
+ * one warning. The field is the one columnField finds. When no field reads the
+ * column, a field is added, listed in `doc.rootModel.added`, and reported. A
+ * dataset or field name that does not read as that name as written, as `date`
+ * does not, or as a name in another letter case does not, is written as
+ * declared, as its text's dialect reads it (see qualifiedName), and reported in
+ * one warning. A double-quoted word of an ANSI_SQL text on a BigQuery table
+ * that this edits is reported in one warning (see doubleQuotesReport). An
+ * OSSIE_SQL_2026 text kcmd cannot parse stays as written, with a warning.
  */
 function rewriteMetricNames(
     doc: ImportDocument, load: DialectLoad,
@@ -1438,14 +1460,18 @@ function rewriteMetricNames(
               own, c.name, t, mt, before,
               readsAsText(t.dialect, table(own), q, c.name));
         }
-        const named = q ? datasets.find(n => n === q.name) : own?.name;
+        const named = q ?
+            declaredName(q, datasets, t.dialect, n => table(dataset(n))) :
+            own?.name;
         if (named === undefined) return undefined;
-        if (!q && !fieldsOf(dataset(named)).includes(c.name.name)) {
-          return undefined;
-        }
-        const qualifier = q ?? bareName(named);
-        const after =
-            qualifiedName(qualifier, c.name, t.dialect, table(dataset(named)));
+        const on = table(dataset(named));
+        const field =
+            declaredName(c.name, fieldsOf(dataset(named)), t.dialect, () => on);
+        if (!q && field === undefined) return undefined;
+        // Each name as declared, as an OSSIE_SQL_2026 text gives it.
+        const qualifier = q ? {...q, name: named} : bareName(named);
+        const fieldName = {...c.name, name: field ?? c.name.name};
+        const after = qualifiedName(qualifier, fieldName, t.dialect, on);
         if (!q) {
           report(
               doc,
@@ -1454,12 +1480,11 @@ function rewriteMetricNames(
                   `fields as '<dataset>.<field>'`,
               metricLabel(mt, doc), mt);
         }
-        if (after !== before &&
-            readsAsText(t.dialect, table(dataset(named)), q, c.name)) {
+        if (after !== before && readsAsText(t.dialect, on, q, c.name)) {
           doubleQuotesReport(
               doc, () => `'${before}' in ${metricLabel(mt, doc)} as field '${after}'`,
               mt);
-        } else if (after !== `${qualifier.written}.${c.name.written}`) {
+        } else if (after !== `${qualifier.written}.${fieldName.written}`) {
           quotedReport(mt, before, after);
         }
         return after === before ? undefined : after;
