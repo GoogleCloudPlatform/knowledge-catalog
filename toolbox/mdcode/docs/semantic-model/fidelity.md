@@ -278,9 +278,237 @@ text names the first part it does not translate. It names a function and a
 date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
 part `w`.
 
+It reads each database's SQL under that database's default settings:
+PostgreSQL, MySQL, SQL Server and Databricks in UTC, Snowflake in
+America/Los_Angeles with TIMESTAMP read as TIMESTAMP_NTZ, and Spanner in
+America/Los_Angeles. A database set up another way can need its `BIGQUERY`
+entries edited by hand.
+
+It translates a date or time plus or minus an amount of one unit. The value
+can be a column, a cast to DATE, a DATE literal, the current date, the current
+timestamp, a cast to a timestamp type where the list below names one, or,
+where the list allows, another such sum. MIN or MAX of such a value gets what
+the value gets, as does Snowflake's DATE_TRUNC, whose value keeps the type of
+its date. Each way a database writes the same sum gets the same BigQuery
+value and type: `+` or `-` with an INTERVAL, a function such as DATE_ADD,
+ADDDATE, DATEADD or TIMESTAMPADD with any unit name the database documents, or
+a whole number of days. The amount is a whole number. In a function and in
+MySQL's INTERVAL it can also be an expression, such as a column, which import
+writes as it is. BigQuery rejects an amount that is not an INT64, where the
+database may round it. In MySQL's INTERVAL, an expression that may not be a
+whole number, such as `n * 1.5` or AVG(n), stays untranslated. An amount
+that is visibly an INTERVAL, such as `3 * INTERVAL 1 DAY` in Databricks'
+date_add, stays untranslated, as the database rejects it. SQL Server's
+DATEADD reads a string of a whole number, such as '1', as the number. A column
+can be a DATE, a DATETIME or a TIMESTAMP in BigQuery, so import adds to a column
+only the units that keep the value and type of each. It also adds months,
+quarters and years to a column, which BigQuery rejects for a TIMESTAMP column.
+From MySQL, Snowflake, Databricks and SQL Server it adds a week to a column as
+7 days, which BigQuery's DATE_ADD also adds to a TIMESTAMP. An amount n of weeks
+that is an expression becomes `7 * (n)` days. These are the units it adds, by
+database. Milliseconds and microseconds go wherever seconds go in PostgreSQL,
+Snowflake and Databricks, which name both, and in MySQL, which names
+microseconds.
+
+- MySQL: every unit from seconds to years to a column and to a value it can
+  see is a DATE, such as the current date.
+  It writes NOW(), CURRENT_TIMESTAMP, LOCALTIMESTAMP and LOCALTIME as
+  DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND), a DATETIME in whole seconds
+  as in MySQL, and adds every unit from seconds to years to it.
+  A date or a time it can see, such as the current date, a date function or
+  date arithmetic on any value, stays untranslated where MySQL uses it as a
+  number or as text. That is in `+`, `-` or `*`, such as `CURDATE() + 1`,
+  negated, or compared with a number or text, also in BETWEEN, IN and CASE,
+  such as `CURDATE() = YEAR(d)` or `CURDATE() = '20240105'`. MySQL turns the
+  date into its digits beside a number, such as 20240101, and reads text
+  beside it as a date by its own rules. With `=`, `<` and the like, and as
+  the bounds of a date in BETWEEN, a string of a date that exists, written
+  YYYY-MM-DD beside a date, or with HH:MM:SS and up to six digits of a
+  fraction beside only DATETIME values, reads as the same value in BigQuery,
+  so `CURDATE() >= '2024-01-01'` is translated as written. IN and CASE stay
+  untranslated with such a string, since MySQL matches strings with each
+  other as text. NULLIF with a date first, a date among number or text
+  results of one COALESCE, IFNULL, IF or CASE, and a string beside an
+  INTERVAL, such as `'2024-01-31' + INTERVAL 1 DAY`, stay untranslated too,
+  since MySQL gives text there. So does NULLIF with a date second, since the
+  first value may be a date, a number or text. A value whose type import
+  cannot see, such as a column or `d + 1`, does not count, so `IF(flag,
+  CURDATE(), d + 1)` is translated as written.
+  A sum that names its INTERVAL first adds it to all that follows, as MySQL
+  does, so `INTERVAL 1 MONTH + CURDATE() - INTERVAL 1 DAY` subtracts the day
+  first. A compound unit, such as HOUR_MINUTE in `INTERVAL '1:30'
+  HOUR_MINUTE`, becomes one INTERVAL per part, read from a number or a string
+  by MySQL's rules: fewer numbers fill the smallest parts, and the digits of
+  microseconds are a fraction of a second. The parts are then added as a sum
+  of INTERVALs is, below.
+- PostgreSQL: every unit to a column, to a DATE and to a DATE plus an
+  INTERVAL, and to the current timestamp, which stays a TIMESTAMP. A cast to
+  timestamp gets what a DATE plus an INTERVAL gets, and a cast to timestamptz
+  what the current timestamp gets. A DATE plus an INTERVAL gives a DATETIME,
+  as it gives a timestamp in PostgreSQL. Months
+  and years go to the current timestamp as a DATETIME in UTC, which BigQuery
+  reads back as a TIMESTAMP: `NOW() + INTERVAL '1 month'` becomes
+  `TIMESTAMP(DATETIME(CURRENT_TIMESTAMP(), 'UTC') + INTERVAL 1 MONTH, 'UTC')`.
+  An INTERVAL string can name several units, such as '1 day 2 hours', and
+  decades, centuries and millennia, which count as 10, 100 and 1000 years. A
+  cast to INTERVAL with fields, such as `'90 minutes'::interval hour`, and
+  `INTERVAL '90 minutes' HOUR` become the INTERVAL PostgreSQL computes, here
+  `INTERVAL 1 HOUR`.
+- Snowflake: every unit from seconds to years to a column and to a DATE. It
+  writes CURRENT_TIMESTAMP as CURRENT_DATETIME('America/Los_Angeles') and adds
+  days, weeks, months, quarters and years to it. An INTERVAL string
+  names at most days, and DATEADD names any unit. A cast to TIMESTAMP or
+  TIMESTAMP_NTZ, and a value plus hours, minutes or seconds, is a
+  TIMESTAMP_NTZ, a DATETIME in BigQuery, and gets every unit.
+  TRY_CAST to TIMESTAMP or TIMESTAMP_NTZ stays untranslated. Snowflake's
+  TRY_CAST reads date and time formats that BigQuery's SAFE_CAST does not,
+  such as '05-Mar-2016', '03/05/2016 10:00:00' or a number of seconds since
+  1970, so BigQuery would give NULL where Snowflake gives a value.
+- Databricks: days, weeks, months and years to a column and to a DATE.
+  date_add, date_sub and two-argument dateadd give a DATE, as in Databricks.
+  timestampadd, and three-argument dateadd and date_add, such as
+  `dateadd(HOUR, 3, d)`, add every unit to a DATE or the current timestamp,
+  which they read as a TIMESTAMP, and nothing to a column, which can keep its
+  TIMESTAMP_NTZ type. timestampdiff, and three-argument datediff and
+  date_diff, count days and smaller units, and weeks of 7 days, as BigQuery's
+  TIMESTAMP_DIFF does between TIMESTAMP(x) values. They count months, quarters
+  and years by the calendar as Databricks does: whole months to the end's day
+  of the month, where the end counts a day nearer the start when its time of
+  day has not reached the start's. Two-argument datediff and date_diff count
+  the days from their second value to their first, as `DATE_DIFF(end, start,
+  DAY)` does. A DATE stays as it is. A column, the current timestamp or a
+  string of a date, with or without a time of day, is read as its date with
+  `CAST(CAST(x AS DATETIME) AS DATE)`, as date_add reads it. BigQuery rejects
+  a string that Databricks reads in another form, such as '2024-02'.
+  Seconds, minutes and hours go to TIMESTAMP(x) of a DATE, its midnight in
+  UTC, which gives a TIMESTAMP as in Databricks. It adds seconds, minutes,
+  hours, days and weeks to the current timestamp, a TIMESTAMP, and months and
+  years to it as a DATETIME in UTC, as from PostgreSQL.
+  Databricks reads the amount of its date functions, and a whole number added
+  to a DATE, as an INT. It wraps a larger amount, such as 4294967301 as 5, or
+  rejects it, where BigQuery adds the whole amount. So a number outside the
+  INT range stays untranslated. An amount of microseconds, milliseconds,
+  seconds or minutes that is not a number stays untranslated too, since 2^31
+  minutes, about 4083 years, can still move a date to one in the years 1 to
+  9999. 2^31 hours cannot, and BigQuery rejects such an amount of hours or
+  longer units.
+- SQL Server: days, weeks, months, quarters and years to a column and to a
+  date, such as a cast to date or CURRENT_DATE, and minutes and hours to a
+  column, which BigQuery rejects for a DATE column, as SQL Server rejects them
+  for a date. Seconds stay untranslated on a column, since SQL Server ignores
+  -30 to 29 seconds added to a smalldatetime. It writes GETDATE() and
+  CURRENT_TIMESTAMP as CURRENT_DATETIME('UTC'), a DATETIME as in SQL Server,
+  and adds every unit from seconds to years to it. A number added to it counts
+  days, as in SQL Server. Its fraction becomes the hours, minutes, seconds or
+  milliseconds it holds, so `GETDATE() + 1.25` adds 30 hours. A fraction that
+  is not whole hundredths of a second stays untranslated, since SQL Server
+  rounds it to 1/300 of a second. DATEADD of milliseconds or smaller units
+  stays untranslated, since a datetime rounds them to 1/300 of a second.
+
+From PostgreSQL, Snowflake and Databricks, a whole number added to a DATE
+counts as days. Added to a DATE that COALESCE, IF or CASE gives, such as
+`COALESCE(d, CURRENT_DATE) + 1`, it stays as written. A column plus a whole
+number, such as `(d + 1) + INTERVAL '1 day'`, gets an INTERVAL as a DATE does.
+None of the three adds an INTERVAL to a number or a whole number to a
+timestamp, and BigQuery does neither. Import translates no date arithmetic
+from ANSI_SQL, since the databases an ANSI_SQL
+text runs on add a unit as different types. It also leaves NULLIF of a date
+or a time in an ANSI_SQL text untranslated, since MySQL gives it as text. From
+a SPANNER text it keeps DATE_ADD, DATE_SUB, TIMESTAMP_ADD and TIMESTAMP_SUB,
+and weeks, days, hours and
+minutes added with `+` or `-`, which BigQuery adds as Spanner does. A week is
+7 days in both. The amount is a whole number or an expression, such as
+`INTERVAL (1+1) DAY`. EXTRACT takes an INTERVAL of any unit, or a sum,
+difference or negation of them, since Spanner and BigQuery give its parts the
+same way. So do a comparison, BETWEEN, IN and a
+CASE with a value, since both compare a month as 30 days and a day as 24
+hours. Months, quarters and years added with `+` or `-` stay untranslated,
+since Spanner adds them to no TIMESTAMP and adds no INTERVAL to a DATE. From
+the other databases, import leaves any other date arithmetic untranslated,
+such as an INTERVAL of a fraction.
+PostgreSQL's DATE_TRUNC of a column plus an INTERVAL stays untranslated, since
+DATE_TRUNC gives a timestamptz for a date column and a timestamp for a
+timestamp column. COALESCE, IF or CASE of a column and a DATE plus an INTERVAL
+stays untranslated, since the column can give it another type. A Databricks
+TIMESTAMP_NTZ column, for one, keeps its type where a DATE plus hours becomes
+a TIMESTAMP.
+
+From PostgreSQL and Databricks, import also translates a sum or difference of
+INTERVALs, such as `INTERVAL '1 day' + INTERVAL '2 hours'`, and an INTERVAL
+times an amount. Alone, it becomes BigQuery's INTERVAL sum as written. Added
+to a value, it gets the form and type that its smallest unit gets in the list
+above. Where that form is `+`, import keeps the sum as written, and each of
+its units must be one the list adds to the result. A sum with months or years
+on the current timestamp goes to its DATETIME in UTC as a whole. BigQuery then
+adds months first, then days, then time, as PostgreSQL and Databricks do.
+Where that form is DATE_ADD, the INTERVALs must add up to one amount of their
+smallest unit, so they must all be months and years, or all be weeks and
+smaller units. An INTERVAL times a whole number adds the product. Times
+another amount n, the sum is an expression of n, such as `(-36 + (n))` months,
+which BigQuery rejects unless n is an INT64. An amount that may not be a
+whole number, such as 1.5, '2', NULL, AVG(n) or n / 2, stays untranslated,
+since BigQuery multiplies an INTERVAL only by an INT64. Databricks multiplies
+weeks and smaller units into seconds, so `current_date() + 3 * INTERVAL 1 DAY`
+gives a TIMESTAMP and becomes `TIMESTAMP(CURRENT_DATE) + 3 * INTERVAL 1 DAY`.
+Databricks' `CURRENT_DATE + (INTERVAL 1 MONTH + INTERVAL 1 YEAR)` becomes
+`DATE_ADD(CURRENT_DATE, INTERVAL 13 MONTH)`. A Databricks sum joins months and
+years, or weeks and smaller units, as Databricks does. A single INTERVAL,
+alone or compared, becomes BigQuery's INTERVAL. BigQuery compares a month as
+30 days and a day as 24 hours, as PostgreSQL does. Databricks compares no
+INTERVAL of months or years with one of smaller units, so that comparison
+stays untranslated. So does AVG of an INTERVAL and an INTERVAL divided
+by a number, since BigQuery rounds them down to whole microseconds. PostgreSQL
+and Databricks round to the nearest microsecond, and Databricks gives a
+year-month INTERVAL in whole months. BigQuery's NULLIF takes no INTERVAL when
+the query runs, though a dry run accepts it, so NULLIF with an INTERVAL
+becomes `IF(a = b, NULL, a)`, also from Spanner.
+
+From PostgreSQL and Databricks, a DATE or a DATETIME that import can see
+beside a TIMESTAMP, compared with it or as a result of one COALESCE, IF or
+CASE, gets TIMESTAMP(x), its midnight or wall-clock time in UTC, as those
+databases read it: `CURRENT_DATE - 7 < NOW()` becomes
+`TIMESTAMP(DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY)) < CURRENT_TIMESTAMP()`.
+
+From PostgreSQL and Databricks, a difference of two dates or times that import
+can see, one of them a timestamp or a timestamptz, is an INTERVAL of days and a
+time of day with one sign, such as `1 day 23:00:00`. BigQuery gives the
+difference of two TIMESTAMPs in hours, here `47:00:00`, so import writes
+`JUSTIFY_HOURS(TIMESTAMP(a) - TIMESTAMP(b))`, which moves each whole 24 hours
+into days as those databases do. `CURRENT_DATE - NOW()` becomes
+`JUSTIFY_HOURS(TIMESTAMP(CURRENT_DATE) - TIMESTAMP(CURRENT_TIMESTAMP()))`. A
+difference with a column stays untranslated, since the column's type is not
+visible: a PostgreSQL date column minus a date is a number of days.
+Arithmetic on such a difference stays untranslated too.
+
+PostgreSQL's EXTRACT of an INTERVAL that import can see, such as
+`INTERVAL '25 hours'` or such a difference, gives each part as a numeric, and
+its DATE_PART gives a double. BigQuery's EXTRACT gives the same parts, since
+both keep the months, days and time of an INTERVAL apart: the hours of
+`INTERVAL '25 hours'` are 25 in both. Import casts the part to NUMERIC, or to
+FLOAT64 for DATE_PART. It writes seconds, milliseconds and microseconds from
+BigQuery's whole seconds and their microseconds, and a quarter, decade, century
+or millennium from the months or years. It writes the epoch with a year of
+365.25 days and a month of 30 days, as PostgreSQL counts it. Databricks'
+EXTRACT of an INTERVAL stays untranslated, since Databricks keeps a day and
+time INTERVAL as one count of microseconds: the hours of `INTERVAL 25 HOURS`
+are 1 there and 25 in BigQuery.
+
+BigQuery rejects IN and a CASE with a value over an INTERVAL when the query
+runs, though a dry run accepts them. From PostgreSQL, Databricks and Spanner,
+IN, NOT IN and a CASE with a value over an INTERVAL become the equalities they
+compare by, where each value is an INTERVAL literal, a sum, difference or
+negation of them, a column or NULL: `x IN (a, b)` becomes `(x = a OR x = b)`,
+and `CASE x WHEN a` becomes `CASE WHEN x = a`. They give the same truth values,
+also for NULL. With any
+other value, such as `INTERVAL '1 day' * 2` or a difference of dates, they stay
+untranslated. An equality with a NULL is NULL whatever the other value is, and
+BigQuery's `=` takes no literal NULL, so it becomes a NULL of type BOOL, such
+as `CAST(NULL AS BOOLEAN)`.
+
 BigQuery rejects a translated field when a column's BigQuery type is not the
-one the expression needs, such as a DATETIME column compared with the current
-time. Then edit that field's `BIGQUERY` entry.
+one the expression needs, such as a DATETIME column compared with PostgreSQL's
+NOW(), a TIMESTAMP column compared with MySQL's NOW(), or a TIMESTAMP column
+plus a month. Then edit that field's `BIGQUERY` entry.
 
 The BigQuery value can differ from the source's value in these cases:
 
@@ -288,6 +516,14 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
+- A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days or weeks
+  can be an hour off across a daylight saving change. Snowflake adds a day in
+  its default time zone, America/Los_Angeles, where BigQuery adds 24 hours.
+- A MySQL TIMESTAMP column plus or minus a unit of a week or less gives a
+  DATETIME in MySQL and a TIMESTAMP in BigQuery, with the same value in UTC.
+- SQL Server's GETDATE() counts 1/300 of a second, where CURRENT_DATETIME
+  counts microseconds. A comparison with a time less than 1/300 of a second away
+  can then give the other result.
 - MySQL, SQL Server and PostgreSQL compare text by a collation. Text that
   differs only in letter case, accents or trailing spaces can give another
   value. PostgreSQL also ignores spaces and punctuation when it sorts text.
@@ -305,7 +541,8 @@ translated text can give other dates and hours than the database does. For such
 a database, edit by hand the translated `BIGQUERY` entries of the fields and
 metrics that read it, so that they name its time zone.
 Snowflake's default time zone is written into the current date and time
-functions of a `SNOWFLAKE` text.
+functions of a `SNOWFLAKE` text, and UTC into the current timestamp of a
+`MYSQL` or `SQLSERVER` text.
 
 ## To Spanner
 

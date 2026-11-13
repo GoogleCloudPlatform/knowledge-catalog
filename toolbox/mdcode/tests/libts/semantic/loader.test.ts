@@ -562,9 +562,11 @@ ${metrics}`;
       expect(() => loadModels(shop(`{name: notes, expression: ${comment}}`)))
           .toThrow(`field 'orders.notes': 'expression' is only a comment; ${fix}`);
     }
-    // BigQuery reads `#` as a comment.
-    expect(() => loadModels(shop(entries('{dialect: BIGQUERY, expression: "# todo"}'))))
-        .toThrow("field 'orders.notes': the BIGQUERY entry of 'expression' is only a comment");
+    // BigQuery and MySQL read `#` as a comment.
+    for (const dialect of ['BIGQUERY', 'MYSQL']) {
+      expect(() => loadModels(shop(entries(`{dialect: ${dialect}, expression: "# todo"}`))))
+          .toThrow(`field 'orders.notes': the ${dialect} entry of 'expression' is only a comment`);
+    }
     expect(() => loadModels(shop('{name: notes, expression: "# todo"}')))
         .toThrow("field 'orders.notes': 'expression' is only a comment");
   });
@@ -575,8 +577,10 @@ ${metrics}`;
       expect(() => loadModels(shop(`{name: notes, expression: ${qualifier}}`)))
           .toThrow(`field 'orders.notes': 'expression' is only the qualifier 'orders.'; ${fix}`);
     }
-    expect(() => loadModels(shop(entries('{dialect: POSTGRES, expression: "orders."}'))))
-        .toThrow("field 'orders.notes': the POSTGRES entry of 'expression' is only the qualifier 'orders.'");
+    for (const [dialect, text] of [['POSTGRES', 'orders.'], ['MYSQL', '# todo\\norders.']]) {
+      expect(() => loadModels(shop(entries(`{dialect: ${dialect}, expression: "${text}"}`))))
+          .toThrow(`field 'orders.notes': the ${dialect} entry of 'expression' is only the qualifier 'orders.'`);
+    }
     expect(() => loadModels(shop('{name: notes, expression: "orders.notes"}'))).not.toThrow();
   });
 
