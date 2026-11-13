@@ -2673,6 +2673,38 @@ ${extraMetric}`;
       ]);
     });
 
+    // An inherited text is read in its tables' dialect: `#>>` is an operator
+    // in PostgreSQL, and `#` starts a comment in BigQuery, Spanner and MySQL.
+    const CLOUDSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/d';
+    test.each([
+      ['AlloyDB', (t: string) => `alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/d/schemas/public/tables/${t}`, undefined, 2],
+      ['PostgreSQL Cloud SQL', (t: string) => `${CLOUDSQL}/schemas/public/tables/${t}`, 'POSTGRES', 2],
+      ['MySQL Cloud SQL', (t: string) => `${CLOUDSQL}/tables/${t}`, 'MYSQL', 0],
+      ['PostgreSQL-dialect Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'POSTGRES', 2],
+      ['GoogleSQL Spanner', (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${t}`, 'SPANNER', 0],
+      ['BigQuery', (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`, undefined, 0],
+    ])('reads an inherited text with #>> on %s tables in their dialect', (_, table, sourceDialect, cycles) => {
+      const entity = (name: string, fields: Field[], extended?: string[]) => ({
+        name, authoredSource: table(name), dataSource: table(name),
+        ...(sourceDialect ? {sourceDialect} : {}), keys: ['id'],
+        ...(extended ? {extends: extended} : {}),
+        fields: [{name: 'id', expression: 'id'}, ...fields],
+      });
+      const m = model({
+        entities: [
+          entity('party', [
+            {name: 'data', expression: 'data'},
+            {name: 'code', expression: 'code'},
+            {name: 'label', expression: "party.data #>> '{tier}' || party.code"},
+          ]),
+          entity('customer', [{name: 'code', expression: 'customer.label'}], ['party']),
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)])
+                 .filter(e => e.includes('names itself through')))
+          .toHaveLength(cycles);
+    });
+
     test('accepts an inherited field that names its supertype\'s siblings', () => {
       const m = model({
         entities: [
@@ -4170,4 +4202,24 @@ ${order}`, {sourceDialects: new Map(looked)});
           "expression reads column 'p_name' of that entity's table; restate it with an " +
           "expression for this entity's table."]});
   }
+});
+
+// The tables' database runs the inherited field's entry for its dialect, so
+// only that text's column counts: here Spanner's, beside a BIGQUERY text that
+// reads p_name.
+test.each([
+  ["'x'", []],
+  ['p_sp', ["entity 'Customer' in model 'shop' (shop): field 'label' is inherited from " +
+            "'Party', whose expression reads column 'p_sp' of that entity's table; " +
+            "restate it with an expression for this entity's table."]],
+])('validateInheritedColumns on Spanner tables reads the SPANNER text %s', (text, errors) => {
+  const spanner = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const label = `{dialects: [{dialect: BIGQUERY, expression: p_name}, {dialect: SPANNER, expression: "${text}"}]}`;
+  const m = loadOne('shop', `    entities:
+      - {name: Party, source: ${spanner}/tables/party, primary_key: [id],
+         fields: [{name: id, expression: id}, {name: label, expression: ${label}}]}
+      - {name: Customer, extends: [Party], source: ${spanner}/tables/customer,
+         primary_key: [id], fields: [{name: id, expression: id}]}
+`, {sourceDialects: new Map([[spanner, 'SPANNER']])});
+  expect(validateInheritedColumns(m, 'shop')).toEqual(errors);
 });

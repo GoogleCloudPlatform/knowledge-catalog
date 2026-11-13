@@ -609,7 +609,7 @@ describe('kcmd profiles reports what push rejects', () => {
   const SPANNER_DB =
       'spanner.googleapis.com/projects/acme/instances/prod/databases/commerce';
   const INLINE = "  profile 'default': the model document's own inline " +
-      'bindings, as authored -- nothing merged, nothing withheld.';
+      'bindings, as authored -- nothing merged.';
   const NO_PROFILES = "  no binding profiles; the model document is its own " +
       "inline 'default' binding.";
 
@@ -837,6 +837,51 @@ relationships:
       '      purchase -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/purchase',
       '    cannot answer: nothing withheld.',
     ]);
+  });
+
+  // The model file's own bindings are reported as push prunes a deployment
+  // that uses them, wherever the report shows them.
+  test('reports what the model file\'s own bindings cannot answer', async () => {
+    const ALLOYDB = 'alloydb.googleapis.com/projects/acme/locations/us/' +
+        'clusters/c/databases/shop';
+    // customer with field note unbound, deployed by `deployments`.
+    const noteUnbound = (source: string, deployments: string) =>
+        `${commerce().replace(/    entities:\n[\s\S]*$/, `    entities:
+      - name: customer
+        source: ${source}
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: note }
+`)}${deployments ? `    deployments:\n${deployments}` : ''}`;
+    const report = (target: string, source: string) => [
+      `    target: ${target}`, '    sources:', `      customer -> ${source}`,
+      '    cannot answer:', '      field customer.note (unbound)'];
+    const AD_SOURCE = `${ALLOYDB}/schemas/public/tables/customer`;
+    const AD_MODEL = {'commerce.yaml': noteUnbound(
+        AD_SOURCE, `      - { name: ad, target: ${ALLOYDB} }\n`)};
+    const NONE = '(none; no deployment names this profile)';
+    for (const [label, files, profile, header, want, code] of [
+             ['an AlloyDB deployment, --profile default', AD_MODEL, 'default',
+              INLINE, report(ALLOYDB, AD_SOURCE), 0],
+             ['an AlloyDB deployment, no named profile', AD_MODEL, undefined,
+              NO_PROFILES, report(ALLOYDB, AD_SOURCE), 0],
+             ['no deployment, no named profile',
+              {'commerce.yaml': noteUnbound(BQ('dev', 'customer'), '')},
+              undefined, NO_PROFILES, report(NONE, BQ('dev', 'customer')), 0],
+             ['a graph deployment push rejects, beside a named profile',
+              {'commerce.yaml': noteUnbound(BQ('dev', 'customer'),
+                   `      - { name: bq, target: ${GRAPH} }\n`),
+               'commerce.profile.prod.yaml': `name: prod\nentities:\n` +
+                   prodEntity('customer', 'c_id', col('c_id'), col('note'))},
+              undefined, INLINE, report(GRAPH, BQ('dev', 'customer')), 1],
+    ] as const) {
+      writeScope(files);
+      logs.length = 0;
+      expect({label, code: await profiles({profile})}).toEqual({label, code});
+      expect({label, lines: section(header).slice(1, 6)})
+          .toEqual({label, lines: want});
+    }
   });
 
   // On `customer`, inheritance removes `party.` from `party.customer.` and

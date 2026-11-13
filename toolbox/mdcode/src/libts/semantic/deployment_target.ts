@@ -188,6 +188,27 @@ function parseTarget(uri: string): ParsedDeploymentTarget|undefined {
   return undefined;
 }
 
+/**
+ * The resource a deployment target names: two targets with the same key name
+ * one resource. Spanner and BigQuery read a graph name without regard to case,
+ * so the key holds it in lower case. A target in no accepted form keys on its
+ * own text, which matches no accepted target's key.
+ */
+export function deploymentTargetKey(target: string): string {
+  const parsed = parseTarget(target);
+  if (!parsed) return `unparsed:${target}`;
+  const {engine, coordinates: c} = parsed;
+  switch (engine) {
+    case 'bigquery':
+      return `bigquery/${c.project}/${c.dataset}/${c.graphName.toLowerCase()}`;
+    case 'spanner':
+      return `spanner/${c.project}/${c.instance}/${c.database}/${
+          c.graphName.toLowerCase()}`;
+    case 'alloydb':
+      return `alloydb/${c.project}/${c.location}/${c.cluster}/${c.database}`;
+  }
+}
+
 // The cluster-based URI of the database a legacy instance-based AlloyDB URI
 // names.
 function clusterUri(legacy: RegExpMatchArray): string {

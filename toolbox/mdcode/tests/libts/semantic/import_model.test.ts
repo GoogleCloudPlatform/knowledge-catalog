@@ -248,6 +248,10 @@ describe('conversion, strict mode, and translation', () => {
   test.each([
     ['a dialect alias', googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'), 'google',
      "field 'orders.order_id': write dialect 'GOOGLE_SQL' as 'BIGQUERY'."],
+    ['a PostgreSQL label on an AlloyDB table',
+     googleDoc({source: `${ALLOYDB_DB}/schemas/public/tables/orders`})
+         .replace('dialect: BIGQUERY', 'dialect: PostgreSQL'),
+     'google', "field 'orders.order_id': write dialect 'PostgreSQL' as 'ALLOYDB'."],
     ['an unsupported dialect',
      googleDoc({fieldExpr: '{dialects: [{dialect: BIGQUERY, expression: order_id}, {dialect: MDX, expression: x}]}'}),
      'google', "field 'orders.order_id': remove the entry for unsupported dialect 'MDX'."],
@@ -903,6 +907,75 @@ describe('profile checks', () => {
       "[sales] deployment 'g': database acme/i/db has the PostgreSQL dialect, and Spanner " +
       'creates no property graph in a PostgreSQL-dialect database. Remove the deployment; push ' +
       'still publishes the model to Knowledge Catalog.',
+    ]);
+  });
+
+  // A vendor label names its language's dialect. It names SPANNER or ALLOYDB
+  // when every table that runs its text is a GoogleSQL Spanner table or an
+  // AlloyDB table. For a field, that is its entity's own table, once
+  // '--source-prefix' completes it and the lookup reads its dialect. For a
+  // metric, it is the tables of the entities the metric reads, or every table
+  // when it reads none.
+  const GOOGLE_SPANNER = lookup({spanner: 'GOOGLE_STANDARD_SQL'});
+  const LABELED = (dialect: string) => AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`);
+  const METRIC = (dialects: string) =>
+      `    metrics:\n      - {name: m, entity: orders, expression: {dialects: [${dialects}]}}\n`;
+  test.each([
+    ['a GoogleSQL Spanner table', model(LABELED('GoogleSQL'), SPANNER_TABLE), {readDialects: GOOGLE_SPANNER},
+     "field 'orders.amount': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['an AlloyDB table that --source-prefix completes', model(LABELED('PostgreSQL'), 'orders'),
+     {sourcePrefix: `${ALLOYDB_DB}/schemas/public`},
+     "field 'orders.amount': write dialect 'PostgreSQL' as 'ALLOYDB'."],
+    ['a model with no table', UNBOUND + LABELED('GoogleSQL'), {},
+     "field 'orders.amount': write dialect 'GoogleSQL' as 'BIGQUERY'."],
+    ['a metric on a GoogleSQL Spanner table',
+     model(METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id)}'), SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['an unanchored metric on a model whose every table is a GoogleSQL Spanner table',
+     model('      - name: party\n        abstract: true\n' +
+           METRIC('{dialect: GoogleSQL, expression: SUM(amount)}').replace('entity: orders, ', ''), SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'SPANNER'."],
+    ['a metric that reads a Spanner and a BigQuery table',
+     model(CUSTOMERS_BQ + METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id) + COUNT(customers.id)}'),
+           SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'BIGQUERY'."],
+    ['a metric that reads a Spanner table and a source in no accepted form',
+     model(CUSTOMERS_BQ.replace(/source: .*/, 'source: prod.customers') +
+           METRIC('{dialect: GoogleSQL, expression: COUNT(orders.order_id) + COUNT(customers.id)}'), SPANNER_TABLE),
+     {readDialects: GOOGLE_SPANNER}, "metric 'm': write dialect 'GoogleSQL' as 'BIGQUERY'."],
+  ] as Array<[string, string, object, string]>)(
+      'reads a vendor label on %s', async (_, input, opts, needed) => {
+        const res = await importSemanticModelYaml(input, {...strict, flavor: 'google', ...opts});
+        expect(res.errors).toContain(needed);
+      });
+
+  // A vendor label whose dialect another entry already has stays as written,
+  // and import reports it.
+  const TWICE = (label: string, dialect: string) =>
+      `${label}: dialect '${dialect}' names 'BIGQUERY', and another entry already has dialect ` +
+      "'BIGQUERY'; remove one of the two entries.";
+  test.each([
+    ['a field with no table',
+     UNBOUND + AMOUNT('{dialects: [{dialect: BIGQUERY, expression: a}, {dialect: GoogleSQL, expression: b}]}'),
+     TWICE("field 'orders.amount'", 'GoogleSQL')],
+    ['a metric whose other entry is in lower case',
+     model(METRIC('{dialect: bigquery, expression: COUNT(orders.order_id)}, ' +
+                  '{dialect: GOOGLE_SQL, expression: COUNT(orders.order_id)}')),
+     TWICE("metric 'm'", 'GOOGLE_SQL')],
+  ])('leaves a vendor label as written on %s', async (_, input, error) => {
+    const res = await importSemanticModelYaml(input, {flavor: 'google'});
+    expect(res.errors).toEqual([error]);
+  });
+
+  // A PostgreSQL model on BigQuery tables gets a POSTGRES entry, which
+  // --transpile translates.
+  test('translates a PostgreSQL label onto BigQuery tables', async () => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: 'orders', fieldExpr: '{dialects: [{dialect: PostgreSQL, expression: order_id}]}'}),
+        {flavor: 'google', sourcePrefix: BQ_PREFIX, transpile: true});
+    expect(loadModels(res.files[0].content).models[0].entities[0].fields[0].dialects).toEqual([
+      {dialect: 'POSTGRES', expression: 'order_id'},
+      {dialect: 'BIGQUERY', expression: 'order_id'},
     ]);
   });
 

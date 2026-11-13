@@ -7,7 +7,7 @@ import {checkProfileFileName, ProfileFileError, profileNameError, profileParseEr
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, metricTableEntities, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
@@ -287,12 +287,37 @@ function sourceError(source: string, ctx: string): string|undefined {
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
 
-const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
-  GOOGLE_SQL: 'BIGQUERY',
-  GOOGLESQL: 'BIGQUERY',
-  POSTGRESQL: 'POSTGRES',
-  TSQL: 'SQLSERVER',
+// Each vendor dialect label, with the dialect it names, and the dialect it
+// names instead when every table that runs it has that dialect: GoogleSQL is
+// SPANNER on a GoogleSQL Spanner table, and PostgreSQL is ALLOYDB on an
+// AlloyDB table.
+const DIALECT_ALIASES:
+    Readonly<Record<string, readonly [SqlDialect, SqlDialect?]>> = {
+  GOOGLE_SQL: ['BIGQUERY', 'SPANNER'],
+  GOOGLESQL: ['BIGQUERY', 'SPANNER'],
+  POSTGRESQL: ['POSTGRES', 'ALLOYDB'],
+  TSQL: ['SQLSERVER'],
 };
+
+// Entity `ds` as sourcesDialect reads it, with the dialect `load` gives its
+// table.
+function lookedUpEntity(ds: Record<string, any>, load: DialectLoad) {
+  const source = typeof ds.source === 'string' ? ds.source : undefined;
+  const key = source && dialectLookupKey(source.trim());
+  return {
+    abstract: Boolean(ds.abstract),
+    authoredSource: source,
+    dataSource: '',
+    sourceDialect: key ? load.sourceDialects?.get(key) : undefined,
+  };
+}
+
+// The dialect of entity `ds`'s own table, as push reads it with the dialects
+// `load` gives. Undefined when it has no table.
+function tableDialect(
+    ds: Record<string, any>, load: DialectLoad): string|null|undefined {
+  return sourcesDialect({entities: [lookedUpEntity(ds, load)]});
+}
 
 // Each kind of --source-prefix: its pattern, the child container a bare name
 // adds under it, if any, the resource name of a table under it, the most
@@ -869,9 +894,10 @@ function normalizeDatatype(
 }
 
 /**
- * Maps dialect aliases onto the 9 allowed SQL dialects and drops unsupported
+ * Maps each dialect onto the 9 allowed SQL dialects and drops unsupported
  * non-SQL dialects on a field or metric, returning `'empty'` if all dialect
- * entries were dropped.
+ * entries were dropped. A vendor label stays as written for
+ * `relabelVendorDialects`.
  */
 function normalizeExpressionDialects(
     obj: Record<string, any>, label: string, doc: ImportDocument): 'ok'|
@@ -887,8 +913,12 @@ function normalizeExpressionDialects(
       continue;
     }
     const upper = entry.dialect.trim().toUpperCase();
-    const mapped = DIALECT_ALIASES[upper] ??
-        (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
+    if (DIALECT_ALIASES[upper]) {
+      kept.push(entry);
+      continue;
+    }
+    const mapped =
+        ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined;
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
         doc.repair(
@@ -908,6 +938,71 @@ function normalizeExpressionDialects(
   }
   obj.expression.dialects = kept;
   return kept.length === 0 ? 'empty' : 'ok';
+}
+
+/**
+ * Rewrites each vendor dialect label on a field or metric, in list order, as
+ * the dialect it names. `tables` holds the dialect of each table that runs
+ * the field or metric. The label names the second dialect DIALECT_ALIASES
+ * gives it when there is a table and every table has that dialect. Otherwise
+ * it names the first. A label whose dialect another entry already has stays
+ * as written, and import reports it.
+ */
+function relabelVendorDialects(
+    obj: Record<string, any>, label: string, doc: ImportDocument,
+    tables: ReadonlyArray<string|null|undefined>): void {
+  if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects)) {
+    return;
+  }
+  const entries = asRecords(obj.expression.dialects);
+  entries.forEach((entry, i) => {
+    const alias = typeof entry.dialect === 'string' ?
+        DIALECT_ALIASES[entry.dialect.trim().toUpperCase()] :
+        undefined;
+    if (!alias) return;
+    const [usual, own] = alias;
+    const name =
+        own && tables.length && tables.every(t => t === own) ? own : usual;
+    if (entries.some((e, j) => j !== i && e.dialect === name)) {
+      doc.errors.push(
+          `${label}: dialect '${entry.dialect}' names '${name}', and ` +
+          `another entry already has dialect '${name}'; remove one of the ` +
+          `two entries.`);
+      return;
+    }
+    doc.repair(
+        `${label}: rewrote dialect '${entry.dialect}' to '${name}'.`,
+        `${label}: write dialect '${entry.dialect}' as '${name}'.`);
+    entry.dialect = name;
+    doc.modified = true;
+  });
+}
+
+// The entities whose tables run metric `mt`, as push reads them with
+// metricTableEntities. A vendor label's text is read in the first dialect
+// DIALECT_ALIASES gives it.
+function metricEntities(
+    mt: Record<string, any>, doc: ImportDocument): Array<Record<string, any>> {
+  const anchor =
+      [mt.entity, ...parseGoogleBlocks(mt.custom_extensions).map(b => b.entity)]
+          .find((a): a is string => typeof a === 'string');
+  const dialects =
+      asRecords(mt.expression?.dialects)
+          .filter(
+              e => typeof e.dialect === 'string' &&
+                  typeof e.expression === 'string')
+          .map(
+              e => ({
+                dialect: DIALECT_ALIASES[e.dialect.trim().toUpperCase()]?.[0] ??
+                    e.dialect,
+                expression: e.expression,
+              }));
+  const names = doc.datasets.map(ds => ds.name)
+                    .filter((n): n is string => typeof n === 'string');
+  const run = metricTableEntities(
+      {name: String(mt.name), authoredEntity: anchor, dialects}, names,
+      undefined, doc.impliedDialect);
+  return doc.datasets.filter(ds => run.includes(ds.name));
 }
 
 /**
@@ -1125,11 +1220,12 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
  * `false` when the metric is unanchored and reaches 0 or >1 entities so the
- * caller prunes it from `doc.metrics`. `translatesLater` is as for
- * `unanchoredMetricProblem`.
+ * caller prunes it from `doc.metrics`. A vendor label names its dialect by
+ * the tables that run the metric (see metricEntities), with the dialects
+ * `load` gives them. `translatesLater` is as for `unanchoredMetricProblem`.
  */
 function repairMetric(
-    mt: Record<string, any>, doc: ImportDocument,
+    mt: Record<string, any>, doc: ImportDocument, load: DialectLoad,
     translatesLater = false): boolean {
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
@@ -1139,6 +1235,16 @@ function repairMetric(
         `add one.`);
     return true;
   }
+  // An abstract entity or one with no source runs nothing, as push's
+  // sourcesDialect reads it. An entity with a source counts whether or not
+  // the source is in an accepted form. A table of unknown dialect keeps the
+  // label from naming SPANNER or ALLOYDB.
+  relabelVendorDialects(
+      mt, mtLabel, doc,
+      metricEntities(mt, doc)
+          .filter(
+              ds => !ds.abstract && typeof ds.source === 'string' && ds.source)
+          .map(ds => tableDialect(ds, load)));
   if (!keepsMetric(mt, doc, translatesLater)) return false;
   truncateDescription(mt, mtLabel, doc);
   return true;
@@ -1281,19 +1387,18 @@ async function repairDocument(
   // metric check runs again after translation, or push's checks in strict
   // mode.
   const load = await readSourceDialects(doc, opts);
-  doc.impliedDialect = sourcesDialect({
-    entities: doc.datasets.map(ds => {
-      const source = typeof ds.source === 'string' ? ds.source : undefined;
-      const key = source && dialectLookupKey(source.trim());
-      return {
-        abstract: Boolean(ds.abstract),
-        authoredSource: source,
-        dataSource: '',
-        sourceDialect: key ? load.sourceDialects?.get(key) : undefined,
-      };
-    }),
-  });
-  filterMetrics(doc, (mt, d) => repairMetric(mt, d, !!opts.transpile));
+  // A vendor label on a field names its dialect by its entity's own table,
+  // once every source is complete and its dialect read.
+  for (const ds of doc.datasets) {
+    for (const f of asRecords(ds.fields)) {
+      relabelVendorDialects(
+          f, `field '${ds.name ?? ''}.${f.name}'`, doc,
+          [tableDialect(ds, load)]);
+    }
+  }
+  doc.impliedDialect = sourcesDialect(
+      {entities: doc.datasets.map(ds => lookedUpEntity(ds, load))});
+  filterMetrics(doc, (mt, d) => repairMetric(mt, d, load, !!opts.transpile));
 
   // 4. Cap each relationship's `description`. A `GOOGLE` block comes only in
   // strict mode, which writes nothing, so its description is only reported.
