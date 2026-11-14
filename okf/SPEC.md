@@ -533,8 +533,8 @@ MAY synthesize one on the fly when none is present.
 ## 9. Log files
 
 A `log.md` file MAY appear at any level of the hierarchy to record the
-history of changes to that scope. The format is a flat list of
-date-grouped entries, newest first:
+history of changes to that scope. Log files contain no frontmatter.
+The format is a flat list of date-grouped entries, newest first:
 
 ```markdown
 # Directory Update Log
