@@ -92,3 +92,16 @@ def test_regenerate_single_child_reuses_description(tmp_path: Path):
     root_index = (root / "index.md").read_text(encoding="utf-8")
     assert "(datasets/index.md) - The only dataset in this bundle." in root_index
     assert call_count == 0
+
+
+def test_reserved_log_md_is_not_indexed(tmp_path: Path):
+    """OKF v0.2 §3.1: `log.md` is reserved and must not be listed."""
+    root = tmp_path / "bundle"
+    _write_doc(root / "tables" / "orders.md", "BigQuery Table", "Orders", "Order rows.")
+    (root / "log.md").write_text("# Log\n\n* 2026-05-28 — created.\n", encoding="utf-8")
+
+    regenerate_indexes(root, synthesize=_stub_synth)
+
+    root_index = (root / "index.md").read_text(encoding="utf-8")
+    assert "log.md" not in root_index
+    assert "# Log" not in root_index
