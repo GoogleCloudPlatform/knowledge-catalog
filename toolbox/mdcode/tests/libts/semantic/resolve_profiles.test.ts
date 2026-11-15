@@ -1087,6 +1087,25 @@ describe('validateProfileCompleteness', () => {
     ]);
   });
 
+  // An OSSIE_SQL_2026 text is read with the Ossie parser, under the rules of
+  // every other dialect.
+  test('a field binding whose only text is OSSIE_SQL_2026 reads only its own entity', () => {
+    const m = irModel();
+    m.entities[1].fields.push({name: 'doubled'});
+    const doubled = {name: 'doubled', dialects: [
+      {dialect: 'OSSIE_SQL_2026' as const, expression: 'Customer.key * 2'}]};
+    expect(validateProfileCompleteness(m, profile({
+      entities: [profile().entities[0],
+                 {...profile().entities[1], fields: [...profile().entities[1].fields!, doubled]}],
+    }))).toEqual([
+      "profile 'prod': field 'Order.doubled' reads entity 'Customer'; a field expression reads " +
+          'only its own entity',
+      "profile 'prod': field 'Order.doubled' has no expression for BIGQUERY or ANSI_SQL, and " +
+          "this profile's sources are BIGQUERY; give it one, or add one with 'kcmd import " +
+          "<file> --input first-party --flavor <ossie|google> --transpile'",
+    ]);
+  });
+
   test('unknown entity, field, relationship and metric names are reported', () => {
     const errors = validateProfileCompleteness(irModel(), profile({
       entities: [...profile().entities, {name: 'Ghost', source: BQ('g')}],
