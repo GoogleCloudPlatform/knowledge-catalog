@@ -673,7 +673,8 @@ function fieldColumn(f: Record<string, any>): WrittenName|undefined {
 }
 
 // Whether `node` is a call of AGG, which takes a metric.
-function isAggCall(node: OssieNode): boolean {
+function isAggCall(node: OssieNode):
+    node is Extract<OssieNode, {kind: 'functionCall'}> {
   return node.kind === 'functionCall' && !node.name.quoted &&
       node.name.name.toUpperCase() === 'AGG';
 }
@@ -924,10 +925,7 @@ function inlineAggCalls(doc: ImportDocument, moved: MovedMetric[]): void {
       let end = 0;
       let covered = 0;
       for (const call of ossieNodes(tree)) {
-        if (!isAggCall(call) || call.kind !== 'functionCall' ||
-            call.start < covered) {
-          continue;
-        }
+        if (!isAggCall(call) || call.start < covered) continue;
         covered = call.end;
         const written = t.text.slice(call.start, call.end);
         const [arg] = call.args;
