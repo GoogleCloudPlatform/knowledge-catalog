@@ -364,12 +364,13 @@ const LEADING_DATE_PART_FUNCTIONS = new Set([
 const BIGQUERY_TRAILING_UNIT_FUNCTIONS =
     new Set(['DATE_ADD', 'DATE_BUCKET', 'DATE_DIFF']);
 
-// BigQuery functions whose last argument is a date part, as in
-// `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the `SAFE.`
-// prefix the engine reads that date part as a column.
-const BIGQUERY_DATE_PART_FUNCTIONS = new Set([
-  'DATE_DIFF', 'DATETIME_DIFF', 'TIMESTAMP_DIFF', 'TIME_DIFF', 'DATE_TRUNC',
-  'DATETIME_TRUNC', 'TIMESTAMP_TRUNC', 'TIME_TRUNC', 'LAST_DAY',
+// BigQuery functions that take a date part, with the date part's argument, as
+// in `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the
+// `SAFE.` prefix the engine reads that date part as a column.
+const BIGQUERY_DATE_PART_ARGUMENTS = new Map([
+  ['DATE_DIFF', 2], ['DATETIME_DIFF', 2], ['TIMESTAMP_DIFF', 2],
+  ['TIME_DIFF', 2], ['DATE_TRUNC', 1], ['DATETIME_TRUNC', 1],
+  ['TIMESTAMP_TRUNC', 1], ['TIME_TRUNC', 1], ['LAST_DAY', 1],
 ]);
 
 const DATE_PART_KEYWORDS = new Set([
@@ -469,10 +470,11 @@ function collectColumns(
       }
       return;
     }
-    if (bigQuery && fnName.startsWith('SAFE.') &&
-        BIGQUERY_DATE_PART_FUNCTIONS.has(fnName.slice('SAFE.'.length)) &&
-        args.length >= 2 && isDatePart(args[args.length - 1])) {
-      collectColumns(args.slice(0, -1), out, bound, dialect);
+    const part = bigQuery && fnName.startsWith('SAFE.') ?
+        BIGQUERY_DATE_PART_ARGUMENTS.get(fnName.slice('SAFE.'.length)) :
+        undefined;
+    if (part !== undefined && isDatePart(args[part])) {
+      collectColumns(args.filter((_, i) => i !== part), out, bound, dialect);
       return;
     }
   }

@@ -194,9 +194,24 @@ describe('columnReferences', () => {
         .toEqual(columnReferences('DATE_DIFF(orders.a, orders.b, DAY)', 'BIGQUERY'));
     expect(columnReferences('SAFE.DATE_TRUNC(orders.d, MONTH)', 'BIGQUERY'))
         .toEqual([{qualifier: 'orders', name: 'd'}]);
-    // Only the last argument is a date part, so a bare `d` before it is read.
+    expect(columnReferences("SAFE.TIMESTAMP_TRUNC(orders.t, MONTH, 'America/Los_Angeles')", 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 't'}]);
+    // Only the date part's argument is skipped, so a bare `d` before it is read.
     expect(columnReferences('SAFE.DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'))
         .toEqual(columnReferences('DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'));
+  });
+
+  // A SAFE. call of each other function that takes a date part skips the
+  // argument that holds it.
+  test.each([
+    ['SAFE.DATETIME_DIFF(orders.a, orders.b, DAY)', ['a', 'b']],
+    ['SAFE.TIMESTAMP_DIFF(orders.a, orders.b, HOUR)', ['a', 'b']],
+    ['SAFE.TIME_DIFF(orders.a, orders.b, MINUTE)', ['a', 'b']],
+    ['SAFE.DATETIME_TRUNC(orders.a, DAY)', ['a']],
+    ['SAFE.TIME_TRUNC(orders.a, HOUR)', ['a']],
+    ['SAFE.LAST_DAY(orders.a, MONTH)', ['a']],
+  ])('%s reads the columns %j', (text, names) => {
+    expect(columnReferences(text, 'BIGQUERY')).toEqual(names.map(name => ({qualifier: 'orders', name})));
   });
 
   test('reads the expression a chained function call applies to', () => {
