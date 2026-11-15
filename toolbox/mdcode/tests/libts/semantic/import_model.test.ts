@@ -1840,21 +1840,27 @@ describe('dialects and datatypes', () => {
         expect(fields[2].expression).toBeUndefined();
       });
 
+  // Every import drops Opaque in any letter case, which kcmd reads as no
+  // datatype, and reports it.
   test.each([
-    ['a Google file', {strict: true}, ['datatype: integer', 'datatype: Opaque']],
+    ['a Google file', {strict: true}, ['datatype: integer']],
     [
       'a Google file converted to vanilla',
       {flavor: 'ossie' as const, strict: true},
-      ['datatype: Integer', 'datatype: Opaque', 'dialect: ANSI_SQL'],
+      ['datatype: Integer', 'dialect: ANSI_SQL'],
     ],
-  ])('keeps each datatype the output flavor accepts in %s', async (_, opts, lines) => {
+    ['a third-party Google file', {}, ['datatype: integer']],
+  ])('keeps each datatype the output flavor accepts, and drops Opaque, in %s', async (_, opts, lines) => {
     const res = await importSemanticModelYaml(
-        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
+        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: OPAQUE\n            expression: amount\n'}),
         opts);
 
     expect(res.errors).toEqual([]);
-    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([]);
+    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([
+      "field 'orders.amount': removed datatype 'OPAQUE', which kcmd reads as no datatype.",
+    ]);
     for (const line of lines) expect(res.files[0].content).toContain(line);
+    expect(res.files[0].content).not.toContain('OPAQUE');
   });
 
   test.each([false, true])(

@@ -135,6 +135,9 @@ repaired, and each repair is reported as a warning. Under
 Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla
 file written as vanilla, recasing a datatype such as `integer` is a repair, and
 so is writing a string `expression` as an `ANSI_SQL` entry under `dialects`.
+Every import removes `datatype: Opaque` in any letter case, since kcmd reads it
+as no datatype, and reports it. Where the input's flavor refuses that letter
+case, as vanilla refuses `opaque`, the removal is a repair.
 When import writes the Google flavor, removing a field's `expression` that has
 no entry in a supported SQL dialect is a repair, and so is removing a `source`
 that is a query. Under `--input first-party`, the error for the field asks for

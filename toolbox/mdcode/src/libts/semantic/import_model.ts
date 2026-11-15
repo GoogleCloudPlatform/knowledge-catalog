@@ -1685,31 +1685,35 @@ function completeFromEntryGroup(
 }
 
 /**
- * When the output's flavor rejects `obj.datatype`, writes it in its canonical
- * casing, such as `Integer` for `integer`, or deletes an `Opaque` in another
- * casing. The change goes through `doc.repair` when the input's flavor
- * rejects the value too.
+ * Deletes `obj.datatype` when it is Opaque in any letter case, which kcmd
+ * reads as no datatype, and reports it. Otherwise, when the output's flavor
+ * rejects the datatype, writes it in its canonical casing, such as `Integer`
+ * for `integer`. Either change goes through `doc.repair` when the input's
+ * flavor rejects the value.
  */
 function normalizeDatatype(
     obj: Record<string, any>, label: string, doc: ImportDocument): void {
-  if (typeof obj.datatype !== 'string' ||
-      normalizeDataType(obj.datatype, doc.targetVersion).ok) {
+  if (typeof obj.datatype !== 'string') return;
+  const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
+  const opaque = res.ok && res.type === undefined;
+  if (!res.ok ||
+      !opaque && normalizeDataType(obj.datatype, doc.targetVersion).ok) {
     return;
   }
-  const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
-  if (!res.ok) return;
+  const removed = `${label}: removed datatype '${obj.datatype}', which kcmd ` +
+      `reads as no datatype.`;
   if (!normalizeDataType(obj.datatype, doc.inputVersion).ok) {
-    if (res.type === undefined) {
-      doc.repair(
-          `${label}: removed datatype '${obj.datatype}'.`,
-          `${label}: remove datatype '${obj.datatype}'.`);
+    if (opaque) {
+      doc.repair(removed, `${label}: remove datatype '${obj.datatype}'.`);
     } else {
       doc.repair(
           `${label}: rewrote datatype '${obj.datatype}' to '${res.type}'.`,
           `${label}: write datatype '${obj.datatype}' as '${res.type}'.`);
     }
+  } else if (opaque) {
+    doc.warnings.push(removed);
   }
-  if (res.type === undefined) {
+  if (opaque) {
     delete obj.datatype;
   } else {
     obj.datatype = res.type;
