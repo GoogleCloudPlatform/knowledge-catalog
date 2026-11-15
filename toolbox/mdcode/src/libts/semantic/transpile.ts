@@ -476,8 +476,12 @@ function transpileWith(
         const found = unknownConstruct(engine, tree, rules);
         return found && writtenName(engine, text, r.dialect, read, rules, found);
       };
-      const unknown = misreadToken(engine, source, read) ??
-          (tree ? named() : 'a text it cannot read as one expression');
+      // BigQuery refuses a name that holds a backtick or a backslash, and the
+      // engine writes such a name as another name.
+      const oddName = quotedNames(tree).some(n => /[`\\]/.test(n)) &&
+          'a name that holds a backtick or a backslash';
+      const unknown = misreadToken(engine, source, read) ?? (oddName ||
+          (tree ? named() : 'a text it cannot read as one expression'));
       if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }

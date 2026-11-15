@@ -240,6 +240,8 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'größe * 2', {sql: '`größe` * 2'}],
     ['POSTGRES', 'extract + 1', {sql: '`extract` + 1'}],
     ['SQLSERVER', 'amount > @threshold', {sql: 'amount > @threshold'}],
+    ['POSTGRES', '"a`b" + 1', {error: 'kcmd does not translate a name that holds a backtick or a backslash'}],
+    ['POSTGRES', 'orders."a\\b" + 1', {error: 'kcmd does not translate a name that holds a backtick or a backslash'}],
     ['POSTGRES', "s LIKE 'a%' OR NOT (a <> b) AND TRUE", {sql: "s LIKE 'a%' OR NOT (a <> b) AND TRUE"}],
     ['ALLOYDB', '"orders"."amount" + 1', {sql: '`orders`.`amount` + 1'}],
     ['SPANNER', 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)', {sql: 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)'}],
