@@ -594,6 +594,9 @@ a reminder line for `SPLIT_PART`, `SUBSTRING` with a constant start below 1,
 - `REGEXP_EXTRACT(s, p)` gives the match of the capturing group when `p` has
   one, where Ossie gives the whole first match, and BigQuery refuses a pattern
   with two or more groups in `REGEXP_EXTRACT` and `REGEXP_COUNT`.
+- `REGEXP_LIKE(s, p)` becomes `REGEXP_CONTAINS(s, p)`, which is true when `p`
+  matches any part of `s`, as in Databricks and PostgreSQL, while Snowflake
+  matches `p` only against the whole of `s`.
 - A cast to `DECIMAL` or `NUMERIC` without a precision keeps 9 decimal places,
   so `CAST(2.75 AS DECIMAL)` is 2.75, where ANSI SQL:2003 gives such a cast a
   scale of 0.
