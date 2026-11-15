@@ -189,6 +189,21 @@ describe('columnReferences', () => {
         ]);
   });
 
+  // A name matches an alias or a lambda parameter as the text's database
+  // compares names. PostgreSQL folds an unquoted name to lower case and
+  // standard SQL to upper case, and each keeps a quoted name as written. MySQL
+  // matches a table alias only in the case written.
+  test.each([
+    ['SNOWFLAKE', 'SUM(ARRAY_SIZE(FILTER(orders.items, I -> i:qty > 1)))', [{qualifier: 'orders', name: 'items'}]],
+    ['SNOWFLAKE', 'SUM(ARRAY_SIZE(FILTER(orders.items, "i" -> "i":qty > 1)))', [{qualifier: 'orders', name: 'items'}]],
+    ['BIGQUERY', 'SUM((SELECT COUNT(*) FROM UNNEST(orders.items) AS I WHERE i.qty > 1))', [{qualifier: 'orders', name: 'items'}]],
+    ['POSTGRES', '(SELECT COUNT(*) FROM shop.customers AS "C" WHERE c.active)', [{qualifier: 'c', name: 'active'}]],
+    ['ANSI_SQL', '(SELECT COUNT(*) FROM shop.customers AS "c" WHERE c.active)', [{qualifier: 'c', name: 'active'}]],
+    ['MYSQL', '(SELECT COUNT(*) FROM shop.customers AS C WHERE c.active)', [{qualifier: 'c', name: 'active'}]],
+  ])('%s compares a name with an alias or lambda parameter as its database does: %s', (dialect, text, columns) => {
+    expect(columnReferences(text, dialect)).toEqual(columns);
+  });
+
   test('SAFE.DATE_DIFF reads the same columns as DATE_DIFF', () => {
     expect(columnReferences('SAFE.DATE_DIFF(orders.a, orders.b, DAY)', 'BIGQUERY'))
         .toEqual(columnReferences('DATE_DIFF(orders.a, orders.b, DAY)', 'BIGQUERY'));

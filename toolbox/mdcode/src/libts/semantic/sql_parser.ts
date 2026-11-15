@@ -438,7 +438,9 @@ function collectColumns(
       typeof obj.column?.name?.name === 'string') {
     const qualifier = obj.column.table?.name;
     const name = obj.column.name.name;
-    if (typeof qualifier === 'string' ? bound.has(qualifier) : bound.has(name)) {
+    if (bound.has(typeof qualifier === 'string' ?
+                      boundKey(obj.column.table, dialect, true) :
+                      boundKey(obj.column.name, dialect))) {
       return;
     }
     out.push({
@@ -460,11 +462,11 @@ function collectColumns(
     if (typeof column?.name?.name === 'string') {
       const qualifier = column.table?.name;
       if (typeof qualifier === 'string') {
-        if (!bound.has(qualifier)) {
+        if (!bound.has(boundKey(column.table, dialect, true))) {
           out.push({qualifier, name: column.name.name});
         }
       } else if (typeof inner.field?.name === 'string') {
-        if (!bound.has(column.name.name)) {
+        if (!bound.has(boundKey(column.name, dialect, true))) {
           out.push({qualifier: column.name.name, name: inner.field.name});
         }
       }
@@ -515,8 +517,12 @@ function collectColumns(
   }
   if (keys.length === 1 && keys[0] === 'lambda') {
     const next = new Set(bound);
+    // The engine marks a quoted lambda parameter unquoted, so a parameter
+    // binds its name both as written and as its database folds it.
     for (const p of obj.lambda?.parameters ?? []) {
-      if (typeof p?.name === 'string') next.add(p.name);
+      if (typeof p?.name === 'string') {
+        next.add(boundKey(p, dialect)).add(boundKey({...p, quoted: true}, dialect));
+      }
     }
     collectColumns(obj.lambda?.body, out, next, dialect);
     return;
@@ -525,12 +531,12 @@ function collectColumns(
     const select = obj.select;
     const next = new Set(bound);
     for (const cte of select?.with?.ctes ?? []) {
-      if (typeof cte?.alias?.name === 'string') next.add(cte.alias.name);
+      if (typeof cte?.alias?.name === 'string') next.add(boundKey(cte.alias, dialect, true));
       collectColumns(cte?.this, out, next, dialect);
     }
     for (const expr of select?.from?.expressions ?? []) {
       collectColumns(expr, out, next, dialect);
-      addSourceAliases(expr, next);
+      addSourceAliases(expr, next, dialect);
     }
     // Inside a subquery with its own `FROM` clause, a bare identifier in the
     // remaining clauses may come from that `FROM` source (e.g. a derived
@@ -538,12 +544,12 @@ function collectColumns(
     // references outside `next` are kept.
     const target: SqlColumn[] = select?.from ? [] : out;
     for (const join of select?.joins ?? []) {
-      addSourceAliases(join?.this, next);
+      addSourceAliases(join?.this, next, dialect);
       collectColumns(join, target, next, dialect);
     }
     for (const item of select?.expressions ?? []) {
       if (typeof item?.alias?.alias?.name === 'string') {
-        next.add(item.alias.alias.name);
+        next.add(boundKey(item.alias.alias, dialect));
       }
     }
     for (const [k, v] of Object.entries(select ?? {})) {
@@ -573,18 +579,34 @@ function isDatePart(node: any): boolean {
   return String(node?.function?.name ?? '').toUpperCase() === 'WEEK';
 }
 
-function addSourceAliases(source: any, bound: Set<string>): void {
+function addSourceAliases(source: any, bound: Set<string>, dialect: string): void {
   if (typeof source?.alias?.alias?.name === 'string') {
-    bound.add(source.alias.alias.name);
+    bound.add(boundKey(source.alias.alias, dialect, true));
   }
   const inner = source?.alias?.this ?? source;
   for (const kind of ['unnest', 'table', 'subquery']) {
     const node = inner?.[kind];
-    if (typeof node?.alias?.name === 'string') bound.add(node.alias.name);
+    if (typeof node?.alias?.name === 'string') bound.add(boundKey(node.alias, dialect, true));
     if (typeof node?.offset_alias?.name === 'string') {
-      bound.add(node.offset_alias.name);
+      bound.add(boundKey(node.offset_alias, dialect));
     }
   }
+}
+
+// `id`, the parser's tree of a name in a text of the engine's `dialect`, in the
+// form two names share when the dialect's database reads them as one name.
+// PostgreSQL folds a name written without quotes to lower case, and Snowflake
+// and standard SQL fold it to upper case; each keeps a quoted name as
+// written. MySQL matches a table's alias or a CTE's name (`table`) in the case
+// written. The other databases match a name in any case.
+function boundKey(id: any, dialect: string, table = false): string {
+  const name = String(id.name);
+  if (dialect === 'mysql' && table) return name;
+  if (dialect === 'postgresql') return id.quoted ? name : name.toLowerCase();
+  if (dialect === 'snowflake' || dialect === 'generic') {
+    return id.quoted ? name : name.toUpperCase();
+  }
+  return name.toLowerCase();
 }
 
 // Whether `node` is a name or a dotted run of names, such as `NET` or
