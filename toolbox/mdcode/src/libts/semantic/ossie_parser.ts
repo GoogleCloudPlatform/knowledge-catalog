@@ -345,7 +345,7 @@ export function tokenizeOssie(text: string):
  * offset `start` of `text`, or `start` when none starts there. Ossie reads
  * such a name without quotes, in any letter case.
  */
-export function regularNameEnd(text: string, start: number): number {
+function regularNameEnd(text: string, start: number): number {
   if (!/[A-Za-z_]/.test(text[start] ?? '')) return start;
   let end = start + 1;
   while (/[A-Za-z0-9_$]/.test(text[end] ?? '')) end++;
@@ -353,7 +353,7 @@ export function regularNameEnd(text: string, start: number): number {
 }
 
 /** Token `t`, a name, a quoted name or a keyword, as a name a text writes. */
-export function ossieIdentifier(t: OssieToken): OssieIdentifier {
+function ossieIdentifier(t: OssieToken): OssieIdentifier {
   const quoted = t.type === 'quoted';
   return {
     start: t.start,
@@ -427,7 +427,7 @@ export function ossieDatePart(node: OssieNode): OssieNode|undefined {
  * The values of the window `over`, in the order the text writes them: each
  * expression of PARTITION BY and ORDER BY, and each offset of its frame.
  */
-export function ossieWindowValues(over: OssieWindow|undefined): OssieNode[] {
+function ossieWindowValues(over: OssieWindow|undefined): OssieNode[] {
   if (!over) return [];
   const bounds = [over.frame?.from, over.frame?.to].flatMap(
       b => b?.kind === 'offset' ? [b.expr] : []);
