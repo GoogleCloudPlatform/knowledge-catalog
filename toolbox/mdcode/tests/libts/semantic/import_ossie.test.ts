@@ -229,6 +229,10 @@ semantic_model:
      ossieFile({orders: '      - name: order total\n        expression:\n          sql: amt\n'}), {},
      "entity 'orders': Field name 'order total' is not valid; names must match ^[A-Za-z_][A-Za-z0-9_]{0,299}$: " +
      'a letter or underscore, then letters, digits or underscores.'],
+    ['an alias inside the value its anchor names',
+     ossieFile({rest: 'nonportable_extensions: [{vendor_name: DBT, data: &a {self: *a}}]\n'}), {},
+     "Semantic model load error: could not parse input: Alias '*a' at line 20, column 61 refers to a value " +
+     'that contains it; JSON cannot hold such a value.'],
   ])('stops on %s', async (_, input, opts, error) => {
     const res = await importSemanticModelYaml(input, {flavor: 'google', ...opts});
     expect([res.files, res.warnings, res.errors]).toEqual([[], [], [error]]);

@@ -20,7 +20,7 @@ import {DEFAULT_PROFILE, fieldsOnTables, importCommand, importHint, noTextFor, p
 import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
-import {parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
+import {documentValue, parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -1898,7 +1898,8 @@ function protoMemberError(
 
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into
- * the Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
+ * the Semantic Model IR. `yaml.parseDocument` accepts JSON too, so both are
+ * supported.
  *
  * A document with a field or metric expression that is not blank needs the SQL
  * parser, so call `loadSqlEngine()` first. Without it, this throws a plain
@@ -1908,7 +1909,7 @@ function protoMemberError(
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(yaml.parseDocument(text, YAML_OPTIONS), text);
   } catch (err: any) {
     throw new SemanticModelError(
         `Semantic model load error: could not parse input: ${

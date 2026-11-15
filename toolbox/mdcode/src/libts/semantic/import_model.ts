@@ -20,7 +20,7 @@ import {columnReferences, columnsForSource, entitiesReached, isColumnName, requa
 import {loadSqlEngine, soleColumn} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
-import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
+import {documentValue, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 import {linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
@@ -1208,8 +1208,7 @@ function parseImportDocument(
   const fromJson = text !== rawYaml;
   let parsedDoc: any;
   try {
-    if (document.errors.length > 0) throw document.errors[0];
-    parsedDoc = document.toJS();
+    parsedDoc = documentValue(document, text);
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         yamlErrorMessage(err, text)}`;

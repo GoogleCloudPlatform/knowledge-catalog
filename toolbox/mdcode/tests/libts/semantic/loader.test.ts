@@ -885,6 +885,11 @@ datasets:
   test('unparseable input throws', () => {
     expect(() => loadModels('{ this is : not valid')).toThrow(/load error/);
   });
+
+  test('an alias inside the value its anchor names throws, naming the alias', () => {
+    expect(() => loadModels('version: "0.2.0.dev0"\nx: &a {self: *a}\nsemantic_model: []\n')).toThrow(
+      "could not parse input: Alias '*a' at line 2, column 14 refers to a value that contains it");
+  });
 });
 
 

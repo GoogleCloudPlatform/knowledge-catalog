@@ -22,6 +22,45 @@ export function parseLeniently(text: string): yaml.Document.Parsed {
   return doc;
 }
 
+// The value of the model document `doc`, as yaml.parse reads it. Throws the
+// document's first YAML error. Also throws for an alias inside the value its
+// anchor names, such as `*a` in `data: &a {self: *a}`. That error gives the
+// alias's line and column in `text`, which `doc` was parsed from.
+export function documentValue(doc: yaml.Document, text: string): unknown {
+  if (doc.errors.length > 0) throw doc.errors[0];
+  // The walk goes in document order. `anchors` holds the node each anchor
+  // names at its current point, and `open` holds the nodes it is inside.
+  const anchors = new Map<string, unknown>();
+  const open = new Set<unknown>();
+  // The first alias under `node` inside the value its anchor names.
+  const loop = (node: unknown): yaml.Alias|undefined => {
+    if (yaml.isAlias(node)) {
+      return open.has(anchors.get(node.source)) ? node : undefined;
+    }
+    if (yaml.isNode(node) && node.anchor) anchors.set(node.anchor, node);
+    open.add(node);
+    const items = yaml.isPair(node) ? [node.key, node.value] :
+        yaml.isCollection(node)     ? node.items :
+                                      [];
+    for (const item of items) {
+      const found = loop(item);
+      if (found) return found;
+    }
+    open.delete(node);
+    return undefined;
+  };
+  const alias = loop(doc.contents);
+  if (alias) {
+    const at = alias.range![0];
+    const line = text.slice(0, at).split('\n').length;
+    throw new Error(
+        `Alias '*${alias.source}' at line ${line}, column ` +
+        `${at - text.lastIndexOf('\n', at - 1)} refers to a value that ` +
+        `contains it; JSON cannot hold such a value.`);
+  }
+  return doc.toJS();
+}
+
 // The message of `err`, a YAML error in `text`. YAML reads an unquoted `*`
 // as an alias, so a value such as `metrics_exclude: *` does not parse, and
 // the message then shows its line with the `*` quoted, when that line parses.

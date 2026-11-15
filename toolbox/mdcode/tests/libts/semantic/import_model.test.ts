@@ -176,6 +176,11 @@ describe('conversion, strict mode, and translation', () => {
           'description: "*".'
     ],
     [
+      'an alias inside the value its anchor names',
+      ossieDoc({extra: '        custom_extensions: [{vendor_name: DBT, data: &a {self: *a}}]\n'}), {},
+      "Alias '*a' at line 13, column 64 refers to a value that contains it"
+    ],
+    [
       'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
       'version'
     ],
