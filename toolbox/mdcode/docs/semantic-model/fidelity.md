@@ -276,7 +276,9 @@ handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. Its warning about any other
 text names the first part it does not translate. It names a function and a
 date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
-part `w`. An `OSSIE_SQL_2026` text follows its own rules, in
+part `w`. A column name that BigQuery cannot read without quotes, such as
+`straße` or `extract`, gets backticks. An `OSSIE_SQL_2026` text follows its
+own rules, in
 [How import translates OSSIE_SQL_2026](#how-import-translates-ossie_sql_2026).
 
 It reads each database's SQL under that database's default settings:

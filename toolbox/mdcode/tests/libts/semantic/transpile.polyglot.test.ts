@@ -226,7 +226,7 @@ describe('polyglotTranspiler (transformations)', () => {
   // constructs it leaves untranslated. Every construct a `sql` row uses gives
   // the source dialect's value in BigQuery for ordinary data, and every `sql`
   // passes a BigQuery dry run against a table that has each column the row
-  // names.
+  // names, given each query parameter it names.
   test.each([
     // Values, operators, CASE and NULL handling.
     ['POSTGRES', 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1', {sql: 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1'}],
@@ -237,6 +237,9 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)', {sql: 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)'}],
     ['MYSQL', 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END', {sql: 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END'}],
     ['SQLSERVER', 'COALESCE([order total], 0) * 2 - 1', {sql: 'COALESCE(`order total`, 0) * 2 - 1'}],
+    ['POSTGRES', 'größe * 2', {sql: '`größe` * 2'}],
+    ['POSTGRES', 'extract + 1', {sql: '`extract` + 1'}],
+    ['SQLSERVER', 'amount > @threshold', {sql: 'amount > @threshold'}],
     ['POSTGRES', "s LIKE 'a%' OR NOT (a <> b) AND TRUE", {sql: "s LIKE 'a%' OR NOT (a <> b) AND TRUE"}],
     ['ALLOYDB', '"orders"."amount" + 1', {sql: '`orders`.`amount` + 1'}],
     ['SPANNER', 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)', {sql: 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)'}],

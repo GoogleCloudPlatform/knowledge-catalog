@@ -32,7 +32,7 @@
 import {Field, OSSIE_SQL, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {ossieToBigQuery} from './ossie_translate';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
-import {isSimpleIdentifier} from './sql_identifiers';
+import {isReservedKeyword, isSimpleIdentifier} from './sql_identifiers';
 import {loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
@@ -3155,12 +3155,14 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
   const tree = sqlExpressionTree(sql, 'BIGQUERY');
   if (!tree) return {sql};
   let changed = false;
-  const result = mapTree(tree, node => {
+  const result = mapTree(tree, visited => {
+    const named = withQuotedNames(visited);
+    const node: any = named ?? visited;
     // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
     // which it writes as DATETIME.
     if (node.data_type === 'timestamp') node.timezone = true;
     const dated = withPlainDates(node);
-    const repaired = repairNode(dated ?? node, read) ?? dated;
+    const repaired = repairNode(dated ?? node, read) ?? dated ?? named;
     if (repaired !== undefined) changed = true;
     return repaired;
   });
@@ -3170,6 +3172,30 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     return {error: written.error ?? 'the repaired SQL could not be written'};
   }
   return {sql: written.sql[0]};
+}
+
+// Whether BigQuery reads `name` as a name without quotes: a letter or
+// underscore followed by letters, digits and underscores, and no reserved
+// word.
+function plainBigQueryName(name: string): boolean {
+  return isSimpleIdentifier(name) && !isReservedKeyword(name);
+}
+
+// `node`, an engine node of BigQuery SQL, with the name of its column, its
+// table or its struct field quoted where BigQuery cannot read the name without
+// quotes, or undefined when no name needs them. The engine writes a name as
+// the source writes it, such as größe, which BigQuery refuses. It reads a
+// variable or a query parameter, such as @threshold, as a column, and that
+// name stays as written.
+function withQuotedNames(node: any): unknown {
+  const plain = (id: any) => !id || id.quoted || /^@/.test(id.name) || plainBigQueryName(id.name);
+  const quoted = (id: any) => plain(id) ? id : {...id, quoted: true};
+  const column = node.column;
+  if (column && !(plain(column.name) && plain(column.table))) {
+    return {...node, column: {...column, name: quoted(column.name), table: quoted(column.table)}};
+  }
+  if (node.dot && !plain(node.dot.field)) return {...node, dot: {...node.dot, field: quoted(node.dot.field)}};
+  return undefined;
 }
 
 // The node to put in place of `node`, an engine node of BigQuery SQL from the
@@ -3213,7 +3239,7 @@ function repairNode(node: any, read: string): unknown {
     // without its quotes, so put it back as a column, quoted if it must be.
     const col = args[1].var?.this;
     const date = col === undefined ? args[1] : {
-      column: {name: {name: col, quoted: !isSimpleIdentifier(col)}, table: null},
+      column: {name: {name: col, quoted: !plainBigQueryName(col)}, table: null},
     };
     return {function: {...fn, args: [date, {var: {this: truncPart}}]}};
   }
