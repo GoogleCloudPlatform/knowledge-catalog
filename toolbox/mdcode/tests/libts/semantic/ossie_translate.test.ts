@@ -14,7 +14,7 @@ const REMINDER = {
   SPLIT_PART: "SPLIT_PART: BigQuery's SPLIT gives NULL past the last part and for a negative part, where the source may give '' and count a negative part from the end; check the BIGQUERY entry.",
   SUBSTRING: 'SUBSTRING: BigQuery reads a start of 0 as 1 and counts a negative start from the end, where the source shortens the substring for a start below 1; check the BIGQUERY entry.',
   REGEXP_EXTRACT: 'REGEXP_EXTRACT: BigQuery gives the match of a capturing group where the pattern has one, where the source gives the whole match; check the BIGQUERY entry.',
-  VARCHAR: 'CAST to VARCHAR(n): BigQuery cuts the text of any value to n characters, where the source raises an error, or TRY_CAST gives NULL, for a longer value that is not a string; check the BIGQUERY entry.',
+  VARCHAR: 'CAST to VARCHAR(n) or STRING(n): BigQuery cuts the text of any value to n characters, where the source raises an error, or TRY_CAST gives NULL, for a longer value that is not a string; check the BIGQUERY entry.',
   EXTRACT_SECOND: "EXTRACT(SECOND) and DATE_PART('second'): BigQuery gives whole seconds, where the source keeps the fraction; check the BIGQUERY entry.",
   DAYOFWEEK: "EXTRACT(DAYOFWEEK) and DATE_PART('dayofweek'): BigQuery numbers the days from Sunday as 1 to Saturday as 7, where Snowflake and PostgreSQL count Sunday as 0 and Saturday as 6; check the BIGQUERY entry.",
   PERCENTILE: "MEDIAN, PERCENTILE_CONT and PERCENTILE_DISC without OVER: BigQuery's APPROX_QUANTILES gives an approximate value, where the source gives the exact one; check the BIGQUERY entry.",

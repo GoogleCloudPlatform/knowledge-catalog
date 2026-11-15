@@ -561,9 +561,9 @@ write by hand for each construct. A text that holds a construct with no such
 form stays untranslated, and the warning names the construct. These are the
 places where the BigQuery SQL can differ from the source. Import's report adds
 a reminder line for `SPLIT_PART`, `SUBSTRING` with a constant start below 1,
-`REGEXP_EXTRACT` with a capturing group, a cast to `VARCHAR(n)`,
-`EXTRACT(SECOND)` and `DATE_PART('second')`, `EXTRACT(DAYOFWEEK)` and
-`DATE_PART('dayofweek')`, and `MEDIAN`, `PERCENTILE_CONT` and
+`REGEXP_EXTRACT` with a capturing group, a cast to `VARCHAR(n)` or
+`STRING(n)`, `EXTRACT(SECOND)` and `DATE_PART('second')`, `EXTRACT(DAYOFWEEK)`
+and `DATE_PART('dayofweek')`, and `MEDIAN`, `PERCENTILE_CONT` and
 `PERCENTILE_DISC` without `OVER`.
 
 - `SPLIT_PART(s, d, n)` becomes `SPLIT(s, d)[SAFE_ORDINAL(n)]`, which gives
@@ -575,9 +575,10 @@ a reminder line for `SPLIT_PART`, `SUBSTRING` with a constant start below 1,
 - `SUBSTRING` reads a start of 0 as 1 and counts a negative start from the
   end, so `SUBSTRING('abcdef', 0, 3)` is `'abc'` and ANSI SQL:2003 gives
   `'ab'` instead.
-- A cast to `VARCHAR(n)` becomes `SUBSTRING(CAST(x AS STRING), 1, n)`, which
-  cuts the text of any value to `n` characters, while ANSI SQL:2003 raises an
-  error for a longer value that is not a string.
+- A cast to `VARCHAR(n)` or `STRING(n)` becomes
+  `SUBSTRING(CAST(x AS STRING), 1, n)`, which cuts the text of any value to
+  `n` characters, while ANSI SQL:2003 raises an error for a longer value that
+  is not a string.
 - `EXTRACT(SECOND FROM x)` and `DATE_PART('second', x)` give whole seconds,
   whereas ANSI SQL:2003 keeps the fraction.
 - `EXTRACT(WEEK FROM x)` and `DATE_PART('week', x)` give the ISO 8601 week,
