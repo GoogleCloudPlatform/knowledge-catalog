@@ -821,7 +821,8 @@ function convertTextNames(doc: ImportDocument, moved: MovedMetric[]): void {
           const name = n.name.name;
           const lower = name.toLowerCase();
           const taken = fieldsOf(own).find(f => f.name.toLowerCase() === lower);
-          // Push refuses a field and a metric of one entity with one name.
+          // Push refuses a metric named like a field of its own entity. On a
+          // BigQuery graph, it refuses one named like any field.
           const metric = doc.metrics.find(
               m => typeof m.name === 'string' && m.name.toLowerCase() === lower);
           const why = taken ?
