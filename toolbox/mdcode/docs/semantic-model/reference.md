@@ -148,10 +148,10 @@ expression.
 From a file another product wrote, import removes what kcmd's spec does not
 accept, and reports each removal: an extra model, a metric with no anchor whose
 expression reaches no entity or several, an entry in a dialect kcmd does not
-accept, and a `source` that is a query. It also truncates a description over
-2,000 characters. A metric left with no entry in a supported SQL dialect stops the
-import, and so does a `source` that is a query when import writes the vanilla
-flavor.
+accept, a metric left with no entry in a supported SQL dialect, and a `source`
+that is a query. It also truncates a description over 2,000 characters. When
+import writes the vanilla flavor, a field left with no entry in a supported SQL
+dialect stops the import, and so does a `source` that is a query.
 The changes that only convert a file between kcmd's two flavors are not
 reported. A conversion moves each value the two flavors place differently, such
 as a dataset's `extends`, between its own key and a `GOOGLE` block, as written.

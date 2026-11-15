@@ -2047,10 +2047,11 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
 
 /**
  * Repairs a metric's datatype, SQL dialect list, and description, returning
- * `false` when the metric is unanchored and reaches 0 or >1 entities so the
- * caller prunes it from `doc.metrics`. A vendor label names its dialect by
- * the tables that run the metric (see metricEntities), with the dialects
- * `load` gives them. `translatesLater` is as for `unanchoredMetricProblem`.
+ * `false` when the caller prunes it from `doc.metrics`: when no entry of its
+ * expression is in a supported SQL dialect, and when it is unanchored and
+ * reaches 0 or >1 entities. A vendor label names its dialect by the tables
+ * that run the metric (see metricEntities), with the dialects `load` gives
+ * them. `translatesLater` is as for `unanchoredMetricProblem`.
  */
 function repairMetric(
     mt: Record<string, any>, doc: ImportDocument, load: DialectLoad,
@@ -2058,10 +2059,13 @@ function repairMetric(
   const mtLabel = `metric '${mt.name}'`;
   normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
-    doc.errors.push(
+    doc.repair(
+        `${mtLabel}: removed the metric, since 'expression' has no entry in ` +
+            `a supported SQL dialect; add the metric back with one.`,
         `${mtLabel}: 'expression' has no entry in a supported SQL dialect; ` +
-        `add one.`);
-    return true;
+            `add one.`);
+    doc.modified = true;
+    return false;
   }
   // An abstract entity or one with no source runs nothing, as push's
   // sourcesDialect reads it. An entity with a source counts whether or not

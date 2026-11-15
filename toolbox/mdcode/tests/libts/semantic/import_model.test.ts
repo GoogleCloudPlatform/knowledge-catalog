@@ -297,6 +297,9 @@ describe('conversion, strict mode, and translation', () => {
      googleDoc({extra: party(`        fields: [{name: id, expression: ${MDX_ONLY}}]\n`)}), 'google',
      "field 'party.id': 'expression' has no entry in a supported SQL dialect; remove 'expression', " +
      "since a field of abstract entity 'party' takes none."],
+    ['a metric with no supported dialect',
+     googleDoc({extra: `    metrics:\n      - {name: m, entity: orders, expression: ${MDX_ONLY}}\n`}), 'google',
+     "metric 'm': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
      "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
     ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
@@ -1863,8 +1866,9 @@ describe('dialects and datatypes', () => {
     expect(res.files[0].content).not.toContain('OPAQUE');
   });
 
+  // A third-party import removes such a metric and reports it.
   test.each([false, true])(
-      'reports an error when a vanilla field or metric is left with no supported dialect, with --input first-party %p',
+      'reports an error when a vanilla field is left with no supported dialect, and for such a metric with --input first-party %p',
       async strict => {
         const extra =
             `    metrics:\n      - name: total_orders\n        expression:\n          dialects:\n            - {dialect: MAQL, expression: "SELECT COUNT(order_id)"}\n`;
@@ -1878,8 +1882,10 @@ describe('dialects and datatypes', () => {
         expect(res.errors).toContain(
             "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect, and " +
             "version '0.2.0.dev0' requires an 'expression' on every field; add one.");
-        expect(res.errors).toContain(
-            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one.");
+        expect(strict ? res.errors : res.warnings).toContain(strict ?
+            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one." :
+            "metric 'total_orders': removed the metric, since 'expression' has no entry in a supported " +
+                'SQL dialect; add the metric back with one.');
       });
 
   test(
