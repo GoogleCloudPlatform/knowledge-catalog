@@ -805,6 +805,14 @@ datasets:
         "Run 'kcmd import <file> --flavor <ossie|google>' to convert it.");
   });
 
+  test('a 0.3.0.dev0 document with no datasets, such as an Ossie ontology, is refused as holding no model', () => {
+    const text = 'version: 0.3.0.dev0\nname: Flights\nontology:\n  concepts: []\n';
+    expect(loadSemanticModels([{name: 'flights', text}]).error).toBe(
+        "Model document 'flights': Semantic model load error: the document has version '0.3.0.dev0' and " +
+        "no 'datasets', so it holds no Apache Ossie semantic model. kcmd reads no other Ossie document, " +
+        'such as an ontology or a mapping.');
+  });
+
   test('an unknown key is a hard load error (objects are strict)', () => {
     // Objects are `.strict()`: an unrecognized key is rejected rather than
     // silently dropped, so a typo cannot slip through unnoticed.

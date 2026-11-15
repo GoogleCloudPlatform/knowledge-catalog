@@ -2220,7 +2220,9 @@ export function entityAndMetricWarnings(
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
 // error rather than a warning (agreed with Dmitri). An unknown version's error
-// ends with `advice` when given.
+// ends with `advice` when given. An Apache Ossie '0.3.0.dev0' document with
+// neither `datasets` nor `semantic_model`, such as an Ossie ontology or mapping
+// document, holds no semantic model, and its error says so.
 function readVersion(doc: unknown, advice?: string): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
@@ -2229,6 +2231,14 @@ function readVersion(doc: unknown, advice?: string): FormatVersion {
         `Semantic model load error: missing 'version'; declare ` +
         `'${OSSIE_VERSION}' (vanilla Ossie) or '${GOOGLE_VERSION}' (the ` +
         `extended profile) at the top level.`);
+  }
+  if (version === OSSIE_ROOT_VERSION && isRecord(doc) &&
+      !('datasets' in doc) && !('semantic_model' in doc)) {
+    throw new SemanticModelError(
+        `Semantic model load error: the document has version ` +
+        `'${OSSIE_ROOT_VERSION}' and no 'datasets', so it holds no Apache ` +
+        `Ossie semantic model. kcmd reads no other Ossie document, such as an ` +
+        `ontology or a mapping.`);
   }
   if (!isFormatVersion(version)) {
     throw new SemanticModelError(
