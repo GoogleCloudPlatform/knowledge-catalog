@@ -13,8 +13,10 @@
 // arithmetic, so `a = b = c` needs parentheses.
 //
 // A text the grammar does not read whole gives the place where the reading
-// stops and what the grammar expects there. Each text is read once, in time
-// linear in its length.
+// stops and what the grammar expects there. Each text is read in time linear
+// in its length, apart from the parentheses of POSITION. The parser can read
+// those again for each IN that stands in them outside other parentheses and
+// CASE.
 
 /** Where a part of a text is written, in code units, end exclusive. */
 export interface OssieSpan {
