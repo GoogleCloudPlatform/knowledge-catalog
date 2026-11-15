@@ -503,10 +503,12 @@ function transpileWith(
   }
 }
 
-// `s` without its white space, to compare a comment the engine writes another
-// way than sqlComments writes it.
+// `s`, a block comment, without the white space at the start and the end of
+// its text, to compare a comment the engine writes another way than
+// sqlComments writes it. The engine adds a space after `/*` and before `*/`
+// where the text has none, and sqlComments trims the text of a line comment.
 function squash(s: string): string {
-  return s.replace(/\s+/g, '');
+  return s.replace(/^\/\*\s*/, '/*').replace(/\s*\*\/$/, '*/');
 }
 
 // `sql`, the engine's translation into its dialect `write` of a text with
