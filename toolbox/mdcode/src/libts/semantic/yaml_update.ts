@@ -118,7 +118,14 @@ export function updateText(
       }
     },
   });
-  const made = u.edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  // An insertion that falls inside a span another edit removes goes where
+  // that span starts.
+  const removed = u.edits.filter(([a, b, s]) => !s && a < b);
+  const placed = u.edits.map(([a, b, s]): [number, number, string] => {
+    const span = a === b && s ? removed.find(([p, q]) => p < a && a < q) : undefined;
+    return span ? [span[0], span[0], s] : [a, b, s];
+  });
+  const made = placed.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   made.forEach(([from, to, s], i) => {
     const [p, q, inserted] = made[i - 1] ?? [];
     if (s || !ends.has(from) || p === from && q === from && inserted) return;
