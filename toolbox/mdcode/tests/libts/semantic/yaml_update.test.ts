@@ -25,6 +25,11 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['a flow mapping key with no value, beside a changed key', 'm: {a: 1, b}\nc: 1\n', v => v.c = 2, 'm: {a: 1, b}\nc: 2\n'],
   [
+    'keys with no value set to values, in a flow and a block mapping',
+    'm: {a: 1, b}\np:\n  a: 1\n  ? b  # c\n', v => (v.m.b = 2, v.p.b = [1]),
+    'm: {a: 1, b: 2}\np:\n  a: 1\n  ? b  # c\n  :\n    - 1\n'
+  ],
+  [
     'the last key of a mapping removed through the final newline, beside a key added after the mapping',
     'a:\n  k: 1\n  e:\n', v => (delete v.a.e, v.z = 1), 'a:\n  k: 1\nz: 1\n'
   ],

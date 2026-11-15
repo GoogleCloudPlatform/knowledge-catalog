@@ -333,6 +333,9 @@ describe('conversion, strict mode, and translation', () => {
      'model per document.'],
     ['a vanilla relationship description', ossieDoc({extra: joined('oc', '        description: d\n')}), 'ossie',
      "relationship 'oc': move 'description' into a GOOGLE custom_extensions block for '0.2.0.dev0'."],
+    ['a vanilla relationship description beside a custom_extensions key with no value',
+     ossieDoc({extra: joined('oc', '        description: d\n        ? custom_extensions\n')}), 'ossie',
+     "relationship 'oc': move 'description' into a GOOGLE custom_extensions block for '0.2.0.dev0'."],
   ] as Array<[string, string, 'ossie'|'google', string]>)(
       'refuses %s under --input first-party with what the input needs',
       async (_, input, flavor, needed) => {

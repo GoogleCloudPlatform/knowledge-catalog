@@ -299,6 +299,11 @@ semantic_model:
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'; another " +
          "metric is named 'm', and so is one named 'orders_m', so rename it.",
      '      - name: m\n        entity: orders\n'],
+    ['a field added to a dataset whose fields key has no value',
+     ossieFile({orders: `  - {name: items, source: ${TABLES}/items, fields, metrics: [{name: n, expression: {sql: SUM(source.price)}}]}\n`}),
+     {}, "entity 'items': added field 'price', which reads column 'price', for metric 'n'.",
+     `      - {name: items, source: ${TABLES}/items, fields: [{name: price, expression: {dialects: ` +
+         '[{dialect: OSSIE_SQL_2026, expression: price}]}}]}\n'],
   ] as const)('converts %s', async (_, input, opts, line, written) => {
     const res = await importSemanticModelYaml(input, {flavor: 'google', ...opts});
     expect(res.warnings).toContain(line);

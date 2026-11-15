@@ -185,7 +185,10 @@ interface Slot {
   col: number;
   /** `:` after a key, or `-`. */
   prefix: string;
-  /** The offset after that `:` or `-`. Unset for the root. */
+  /**
+   * The offset after that `:` or `-`, or after a key written with no `:`.
+   * Unset for the root.
+   */
   after?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
@@ -273,7 +276,11 @@ function patchItems(
         item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
         g[i].start;
     const prefix = yaml.isPair(item) ? ':' : '-';
-    return {col, prefix, after: sep === undefined ? sep : sep + 1, flow};
+    // A key written with no `:`, as `b` in `{a: 1, b}`, has its slot right
+    // after it.
+    const after = sep !== undefined ? sep + 1 :
+        ((item as yaml.Pair).key as yaml.Node).range![1];
+    return {col, prefix, after, flow};
   };
   // Removes each run of items no entry keeps.
   for (let a = 0; a < items.length; a++) {
@@ -499,6 +506,16 @@ function setScalar(
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
+  // A key written with no `:` has no value node, so the value goes after a
+  // new `:`. In a block mapping, where such a key follows `?`, that `:` starts
+  // a line under the `?`, after the line that holds the key's last character.
+  if (node === null && slot.after !== undefined) {
+    const at = slot.flow ? slot.after : lineEnd(t, slot.after - 1);
+    u.edits.push([at, at, slot.flow ?
+        `${slot.prefix} ${scalarText(u, value, slot.col, true)}` :
+        u.nl + block(u, slot.prefix, value, slot.col).join(u.nl)]);
+    return;
+  }
   const [from, to, lead] = yaml.isNode(node) && node.range ?
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
