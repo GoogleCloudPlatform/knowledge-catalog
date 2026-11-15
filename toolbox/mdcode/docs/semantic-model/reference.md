@@ -224,7 +224,9 @@ root, with `datasets` and no `semantic_model` there: a `0.3.0.dev0` file, or a
 `0.2.0.dev0` file as the Ossie converters write it. A `0.3.0.dev0` file without
 `datasets`, such as an Ossie ontology or mapping file, holds no model, and
 import refuses it. Only an import without `--input first-party` reads a
-root-model file, and it reads no profile file beside it. Every other command
+root-model file. Import does not write or check a `<model>.profile.<name>.yaml`
+file beside it. It still reads the dialect of each table such a file names. It
+also warns about a `<model>.profiles/` directory beside it. Every other command
 refuses such a file and says to run `kcmd import`. Import stops on a `GOOGLE`
 block in such a file, on a `0.3.0.dev0` file with a `semantic_model` list, and
 on a name kcmd's name rules refuse. A third-party import that stops on a name
