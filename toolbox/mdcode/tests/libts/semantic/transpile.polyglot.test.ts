@@ -316,6 +316,11 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', '/* a /* b */ c */ d', {sql: 'd /* a / * b * / c */'}],
     ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
     ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
+    // Each comment is written as often as the text writes it, and a string
+    // that holds a comment's text is no comment.
+    ['SNOWFLAKE', "status = 'done' -- finished orders", {sql: "status = 'done' /* finished orders */"}],
+    ['POSTGRES', '-- c\nx + 1 -- c', {sql: 'x + 1 /* c */ /* c */'}],
+    ['POSTGRES', "((x = '/*c*/')) -- c", {sql: "((x = '/*c*/')) /* c */"}],
     ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
     ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: "COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) /* when the order was placed */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],

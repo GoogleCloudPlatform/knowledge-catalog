@@ -483,14 +483,53 @@ function transpileWith(
     }
     repaired ??= engineTranslation(engine, text, r.dialect, read, write);
     if ('error' in repaired) return {id: r.id, error: repaired.error};
-    // Each comment the engine did not keep goes last. The engine may space a
-    // comment it keeps another way.
-    const squash = (s: string) => s.replace(/\s+/g, '');
-    const dropped = comments.filter(c => !squash(repaired.sql).includes(squash(c)));
-    return {id: r.id, sql: [repaired.sql, ...dropped].join(' ')};
+    // Each comment the engine did not keep goes last, as often as the text
+    // writes it more than the translation does. Both count, by the engine's
+    // tokens, only the comments outside strings.
+    const sql = commentsAsWritten(engine, repaired.sql, write, comments);
+    const kept = sqlComments(engine, sql, write).comments.map(squash);
+    const dropped = comments.filter(c => {
+      const i = kept.indexOf(squash(c));
+      if (i >= 0) kept.splice(i, 1);
+      return i < 0;
+    });
+    return {id: r.id, sql: [sql, ...dropped].join(' ')};
   } catch (err) {
     return {id: r.id, error: errMessage(err)};
   }
+}
+
+// `s` without its white space, to compare a comment the engine writes another
+// way than sqlComments writes it.
+function squash(s: string): string {
+  return s.replace(/\s+/g, '');
+}
+
+// `sql`, the engine's translation into its dialect `write` of a text with
+// `comments` (see sqlComments), with each of those comments as often as the
+// text writes it. The engine writes a comment once for each node that ends
+// where it stands, so `x = y -- c` becomes `x = y /* c */ /* c */`, and it may
+// write a copy after the next operator. Each copy past that count is removed,
+// with the spaces before it. The text between two tokens holds only spaces and
+// comments.
+function commentsAsWritten(engine: PolyglotEngine, sql: string, write: string, comments: string[]): string {
+  const tokens = engine.tokenize(sql, write).tokens;
+  if (!tokens) return sql;
+  const left = new Map<string, number>();
+  comments.forEach(c => left.set(squash(c), (left.get(squash(c)) ?? 0) + 1));
+  const chars = [...sql];
+  let out = '';
+  let end = 0;
+  for (const {span} of [...tokens, {span: {start: chars.length, end: chars.length}}]) {
+    out += chars.slice(end, span.start).join('').replace(/\s*(\/\*[\s\S]*?\*\/)/g, (copy, c) => {
+      const n = left.get(squash(c));
+      if (n !== undefined) left.set(squash(c), n - 1);
+      return n === undefined || n > 0 ? copy : '';
+    });
+    out += chars.slice(span.start, span.end).join('');
+    end = span.end;
+  }
+  return out;
 }
 
 // The engine's translation of `text`, an expression in `dialect` that the
