@@ -626,13 +626,18 @@ const CONVERTING = new Set(['mysql', 'tsql']);
 // of two integers is an integer on PostgreSQL tables, and its AVG of integers
 // an integer on SQL Server tables. A SPANNER text gives
 // BigQuery's value except where Spanner applies its default time zone (see
-// "SPANNER texts" below).
+// "SPANNER texts" below). PI() gives the double nearest pi in PostgreSQL,
+// MySQL, SQL Server, Snowflake and Databricks, as BigQuery's ACOS(-1) does.
+// ANSI SQL, Spanner and BigQuery have no PI(). RANDOM() gives a double from 0
+// to 1 in PostgreSQL and Databricks, as BigQuery's RAND() does, and a 64-bit
+// integer in Snowflake.
 const KINDS: Record<string, string[]> = Object.fromEntries([
-  ...['annotated', 'column', 'literal', 'boolean', 'paren', 'neg', 'add', 'sub',
+  ...['annotated', 'column', 'literal', 'boolean', 'null', 'paren', 'neg', 'add', 'sub',
       'mul', 'eq', 'neq', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not', 'between',
       'in', 'is_null', 'case', 'coalesce', 'sum', 'count', 'min', 'max', 'trim',
       'upper', 'lower', 'like', 'abs', 'floor', 'ceil', 'cast',
       'try_cast'].map(kind => [kind, DIALECTS]),
+  ['pi', except('generic', 'spanner')], ['random', ['postgresql', 'databricks']],
   ['div', ['snowflake', 'databricks', 'spanner']], ['avg', except('mysql', 'tsql', 'generic')],
   ['length', except('mysql', 'tsql')],
   ['concat', except('tsql')], ['nvl', ['snowflake', 'databricks']],
@@ -2165,12 +2170,12 @@ function treeWithoutComments(node: any): any {
 }
 
 // Whether `v` is an engine node: an object with one key, its kind, whose value
-// is an object.
+// is an object, or null for a node with no parts, such as PI() or NULL.
 function isNode(v: any): boolean {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const values = Object.values(v);
-  return values.length === 1 && !!values[0] && typeof values[0] === 'object' &&
-      !Array.isArray(values[0]);
+  return values.length === 1 && (values[0] === null ||
+      (typeof values[0] === 'object' && !Array.isArray(values[0])));
 }
 
 // The kind of `node`, an engine node, or undefined.
@@ -2183,6 +2188,8 @@ function kindOf(node: any): string|undefined {
 // not translate the node.
 function nextNodes(kind: string, value: any, read: string):
     unknown[]|string|undefined {
+  // A node with no parts, such as NULL.
+  if (value === null) return KINDS[kind]?.includes(read) ? [] : undefined;
   const node = {[kind]: value};
   const nested = comparingKind(node) ? nestedComparison(node, read) : undefined;
   if (nested) return nested;
@@ -2531,11 +2538,13 @@ function swapped(node: any, swap: Map<any, any>): any {
 // truncates a DATE as a timestamp with time zone at midnight UTC, which a unit
 // of a day or less leaves at the date. A comparison, a negated value, and the
 // results of one COALESCE, NVL, IF or CASE, get the forms valueForms gives.
+// PI() is ACOS(-1), since BigQuery has no PI().
 function exactForm(node: any, read: string): any {
   const kind = kindOf(node) ?? '';
   const value = node[kind];
   const args: any[] = kind === 'function' ? value.args ?? [] : [];
   const name = String(value?.name).toUpperCase();
+  if (kind === 'pi') return formCall('ACOS(-1)', []);
   if (read === 'postgresql' && name === 'DATE_TRUNC' && args.length === 2 && isDate(args[1])) {
     const unit = TRUNC_PARTS[String(partName(args[0])).toLowerCase()];
     const day = ['DAY', ...SUB_DAY].includes(unit);
@@ -2951,12 +2960,13 @@ function constructName(engine: PolyglotEngine, node: any, read: string): string 
   // A `not` node here wraps an operator import does not translate, such as
   // ILIKE in `s NOT ILIKE p` (see nextNodes).
   if (kind === 'not') return `NOT ${constructName(engine, value.this, read)}`;
-  const written = [value.original_name, value.name].find(n => typeof n === 'string');
+  const written = [value?.original_name, value?.name].find(n => typeof n === 'string');
   if (written) return written.toUpperCase();
   if (kind === 'window_function') return 'OVER';
-  // The node with a column `x` for each node in it.
+  // The node with a column `x` for each node in it. A node such as PI() has
+  // none.
   const x = {column: {name: {name: 'x', quoted: false}, table: null}};
-  const bareNode = Object.fromEntries(Object.entries(value).map(([k, v]) =>
+  const bareNode = value && Object.fromEntries(Object.entries(value).map(([k, v]) =>
       [k, Array.isArray(v) ? v.map(e => isNode(e) ? x : e) : isNode(v) ? x : v]));
   const sql = engine.generate([{[kind]: bareNode}], read === 'spanner' ? 'bigquery' : read).sql?.[0] ?? '';
   const called = /^([A-Za-z_]\w*)\s*\(/.exec(sql)?.[1];

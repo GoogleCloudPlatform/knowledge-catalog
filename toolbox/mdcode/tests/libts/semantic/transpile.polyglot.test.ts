@@ -472,6 +472,12 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'DATEADD(day, 1, CAST(d AS DATE)) < GETDATE()', {sql: "DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) < CURRENT_DATETIME('UTC')"}],
     ['DATABRICKS', 'date_add(d, 1) < current_timestamp()', {sql: 'TIMESTAMP(DATE_ADD(CAST(CAST(d AS DATETIME) AS DATE), INTERVAL 1 DAY)) < CURRENT_TIMESTAMP()'}],
     ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) < NOW()', {sql: "(CURRENT_DATE + INTERVAL 1 HOUR) < DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"}],
+    // Calls with no arguments: PI(), RANDOM() where RAND() gives its value, and
+    // calls off the list.
+    ['POSTGRES', 'PI() * r * r', {sql: 'ACOS(-1) * r * r'}],
+    ['POSTGRES', 'RANDOM()', {sql: 'RAND()'}],
+    ['SNOWFLAKE', 'RANDOM()', {error: 'kcmd does not translate RANDOM'}],
+    ['MYSQL', 'ROW_NUMBER() + 1', {error: 'kcmd does not translate ROW_NUMBER'}],
     // Date, format and conversion functions off the list.
     ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],
     ['SQLSERVER', 'CONVERT(varchar(10), d, 103)', {error: 'kcmd does not translate CONVERT'}],
