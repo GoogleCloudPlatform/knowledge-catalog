@@ -3086,20 +3086,23 @@ describe('profile completeness: dialects and struct paths', () => {
             .toEqual(["profile 'p': entity 'orders' has no source in this profile"]);
       });
 
-  // On Spanner tables whose dialect no lookup read, an ANSI_SQL text is
-  // checked for a query as generic SQL with readWithoutDialect, and not at all
-  // without.
-  test.each([[{}, false], [{readWithoutDialect: true}, true]])(
-      'with no dialect known, a query in an ANSI_SQL binding is reported with %o: %p', (opts, holds) => {
-        const amount = {name: 'amount', dialects: [{dialect: 'ANSI_SQL' as const, expression: '(SELECT 1)'}]};
-        expect(validateProfileCompleteness(
-                   shop({expression: 'amt'}),
-                   {name: 'p', entities: [keyedById('orders', SP('orders'), amount)], relationships: []},
-                   [], opts))
-            .toEqual(!holds ? [] : [
-              "profile 'p': field 'orders.amount': its 'ANSI_SQL' SQL holds a query; a field " +
-                  'expression is a scalar expression over its own dataset, so it may not hold a ' +
-                  'subquery or a CTE']);
+  // On Spanner tables whose dialect no lookup read, an ANSI_SQL text holds a
+  // query only when it holds one in both dialects the tables may have, with
+  // readWithoutDialect or without. Spanner's GoogleSQL reads the second text
+  // as a string.
+  test.each([['(SELECT 1)', true], ["'''a' || (SELECT 1) || 'b'''", false]])(
+      'with no dialect known, the ANSI_SQL binding %s holds a query: %p', (expression, holds) => {
+        const amount = {name: 'amount', dialects: [{dialect: 'ANSI_SQL' as const, expression}]};
+        for (const opts of [{}, {readWithoutDialect: true}]) {
+          expect(validateProfileCompleteness(
+                     shop({expression: 'amt'}),
+                     {name: 'p', entities: [keyedById('orders', SP('orders'), amount)], relationships: []},
+                     [], opts))
+              .toEqual(!holds ? [] : [
+                "profile 'p': field 'orders.amount': its 'ANSI_SQL' SQL holds a query; a field " +
+                    'expression is a scalar expression over its own dataset, so it may not hold a ' +
+                    'subquery or a CTE']);
+        }
       });
 
   // A Cloud SQL table written as its resource name takes the dialect its

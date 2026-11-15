@@ -103,7 +103,9 @@ export function declaredFields(model: SemanticModel): Map<string, Set<string>> {
 // lookup read is read as columnsWithoutDialect reads it in the dialects those
 // tables may have, where it is otherwise skipped. A metric text that read
 // leaves a name out of is then left out of the rules on which entities the
-// text reaches.
+// text reaches. With or without `load.readWithoutDialect`, an ANSI_SQL text of
+// such tables holds a query only when it holds one in each dialect they may
+// have.
 export function expressionProblems(
     model: SemanticModel, document: string, fieldsPruned = false,
     warnings: string[] = [], load: DialectLoad = {}): ExpressionProblem[] {
@@ -125,7 +127,7 @@ export function expressionProblems(
   // does not give, so the cycle check reads the sources' dialect as read.
   const cycles = selfReferences(model, sourcesRead);
   const candidates =
-      dialectless ? possibleDialects(model.entities ?? []) : [];
+      sourcesRead === null ? possibleDialects(model.entities ?? []) : [];
   // The columns `text` reads, and whether the read left a name out.
   const read = (text: string, dialect: string) => {
     if (dialect !== 'ANSI_SQL' || !dialectless) {
@@ -174,7 +176,7 @@ export function expressionProblems(
       const unreadDialects: string[] = [];
       const queried: string[] = [];
       for (const {text, dialect} of sources) {
-        if (holdsSubquery(text, dialect, impliedDialect)) {
+        if (holdsSubquery(text, dialect, sourcesRead, candidates)) {
           queried.push(dialect);
           continue;
         }
@@ -278,7 +280,7 @@ export function expressionProblems(
     // Whether the read left a name out of a text.
     let partial = false;
     for (const {text, dialect} of readable) {
-      if (holdsSubquery(text, dialect, impliedDialect)) {
+      if (holdsSubquery(text, dialect, sourcesRead, candidates)) {
         queried.push(dialect);
         partial = true;
         continue;

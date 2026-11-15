@@ -638,13 +638,17 @@ function unwrapped(node: any): any {
 // WITH appears anywhere in it. It also holds one when a query is the body of
 // a subquery, of EXISTS or of IN, or the operand of ANY or ALL, as in
 // `(VALUES (1))` or `x = ANY(VALUES (1), (2))`. An `ANSI_SQL` text is read in
-// `impliedDialect` when that is set, and not at all when that is null, as
-// columnsForSource reads it. False when the text is not read or the SQL
-// parser cannot read it.
+// `impliedDialect` when that is set, as columnsForSource reads it. When that
+// is null, which no lookup read, the text holds a subquery only when it holds
+// one in each of `possible`, the dialects its tables may have. It holds none
+// when `possible` is empty. False when the SQL parser cannot read the text.
 export function holdsSubquery(
-    expression: string, dialect: string,
-    impliedDialect?: string|null): boolean {
-  if (dialect === 'ANSI_SQL' && impliedDialect === null) return false;
+    expression: string, dialect: string, impliedDialect?: string|null,
+    possible: readonly string[] = []): boolean {
+  if (dialect === 'ANSI_SQL' && impliedDialect === null) {
+    return possible.length > 0 &&
+        possible.every(d => holdsSubquery(expression, d));
+  }
   const read = dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
   const isQuery = (node: any): boolean => {
     const kind = Object.keys(node ?? {})[0];

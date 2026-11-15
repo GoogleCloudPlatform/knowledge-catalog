@@ -1486,6 +1486,9 @@ describe('field and metric expression references', () => {
     ],
   });
 
+  const spannerOrders =
+      'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/orders';
+
   // A field expression is a scalar expression over its own dataset, and a
   // metric reads fields, so neither may hold a query, in any dialect. [what
   // holds the text, its dialect, the text, whether it holds a query, and the
@@ -1510,10 +1513,11 @@ describe('field and metric expression references', () => {
     ['field', 'ANSI_SQL', '(SELECT MAX(c) FROM t) # note', true],
     ['metric', 'BIGQUERY', "WITH paid AS (SELECT * FROM shop.orders WHERE status = 'paid') " +
      'SELECT SUM(net_amount) FROM paid', true],
-    // With no lookup of a Spanner table's dialect, an ANSI_SQL text is not
-    // read. Spanner reads this one as a string.
-    ['field', 'ANSI_SQL', "'''a' || (SELECT 1) || 'b'''", false,
-     'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/orders'],
+    // With no lookup of a Spanner table's dialect, an ANSI_SQL text holds a
+    // query only when it holds one in both dialects the table may have.
+    // Spanner's GoogleSQL reads the second text as a string.
+    ['field', 'ANSI_SQL', 'o_id + (SELECT 1)', true, spannerOrders],
+    ['field', 'ANSI_SQL', "'''a' || (SELECT 1) || 'b'''", false, spannerOrders],
   ])('refuses a %s whose %s text holds a query: %s', (kind, dialect, expression, holds,
                                                        table = orders().dataSource) => {
     const dialects = [{dialect, expression}];
@@ -1522,12 +1526,16 @@ describe('field and metric expression references', () => {
         model({entities: [{...on, fields: [...on.fields, {name: 'code', dialects}]}]}) :
         model({entities: [on],
                metrics: [{name: 'paid_total', entity: 'orders', authoredEntity: 'orders', dialects}]});
-    expect(validatePushRequirements([loaded(m)])).toEqual(!holds ? [] : [kind === 'field' ?
+    const expected = !holds ? [] : [kind === 'field' ?
         `field 'orders.code' in model 'm' (doc): its '${dialect}' SQL holds a query; a field ` +
             'expression is a scalar expression over its own dataset, so it may not hold a ' +
             'subquery or a CTE.' :
         `metric 'paid_total' in model 'm' (doc): its '${dialect}' SQL holds a query; a metric ` +
-            'reads fields, so its expression may not hold a subquery or a CTE.']);
+            'reads fields, so its expression may not hold a subquery or a CTE.'];
+    // Pull checks with readWithoutDialect, and finds the same queries.
+    for (const load of [{}, {readWithoutDialect: true}]) {
+      expect(validatePushRequirements([loaded(m)], {load})).toEqual(expected);
+    }
   });
 
   describe('metrics', () => {

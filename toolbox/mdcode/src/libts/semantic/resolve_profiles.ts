@@ -1803,13 +1803,12 @@ export function validateProfileCompleteness(
     for (const pf of pe.fields ?? []) {
       // A text with no SQL is reported above, and has nothing to read. A text
       // that holds a query is reported here, and its columns are not read. An
-      // ANSI_SQL text whose dialect no lookup read is checked as generic SQL
-      // with `readWithoutDialect`, and not at all without.
+      // ANSI_SQL text whose dialect no lookup read holds a query only when it
+      // holds one in each dialect the profile's tables may have.
       const texts = expressionSources(pf).filter(
           s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
-      const queried = texts.filter(s => holdsSubquery(
-          s.text, s.dialect,
-          dialect === null && opts.readWithoutDialect ? undefined : dialect));
+      const queried = texts.filter(
+          s => holdsSubquery(s.text, s.dialect, dialect, candidates));
       if (queried.length) {
         errors.push(`${at}: ${queryProblem(
             `field '${pe.name}.${pf.name}'`, queried.map(s => s.dialect))}`);
