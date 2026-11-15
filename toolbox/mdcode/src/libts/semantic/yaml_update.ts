@@ -80,13 +80,11 @@ export function updateText(
     text: string, doc: yaml.Document, value: unknown,
     links: ReadonlyMap<object, yaml.Node>,
     edits: Array<[number, number, string]> = []): string {
-  const pairs: Array<[yaml.Pair, unknown]> = [];
-  yaml.visit(doc, {Pair: (_, p, path) => void pairs.push([p, path.at(-1)])});
   const u: Update = {
     text,
     doc,
     links,
-    pairs,
+    ...pairsIndexed(doc),
     held: new Map(),
     used: new Set(),
     copies: new Map([...links].map(([v, n]) => [n, v])),
@@ -145,8 +143,13 @@ interface Update {
   text: string;
   doc: yaml.Document;
   links: ReadonlyMap<object, yaml.Node>;
-  /** Each pair of `doc`, with the mapping that holds it. */
-  pairs: ReadonlyArray<[yaml.Pair, unknown]>;
+  /** The pairs of `doc` by their value node, each with its mapping. */
+  byValue: ReadonlyMap<unknown, ReadonlyArray<[yaml.Pair, unknown]>>;
+  /**
+   * The pairs of `doc` whose value is a scalar, by their key and value (see
+   * scalarKey), each with its mapping.
+   */
+  byScalar: ReadonlyMap<string, ReadonlyArray<[yaml.Pair, unknown]>>;
   /**
    * Each node whose text the new value keeps, with the object of the new value
    * that keeps it.
@@ -517,7 +520,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const col = under && isFull(value) ? from - lineStart(t, from) : slot.col;
   // A scalar under a key the document renames moves its text into the value
   // written in its place, when that value holds it.
-  const pair = u.pairs.find(([p]) => p.value === node)?.[0];
+  const pair = u.byValue.get(node)?.[0]?.[0];
   if (pair && yaml.isScalar(pair.key) && pair.key.source !== pair.key.value) {
     u.replacing = node;
   }
@@ -529,7 +532,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // scalar's header unless the scalar's text moved into the new value. A
   // block collection of several lines keeps none.
   const header = headerTail(t, from);
-  const moved = u.pairs.some(([p]) => p.value === node && u.used.has(p));
+  const moved = (u.byValue.get(node) ?? []).some(([p]) => u.used.has(p));
   const after = header !== undefined ? (moved ? '' : header) :
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
@@ -619,7 +622,11 @@ function movedText(
     u: Update, key: string|undefined, value: unknown,
     col?: number): string[]|undefined {
   const node = isObject(value) ? u.links.get(value) : undefined;
-  const found = u.pairs.find(([p, parent]) => !u.used.has(p) &&
+  const candidates = node ? u.byValue.get(node) : [
+    ...(u.byValue.get(u.replacing) ?? []),
+    ...(key !== undefined ? u.byScalar.get(scalarKey(key, value)) ?? [] : []),
+  ];
+  const found = candidates?.find(([p, parent]) => !u.used.has(p) &&
       (node ? p.value === node && u.held.get(node) === value :
               yaml.isScalar(p.value) && p.value.value === value &&
               (p.value === u.replacing ||
@@ -1082,6 +1089,37 @@ function skipBlank(t: string, p: number, limit: number): number {
   return p;
 }
 
+/**
+ * Each pair of `doc` with the mapping that holds it, by its value node, and
+ * each pair whose value is a scalar by its key and value, in document order.
+ */
+function pairsIndexed(doc: yaml.Document): Pick<Update, 'byValue'|'byScalar'> {
+  const byValue = new Map<unknown, Array<[yaml.Pair, unknown]>>();
+  const byScalar = new Map<string, Array<[yaml.Pair, unknown]>>();
+  const add = <K>(
+      map: Map<K, Array<[yaml.Pair, unknown]>>, k: K,
+      entry: [yaml.Pair, unknown]) => {
+    const list = map.get(k);
+    if (list) list.push(entry);
+    else map.set(k, [entry]);
+  };
+  yaml.visit(doc, {
+    Pair: (_, p, path) => {
+      const entry: [yaml.Pair, unknown] = [p, path.at(-1)];
+      if (p.value != null) add(byValue, p.value, entry);
+      if (yaml.isScalar(p.value)) {
+        add(byScalar, scalarKey(keyOf(p), p.value.value), entry);
+      }
+    },
+  });
+  return {byValue, byScalar};
+}
+
+/** The text byScalar files a pair under: its key, value type and value. */
+function scalarKey(key: string, value: unknown): string {
+  return `${key}\0${typeof value}\0${String(value)}`;
+}
+
 function keyOf(pair: yaml.Pair): string {
   const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
   return key === null ? '' : String(key);
@@ -1089,7 +1127,7 @@ function keyOf(pair: yaml.Pair): string {
 
 /** Whether `node` is the `data` of a GOOGLE block. */
 function isGoogleData(u: Update, node: yaml.Node): boolean {
-  const [pair, map] = u.pairs.find(([p]) => p.value === node) ?? [];
+  const [pair, map] = u.byValue.get(node)?.[0] ?? [];
   return !!pair && keyOf(pair) === 'data' && yaml.isMap(map) &&
       isGoogleVendor(map.get('vendor_name'));
 }
