@@ -23,6 +23,7 @@ test.each<[string, string, (value: any) => void, string?]>([
     'empty flow collections with a space or a comment inside, beside a changed key',
     'a: [ ]\nb: {\n  # c\n}\nd: 1\n', v => v.d = 2, 'a: [ ]\nb: {\n  # c\n}\nd: 2\n'
   ],
+  ['a flow mapping key with no value, beside a changed key', 'm: {a: 1, b}\nc: 1\n', v => v.c = 2, 'm: {a: 1, b}\nc: 2\n'],
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   [

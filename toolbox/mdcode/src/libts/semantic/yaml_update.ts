@@ -202,6 +202,9 @@ function hold(u: Update, value: unknown, node: unknown): void {
 }
 
 function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
+  // A key written with no value, as `b` in `{a: 1, b}`, has no value node.
+  // Its text stays while its value stays null.
+  if (node === null && value === null) return;
   const edits = u.edits.length;
   // A flow collection over several lines that changes is written again in
   // block style.
