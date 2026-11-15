@@ -921,8 +921,7 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   target names the graph. Spanner takes a graph name that starts with a
   letter, holds only letters, digits and underscores, and is at most 128
   characters long. The name cannot be that of a table the graph reads,
-  ignoring case. The expression of a Spanner graph property cannot hold a
-  subquery. A BigQuery graph also cannot hold a metric
+  ignoring case. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
   most 1,024 characters, counting the field label and the time-dimension line
@@ -981,6 +980,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name, and
   so does a Spanner table in a PostgreSQL-dialect database.
   *(static)*
+* Push refuses a field or metric text that holds a subquery or a CTE, in any
+  dialect, and an `OSSIE_SQL_2026` text cannot hold one. *(static)*
 * **The model file's own bindings are all in one database.** One database
   means what it means for a profile ([Sources](profiles.md#sources)). Every
   push checks them, whether or not a deployment uses them. *(static)*

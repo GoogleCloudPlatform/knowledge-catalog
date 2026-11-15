@@ -1074,6 +1074,19 @@ describe('validateProfileCompleteness', () => {
     expect(validateProfileCompleteness(irModel(), profile())).toEqual([]);
   });
 
+  // An ANSI_SQL text is read in the profile's dialect, where # starts a comment.
+  test('a field binding whose text holds a query is reported', () => {
+    const ltv = {name: 'lifetimeValue', dialects: [
+      {dialect: 'ANSI_SQL' as const, expression: '(SELECT SUM(o.total) FROM shop.orders AS o) # note'}]};
+    expect(validateProfileCompleteness(irModel(), profile({
+      entities: [{...profile().entities[0], fields: [...CUSTOMER_COLUMNS, ltv]}, profile().entities[1]],
+    }))).toEqual([
+      "profile 'prod': field 'Customer.lifetimeValue': its 'ANSI_SQL' SQL holds a query; a field " +
+          'expression is a scalar expression over its own dataset, so it may not hold a subquery ' +
+          'or a CTE',
+    ]);
+  });
+
   test('unknown entity, field, relationship and metric names are reported', () => {
     const errors = validateProfileCompleteness(irModel(), profile({
       entities: [...profile().entities, {name: 'Ghost', source: BQ('g')}],

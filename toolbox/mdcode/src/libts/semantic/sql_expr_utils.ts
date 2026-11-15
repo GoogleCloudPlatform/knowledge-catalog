@@ -631,17 +631,25 @@ function unwrapped(node: any): any {
 }
 
 // Whether `expression`, read in `dialect`, holds a subquery at any depth, such
-// as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`. False when
-// the SQL parser cannot read it.
-export function holdsSubquery(expression: string, dialect: string): boolean {
+// as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`, or is a
+// query, such as `WITH ... SELECT ...`, which the parser reads in parentheses.
+// An `ANSI_SQL` text is read in `impliedDialect` when that is set, as
+// columnsForSource reads it. A query is found by its SELECT node, which a set
+// operation and a CTE hold too. The parser also gives the array of
+// `x = ANY(ARRAY[1, 2])` the key `subquery`, so that key does not count. False
+// when the SQL parser cannot read it.
+export function holdsSubquery(
+    expression: string, dialect: string,
+    impliedDialect?: string|null): boolean {
+  const read = dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
   const holds = (node: unknown): boolean => {
     if (Array.isArray(node)) return node.some(holds);
     if (node === null || typeof node !== 'object') return false;
     return Object.entries(node).some(
-        ([kind, value]) =>
-            kind === 'subquery' || kind === 'select' || holds(value));
+        ([kind, value]) => kind === 'select' || holds(value));
   };
-  return holds(sqlExpressionTree(expression, dialect));
+  return holds(sqlExpressionTree(expression, read) ??
+               sqlExpressionTree(`(\n${expression}\n)`, read));
 }
 
 // Whether the parser's tree `node` holds an aggregate, a window or a subquery

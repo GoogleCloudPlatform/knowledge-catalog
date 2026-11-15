@@ -1486,6 +1486,34 @@ describe('field and metric expression references', () => {
     ],
   });
 
+  // A field expression is a scalar expression over its own dataset, and a
+  // metric reads fields, so neither may hold a query, in any dialect. [what
+  // holds the text, its dialect, the text, whether it holds a query]
+  test.each<['field'|'metric', SqlDialect, string, boolean]>([
+    ['field', 'BIGQUERY', '(SELECT MAX(c.tier) FROM shop.customers AS c)', true],
+    ['field', 'ANSI_SQL', 'EXISTS (SELECT 1 FROM t)', true],
+    ['field', 'ANSI_SQL', 'o_code IN (SELECT c FROM t)', true],
+    ['field', 'ANSI_SQL', 'ARRAY(SELECT c FROM t)', true],
+    ['field', 'ANSI_SQL', 'o_code IN (1, 2)', false],
+    ['field', 'POSTGRES', "o_code = ANY(ARRAY['a', 'b'])", false],
+    // An ANSI_SQL text is read in its tables' dialect, where # starts a comment.
+    ['field', 'ANSI_SQL', '(SELECT MAX(c) FROM t) # note', true],
+    ['metric', 'BIGQUERY', "WITH paid AS (SELECT * FROM shop.orders WHERE status = 'paid') " +
+     'SELECT SUM(net_amount) FROM paid', true],
+  ])('refuses a %s whose %s text holds a query: %s', (kind, dialect, expression, holds) => {
+    const dialects = [{dialect, expression}];
+    const m = kind === 'field' ?
+        model({entities: [{...orders(), fields: [...orders().fields, {name: 'code', dialects}]}]}) :
+        model({entities: [orders()],
+               metrics: [{name: 'paid_total', entity: 'orders', authoredEntity: 'orders', dialects}]});
+    expect(validatePushRequirements([loaded(m)])).toEqual(!holds ? [] : [kind === 'field' ?
+        `field 'orders.code' in model 'm' (doc): its '${dialect}' SQL holds a query; a field ` +
+            'expression is a scalar expression over its own dataset, so it may not hold a ' +
+            'subquery or a CTE.' :
+        `metric 'paid_total' in model 'm' (doc): its '${dialect}' SQL holds a query; a metric ` +
+            'reads fields, so its expression may not hold a subquery or a CTE.']);
+  });
+
   describe('metrics', () => {
     test('rejects an unanchored metric that reaches no entity or multiple entities on BigQuery, Spanner, and pruned pushes', () => {
       const noEntity = (target: string) => model(
@@ -1937,7 +1965,7 @@ ${metricBlock}`).models[0];
                   "entity 'orders'; entity names are case-sensitive."));
     });
 
-    test('accepts function names, date parts, leading date units, NET.HOST namespaces, UNNEST/subquery/lambda bindings, and COUNT(*)', () => {
+    test('accepts function names, date parts, leading date units, NET.HOST namespaces, lambda bindings, and COUNT(*)', () => {
       const m = model({
         entities: [orders()],
         metrics: [
@@ -1957,8 +1985,6 @@ ${metricBlock}`).models[0];
               {dialect: 'ANSI_SQL', expression: 'AVG(DATEADD(DAY, 1, orders.order_date))'},
             ],
           },
-          {name: 'unnest_sum', expression: '(SELECT SUM(s.x) FROM UNNEST(orders.items) AS s)', entity: 'orders'},
-          {name: 'unnest_unaliased', expression: '(SELECT SUM(x) FROM UNNEST(orders.items))', entity: 'orders'},
           {
             name: 'lambda_sum',
             entity: 'orders',
@@ -4170,27 +4196,6 @@ ${['employee', 'purchase'].map((e, i) => `      - name: ${e}
     test('accepts a property that two tables declare with different datatypes', () => {
       expect(graphOf('g', [['score', 'Decimal'], ['score', 'Float']]))
           .toEqual([]);
-    });
-
-    test('refuses a property expression that holds a subquery', () => {
-      const subquery = (owners: string) => IN(
-          `, where property 'code' of ${owners} holds a subquery, which ` +
-          'Spanner refuses in a property expression; write the expression ' +
-          'without a subquery.');
-      for (const [expression, other, errors] of [
-             ['(SELECT MAX(c) FROM t)', 'c', [subquery("entity 'employee'")]],
-             ['EXISTS (SELECT 1 FROM t)', 'c', [subquery("entity 'employee'")]],
-             ['c IN (SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
-             ['ARRAY(SELECT c FROM t)', 'c', [subquery("entity 'employee'")]],
-             // A property of one SQL in two tables is reported once.
-             ['(SELECT 1)', '(SELECT 1)',
-              [subquery("entity 'employee' and entity 'purchase'")]],
-             ['c IN (1, 2)', 'c', []],
-           ] as Array<[string, string, string[]]>) {
-        expect({expression, errors: graphOf('g', [
-                  ['code', 'String', expression], ['code', 'String', other],
-                ])}).toEqual({expression, errors});
-      }
     });
   });
 });

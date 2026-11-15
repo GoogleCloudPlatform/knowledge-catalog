@@ -29,12 +29,12 @@
 
 import * as yaml from 'yaml';
 
-import {selfReferences} from './expression_checks';
+import {queryProblem, selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, COMMA_ADVICE, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {bigQueryTranslation} from './transpile';
 import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
@@ -1801,9 +1801,17 @@ export function validateProfileCompleteness(
     // dialects the profile's tables may have, and not at all without.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
-      // A text with no SQL is reported above, and has nothing to read.
-      const readable = expressionSources(pf).filter(
-          s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
+      // A text with no SQL is reported above, and has nothing to read. A text
+      // that holds a query is reported here, and its columns are not read.
+      const texts = expressionSources(pf).filter(
+          s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
+      const queried = texts.filter(s => holdsSubquery(s.text, s.dialect, dialect));
+      if (queried.length) {
+        errors.push(`${at}: ${queryProblem(
+            `field '${pe.name}.${pf.name}'`, queried.map(s => s.dialect))}`);
+      }
+      const readable = texts.filter(
+          s => !queried.includes(s) &&
               !(s.dialect === 'ANSI_SQL' && dialect === null &&
                 !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
