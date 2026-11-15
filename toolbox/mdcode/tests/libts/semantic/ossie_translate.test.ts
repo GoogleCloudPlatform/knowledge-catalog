@@ -138,6 +138,7 @@ const ROWS: Row[] = [
   ['TO_CHAR(d, \'YYYY-MM-DD\') || TO_CHAR(ts, \'DD Mon YYYY HH24:MI\')',
    'FORMAT_DATE(\'%Y-%m-%d\', d) || FORMAT_TIMESTAMP(\'%d %b %Y %H:%M\', ts)'],
   ['TO_DATE(s, \'YYYY-MM-DD\')', 'PARSE_DATE(\'%Y-%m-%d\', s)'],
+  ['TO_DATE(s, \'YYYY-MM-DD HH24:MI:SS\')', 'DATE(PARSE_DATETIME(\'%Y-%m-%d %H:%M:%S\', s))'],
   ['TO_TIMESTAMP(s, \'YYYY-MM-DD"T"HH24:MI:SS\')', 'PARSE_TIMESTAMP(\'%Y-%m-%dT%H:%M:%S\', s)'],
 
   // String functions.

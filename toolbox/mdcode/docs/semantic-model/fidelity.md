@@ -626,8 +626,8 @@ and `PERCENTILE_DISC` without `OVER`.
   fails. For example, BigQuery refuses a `DATE` column beside a `TIMESTAMP`
   column, a part shorter than a day of a `DATE`, a week or longer of a
   `TIMESTAMP` column in `DATEADD` and `DATEDIFF`, a `TIME` in `DATE_TRUNC`,
-  `DATEADD` and `DATEDIFF`, `%` and `MOD()` of a `FLOAT64`, `PARTITION BY` a
-  `FLOAT64`, and a time of day in the format of `TO_DATE`.
+  `DATEADD` and `DATEDIFF`, `%` and `MOD()` of a `FLOAT64`, and `PARTITION BY`
+  a `FLOAT64`.
 
 ## To Spanner
 

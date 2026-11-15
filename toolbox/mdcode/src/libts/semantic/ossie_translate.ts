@@ -749,11 +749,13 @@ class Translator {
     return digits ?? (Number.isInteger(v) || text === undefined ? numberSql(v) : text);
   }
 
-  // `node`, TO_CHAR, or TO_DATE or TO_TIMESTAMP with a format, named `name`:
-  // BigQuery's PARSE_DATE, PARSE_TIMESTAMP, or for TO_CHAR FORMAT_TIMESTAMP
-  // when the format has a time of day and FORMAT_DATE otherwise, which both
-  // take a DATE, a DATETIME and a TIMESTAMP. The format is a literal, whose
-  // tokens become BigQuery's elements (see bigQueryFormat).
+  // `node`, TO_CHAR, or TO_DATE or TO_TIMESTAMP with a format, named `name`.
+  // TO_TIMESTAMP is BigQuery's PARSE_TIMESTAMP. TO_DATE is PARSE_DATE, or the
+  // DATE of PARSE_DATETIME when the format has a time of day, which
+  // PARSE_DATE refuses. TO_CHAR is FORMAT_TIMESTAMP when the format has a
+  // time of day and FORMAT_DATE otherwise, which both take a DATE, a DATETIME
+  // and a TIMESTAMP. The format is a literal, whose tokens become BigQuery's
+  // elements (see bigQueryFormat).
   private formatted(node: Call, name: string): string {
     const [value, given] = node.args;
     const fn = node.name.written;
@@ -764,8 +766,10 @@ class Translator {
       refuse(`${fn} with '${format.word}' in its format, which is not one of Ossie's format tokens`);
     }
     const [f, x] = [stringLiteral(format), this.out(value).sql];
-    if (name !== 'TO_CHAR') return `PARSE_${name === 'TO_DATE' ? 'DATE' : 'TIMESTAMP'}(${f}, ${x})`;
-    return `${/%[HIMSp]/.test(format.replaceAll('%%', '')) ? 'FORMAT_TIMESTAMP' : 'FORMAT_DATE'}(${f}, ${x})`;
+    const timed = /%[HIMSp]/.test(format.replaceAll('%%', ''));
+    if (name === 'TO_TIMESTAMP') return `PARSE_TIMESTAMP(${f}, ${x})`;
+    if (name === 'TO_DATE') return timed ? `DATE(PARSE_DATETIME(${f}, ${x}))` : `PARSE_DATE(${f}, ${x})`;
+    return `${timed ? 'FORMAT_TIMESTAMP' : 'FORMAT_DATE'}(${f}, ${x})`;
   }
 
   // `node`, MEDIAN, PERCENTILE_CONT, PERCENTILE_DISC or APPROX_PERCENTILE,
