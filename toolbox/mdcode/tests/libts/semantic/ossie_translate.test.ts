@@ -110,6 +110,7 @@ const ROWS: Row[] = [
   // Constant folding where BigQuery takes only a literal.
   ['LAG(x, 1 + 1) OVER (ORDER BY x)', 'LAG(x, 2) OVER (ORDER BY x NULLS LAST)'],
   ['NTILE(CAST(2.4 AS INTEGER)) OVER (ORDER BY x)', 'NTILE(2) OVER (ORDER BY x NULLS LAST)'],
+  ['APPROX_PERCENTILE(x, CAST(0.25 AS DECIMAL))', 'APPROX_QUANTILES(x, 100)[OFFSET(25)]'],
   ['NTH_VALUE(x, ABS(-2)) OVER (ORDER BY x ROWS BETWEEN (1 + 1) PRECEDING AND CURRENT ROW)',
    'NTH_VALUE(x, 2) OVER (ORDER BY x NULLS LAST ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)'],
   ['LAG(x, n) OVER (ORDER BY x)', 'kcmd does not translate LAG with the offset n, since BigQuery takes only a literal INT64 of 0 or more there'],

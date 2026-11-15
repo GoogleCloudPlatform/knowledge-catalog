@@ -384,7 +384,8 @@ function chosen(node: Extract<OssieNode, {kind: 'case'}>): Constant|undefined {
 }
 
 // The value a cast of a constant to a number type gives: a cast to an integer
-// rounds half away from zero, and one to DECIMAL to its scale.
+// rounds half away from zero, and one to DECIMAL to its scale. A DECIMAL
+// without parameters keeps 9 places, as BigQuery's NUMERIC does.
 function castConstant(node: Cast): Constant|undefined {
   const x = constant(node.operand);
   if (typeof x !== 'number') return x === null ? null : undefined;
@@ -395,7 +396,7 @@ function castConstant(node: Cast): Constant|undefined {
       return roundAway(x);
     case 'DECIMAL':
     case 'NUMERIC':
-      return roundAway(x, Number(node.type.params[1] ?? 0));
+      return roundAway(x, node.type.params.length ? Number(node.type.params[1] ?? 0) : 9);
     case 'FLOAT':
     case 'DOUBLE':
       return x;
