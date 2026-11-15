@@ -112,6 +112,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 3\n'
   ],
   [
+    'an item added after an item that ends in an empty value with no comment, and such an item removed',
+    'l:\n  - a: 1\n    d:\nm:\n  - e: 1\n    d:\n  - k: 1\n', v => (v.l.push({b: 2}), v.m.shift()),
+    'l:\n  - a: 1\n    d:\n  - b: 2\nm:\n  - k: 1\n'
+  ],
+  [
     'items that end in a deeper comment above a comment and a line of spaces, removed or moved',
     'l:\n  - k: 1\n    # deep\n  # c\n  \n  - k: 2\na:\n  t:\n    l: 1\n    # deep\n  # d\n  \n  i: 1\n',
     v => (v.l.shift(), v.a = {i: 1, custom: {t: v.a.t}}),

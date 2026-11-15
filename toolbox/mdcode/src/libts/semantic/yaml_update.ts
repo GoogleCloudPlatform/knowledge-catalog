@@ -402,7 +402,6 @@ function geometry(
     const start = yaml.isPair(item) || flow ? first.range![0] : dash[i];
     const ls = lineStart(t, start);
     const inline = !flow && t.slice(ls, start).trim() !== '';
-    // An empty value, as in `a:`, ends on its key's line, and so does the item.
     const end = flow ? last.range![1] :
                        blockEnd(t, Math.max(last.range![2], nextLine(t, start)),
                                 start - ls, last);
@@ -426,6 +425,8 @@ function geometry(
  * lines that end a `|+` block scalar.
  */
 function blockEnd(t: string, end: number, col: number, node?: unknown): number {
+  // An empty value, as in `a:`, ends at the line break after it.
+  if (end === lineEnd(t, end)) end = nextLine(t, end);
   if (t.slice(lineStart(t, end), end).trim() === '') end = lineStart(t, end);
   let last = node;
   while (yaml.isCollection(last) && last.items.length > 0) {
