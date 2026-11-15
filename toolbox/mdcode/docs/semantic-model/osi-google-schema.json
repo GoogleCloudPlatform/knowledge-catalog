@@ -70,7 +70,8 @@
         "ALLOYDB",
         "SNOWFLAKE",
         "DATABRICKS",
-        "SQLSERVER"
+        "SQLSERVER",
+        "OSSIE_SQL_2026"
       ],
       "description": "SQL dialect, matched exactly."
     },

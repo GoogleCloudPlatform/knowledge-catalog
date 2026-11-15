@@ -13,7 +13,7 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 
 import {deploymentTargetKey} from './deployment_target';
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, OSSIE_SQL, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, importCommand, importHint, noTextFor, profileSpecOf, sourcesDialect, TableDialects, tableDialects, TranspileOutcomes} from './resolve_profiles';
@@ -123,6 +123,19 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
 export const GOOGLE_VERSION = '0.2.0.dev0/google';
+// The version an Apache Ossie 0.3.0.dev0 file declares. Such a file holds its
+// model at the document root.
+export const OSSIE_ROOT_VERSION = '0.3.0.dev0';
+// The sentence a load error adds for a file only `kcmd import` reads.
+const IMPORT_ADVICE =
+    `Run 'kcmd import <file> --flavor <ossie|google>' to convert it.`;
+// `error`, a load error, without the sentence at its end that advises running
+// `kcmd import` on the file: IMPORT_ADVICE, or the advice to complete bare
+// table names (see parseSource).
+export function withoutImportAdvice(error: string): string {
+  return error.replace(
+      /\s+(?:Run|Or run) 'kcmd import <file>[^']*' to [^'\n]*$/, '');
+}
 // How a vanilla author declares deployments: in a GOOGLE block on the model,
 // or under `deployments:` after a switch to the Google flavor.
 const DEPLOYMENTS_VERSION_HINT =
@@ -1889,7 +1902,8 @@ function protoMemberError(
  *
  * A document with a field or metric expression that is not blank needs the SQL
  * parser, so call `loadSqlEngine()` first. Without it, this throws a plain
- * Error instead of a SemanticModelError.
+ * Error instead of a SemanticModelError. The Ossie parser reads an
+ * OSSIE_SQL_2026 text without it.
  */
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
@@ -1909,7 +1923,10 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  * `warnings` rather than thrown.
  */
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
-  const version = readVersion(doc);
+  // Only `kcmd import` reads a model at the document root, so the load error
+  // says to run it.
+  const advice = rootModelVersion(doc) ? IMPORT_ADVICE : undefined;
+  const version = readVersion(doc, advice);
   const extended = version === GOOGLE_VERSION;
   const proto =
       protoMemberError(doc, extended, opts.messageFlavor ?? version);
@@ -1925,7 +1942,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
         schemaProblems(result.error.issues, {
           schema, doc: normalized, authored: doc, extended,
           subject: 'the document', words: opts.messageFlavor,
-        })}`);
+        })}${advice ? `\n${advice}` : ''}`);
   }
 
   const warnings: string[] = [];
@@ -2123,12 +2140,13 @@ export function inferMetricEntities(
     if (text) sources.push({text, dialect});
   }
   const allCols: SqlColumn[] = [];
-  let unparsed = false;
+  // The dialect of the first text that could not be parsed.
+  let unparsed: string|undefined;
   for (const {text, dialect} of sources) {
     if (!text) continue;
     const cols = columnsForSource(text, dialect, impliedDialect ?? undefined);
     if (cols === undefined) {
-      unparsed = true;
+      unparsed ??= dialect;
     } else {
       allCols.push(...cols);
     }
@@ -2140,12 +2158,15 @@ export function inferMetricEntities(
             `metric, or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
             `the metric` :
         `set 'entity' on the metric`;
+    // Ossie's grammar quotes a name in double quotes, and reserves ORDER.
+    const quoting = unparsed === OSSIE_SQL ?
+        'double-quote a reserved qualifier, such as "Order".amount' :
+        'backtick-quote a reserved qualifier, such as `Date`.amount';
     return {
       referenced,
       warning: unparsed ?
           `${ctx}: expression could not be parsed; entity inference was ` +
-              `skipped (${entityHint}, or backtick-quote a reserved ` +
-              `qualifier, such as \`Date\`.amount)` :
+              `skipped (${entityHint}, or ${quoting})` :
           `${ctx}: expression references no known entity; ` +
               `it may not be placeable downstream`,
     };
@@ -2198,8 +2219,9 @@ export function entityAndMetricWarnings(
 // Reads and validates the top-level `version`. It is REQUIRED and must be one
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
-// error rather than a warning (agreed with Dmitri).
-function readVersion(doc: unknown): FormatVersion {
+// error rather than a warning (agreed with Dmitri). An unknown version's error
+// ends with `advice` when given.
+function readVersion(doc: unknown, advice?: string): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
   if (typeof version !== 'string' || version.length === 0) {
@@ -2211,9 +2233,26 @@ function readVersion(doc: unknown): FormatVersion {
   if (!isFormatVersion(version)) {
     throw new SemanticModelError(
         `Semantic model load error: unknown version ` +
-        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.`);
+        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.` +
+        (advice ? ` ${advice}` : ''));
   }
   return version;
+}
+
+/**
+ * The version of `doc` when it holds an Ossie model at the document root,
+ * with `datasets` and no `semantic_model`: an Apache Ossie '0.3.0.dev0' file,
+ * or a '0.2.0.dev0' file as the Ossie converters write it. Undefined for any
+ * other document.
+ */
+export function rootModelVersion(doc: unknown): string|undefined {
+  if (!isRecord(doc) || 'semantic_model' in doc || !('datasets' in doc)) {
+    return undefined;
+  }
+  const {version} = doc;
+  return version === OSSIE_ROOT_VERSION || version === OSSIE_VERSION ?
+      version :
+      undefined;
 }
 
 

@@ -1,5 +1,7 @@
 // The SQL engine kcmd reads and translates expressions with: the
-// @polyglot-sql/sdk Rust/WASM engine, bundled into the tool.
+// @polyglot-sql/sdk Rust/WASM engine, bundled into the tool. The readers here
+// read an OSSIE_SQL_2026 text with ossie_parser.ts instead, and never hand it
+// to the engine.
 //
 // Loading the engine is asynchronous and happens once per process, through
 // `loadSqlEngine`. Parsing is synchronous after that, so the validators that
@@ -7,6 +9,9 @@
 // first, and so does a test.
 
 import {readFileSync} from 'node:fs';
+
+import {OSSIE_SQL} from './ir';
+import {ossieReferences, ossieSoleReference, ossieTree, tokenizeOssie} from './ossie_parser';
 
 // The subset of the @polyglot-sql/sdk `/manual` surface kcmd uses. Declared
 // locally because the package's `/manual` subpath does not re-export its named
@@ -123,9 +128,17 @@ export interface SqlColumn {
 // qualified by `orders`. A function namespace such as `NET` in
 // `NET.HOST(orders.url)` is not a column, and the expression a chained call
 // applies to, such as `(orders.name)` in `(orders.name).UPPER()`, is read.
-// Throws when the engine is not loaded.
+// Throws when the engine is not loaded, except for an OSSIE_SQL_2026 text,
+// which the Ossie parser reads.
 export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
     undefined {
+  if (isOssie(dialect)) {
+    if (!expression.trim()) return [];
+    const tree = ossieTree(expression);
+    return tree ? ossieReferences(tree).map(([first, second]) => second ?
+        {qualifier: first.name, name: second.name} : {name: first.name}) :
+                  undefined;
+  }
   const tree = sqlExpressionTree(expression, dialect);
   if (!expression.trim()) return [];
   if (!tree) return undefined;
@@ -139,9 +152,16 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
 // nothing else, perhaps in parentheses: `orders.amount`, `` (`order`) `` or
 // `amount`, but not a struct path such as `orders.address.city` or any other
 // expression. Undefined otherwise, or when the engine cannot read it. Throws
-// when the engine is not loaded.
+// when the engine is not loaded, except for an OSSIE_SQL_2026 text, which the
+// Ossie parser reads.
 export function soleColumn(expression: string, dialect: string): SqlColumn|
     undefined {
+  if (isOssie(dialect)) {
+    const parts = ossieSoleReference(ossieTree(expression));
+    if (!parts) return undefined;
+    const [first, second] = parts;
+    return second ? {qualifier: first.name, name: second.name} : {name: first.name};
+  }
   let tree = sqlExpressionTree(expression, dialect);
   const kind = (node: any) =>
       node && Object.keys(node).length === 1 ? Object.keys(node)[0] : undefined;
@@ -155,8 +175,10 @@ export function soleColumn(expression: string, dialect: string): SqlColumn|
 // undefined when it cannot be read so or is empty. A text that starts with a
 // keyword, such as `Order.amount`, is read again inside parentheses on lines
 // of their own, so a trailing `--` comment stays inside. A MySQL text is read
-// with its comments as MySQL reads them, as mysqlForEngine writes it.
+// with its comments as MySQL reads them, as mysqlForEngine writes it. An
+// OSSIE_SQL_2026 text has no engine tree, so it gives undefined.
 export function sqlExpressionTree(expression: string, dialect: string): any {
+  if (isOssie(dialect)) return undefined;
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
@@ -542,8 +564,10 @@ function isNamePath(node: unknown): boolean {
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
 // tokenize it. A MySQL text is read with its comments as MySQL reads them, and
 // each span still counts from the start of `expression`. Throws when the
-// engine is not loaded.
+// engine is not loaded, except for an OSSIE_SQL_2026 text, which the Ossie
+// parser reads.
 export function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+  if (isOssie(dialect)) return ossieTokens(expression);
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
@@ -562,9 +586,67 @@ export function sqlTokens(expression: string, dialect: string): SqlToken[]|undef
   })) : undefined;
 }
 
+// Whether `dialect` is OSSIE_SQL_2026, which ossie_parser.ts reads.
+function isOssie(dialect: string): boolean {
+  return dialect.toUpperCase() === OSSIE_SQL;
+}
+
+// The engine's kind of each symbol of an OSSIE_SQL_2026 text.
+const OSSIE_SYMBOL_TYPES: Readonly<Record<string, string>> = {
+  '(': 'L_PAREN', ')': 'R_PAREN', '.': 'DOT', ',': 'COMMA', '+': 'PLUS',
+  '-': 'DASH', '*': 'STAR', '/': 'SLASH', '%': 'PERCENT', '=': 'EQ',
+  '<>': 'NEQ', '<': 'LT', '<=': 'LTE', '>': 'GT', '>=': 'GTE', '||': 'D_PIPE',
+};
+
+// The tokens of `expression`, an OSSIE_SQL_2026 text, as tokenizeOssie reads
+// them, in the form the engine gives: a name is a `VAR`, a keyword is its own
+// kind, and each comment is attached to the token after it, or to the last
+// token when none follows. Undefined when a character starts no token, or
+// when a `/*` has no `*/` after it, which tokenizeOssie reads as the tokens
+// `/` and `*` followed by the words of the comment.
+function ossieTokens(expression: string): SqlToken[]|undefined {
+  const read = tokenizeOssie(expression);
+  if ('error' in read ||
+      read.tokens.some(t => t.written === '/' && expression[t.end] === '*')) {
+    return undefined;
+  }
+  // The offset in code points of each code unit. Each unit adds one code
+  // point, except the first unit of a surrogate pair, where codePointAt reads
+  // a code point above U+FFFF.
+  const points: number[] = [];
+  let point = 0;
+  for (let i = 0; i < expression.length; i++) {
+    points.push(point);
+    if (expression.codePointAt(i)! <= 0xffff) point++;
+  }
+  points.push(point);
+  let next = 0;
+  const tokens = read.tokens.map(t => {
+    const before: string[] = [];
+    while (next < read.comments.length && read.comments[next].end <= t.start) {
+      before.push(read.comments[next++].written);
+    }
+    return {
+      token_type: t.type === 'name'   ? 'VAR' :
+          t.type === 'quoted'         ? 'QUOTED_IDENTIFIER' :
+          t.type === 'string'         ? 'STRING' :
+          t.type === 'number'         ? 'NUMBER' :
+          t.type === 'keyword'        ? t.value :
+                                        OSSIE_SYMBOL_TYPES[t.value],
+      text: t.type === 'quoted' || t.type === 'string' ? t.value : t.written,
+      span: {start: points[t.start], end: points[t.end]},
+      comments: before,
+      trailing_comments: [] as string[],
+    };
+  });
+  tokens.at(-1)?.trailing_comments.push(...read.comments.slice(next).map(c => c.written));
+  return tokens;
+}
+
 // Whether `expression` holds no SQL in `dialect`: it is empty, only whitespace
 // or only comments. False when the engine cannot read it. Throws when the
-// engine is not loaded.
+// engine is not loaded, except for an OSSIE_SQL_2026 text, which the Ossie
+// parser reads.
 export function holdsNoSql(expression: string, dialect: string): boolean {
   return sqlTokens(expression, dialect)?.length === 0;
 }
@@ -575,7 +657,8 @@ export function holdsNoSql(expression: string, dialect: string): boolean {
 // Comments before the first token or after the last are dropped. The rest of
 // the text stays as written. Returns `expression` itself when it has no
 // comment, holds nothing but comments, or the engine cannot read it. Throws
-// when the engine is not loaded.
+// when the engine is not loaded, except for an OSSIE_SQL_2026 text, which the
+// Ossie parser reads.
 export function withoutComments(expression: string, dialect: string): string {
   const tokens = sqlTokens(expression, dialect);
   if (!tokens?.some(t => t.comments.length || t.trailing_comments.length)) {

@@ -2117,6 +2117,9 @@ describe('profile rules', () => {
       {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
       {dialect: 'BIGQUERY', expression: 'party.code + 1'},
     ]}, {name: 'data', expression: 'data'}, BQ('party'), [], {ownSqlOnly: {}}],
+    ['a cycle the caller reports in an ANSI_SQL text', {dialects: [
+      {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
+    ]}, {name: 'data', expression: 'data'}, BQ('party'), [], {ownSqlOnly: {}}],
     ['tables whose dialect no lookup read', {dialects: [
       {dialect: 'SPANNER', expression: 'c_code'},
       {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
@@ -4644,7 +4647,7 @@ entities:
           "profile 'prod': entity 'base': field 'note': Unknown dialect " +
               "'NOPE' in expression dialects. Expected one of ANSI_SQL, " +
               'BIGQUERY, SPANNER, MYSQL, POSTGRES, ALLOYDB, SQLSERVER, ' +
-              'SNOWFLAKE, DATABRICKS.',
+              'SNOWFLAKE, DATABRICKS, OSSIE_SQL_2026.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.

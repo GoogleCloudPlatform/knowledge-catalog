@@ -210,14 +210,15 @@ export function expressionProblems(
     }
     // Each cycle once, though it may be read in several texts.
     const reported = new Set<string>();
-    for (const {cycle} of cycles.filter(c => c.entity === entity.name)) {
+    for (const {cycle, dialect} of cycles.filter(
+             c => c.entity === entity.name)) {
       if (reported.has(JSON.stringify(cycle))) continue;
       reported.add(JSON.stringify(cycle));
       errors.push({
         item: {entity: entity.name, field: cycle[0]},
         problem: selfReferenceMessage(
                      entity.name, cycle,
-                     ` in model '${model.name}' (${document})`) +
+                     ` in model '${model.name}' (${document})`, dialect) +
             '.',
       });
     }
@@ -415,10 +416,13 @@ function fieldNoSqlProblems(
 // cycle of the ancestor where it forms: of those that bind its fields, the one
 // with the most ancestors. An inherited text is read in `impliedDialect`, as
 // the runtime reads it. A dialect in which `#` starts a comment is read with
-// BigQuery's rules, which also start a comment at `#`.
+// BigQuery's rules, which also start a comment at `#`. A cycle gives `dialect`
+// when all the texts that form it, in every dialect read, are written in that
+// one dialect.
 export function selfReferences(
     model: SemanticModel, impliedDialect: string|null|undefined):
-    Array<{entity: string; cycle: string[]; texts: string[]}> {
+    Array<
+        {entity: string; cycle: string[]; texts: string[]; dialect?: string}> {
   const inheritedReading =
       impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
                                                              undefined;
@@ -433,6 +437,8 @@ export function selfReferences(
   // Each cycle, by its entity, fields and texts.
   const found =
       new Map<string, {entity: string; cycle: string[]; texts: string[]}>();
+  // The dialects each cycle's texts are written in, by its entity and fields.
+  const written = new Map<string, Set<string>>();
   for (const e of model.entities ?? []) {
     if (e.abstract) continue;
     const resolved = resolvedByName.get(e.name) ?? e;
@@ -448,9 +454,23 @@ export function selfReferences(
       const texts = owners.map(o => textsFor(o.field, dialect)[0]?.text ?? '');
       const key = JSON.stringify({entity, cycle, texts});
       if (!found.has(key)) found.set(key, {entity, cycle, texts});
+      // Each text is written in `dialect`, or is the ANSI_SQL text of a field
+      // with no text in it.
+      const byCycle = JSON.stringify({entity, cycle});
+      written.set(byCycle, new Set([
+        ...written.get(byCycle) ?? [],
+        ...owners.map(
+            o => expressionSources(o.field).some(s => s.dialect === dialect) ?
+                dialect :
+                'ANSI_SQL'),
+      ]));
     }
   }
-  return [...found.values()];
+  return [...found.values()].map(c => {
+    const [dialect, ...others] =
+        written.get(JSON.stringify({entity: c.entity, cycle: c.cycle}))!;
+    return others.length ? c : {...c, dialect};
+  });
 }
 
 // The fields of `entity`, an entity with the fields its table runs, that name

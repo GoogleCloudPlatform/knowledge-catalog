@@ -13,8 +13,9 @@
 // an inherited expression onto the entity inheriting it.
 //
 
-import {Field, fieldBinding} from './ir';
-import {quoteIfReserved} from './sql_identifiers';
+import {Field, fieldBinding, OSSIE_SQL} from './ir';
+import {OSSIE_RESERVED} from './ossie_parser';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
@@ -152,9 +153,10 @@ function nameOf(t: SqlToken, chars: string[]): string {
 // field and runs through the fields it names back to it, and `where` follows
 // the field's name, as ` in model 'm' (doc)` does. The graph renders a field
 // that names a sibling field from that sibling's own SQL (see
-// graph_ddl.fieldSql), so a field that reaches itself has none.
+// graph_ddl.fieldSql), so a field that reaches itself has none. The advice
+// writes the column as a text in `dialect` writes it.
 export function selfReferenceMessage(
-    owner: string, cycle: string[], where = ''): string {
+    owner: string, cycle: string[], where = '', dialect?: string): string {
   const [field, ...through] = cycle;
   return `field '${owner}.${field}'${where} names itself` +
       (through.length ?
@@ -164,7 +166,17 @@ export function selfReferenceMessage(
       `itself, directly or through other fields` +
       (through.length ? '' :
                         `; to read the column of that name, write it ` +
-               `without the qualifier: '${quoteIfReserved(field)}'`);
+               `without the qualifier: '${columnIn(field, dialect)}'`);
+}
+
+// The column `name` as a text in `dialect` writes it. An OSSIE_SQL_2026 text
+// writes it in double quotes when Ossie reserves it or it is not a simple
+// identifier. A text in any other dialect writes it as quoteIfReserved does.
+function columnIn(name: string, dialect?: string): string {
+  if (dialect !== OSSIE_SQL) return quoteIfReserved(name);
+  return OSSIE_RESERVED.has(name.toUpperCase()) || !isSimpleIdentifier(name) ?
+      `"${name.replace(/"/g, '""')}"` :
+      name;
 }
 
 // `expression` with each `<from>.` qualifier it writes before a column (see

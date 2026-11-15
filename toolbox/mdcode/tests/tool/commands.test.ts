@@ -1766,6 +1766,46 @@ semantic_model:
          });
   }
 
+  // Pull writes over a local model file that does not load, so its warning
+  // leaves out the loader's advice to run kcmd import on the file, except
+  // under --dry-run.
+  const NO_LOAD = `Warning: local model file ${
+      shown('commerce.yaml')} does not load, so pull writes it from the ` +
+      "catalog: Model document 'commerce': Semantic model load error: ";
+  for (const [what, text, error, advice] of [
+    ['Ossie model file',
+     'version: "0.3.0.dev0"\nname: commerce\ndatasets: []\n',
+     "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or " +
+         "'0.2.0.dev0/google'.",
+     " Run 'kcmd import <file> --flavor <ossie|google>' to convert it."],
+    ['model file with a bare table name',
+     MODEL.replace('name: Order\n', 'name: Order\n        source: orders\n'),
+     "entity 'Order': bare table name 'orders' is not a valid source. Write " +
+         "the table's GCP resource name instead, for example:\n  source: " +
+         'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/' +
+         'tables/orders',
+     "\nOr run 'kcmd import <file> --input first-party --flavor google " +
+         "--source-prefix <prefix>' to complete each bare table name from " +
+         'the database or Knowledge Catalog entry group that <prefix> names.'],
+  ] as const) {
+    for (const dryRun of [false, true]) {
+      test(`warns about a local ${what}${dryRun ? ' under --dry-run' : ''}`,
+           async () => {
+             await pushed({
+               'commerce.yaml': MODEL,
+               'commerce.profile.prod.yaml': PROFILE,
+             });
+             fs.writeFileSync(local('commerce.yaml'), text);
+
+             expect(await pull({dryRun})).toBe(0);
+             const warnings = (console.warn as Mock<any>).mock.calls.map(
+                 c => c.join(' '));
+             expect(warnings).toContain(
+                 `${NO_LOAD}${error}${dryRun ? advice : ''}`);
+           });
+    }
+  }
+
   // A local profile file push or the layout would refuse is written from the
   // catalog, and the model file stays.
   const ONE = `Warning: local profile file ${

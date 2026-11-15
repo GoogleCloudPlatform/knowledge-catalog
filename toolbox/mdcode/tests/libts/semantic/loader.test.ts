@@ -787,6 +787,24 @@ describe('document-level handling', () => {
     })).toThrow(/unknown version '9.9.9'/);
   });
 
+  test.each([
+    ['0.3.0.dev0', "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or '0.2.0.dev0/google'. "],
+    ['0.2.0.dev0', "the document: 'semantic_model' is missing; it takes a list\nthe document: unknown keys " +
+        "'name' and 'datasets'; it takes 'version' and 'semantic_model'\n"],
+  ])('a %s file with its model at the document root is refused with advice to import it', (version, problem) => {
+    const text = `version: "${version}"
+name: retail
+datasets:
+  - name: orders
+    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+    primary_key: [id]
+    fields: []
+`;
+    expect(loadSemanticModels([{name: 'retail', text}]).error).toBe(
+        `Model document 'retail': Semantic model load error: ${problem}` +
+        "Run 'kcmd import <file> --flavor <ossie|google>' to convert it.");
+  });
+
   test('an unknown key is a hard load error (objects are strict)', () => {
     // Objects are `.strict()`: an unrecognized key is rejected rather than
     // silently dropped, so a typo cannot slip through unnoticed.
@@ -1069,8 +1087,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all nine allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
-    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS'];
+  test('all ten allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS', 'OSSIE_SQL_2026'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',
@@ -1945,6 +1963,13 @@ semantic_model:
         "skipped (set 'entity' in a GOOGLE custom_extensions block on the metric, " +
         "or use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
         "backtick-quote a reserved qualifier, such as `Date`.amount)");
+
+    // Ossie's grammar reserves ORDER and quotes a name in double quotes.
+    const ossieUnparseable = load(GOOGLE, fullModel('metric', { expression: expr('SUM(Order.amount)', 'OSSIE_SQL_2026') }));
+    expect(ossieUnparseable.warnings).toContain(
+        "metric 'order_count': expression could not be parsed; entity inference was " +
+        "skipped (set 'entity' on the metric, or double-quote a reserved " +
+        'qualifier, such as "Order".amount)');
   });
 });
 

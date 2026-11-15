@@ -2042,6 +2042,16 @@ ${extraMetric}`;
               {dialect: 'SNOWFLAKE', expression: 'SUM(orders.net_amount'},
             ],
           },
+          // Ossie's grammar has no `::` cast, which the SQL engine reads.
+          {
+            name: 'ossie_unparseable',
+            entity: 'orders',
+            authoredEntity: 'orders',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'COUNT(*)'},
+              {dialect: 'OSSIE_SQL_2026', expression: 'SUM(orders.net_amount::INT)'},
+            ],
+          },
         ],
       });
       const warnings: string[] = [];
@@ -2050,6 +2060,7 @@ ${extraMetric}`;
         "metric 'unparseable_anchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
         "metric 'unparseable_unanchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
         "metric 'partial_unparseable' in model 'm' (doc): kcmd could not read its 'SNOWFLAKE' SQL, so the fields that entry reads were not checked.",
+        "metric 'ossie_unparseable' in model 'm' (doc): kcmd could not read its 'OSSIE_SQL_2026' SQL, so the fields that entry reads were not checked.",
       ]);
     });
   });
@@ -2583,6 +2594,40 @@ ${extraMetric}`;
       ]);
     });
 
+    // With no sources, each text is read in its own dialect, and a field with
+    // no text in a dialect is read there through its ANSI_SQL text. The column
+    // is quoted as Ossie quotes it only when each text in which the field
+    // names itself is an OSSIE_SQL_2026 text. Ossie writes a name it reserves
+    // in double quotes.
+    const withTexts = (name: string, ...texts: Array<[SqlDialect, string]>):
+        Field => ({name, dialects: texts.map(
+                      ([dialect, expression]) => ({dialect, expression}))});
+    test.each<[string, Field[], Array<[string, string]>]>([
+      ['OSSIE_SQL_2026 texts', [
+        withTexts('order', ['OSSIE_SQL_2026', 'orders."order"']),
+        withTexts('ilike', ['OSSIE_SQL_2026', 'orders."ilike"']),
+      ], [['order', '"order"'], ['ilike', '"ilike"']]],
+      // The Ossie parser reads `orders."order"` as the field.
+      ['an ANSI_SQL text', [
+        withTexts('id', ['OSSIE_SQL_2026', 'order_id']),
+        withTexts('order', ['ANSI_SQL', 'orders."order"']),
+      ], [['order', '`order`']]],
+      ['an OSSIE_SQL_2026 text and a BIGQUERY text', [
+        withTexts('order', ['OSSIE_SQL_2026', 'orders."order"'],
+                  ['BIGQUERY', 'orders.`order`']),
+      ], [['order', '`order`']]],
+    ])('quotes the column of a field that names itself in %s', (_, fields, expected) => {
+      const m = model({
+        entities: [{name: 'orders', dataSource: '', keys: [], fields}],
+      });
+      expect(validatePushRequirements([loaded(m)])).toEqual(expected.map(
+          ([name, column]) => `field 'orders.${name}' in model 'm' (doc) ` +
+              'names itself; a field expression may name other fields of its ' +
+              'entity, but not itself, directly or through other fields; to ' +
+              'read the column of that name, write it without the qualifier: ' +
+              `'${column}'.`));
+    });
+
     // A profile's exclusion leaves the field off the entity's table, but a
     // subtype that inherits the binding runs it, so it must still render
     // there.
@@ -2628,6 +2673,30 @@ ${extraMetric}`;
             "field 'Date.a' in model 'm' (doc) names itself through 'Date.b'",
             "field 'Date.b' in model 'm' (doc) names itself through 'Date.a'",
           ]);
+    });
+
+    test.each([
+      // Ossie's grammar reads an unclosed `/*` as `/` and `*`, so the text
+      // does not parse, and the words after it name nothing.
+      ['amount /* see orders.x', [],
+       ["field 'orders.x' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked."]],
+      // A high surrogate with no low surrogate after it is one character, so
+      // the name after it is read where it is written.
+      ["'\uD800' || orders.x", ["field 'orders.x' in model 'm' (doc) names itself"], []],
+    ])('checks an OSSIE_SQL_2026 field text for a self-reference as Ossie\'s grammar reads it: %p', (text, errors, warnings) => {
+      const m = model({
+        entities: [{
+          name: 'orders',
+          dataSource: '',
+          keys: [],
+          fields: [{name: 'x', dialects: [{dialect: 'OSSIE_SQL_2026', expression: text}]}],
+        }],
+      });
+      const got: string[] = [];
+      expect(validatePushRequirements([loaded(m)], {warnings: got})
+                 .map(e => e.slice(0, e.indexOf(';'))))
+          .toEqual(errors);
+      expect(got).toEqual(warnings);
     });
 
     // The cycle is in the subtype's own binding, so it is the subtype's error;

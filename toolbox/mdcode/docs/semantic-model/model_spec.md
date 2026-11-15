@@ -313,10 +313,12 @@ metric's entity be derived ([§2.3](#23-metric)).
 
 Ossie closes `dialect` to an enum — `ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`,
 `DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. In both flavors, `kcmd` accepts
-exact-case SQL dialects from the nine-dialect set `ANSI_SQL`, `BIGQUERY`,
-`SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`, `SNOWFLAKE`, `DATABRICKS`, and
-`SQLSERVER`, and rejects `MDX`, `TABLEAU`, `MAQL`, `THOUGHTSPOT`, and any other
-name at load time. `SQLSERVER` text is read as T-SQL.
+exact-case SQL dialects from the ten-dialect set `ANSI_SQL`, `BIGQUERY`,
+`SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`, `SNOWFLAKE`, `DATABRICKS`,
+`SQLSERVER` and `OSSIE_SQL_2026`, and rejects `MDX`, `TABLEAU`, `MAQL`,
+`THOUGHTSPOT`, and any other name at load time. `SQLSERVER` text is read as
+T-SQL. `OSSIE_SQL_2026` is the SQL Apache Ossie `0.3.0.dev0` writes `sql` in,
+and `kcmd` reads it by Ossie's expression grammar.
 
 ## 3. Conformance summary
 
@@ -343,7 +345,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship M:N | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and reads fields only inside aggregates · [§4.1](#41-narrowings-stricter-than-ossie) |
-| `expression.dialects` | closed enum | stricter; adds names | accepts 9 SQL dialects and rejects non-SQL dialects · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
+| `expression.dialects` | closed enum | stricter; adds names | accepts 10 SQL dialects and rejects non-SQL dialects · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
 | `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
 | field `expression` (column binding) | required (`dialects` object) | optional; bare-string sugar in `/google` and profiles | model before binding; each named profile binds or excludes it · [§2.5](#25-expressions), [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
@@ -445,8 +447,10 @@ Each rule and its reason:
 
 - **Only SQL dialects are accepted.** An expression entry whose `dialect` is
   `MDX`, `TABLEAU`, `MAQL` or `THOUGHTSPOT` is a hard load error
-  ([§2.5](#25-expressions)). *Why:* every accepted dialect names a SQL engine,
-  and no engine on the list runs text in those languages.
+  ([§2.5](#25-expressions)). *Why:* `kcmd` reads every accepted dialect as
+  SQL, and it has no reader for text in those languages. It reads
+  `OSSIE_SQL_2026` by Ossie's expression grammar and the other dialects with
+  its SQL parser.
 
 A diamond in a class hierarchy is allowed when both paths reach one
 declaration: the resolver keeps that field once. A cycle in `extends` is
@@ -486,10 +490,12 @@ column, as Ossie requires.
 **Dialect names added for Google Cloud databases.** Ossie's `dialect` enum has
 no name for Spanner, AlloyDB or the Cloud SQL engines. `kcmd` adds those five
 SQL dialects to the enum in both versions ([§2.5](#25-expressions)). A vanilla
-document that uses one of the five added
-dialects is not a valid Ossie document. In addition, `0.2.0.dev0/google` model
-files and all profile bindings accept a plain-string `expression:` shorthand,
-which normalizes to a single `ANSI_SQL` entry.
+document that uses one of the five added dialects is not a valid Ossie
+`0.2.0.dev0` document. `OSSIE_SQL_2026` is Ossie's own portable SQL dialect,
+and `kcmd` accepts it in both versions. An Apache Ossie `0.3.0.dev0` file
+writes its `sql` in it. In addition, `0.2.0.dev0/google` model files and all
+profile bindings accept a plain-string `expression:` shorthand, which
+normalizes to a single `ANSI_SQL` entry.
 
 The operational form of every rule in this section (hard error vs.
 skip-with-warning, and the exact message) is in
