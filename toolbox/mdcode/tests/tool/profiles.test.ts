@@ -1228,21 +1228,29 @@ semantic_model:
   });
 
   // When push stops at a profile file that breaks a layout rule, the report
-  // throws push's message before anything prints.
-  test('throws push\'s error for a profile file that breaks a layout rule',
-       async () => {
-         writeScope({
-           'commerce.yaml': commerce(),
-           'commerce.profile.prod.yaml': profileFile('other'),
-         });
-         const pushed = await pushResult();
-         expect(pushed).toEqual({
-           code: 1,
-           errors: [expect.stringContaining("declares name 'other'")],
-         });
-         await expect(profiles()).rejects.toThrow(pushed.errors[0]);
-         expect(logs).toEqual([]);
-       });
+  // throws push's message before anything prints. [the rule, the profile
+  // file, push's message]
+  for (const [rule, text, error] of [
+    ['declares another name', profileFile('other'), "declares name 'other'"],
+    ['holds an alias inside the value its anchor names',
+     profileFile('prod') +
+         'actions:\n  - name: a\n    executor: &a {self: *a}\n',
+     "Profile file 'commerce.profile.prod.yaml' does not parse: Alias '*a' " +
+         'at line 17, column 25 refers to a value that contains it; JSON ' +
+         'cannot hold such a value.'],
+  ]) {
+    test(`throws push's error for a profile file that ${rule}`, async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.prod.yaml': text,
+      });
+      const pushed = await pushResult();
+      expect(pushed).toEqual(
+          {code: 1, errors: [expect.stringContaining(error)]});
+      await expect(profiles()).rejects.toThrow(pushed.errors[0]);
+      expect(logs).toEqual([]);
+    });
+  }
 
   test('reports a SQL parser that cannot load', async () => {
     writeScope({'commerce.yaml': commerce({targets: 1})});

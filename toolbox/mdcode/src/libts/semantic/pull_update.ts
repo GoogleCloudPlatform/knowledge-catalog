@@ -22,7 +22,7 @@ import {generateCatalogResources} from './knowledge_catalog';
 import {isGoogleVendor, isRecord, loadSemanticModels, SemanticModelError} from './loader';
 import {loadProfileFile, plainCopy, ProfileFiles, profileProblems} from './resolve_profiles';
 import {cutStatements, withProfileFiles} from './validate';
-import {YAML_OPTIONS} from './yaml_options';
+import {documentValue, YAML_OPTIONS} from './yaml_options';
 import {itemKey, itemKeys, linkNodes, parseForUpdate, spansLines, spliced, updateText} from './yaml_update';
 
 /** The entry group the catalog form is built for. */
@@ -92,7 +92,7 @@ export function updatedText(
     local: string, base: string, pulled: string, jsonLayout = true): string {
   const {document, text} = parseForUpdate(local);
   // A plain copy, so that an alias and its anchor are two values.
-  const value = plainCopy(document.toJS());
+  const value = plainCopy(documentValue(text, document));
   const links = linkNodes(value, document.contents);
   const parse = (t: string) => yaml.parse(t, YAML_OPTIONS);
   const made: Array<[number, number, string]> = [];

@@ -1575,26 +1575,27 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  * Text that is not valid YAML is read as far as it parses. A document whose
  * root keys are all strings, and that sets `version` once, to a string other
  * than the vanilla one, gives none when each YAML error is a key set twice, an
- * alias whose anchor is not set, or more aliases than a load expands. Otherwise
- * its profiles are read as in text that parses, and only when that reading is
- * unambiguous. Each YAML error is a key set twice or an alias whose anchor is
- * not set, since any other error, such as a bad indent, can move the blocks,
- * cut them short or change the version. The document sets `version` once, to
- * the vanilla one, and `semantic_model` at most once. Its model sets
- * `custom_extensions` at most once, and each block that is a mapping sets
- * `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles` at
- * most once each, and holds no alias. Every key of a mapping on that path is a
- * string, so not an alias or a merge key, and no value on it is an alias. No
- * key is set twice inside `custom_extensions`. When any of these fails, when a
- * GOOGLE block cannot be read, or when a load rejects its profiles, it throws
- * the error a load reports for the text. So does a vanilla model whose text has
- * more aliases than a load expands, or a merge key whose value is not a
- * mapping.
+ * alias whose anchor is not set, an alias inside the value its anchor names,
+ * or more aliases than a load expands. Otherwise its profiles are read as in
+ * text that parses, and only when that reading is unambiguous. Each YAML error
+ * is a key set twice, an alias whose anchor is not set, or an alias inside the
+ * value its anchor names, since any other error, such as a bad indent, can
+ * move the blocks, cut them short or change the version. The document sets
+ * `version` once, to the vanilla one, and `semantic_model` at most once. Its
+ * model sets `custom_extensions` at most once, and each block that is a
+ * mapping sets `vendor_name` once, to a string. A GOOGLE block sets `data` and
+ * `profiles` at most once each, and holds no alias. Every key of a mapping on
+ * that path is a string, so not an alias or a merge key, and no value on it is
+ * an alias. No key is set twice inside `custom_extensions`. When any of these
+ * fails, when a GOOGLE block cannot be read, or when a load rejects its
+ * profiles, it throws the error a load reports for the text. So does a vanilla
+ * model whose text has more aliases than a load expands, or a merge key whose
+ * value is not a mapping.
  */
 export function googleBlockProfiles(text: string): ProfileSpec[] {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     return googleBlockProfilesPastYamlError(text, yamlErrorMessage(err, text));
   }
@@ -1678,13 +1679,13 @@ function googleBlockProfilesPastYamlError(
  * it. Valid YAML gives its version. Past a YAML error, the version is read
  * only when every root key is a string and the root sets `version` once, to a
  * string. Each error must be a key set twice, an alias whose anchor is not
- * set, or more aliases than a load expands. Undefined otherwise, and when the
- * text sets no string version.
+ * set, an alias inside the value its anchor names, or more aliases than a
+ * load expands. Undefined otherwise, and when the text sets no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch {
     return versionPastYamlError(
         yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
@@ -1909,7 +1910,7 @@ function protoMemberError(
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
-    doc = documentValue(yaml.parseDocument(text, YAML_OPTIONS), text);
+    doc = documentValue(text);
   } catch (err: any) {
     throw new SemanticModelError(
         `Semantic model load error: could not parse input: ${

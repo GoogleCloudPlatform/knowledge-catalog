@@ -27,8 +27,6 @@
 //     columns rather than fields, so pruning fields never removes an entity or
 //     a relationship.
 
-import * as yaml from 'yaml';
-
 import {queryProblem, selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, COMMA_ADVICE, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
@@ -37,7 +35,7 @@ import {declaredConceptFields, InheritanceError, resolveInheritance} from './res
 import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {bigQueryTranslation} from './transpile';
-import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
+import {documentValue, yamlErrorMessage} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form).
@@ -429,7 +427,7 @@ export function loadProfileFile(
     opts: {skipActions?: boolean} = {}): ProfileSpec {
   let doc: any;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     throw new SemanticModelError(`profile '${profileName}' does not parse: ${
         yamlErrorMessage(err, text)}`);

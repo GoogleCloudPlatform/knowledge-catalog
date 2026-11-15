@@ -1208,7 +1208,7 @@ function parseImportDocument(
   const fromJson = text !== rawYaml;
   let parsedDoc: any;
   try {
-    parsedDoc = documentValue(document, text);
+    parsedDoc = documentValue(text, document);
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         yamlErrorMessage(err, text)}`;
@@ -2463,7 +2463,7 @@ function moveConstructs(
         if (was[key] === place || was[key] === 'none') continue;
         const value: unknown = was[key] === 'block' ? block[key] :
             was[key] === 'file' ?
-            profileFiles.map(pf => yaml.parse(pf.content, YAML_OPTIONS)) :
+            profileFiles.map(pf => documentValue(pf.content)) :
             obj[key];
         // A third-party file can write natively a key its flavor keeps in a
         // GOOGLE block. That key stays as written.
@@ -2632,7 +2632,7 @@ function withDialects(
     {fileName, content}: SerializedFile, profile: ProfileSpec,
     doc: ImportDocument): string {
   const {document, text} = parseForUpdate(content);
-  const root = plainCopy(document.toJS()) as Record<string, any>;
+  const root = plainCopy(documentValue(text, document)) as Record<string, any>;
   const links = linkNodes(root, document.contents);
   if (!syncProfile(root, profile)) return content;
   if (text !== content) doc.warnings.push(`Converted '${fileName}' to YAML.`);

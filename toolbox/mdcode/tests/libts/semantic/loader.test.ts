@@ -2863,17 +2863,20 @@ ${model}`;
     expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
   });
 
-  test('googleBlockProfiles skips profiles with no JSON form, such as a recursive alias', () => {
+  test('googleBlockProfiles reports the load error for an alias inside the value its anchor names', () => {
     const text = (block: string) => `version: "${VANILLA}"
 semantic_model:
   - name: m
     custom_extensions:
 ${block}`;
-    for (const block of [
-      '      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
-      '      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+    for (const [block, alias] of [
+      ['      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
+        "'*p' at line 8, column 19"],
+      ['      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+        "'*d' at line 9, column 21"],
     ]) {
-      expect(googleBlockProfiles(text(block))).toEqual([]);
+      expect(() => googleBlockProfiles(text(block))).toThrow(
+        `Semantic model load error: could not parse input: Alias ${alias} refers to a value that contains it`);
     }
   });
 });

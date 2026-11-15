@@ -29,7 +29,7 @@ import type {SpannerClient} from '../gcp/spanner';
 import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {storeMessage} from './parameters';
-import {YAML_OPTIONS} from './yaml_options';
+import {documentValue, YAML_OPTIONS} from './yaml_options';
 
 // The dialect each entrySource.system gives, in lower case.
 const DIALECT_OF_ENTRY_SYSTEM =
@@ -291,12 +291,11 @@ export function sourcesToLookUp(texts: Iterable<string>): string[] {
     for (const doc of yaml.parseAllDocuments(text, YAML_OPTIONS)) {
       if (doc.errors.length) continue;
       // Reading the values can still fail: on an alias whose anchor is not
-      // set, on more aliases than a load expands, or, while walking them, on
-      // an alias that refers to itself, which makes the values cyclic. The
-      // load reports that file in its own words, so the rest of it is skipped
-      // here rather than stopping the command.
+      // set, on more aliases than a load expands, or on an alias inside the
+      // value its anchor names. The load reports that file in its own words,
+      // so it is skipped here rather than stopping the command.
       try {
-        visit(doc.toJS());
+        visit(documentValue(text, doc));
       } catch {
         continue;
       }

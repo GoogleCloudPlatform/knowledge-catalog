@@ -22,11 +22,14 @@ export function parseLeniently(text: string): yaml.Document.Parsed {
   return doc;
 }
 
-// The value of the model document `doc`, as yaml.parse reads it. Throws the
-// document's first YAML error. Also throws for an alias inside the value its
-// anchor names, such as `*a` in `data: &a {self: *a}`. That error gives the
-// alias's line and column in `text`, which `doc` was parsed from.
-export function documentValue(doc: yaml.Document, text: string): unknown {
+// The value of the model or profile document `doc`, parsed from `text`, as
+// yaml.parse reads it. `doc` defaults to `text` parsed with YAML_OPTIONS.
+// Throws the document's first YAML error. Also throws for an alias inside the
+// value its anchor names, such as `*a` in `data: &a {self: *a}`. That error
+// gives the alias's line and column in `text`.
+export function documentValue(
+    text: string,
+    doc: yaml.Document = yaml.parseDocument(text, YAML_OPTIONS)): unknown {
   if (doc.errors.length > 0) throw doc.errors[0];
   // The walk goes in document order. `anchors` holds the node each anchor
   // names at its current point, and `open` holds the nodes it is inside.
