@@ -550,16 +550,24 @@ function engineTranslation(
   // reads the expression alone first. After SELECT, the engine writes the
   // functions of a comparison or a CASE before a comment as the source does,
   // so it reads the expression there without its comments. transpileWith puts
-  // them last.
+  // them last. The engine reads a text that starts with a statement word alone
+  // as that statement, such as PostgreSQL's `call = 'inbound'` with a column
+  // named call. When the text alone gives no BigQuery expression, or reads as
+  // a statement, it is translated after SELECT when that gives a BigQuery
+  // expression, and otherwise not at all.
   let res = engine.transpile(sql, read, write);
-  if (!res.success) {
-    const chars = [...sql];
-    const code = (engine.tokenize(sql, read).tokens ?? [])
-        .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
+  const isExpression = (r: typeof res) =>
+      r.sql?.length === 1 && sqlExpressionTree(r.sql[0], 'BIGQUERY') !== undefined;
+  const chars = [...sql];
+  const code = (engine.tokenize(sql, read).tokens ?? [])
+      .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
+  const statement = res.success && write === 'bigquery' &&
+      (!isExpression(res) || readsAsStatement(engine, code, read));
+  if (!res.success || statement) {
     const selected = engine.transpile(`SELECT ${code}`, read, write);
-    if (selected.success) {
-      res = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
-    }
+    const written = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
+    if (selected.success && (!statement || isExpression(written))) res = written;
+    else if (statement) return {error: 'kcmd does not translate a text it cannot read as one expression'};
   }
   if (!res.success || !res.sql || res.sql.length === 0)
     return {error: res.error ?? 'transpilation produced no output'};
@@ -570,6 +578,16 @@ function engineTranslation(
     return {error: `expected a single expression but got ${res.sql.length} statements`};
   return write === 'bigquery' ? repairForBigQuery(engine, res.sql[0], read) :
                                 {sql: res.sql[0]};
+}
+
+// Whether the engine reads `code`, a text without comments in its dialect
+// `read`, alone as another kind of node than the expression it reads after
+// SELECT. A text that starts with a statement word reads alone as that
+// statement.
+function readsAsStatement(engine: PolyglotEngine, code: string, read: string): boolean {
+  const kind = (node: any) => Object.keys(node ?? {})[0];
+  const selected = kind((engine.parse(`SELECT ${code}`, read).ast?.[0] as any)?.select?.expressions?.[0]);
+  return selected !== undefined && kind(engine.parse(code, read).ast?.[0]) !== selected;
 }
 
 // The text after the comments that start `sql`, in the engine's dialect
