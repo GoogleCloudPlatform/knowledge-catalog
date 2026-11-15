@@ -2215,6 +2215,18 @@ describe('profile rules', () => {
             "'expression'; it takes 'dialect' and 'expression'");
   });
 
+  // YAML ends a flow-mapping entry at a comma, so an unquoted text that holds a
+  // comma leaves a key with no value.
+  test('an unknown key with no value advises to quote the text', () => {
+    expect(() => loadProfileFile(
+               'name: prod\nentities:\n  - {name: o, fields: [{name: a, expression: ROUND(x, 2)}]}\n',
+               'prod'))
+        .toThrow(new Error(
+            "profile 'prod': entity 'o': field 'a': unknown key '2)'; it takes 'name' and " +
+            "'expression'. A comma ends an entry of a flow mapping, so if the comma belongs to " +
+            'the text, quote the text.'));
+  });
+
   // A blank expression, one that is only a comment and one that is only its
   // entity's qualifier are rejected, as in a model file.
   test('a profile expression may not be blank', () => {

@@ -2952,6 +2952,9 @@ describe('closed objects: custom_extensions and dimension', () => {
         ['dataset', { custom_extensions: null }, `${entity} 'orders': 'custom_extensions' is empty; it takes a list`],
         ['field', { colour: 'red', size: 3 }, "field 'orders.customer_id': unknown keys 'colour' and 'size'; it takes " +
           "'name', 'expression', 'datatype', 'description', 'label', 'dimension', 'ai_context' and 'custom_extensions'"],
+        ['field', { '2)': null }, "field 'orders.customer_id': unknown key '2)'; it takes 'name', 'expression', " +
+          "'datatype', 'description', 'label', 'dimension', 'ai_context' and 'custom_extensions'. A comma ends an " +
+          'entry of a flow mapping, so if the comma belongs to the text, quote the text.'],
         ['dataset', { name: undefined }, `${entity} number 1: 'name' is missing; it takes a string`],
         ['field', { name: undefined }, `field number 2 of ${entity} 'orders': 'name' is missing; it takes a string`],
         ['dataset', { primary_key: { id: 1 } }, `${entity} 'orders': 'primary_key' is a mapping; it takes a list`],

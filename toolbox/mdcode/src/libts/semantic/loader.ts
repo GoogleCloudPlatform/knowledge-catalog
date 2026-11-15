@@ -3223,6 +3223,12 @@ function schemaProblems(
       .join('\n');
 }
 
+// The sentence a message about an unknown key with no value ends with. YAML
+// ends a flow-mapping entry at a comma, so an unquoted text that holds a comma
+// leaves the rest of the text as a key with no value.
+export const COMMA_ADVICE = 'A comma ends an entry of a flow mapping, so if ' +
+    'the comma belongs to the text, quote the text.';
+
 function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   if (issue.code === 'invalid_union') {
     // When only one alternative takes the value's type, report its problems.
@@ -3243,9 +3249,11 @@ function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   switch (issue.code) {
     case 'unrecognized_keys': {
       const keys = keysAt(input.schema, issue.path).map(k => `'${spelled(k)}'`);
+      const noValue = issue.keys.some(k => (value as any)?.[k] === null);
       return `${subject}: unknown key${issue.keys.length > 1 ? 's' : ''} ${
           listed(issue.keys.map(k => `'${k}'`))}${
-          place ? ` in ${place}` : ''}; it takes ${listed(keys)}`;
+          place ? ` in ${place}` : ''}; it takes ${listed(keys)}${
+          noValue ? `. ${COMMA_ADVICE}` : ''}`;
     }
     case 'invalid_type':
       return takes(expected(issue.expected));
