@@ -1497,6 +1497,12 @@ describe('field and metric expression references', () => {
     ['field', 'ANSI_SQL', 'ARRAY(SELECT c FROM t)', true],
     ['field', 'ANSI_SQL', 'o_code IN (1, 2)', false],
     ['field', 'POSTGRES', "o_code = ANY(ARRAY['a', 'b'])", false],
+    // A VALUES list is a query as the body of a subquery. A Snowflake object
+    // constant holds values and no query.
+    ['field', 'SPANNER', 'o_code = (VALUES (1))', true],
+    ['field', 'SPANNER', 'o_code = (WITH c AS (VALUES (1)) VALUES (2))', true],
+    ['field', 'POSTGRES', 'o_code = ANY(VALUES (1), (2))', true],
+    ['field', 'SNOWFLAKE', "{'P': 'Pending', 'S': 'Shipped'}[o_status]::STRING", false],
     // An ANSI_SQL text is read in its tables' dialect, where # starts a comment.
     ['field', 'ANSI_SQL', '(SELECT MAX(c) FROM t) # note', true],
     ['metric', 'BIGQUERY', "WITH paid AS (SELECT * FROM shop.orders WHERE status = 'paid') " +
