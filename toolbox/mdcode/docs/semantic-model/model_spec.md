@@ -44,15 +44,18 @@ was used.
 Ossie compatibility is a property of the **vanilla** version, and the contract
 runs in both directions:
 
-> **An Ossie `0.2.0.dev0` document is a valid `kcmd` model unless it breaks a
-> narrowing ([§4.1](#41-narrowings-stricter-than-ossie)) — in particular, `kcmd`
-> accepts only SQL dialects and rejects Ossie's non-SQL dialects at load time
-> ([§2.5](#25-expressions)).** The reverse holds for a vanilla `kcmd` model that
+> **An Ossie `0.2.0.dev0` document with a `semantic_model` list is a valid
+> `kcmd` model unless it breaks a narrowing
+> ([§4.1](#41-narrowings-stricter-than-ossie)).** In particular, `kcmd` accepts
+> only SQL dialects and rejects Ossie's non-SQL dialects at load time
+> ([§2.5](#25-expressions)). The reverse holds for a vanilla `kcmd` model that
 > uses no extensions ([§5](#5-extensions)) *and* no relaxations
 > ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only Ossie
 > constructs and Ossie-defined SQL dialects (`ANSI_SQL`, `BIGQUERY`, `SNOWFLAKE`,
 > `DATABRICKS`). Strip the `GOOGLE` `custom_extensions` blocks from such a model
-> and it is a valid Ossie document.
+> and it is a valid document of Ossie `0.2.0.dev0` with a `semantic_model`
+> list. Later Ossie schemas hold the model at the document root and refuse
+> that list.
 
 Under vanilla, `kcmd`'s deployment, binding and inheritance additions ride in a
 `custom_extensions` block an Ossie-only tool ignores (see
@@ -311,14 +314,16 @@ flavor. In both places, the bare-string shorthand normalizes to a single
 references logical fields as `entity.field`; the qualifiers are what let a
 metric's entity be derived ([§2.3](#23-metric)).
 
-Ossie closes `dialect` to an enum — `ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`,
-`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. In both flavors, `kcmd` accepts
-exact-case SQL dialects from the ten-dialect set `ANSI_SQL`, `BIGQUERY`,
-`SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`, `SNOWFLAKE`, `DATABRICKS`,
-`SQLSERVER` and `OSSIE_SQL_2026`, and rejects `MDX`, `TABLEAU`, `MAQL`,
-`THOUGHTSPOT`, and any other name at load time. `SQLSERVER` text is read as
-T-SQL. `OSSIE_SQL_2026` is the SQL Apache Ossie `0.3.0.dev0` writes `sql` in,
-and `kcmd` reads it by Ossie's expression grammar.
+Ossie `0.2.0.dev0` with a `semantic_model` list closes `dialect` to an enum:
+`ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`, `DATABRICKS`, `MAQL`, `BIGQUERY`,
+`SIGMA`, `THOUGHTSPOT` and `DAX`. Ossie `0.3.0.dev0` accepts any dialect
+string, so a `0.3.0.dev0` file may carry a dialect `kcmd` does not accept. In
+both flavors, `kcmd` accepts exact-case SQL dialects from the ten-dialect set
+`ANSI_SQL`, `BIGQUERY`, `SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`, `SNOWFLAKE`,
+`DATABRICKS`, `SQLSERVER` and `OSSIE_SQL_2026`, and rejects `MDX`, `TABLEAU`,
+`MAQL`, `THOUGHTSPOT`, and any other name at load time. `SQLSERVER` text is
+read as T-SQL. `OSSIE_SQL_2026` is the SQL Apache Ossie `0.3.0.dev0` writes
+`sql` in, and `kcmd` reads it by Ossie's expression grammar.
 
 ## 3. Conformance summary
 
