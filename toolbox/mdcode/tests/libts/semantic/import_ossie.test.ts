@@ -305,6 +305,10 @@ semantic_model:
     expect(res.files[0].content).toContain(written);
   });
 
+  // The load error of a written file whose dataset orders keeps its `metrics`.
+  const KEPT_METRICS = "Semantic model load error: entity 'orders': unknown key 'metrics'; it takes 'name', " +
+      "'source', 'primary_key', 'unique_keys', 'description', 'ai_context', 'fields', 'custom_extensions', " +
+      "'extends' and 'abstract'";
   // [what the input holds, the input, the line that reports it, and the load
   // error of the written file]
   test.each([
@@ -317,6 +321,15 @@ semantic_model:
      ossieFile({orders: '    metrics: [{name: m, expression: {sql: SUM(amount)}, nonportable_extensions: {vendor_name: DBT}}]\n'}),
      "metric 'm': did not anchor it on 'orders', since its extension blocks are not a list.",
      "Semantic model load error: metric 'm': 'custom_extensions' is a mapping; it takes a list"],
+    ["a dataset's metrics that is not a list", ossieFile({orders: '    metrics: oops\n'}),
+     "entity 'orders': left its 'metrics' as written, since it is not a list.", KEPT_METRICS],
+    ["a dataset's metrics with an entry that has no name",
+     ossieFile({orders: '    metrics: [{name: m, expression: {sql: SUM(amount)}}, {expression: {sql: COUNT(*)}}]\n'}),
+     "entity 'orders': left its 'metrics' as written, since metric number 2 has no string 'name'.", KEPT_METRICS],
+    ["a dataset's metrics beside a model's metrics that is not a list",
+     ossieFile({orders: '    metrics: [{name: m, expression: {sql: SUM(amount)}}]\n', rest: 'metrics: oops\n'}),
+     "entity 'orders': left its 'metrics' as written, since the model's 'metrics' is not a list.",
+     `${KEPT_METRICS}\nmodel 'shop': 'metrics' is 'oops'; it takes a list`],
   ])('leaves %s as written, and stops, since the written file does not load', async (_, input, line, error) => {
     const res = await importSemanticModelYaml(input, {flavor: 'google'});
     expect(res.warnings).toContain(line);

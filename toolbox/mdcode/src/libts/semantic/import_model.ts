@@ -494,16 +494,29 @@ function ossieFileError(doc: unknown, strict: boolean): string|undefined {
 }
 
 /**
+ * Why import leaves the `metrics` of `ds`, a dataset of `model`, an Ossie
+ * model's value, as written, or undefined when it moves them to the model.
+ * Import moves a list of mappings that each have a string `name`, when the
+ * model's own `metrics` is a list or empty.
+ */
+function keptMetricsReason(
+    model: Record<string, any>, ds: Record<string, any>): string|undefined {
+  if (model.metrics != null && !Array.isArray(model.metrics)) {
+    return `the model's 'metrics' is not a list`;
+  }
+  if (!Array.isArray(ds.metrics)) return 'it is not a list';
+  const i = ds.metrics.findIndex(
+      (m: unknown) => !isRecord(m) || typeof m.name !== 'string');
+  return i < 0 ? undefined : `metric number ${i + 1} has no string 'name'`;
+}
+
+/**
  * The datasets of `model`, an Ossie model's value, whose metrics import moves
- * to the model: each whose `metrics` is a list of mappings with a `name`, when
- * the model's own `metrics` is a list or empty. Any other `metrics` stays as
- * written.
+ * to the model (see keptMetricsReason).
  */
 function movingDatasets(model: Record<string, any>): Array<Record<string, any>> {
-  if (model.metrics != null && !Array.isArray(model.metrics)) return [];
   return asRecords(model.datasets).filter(
-      ds => Array.isArray(ds.metrics) &&
-          ds.metrics.every((m: unknown) => isRecord(m) && typeof m.name === 'string'));
+      ds => 'metrics' in ds && keptMetricsReason(model, ds) === undefined);
 }
 
 /**
@@ -974,9 +987,10 @@ function hyphenateModelName(doc: ImportDocument): void {
  * Converts what kcmd writes another way in `doc`, which holds the model of an
  * Ossie file of version `version` that held it at the document root, and
  * reports each edit: the version, the metrics its datasets listed (`moved`),
- * the empty metrics lists of the datasets `emptied` names, the extension
- * blocks, the `sql` of each expression, the names in texts and relationships,
- * the calls of AGG, and the key and join entries.
+ * the empty metrics lists of the datasets `emptied` names, the `metrics` a
+ * dataset keeps as written, the extension blocks, the `sql` of each
+ * expression, the names in texts and relationships, the calls of AGG, and the
+ * key and join entries.
  */
 function convertRootModel(
     doc: ImportDocument, version: string, moved: MovedMetric[],
@@ -1026,6 +1040,14 @@ function convertRootModel(
     report(
         `${word} '${dataset}': removed its empty 'metrics' list, since kcmd ` +
         `lists every metric in the model's metrics.`);
+  }
+  // A dataset that still has `metrics` keeps them as written.
+  for (const ds of doc.datasets) {
+    const why = 'metrics' in ds ? keptMetricsReason(doc.model, ds) : undefined;
+    if (why) {
+      report(
+          `${word} '${ds.name}': left its 'metrics' as written, since ${why}.`);
+    }
   }
 
   const objects = [
