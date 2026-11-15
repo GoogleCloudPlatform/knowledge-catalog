@@ -30,6 +30,12 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm: {a: 1, b: 2}\np:\n  a: 1\n  ? b  # c\n  :\n    - 1\n'
   ],
   [
+    'keys after `?`, an anchor or a tag, beside a new key, list and flow mapping, and a moved block scalar',
+    'm:\n  ? a\n  : 1\n? s\n:\n- x\nf: { &k c: 1 }\nc:\n  custom:\n    !!str t: |  # h\n      x\n',
+    v => (v.m.b = 2, v.z = [1], v.f.d = {e: 1}, v.c = {...v.c.custom}),
+    'm:\n  ? a\n  : 1\n  b: 2\n? s\n:\n- x\nf: { &k c: 1, d: { e: 1 } }\nc:\n  t: |  # h\n    x\nz:\n- 1\n'
+  ],
+  [
     'the last key of a mapping removed through the final newline, beside a key added after the mapping',
     'a:\n  k: 1\n  e:\n', v => (delete v.a.e, v.z = 1), 'a:\n  k: 1\nz: 1\n'
   ],

@@ -289,6 +289,13 @@ semantic_model:
                 rest: 'metrics: []  # model metrics\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      '    metrics:  # model metrics\n      # The sum.\n      - name: m  # in cents\n'],
+    ['root keys written after `?`, one with its list left of the key',
+     ossieFile({orders: '    metrics:\n      # The sum.\n      - name: m  # in cents\n        expression:\n' +
+                    '          sql: SUM(amount)\n',
+                rest: '?  metrics  # model metrics\n:\n'})
+         .replace('name: shop\ndatasets:\n', '?   name\n: shop\n?     datasets\n:\n'),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    ?  metrics  # model metrics\n    :\n      # The sum.\n      - name: m  # in cents\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',

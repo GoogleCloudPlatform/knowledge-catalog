@@ -403,10 +403,11 @@ function geometry(
   const dash = flow ? [] : dashes(node);
   let prevEnd = 0;
   return (node.items as unknown[]).map((item, i) => {
-    const first = (yaml.isPair(item) ? item.key : item) as yaml.Node;
     const last =
         (yaml.isPair(item) ? item.value ?? item.key : item) as yaml.Node;
-    const start = yaml.isPair(item) || flow ? first.range![0] : dash[i];
+    const start = yaml.isPair(item) ? pairStart(item) :
+        flow                        ? (item as yaml.Node).range![0] :
+                                      dash[i];
     const ls = lineStart(t, start);
     const inline = !flow && t.slice(ls, start).trim() !== '';
     const end = flow ? last.range![1] :
@@ -655,7 +656,7 @@ function movedText(
   const v = p?.value as yaml.Node|undefined;
   if (!p || !v?.range || !yaml.isNode(p.key) || keeps(u, v)) return undefined;
   const t = u.text;
-  const keyCol = p.key.range![0] - lineStart(t, p.key.range![0]);
+  const keyCol = pairStart(p) - lineStart(t, pairStart(p));
   const from = v.range[0];
   // The comments after the value at its key's column or less are above the
   // next key.
@@ -802,8 +803,8 @@ export function movedItems(
   if (target.flow || own !== undefined && !empty && !blockList(own)) {
     return undefined;
   }
-  const column = (n: yaml.Node) => n.range![0] - lineStart(text, n.range![0]);
-  const keyCol = column(target.items[0].key as yaml.Node);
+  const column = (p: number) => p - lineStart(text, p);
+  const keyCol = column(pairStart(target.items[0]));
   const to = blockList(own) ? dashes(own)[0] - lineStart(text, dashes(own)[0]) :
                               keyCol + indents(doc, text).seqIndent;
   const edits: Array<[number, number, string]> = [];
@@ -1005,24 +1006,25 @@ function indents(doc: yaml.Document, text: string):
   yaml.visit(doc, {
     Collection: (_, v) => {
       const first = v.items[0];
-      const at = (yaml.isPair(first) ? first.key : first) as yaml.Node|undefined;
-      const gap = v.flow && v.range && at?.range ?
-          text.slice(v.range[0] + 1, at.range[0]) :
+      const at = yaml.isPair(first) ? pairStart(first) :
+          (first as yaml.Node|undefined)?.range?.[0];
+      const gap = v.flow && v.range && at !== undefined ?
+          text.slice(v.range[0] + 1, at) :
           '\n';
       if (!gap.includes('\n')) pad[yaml.isMap(v) ? 'map' : 'seq'] ??= gap;
     },
-    Pair: (_, {key, value: v}) => {
+    Pair: (_, pair) => {
+      const {key, value: v} = pair;
       if (!yaml.isNode(key) || !yaml.isCollection(v) || v.flow ||
           v.items.length === 0) {
         return;
       }
       const first = v.items[0];
-      const at = yaml.isPair(first) ? (first.key as yaml.Node).range![0] :
-                                      dashes(v)[0];
+      const at = yaml.isPair(first) ? pairStart(first) : dashes(v)[0];
       found[yaml.isMap(v) ? 'step' : 'seqIndent'] ??=
-          col(at) - col(key.range![0]);
+          col(at) - col(pairStart(pair));
       if (yaml.isMap(first) && !first.flow && first.items[0]) {
-        const firstKey = (first.items[0].key as yaml.Node).range![0];
+        const firstKey = pairStart(first.items[0]);
         found.itemIndent ??= col(firstKey) - col(at);
         itemAlone ??= lineStart(text, firstKey) !== lineStart(text, at);
       }
@@ -1039,6 +1041,16 @@ function dashes(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
   return ((node.srcToken as yaml.CST.BlockSequence)?.items ?? [])
       .flatMap(it => it.start.filter(s => s.type === 'seq-item-ind'))
       .map(s => s.offset);
+}
+
+/**
+ * The offset where `pair` starts: its `?`, or else its key's anchor or tag,
+ * or else its key.
+ */
+function pairStart(pair: yaml.Pair): number {
+  const mark = pair.srcToken?.start.find(
+      s => ['explicit-key-ind', 'anchor', 'tag'].includes(s.type));
+  return mark?.offset ?? (pair.key as yaml.Node).range![0];
 }
 
 /**
