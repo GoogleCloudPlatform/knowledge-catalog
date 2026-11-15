@@ -16,6 +16,7 @@ const REMINDER = {
   REGEXP_EXTRACT: 'REGEXP_EXTRACT: BigQuery gives the match of a capturing group where the pattern has one, where the source gives the whole match; check the BIGQUERY entry.',
   VARCHAR: 'CAST to VARCHAR(n): BigQuery cuts the text of any value to n characters, where the source raises an error, or TRY_CAST gives NULL, for a longer value that is not a string; check the BIGQUERY entry.',
   EXTRACT_SECOND: "EXTRACT(SECOND) and DATE_PART('second'): BigQuery gives whole seconds, where the source keeps the fraction; check the BIGQUERY entry.",
+  DAYOFWEEK: "EXTRACT(DAYOFWEEK) and DATE_PART('dayofweek'): BigQuery numbers the days from Sunday as 1 to Saturday as 7, where Snowflake and PostgreSQL count Sunday as 0 and Saturday as 6; check the BIGQUERY entry.",
   PERCENTILE: "MEDIAN, PERCENTILE_CONT and PERCENTILE_DISC without OVER: BigQuery's APPROX_QUANTILES gives an approximate value, where the source gives the exact one; check the BIGQUERY entry.",
 };
 
@@ -132,7 +133,7 @@ const ROWS: Row[] = [
    'EXTRACT(YEAR FROM d) + EXTRACT(QUARTER FROM d) + EXTRACT(MONTH FROM d) + EXTRACT(DAY FROM d) + EXTRACT(DAYOFYEAR FROM d)'],
   ['HOUR(ts) + MINUTE(ts) + SECOND(ts)', 'EXTRACT(HOUR FROM ts) + EXTRACT(MINUTE FROM ts) + EXTRACT(SECOND FROM ts)'],
   ['EXTRACT(week FROM d) + EXTRACT(MILLISECOND FROM ts)', 'EXTRACT(ISOWEEK FROM d) + EXTRACT(MILLISECOND FROM ts)'],
-  ['DATE_PART(\'year\', d) + DATE_PART(dayofweek, d)', 'EXTRACT(YEAR FROM d) + EXTRACT(DAYOFWEEK FROM d)'],
+  ['DATE_PART(\'year\', d) + DATE_PART(dayofweek, d)', 'EXTRACT(YEAR FROM d) + EXTRACT(DAYOFWEEK FROM d)', 'DAYOFWEEK'],
   ['DATE_TRUNC(\'month\', d) < DATE_TRUNC(week, d)', 'DATE_TRUNC(d, MONTH) < DATE_TRUNC(d, ISOWEEK)'],
   ['DATEADD(day, -7, d) < DATEADD(\'week\', 1, d)', 'DATE_ADD(d, INTERVAL -7 DAY) < DATE_ADD(d, INTERVAL 1 WEEK)'],
   ['DATEDIFF(day, d, d) + DATEDIFF(week, d, d)', 'DATE_DIFF(d, d, DAY) + DATE_DIFF(d, d, ISOWEEK)'],
@@ -229,6 +230,8 @@ const ROWS: Row[] = [
   ['CAST(x AS VARCHAR(3)) || TRY_CAST(s AS STRING(2))', 'SUBSTRING(CAST(x AS STRING), 1, 3) || SUBSTRING(SAFE_CAST(s AS STRING), 1, 2)', 'VARCHAR'],
   ['EXTRACT(SECOND FROM ts)', 'EXTRACT(SECOND FROM ts)', 'EXTRACT_SECOND'],
   ['DATE_PART(\'second\', ts) + DATE_PART(second, ts)', 'EXTRACT(SECOND FROM ts) + EXTRACT(SECOND FROM ts)', 'EXTRACT_SECOND'],
+  ['EXTRACT(DAYOFWEEK FROM d)', 'EXTRACT(DAYOFWEEK FROM d)', 'DAYOFWEEK'],
+  ['DATE_PART(\'dayofweek\', d)', 'EXTRACT(DAYOFWEEK FROM d)', 'DAYOFWEEK'],
 
   // Texts kcmd does not translate.
   ['NOW()', 'kcmd does not translate NOW'],

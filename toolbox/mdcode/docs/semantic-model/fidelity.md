@@ -562,8 +562,9 @@ form stays untranslated, and the warning names the construct. These are the
 places where the BigQuery SQL can differ from the source. Import's report adds
 a reminder line for `SPLIT_PART`, `SUBSTRING` with a constant start below 1,
 `REGEXP_EXTRACT` with a capturing group, a cast to `VARCHAR(n)`,
-`EXTRACT(SECOND)` and `DATE_PART('second')`, and `MEDIAN`, `PERCENTILE_CONT`
-and `PERCENTILE_DISC` without `OVER`.
+`EXTRACT(SECOND)` and `DATE_PART('second')`, `EXTRACT(DAYOFWEEK)` and
+`DATE_PART('dayofweek')`, and `MEDIAN`, `PERCENTILE_CONT` and
+`PERCENTILE_DISC` without `OVER`.
 
 - `SPLIT_PART(s, d, n)` becomes `SPLIT(s, d)[SAFE_ORDINAL(n)]`, which gives
   NULL past the last part and for a negative part, where Snowflake, Databricks
@@ -582,6 +583,9 @@ and `PERCENTILE_DISC` without `OVER`.
 - `EXTRACT(WEEK FROM x)` and `DATE_PART('week', x)` give the ISO 8601 week,
   BigQuery's `ISOWEEK`, so 2021-01-01 is in week 53, and a week starts on
   Monday in `DATE_TRUNC` and `DATEDIFF` too.
+- `EXTRACT(DAYOFWEEK FROM x)` and `DATE_PART('dayofweek', x)` number the days
+  from Sunday as 1 to Saturday as 7, where Snowflake and PostgreSQL count
+  Sunday as 0 and Saturday as 6.
 - `MEDIAN`, `PERCENTILE_CONT` and `PERCENTILE_DISC` without `OVER` become
   `APPROX_QUANTILES`, an approximate value of the exact percentile the source
   gives.

@@ -20,6 +20,7 @@ const REMINDERS = {
   REGEXP_EXTRACT: 'REGEXP_EXTRACT: BigQuery gives the match of a capturing group where the pattern has one, where the source gives the whole match; check the BIGQUERY entry.',
   VARCHAR: 'CAST to VARCHAR(n): BigQuery cuts the text of any value to n characters, where the source raises an error, or TRY_CAST gives NULL, for a longer value that is not a string; check the BIGQUERY entry.',
   EXTRACT_SECOND: "EXTRACT(SECOND) and DATE_PART('second'): BigQuery gives whole seconds, where the source keeps the fraction; check the BIGQUERY entry.",
+  DAYOFWEEK: "EXTRACT(DAYOFWEEK) and DATE_PART('dayofweek'): BigQuery numbers the days from Sunday as 1 to Saturday as 7, where Snowflake and PostgreSQL count Sunday as 0 and Saturday as 6; check the BIGQUERY entry.",
   PERCENTILE: "MEDIAN, PERCENTILE_CONT and PERCENTILE_DISC without OVER: BigQuery's APPROX_QUANTILES gives an approximate value, where the source gives the exact one; check the BIGQUERY entry.",
 };
 
@@ -145,6 +146,10 @@ const PARTS: Record<string, Record<string, string>> = {
   DATEADD: parts(UNITS, 'WEEK'),
   DATEDIFF: parts(UNITS),
 };
+
+// The reminder of each date part of EXTRACT and DATE_PART whose value can
+// differ from the source's, by BigQuery's name.
+const PART_REMINDERS: Record<string, Reminder> = {SECOND: 'EXTRACT_SECOND', DAYOFWEEK: 'DAYOFWEEK'};
 
 // The parts of PARTS longer than a day, and those shorter than a day, by
 // BigQuery's names.
@@ -560,7 +565,7 @@ class Translator {
         const what = `EXTRACT with part '${node.field.written}'`;
         const part = EXTRACT_PARTS[node.field.name.toUpperCase()] ?? refuse(what);
         this.refuseShortPartOfDate(what, part, [node.operand]);
-        if (part === 'SECOND') this.reminders.add('EXTRACT_SECOND');
+        if (PART_REMINDERS[part]) this.reminders.add(PART_REMINDERS[part]);
         return atom(`EXTRACT(${part} FROM ${this.out(node.operand).sql})`);
       }
       case 'position':
@@ -711,7 +716,7 @@ class Translator {
     const name = node.name.name.toUpperCase();
     const what = `${node.name.written} with part '${word}'`;
     // DATE_PART is the other syntax of EXTRACT.
-    if (name === 'DATE_PART' && part === 'SECOND') this.reminders.add('EXTRACT_SECOND');
+    if (name === 'DATE_PART' && PART_REMINDERS[part]) this.reminders.add(PART_REMINDERS[part]);
     // The dates of the call: DATEADD's third argument, and the second and any
     // third of the others.
     const dates = node.args.slice(name === 'DATEADD' ? 2 : 1);
