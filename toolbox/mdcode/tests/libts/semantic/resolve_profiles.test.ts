@@ -3067,6 +3067,22 @@ describe('profile completeness: dialects and struct paths', () => {
             .toEqual(["profile 'p': entity 'orders' has no source in this profile"]);
       });
 
+  // On Spanner tables whose dialect no lookup read, an ANSI_SQL text is
+  // checked for a query as generic SQL with readWithoutDialect, and not at all
+  // without.
+  test.each([[{}, false], [{readWithoutDialect: true}, true]])(
+      'with no dialect known, a query in an ANSI_SQL binding is reported with %o: %p', (opts, holds) => {
+        const amount = {name: 'amount', dialects: [{dialect: 'ANSI_SQL' as const, expression: '(SELECT 1)'}]};
+        expect(validateProfileCompleteness(
+                   shop({expression: 'amt'}),
+                   {name: 'p', entities: [keyedById('orders', SP('orders'), amount)], relationships: []},
+                   [], opts))
+            .toEqual(!holds ? [] : [
+              "profile 'p': field 'orders.amount': its 'ANSI_SQL' SQL holds a query; a field " +
+                  'expression is a scalar expression over its own dataset, so it may not hold a ' +
+                  'subquery or a CTE']);
+      });
+
   // A Cloud SQL table written as its resource name takes the dialect its
   // catalog entry's type names, which a command looks up before it loads.
   // Without a lookup the source implies no dialect, so every text counts.

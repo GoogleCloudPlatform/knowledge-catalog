@@ -1488,8 +1488,9 @@ describe('field and metric expression references', () => {
 
   // A field expression is a scalar expression over its own dataset, and a
   // metric reads fields, so neither may hold a query, in any dialect. [what
-  // holds the text, its dialect, the text, whether it holds a query]
-  test.each<['field'|'metric', SqlDialect, string, boolean]>([
+  // holds the text, its dialect, the text, whether it holds a query, and the
+  // table of orders when it is not the BigQuery one]
+  test.each<['field'|'metric', SqlDialect, string, boolean, string?]>([
     ['field', 'BIGQUERY', '(SELECT MAX(c.tier) FROM shop.customers AS c)', true],
     ['field', 'ANSI_SQL', 'EXISTS (SELECT 1 FROM t)', true],
     ['field', 'ANSI_SQL', 'o_code IN (SELECT c FROM t)', true],
@@ -1500,11 +1501,17 @@ describe('field and metric expression references', () => {
     ['field', 'ANSI_SQL', '(SELECT MAX(c) FROM t) # note', true],
     ['metric', 'BIGQUERY', "WITH paid AS (SELECT * FROM shop.orders WHERE status = 'paid') " +
      'SELECT SUM(net_amount) FROM paid', true],
-  ])('refuses a %s whose %s text holds a query: %s', (kind, dialect, expression, holds) => {
+    // With no lookup of a Spanner table's dialect, an ANSI_SQL text is not
+    // read. Spanner reads this one as a string.
+    ['field', 'ANSI_SQL', "'''a' || (SELECT 1) || 'b'''", false,
+     'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/orders'],
+  ])('refuses a %s whose %s text holds a query: %s', (kind, dialect, expression, holds,
+                                                       table = orders().dataSource) => {
     const dialects = [{dialect, expression}];
+    const on = {...orders(), dataSource: table};
     const m = kind === 'field' ?
-        model({entities: [{...orders(), fields: [...orders().fields, {name: 'code', dialects}]}]}) :
-        model({entities: [orders()],
+        model({entities: [{...on, fields: [...on.fields, {name: 'code', dialects}]}]}) :
+        model({entities: [on],
                metrics: [{name: 'paid_total', entity: 'orders', authoredEntity: 'orders', dialects}]});
     expect(validatePushRequirements([loaded(m)])).toEqual(!holds ? [] : [kind === 'field' ?
         `field 'orders.code' in model 'm' (doc): its '${dialect}' SQL holds a query; a field ` +

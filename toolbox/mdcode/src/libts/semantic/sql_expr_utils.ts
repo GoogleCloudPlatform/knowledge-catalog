@@ -633,14 +633,15 @@ function unwrapped(node: any): any {
 // Whether `expression`, read in `dialect`, holds a subquery at any depth, such
 // as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`, or is a
 // query, such as `WITH ... SELECT ...`, which the parser reads in parentheses.
-// An `ANSI_SQL` text is read in `impliedDialect` when that is set, as
-// columnsForSource reads it. A query is found by its SELECT node, which a set
-// operation and a CTE hold too. The parser also gives the array of
-// `x = ANY(ARRAY[1, 2])` the key `subquery`, so that key does not count. False
-// when the SQL parser cannot read it.
+// An `ANSI_SQL` text is read in `impliedDialect` when that is set, and not at
+// all when that is null, as columnsForSource reads it. A query is found by its
+// SELECT node, which a set operation and a CTE hold too. The parser also gives
+// the array of `x = ANY(ARRAY[1, 2])` the key `subquery`, so that key does not
+// count. False when the text is not read or the SQL parser cannot read it.
 export function holdsSubquery(
     expression: string, dialect: string,
     impliedDialect?: string|null): boolean {
+  if (dialect === 'ANSI_SQL' && impliedDialect === null) return false;
   const read = dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
   const holds = (node: unknown): boolean => {
     if (Array.isArray(node)) return node.some(holds);
