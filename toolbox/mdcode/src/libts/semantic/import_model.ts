@@ -2108,14 +2108,18 @@ function keepsMetric(
   return true;
 }
 
-/** Keeps the metrics of `doc` for which `keep` returns true. */
+/**
+ * Keeps the metrics of `doc` for which `keep` returns true. An entry of the
+ * model's `metrics` that is not a mapping stays, for the load to report.
+ */
 function filterMetrics(
     doc: ImportDocument,
     keep: (mt: Record<string, any>, doc: ImportDocument) => boolean): void {
-  doc.metrics = doc.metrics.filter(mt => keep(mt, doc));
-  if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
-    doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
-  }
+  const gone = new Set(doc.metrics.filter(mt => !keep(mt, doc)));
+  if (!gone.size) return;
+  doc.metrics = doc.metrics.filter(mt => !gone.has(mt));
+  const left = doc.model.metrics.filter((m: any) => !gone.has(m));
+  doc.model.metrics = left.length ? left : undefined;
 }
 
 /**

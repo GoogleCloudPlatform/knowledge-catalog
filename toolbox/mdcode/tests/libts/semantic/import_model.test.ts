@@ -242,6 +242,11 @@ describe('conversion, strict mode, and translation', () => {
       `entity 'orders': unknown key 'colour'`
     ],
     [
+      'an empty metrics entry in a vanilla model converted to Google in strict mode',
+      ossieDoc({extra: '    metrics:\n      -\n'}), {flavor: 'google' as const, strict: true},
+      'metric number 1 is empty; it takes a mapping'
+    ],
+    [
       'two vanilla dataset names converted to Google in strict mode',
       ossieDoc({extra: `      - name: Orders\n        source: ${BQ_TABLE}\n`}),
       {flavor: 'google' as const, strict: true},
