@@ -69,8 +69,8 @@ export function loadSqlEngine(): Promise<PolyglotEngine> {
       const engine =
           await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
       await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
-      loadedEngine = engine;
-      return engine;
+      loadedEngine = guardedEngine(engine);
+      return loadedEngine;
     })().catch(err => {
       // Don't cache the failure: a transient init error (e.g. a failed read)
       // must not permanently disable the engine for a long-lived process.
@@ -87,10 +87,45 @@ export function loadedSqlEngine(): PolyglotEngine|undefined {
   return loadedEngine;
 }
 
+// `engine` as kcmd calls it. The engine prints a message to the console when
+// it panics on a text, and then reports the text unread; no call lets that
+// message through. Parse and transpile report a text the engine's parser
+// cannot take (see parserTakes) unread without handing it to the engine.
+function guardedEngine(engine: PolyglotEngine): PolyglotEngine {
+  const refused = {success: false, error: "kcmd's SQL parser cannot read the text"};
+  return {
+    init: opts => engine.init(opts),
+    transpile: (sql, read, write) => withoutEngineMessages(
+        () => parserTakes(engine, sql, read) ? engine.transpile(sql, read, write) : refused),
+    parse: (sql, dialect) => withoutEngineMessages(
+        () => parserTakes(engine, sql, dialect) ? engine.parse(sql, dialect) : refused),
+    generate: (ast, dialect) => withoutEngineMessages(() => engine.generate(ast, dialect)),
+    tokenize: (sql, dialect) => withoutEngineMessages(() => engine.tokenize(sql, dialect)),
+  };
+}
+
+// Whether the engine's parser takes `sql`, a text in the engine's dialect
+// `dialect`, by the engine's tokens, so outside strings, quoted names and
+// comments. The parser never returns on a type it does not know followed by a
+// parenthesis the text leaves open, as in `CAST(amount AS BIGNUMERIC(40, 10`,
+// so it takes no text whose parentheses do not pair. The T-SQL parser panics on
+// a bare IF before a parenthesis, as in `IF(a, b, c)`, and each panic damages
+// the engine. T-SQL has no IF function, so it takes no such T-SQL text. True
+// when the engine cannot tokenize `sql`, since its parser then stops there too.
+function parserTakes(engine: PolyglotEngine, sql: string, dialect: string): boolean {
+  const tokens = engine.tokenize(sql, dialect).tokens ?? [];
+  let depth = 0;
+  for (const [i, t] of tokens.entries()) {
+    if (dialect === 'tsql' && t.token_type === 'IF' && tokens[i + 1]?.token_type === 'L_PAREN') return false;
+    if (t.token_type === 'L_PAREN') depth++;
+    else if (t.token_type === 'R_PAREN' && --depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 // Runs `read` and drops the message the engine prints to the console when it
-// panics on a text. The engine then reports that text unread, as it reports
-// any text it cannot parse.
-export function withoutEngineMessages<T>(read: () => T): T {
+// panics on a text.
+function withoutEngineMessages<T>(read: () => T): T {
   const error = console.error;
   console.error = () => {};
   try {

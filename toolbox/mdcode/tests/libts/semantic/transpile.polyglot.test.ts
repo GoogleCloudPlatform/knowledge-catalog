@@ -8,6 +8,7 @@
 // or an unparseable expression degrades to a per-request `error`.
 
 import {describe, expect, spyOn, test} from 'bun:test';
+import {join} from 'node:path';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSqlEngine, mysqlForEngine, sqlExpressionTree} from '../../../src/libts/semantic/sql_parser';
@@ -138,6 +139,33 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
           expect(r.error).toContain('unsupported target dialect');
         }
       });
+
+  // The engine's parser never returns on a type followed by a parenthesis the
+  // text leaves open. Its T-SQL parser panics on IF(...), and after a few
+  // thousand panics the engine reads no text. So each text is translated and
+  // read 3,000 times in a child process stopped after 20 seconds, then a plain
+  // text is read, and what the engine printed is checked too.
+  test.each([
+    ['SNOWFLAKE', 'CAST(amount AS NUMBER(10, 2'],
+    ['SQLSERVER', 'IF(a, b, c)'],
+  ])('reads and translates %s %j without hanging or printing', (dialect, expression) => {
+    const module = (file: string) => JSON.stringify(join(__dirname, '../../../src/libts/semantic', file));
+    const run = Bun.spawnSync({
+      cmd: [process.execPath, '-e', `
+        const {loadSqlEngine, sqlColumns} = await import(${module('sql_parser')});
+        const {polyglotTranspiler} = await import(${module('transpile')});
+        await loadSqlEngine();
+        const [dialect, expression] = ${JSON.stringify([dialect, expression])};
+        const [translation] = await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY');
+        for (let i = 1; i < 3000; i++) sqlColumns(expression, dialect);
+        const columns = sqlColumns(expression, dialect) ?? null;
+        console.log(JSON.stringify({columns, translation, after: sqlColumns('a + b', 'POSTGRES') ?? null}));`],
+      timeout: 20000,
+    });
+    expect({stopped: run.exitedDueToTimeout, printed: run.stderr.toString(), ...JSON.parse(run.stdout.toString() || '{}')})
+        .toEqual({stopped: false, printed: '', columns: null, after: [{name: 'a'}, {name: 'b'}], translation: {
+          id: '0', error: 'kcmd does not translate a text it cannot read as one expression'}});
+  }, 30000);
 });
 
 describe('polyglotTranspiler (transformations)', () => {

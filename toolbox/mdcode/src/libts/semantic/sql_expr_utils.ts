@@ -16,7 +16,7 @@
 import {Field, fieldBinding, OSSIE_SQL} from './ir';
 import {OSSIE_RESERVED} from './ossie_parser';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
-import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
+import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
 // text with no dialect, is read as BigQuery.
@@ -296,12 +296,7 @@ export function columnsForSource(
 export function columnsWithoutDialect(
     text: string, dialects: readonly string[]):
     {columns: SqlColumn[]; skipped: boolean}|undefined {
-  // T-SQL's parser panics on `IF(...)`, and the tables may not run T-SQL, so
-  // the engine's message stays out of the output.
-  if (withoutEngineMessages(
-          () => dialects.some(d => !columnReferences(text, d)))) {
-    return undefined;
-  }
+  if (dialects.some(d => !columnReferences(text, d))) return undefined;
   const tokens = sqlTokens(text, 'ANSI_SQL');
   if (!tokens) return undefined;
   // Each name in double quotes is read as a placeholder name, so the columns
