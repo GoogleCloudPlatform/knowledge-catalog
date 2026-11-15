@@ -519,6 +519,12 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
+- A DATE literal or a cast of a date string to DATE, compared with a column,
+  becomes the plain string. Snowflake, Databricks and SQL Server compare a
+  text column with a date as a date, so a text column holding
+  '2024-01-01 10:00:00' matches the date 2024-01-01 there and not in BigQuery.
+  A Databricks CAST to DATE stays SAFE_CAST instead, which BigQuery refuses
+  beside a text or TIMESTAMP column.
 - A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days or weeks
   can be an hour off across a daylight saving change. Snowflake adds a day in
   its default time zone, America/Los_Angeles, where BigQuery adds 24 hours.
