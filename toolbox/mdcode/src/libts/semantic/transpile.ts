@@ -554,9 +554,12 @@ function engineTranslation(
   // so it reads the expression there without its comments. transpileWith puts
   // them last. The engine reads a text that starts with a statement word alone
   // as that statement, such as PostgreSQL's `call = 'inbound'` with a column
-  // named call. When the text alone gives no BigQuery expression, or reads as
-  // a statement, it is translated after SELECT when that gives a BigQuery
-  // expression, and otherwise not at all.
+  // named call. When the engine cannot read the text alone, the translation
+  // after SELECT is taken whenever the engine gives one, with no check that it
+  // is a BigQuery expression. When the text alone gives SQL that is not one
+  // BigQuery expression, or reads as a statement, the translation after SELECT
+  // is taken only when it is a BigQuery expression, and otherwise the text is
+  // not translated.
   let res = engine.transpile(sql, read, write);
   const isExpression = (r: typeof res) =>
       r.sql?.length === 1 && sqlExpressionTree(r.sql[0], 'BIGQUERY') !== undefined;
