@@ -633,29 +633,34 @@ function unwrapped(node: any): any {
 // Whether `expression`, read in `dialect`, holds a subquery at any depth, such
 // as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`, or is a
 // query, such as `WITH ... SELECT ...`, which the parser reads in parentheses.
-// An `ANSI_SQL` text is read in `impliedDialect` when that is set, and not at
-// all when that is null, as columnsForSource reads it. A query is found by its
-// SELECT node, which a set operation and a CTE hold too, or by a VALUES list
-// that is the body of a subquery, such as `(VALUES (1))` or
-// `x = ANY(VALUES (1))`. The parser also gives the array of
-// `x = ANY(ARRAY[1, 2])` the key `subquery`, so that key alone does not count.
-// It gives the values of a Snowflake object constant such as
-// `{'P': 'Pending'}` the key `values` too, so a VALUES list counts only as the
-// body of a subquery. False when the text is not read or the SQL parser cannot
-// read it.
+// A query is a SELECT, a VALUES list, a WITH, or a UNION, INTERSECT or EXCEPT
+// whose branches are queries. The text holds a subquery when a SELECT or a
+// WITH appears anywhere in it. It also holds one when a query is the body of
+// a subquery, of EXISTS or of IN, or the operand of ANY or ALL, as in
+// `(VALUES (1))` or `x = ANY(VALUES (1), (2))`. An `ANSI_SQL` text is read in
+// `impliedDialect` when that is set, and not at all when that is null, as
+// columnsForSource reads it. False when the text is not read or the SQL
+// parser cannot read it.
 export function holdsSubquery(
     expression: string, dialect: string,
     impliedDialect?: string|null): boolean {
   if (dialect === 'ANSI_SQL' && impliedDialect === null) return false;
   const read = dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
+  const isQuery = (node: any): boolean => {
+    const kind = Object.keys(node ?? {})[0];
+    return kind === 'select' || kind === 'values' || kind === 'with' ||
+        (['union', 'intersect', 'except'].includes(kind) &&
+         isQuery(node[kind].left) && isQuery(node[kind].right));
+  };
   const holds = (node: unknown): boolean => {
     if (Array.isArray(node)) return node.some(holds);
     if (node === null || typeof node !== 'object') return false;
     return Object.entries(node).some(
-        ([kind, value]) => kind === 'select' ||
-            (kind === 'subquery' &&
-             (value?.this ?? value)?.values !== undefined) ||
-            holds(value));
+        ([kind, value]) => kind === 'select' || kind === 'with' ||
+            ((kind === 'subquery' || kind === 'exists') &&
+             isQuery(value?.this)) ||
+            ((kind === 'any' || kind === 'all') && isQuery(value?.subquery)) ||
+            (kind === 'in' && isQuery(value?.query)) || holds(value));
   };
   return holds(sqlExpressionTree(expression, read) ??
                sqlExpressionTree(`(\n${expression}\n)`, read));
