@@ -143,9 +143,10 @@ export function isReservedKeyword(name: string): boolean {
   return RESERVED_KEYWORDS.has(name.toUpperCase());
 }
 
-// Backticks `name`, escaping any embedded backtick.
-function backtick(name: string): string {
-  return `\`${name.replace(/`/g, '\\`')}\``;
+// `name` in backticks, with each backslash and backtick in it escaped, as
+// BigQuery and Spanner read a quoted name.
+export function backtick(name: string): string {
+  return `\`${name.replace(/[\\`]/g, '\\$&')}\``;
 }
 
 // Quotes a name that would otherwise be MISREAD as a bare identifier: a simple

@@ -76,8 +76,9 @@ describe('quoteIdentifier', () => {
         expect(quoteIdentifier('has-hyphen')).toBe('`has-hyphen`');
       });
 
-  test('escapes an embedded backtick', () => {
+  test('escapes an embedded backtick or backslash', () => {
     expect(quoteIdentifier('we`ird')).toBe('`we\\`ird`');
+    expect(quoteIdentifier('we\\ird')).toBe('`we\\\\ird`');
   });
 });
 

@@ -393,6 +393,17 @@ semantic_model:
     expect(res.warnings).toContain(`metric 't': wrote 'AGG("ORDER".m)' as '(SUM("Order".amount))'.`);
   });
 
+  test('adds a BIGQUERY text beside each OSSIE_SQL_2026 text under --transpile', async () => {
+    const res = await importSemanticModelYaml(ossieFile({orders: metric('SUM(amount)')}), {flavor: 'google', transpile: true});
+    const content = res.files[0].content;
+    expect(content).toContain(
+        '                - dialect: OSSIE_SQL_2026\n                  expression: o_id\n' +
+        '                - dialect: BIGQUERY\n                  expression: o_id\n');
+    expect(content).toContain(
+        '            - dialect: OSSIE_SQL_2026\n              expression: SUM(orders.amount)\n' +
+        '            - dialect: BIGQUERY\n              expression: SUM(orders.amount)\n');
+  });
+
   test('gives no advice about a profile file beside it', async () => {
     const res = await importSemanticModelYaml(
         ossieFile(), {flavor: 'google', profileFiles: [{fileName: 'shop.profile.dev.yaml', content: 'name: dev\n'}]});

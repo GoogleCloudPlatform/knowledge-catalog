@@ -29,7 +29,8 @@
 //     warning is emitted -- never a throw.
 //
 
-import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {Field, OSSIE_SQL, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {ossieToBigQuery} from './ossie_translate';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
 import {loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
@@ -49,10 +50,13 @@ export interface TranspileRequest {
 
 // The result for one request: exactly one of `sql` (success) or `error` (the
 // expression could not be transpiled and should be left to the imported form).
+// `reminders` holds a line for each form in `sql` whose value can differ from
+// the source's in a way the author should check.
 export interface TranspileResponse {
   id: string;
   sql?: string;
   error?: string;
+  reminders?: readonly string[];
 }
 
 // The pluggable transpilation mechanism. Must return one response per request
@@ -276,7 +280,15 @@ export async function transpileModel(
 
   if (!pending.length) return {model: clone, warnings};
 
-  const responses = await transpiler(pending.map(p => p.request), target);
+  // kcmd's Ossie translator translates an OSSIE_SQL_2026 text to BigQuery,
+  // and the transpiler every other text.
+  const ossie = (r: TranspileRequest) => r.dialect === OSSIE_SQL && target === DEFAULT_TARGET;
+  const requests = pending.map(p => p.request);
+  const others = requests.filter(r => !ossie(r));
+  const responses = [
+    ...requests.filter(ossie).map(ossieResponse),
+    ...others.length ? await transpiler(others, target) : [],
+  ];
   const byId = new Map(responses.map(r => [r.id, r]));
 
   for (const p of pending) {
@@ -314,6 +326,7 @@ export async function transpileModel(
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
+    for (const reminder of res.reminders ?? []) warnings.push(`${ctx}: ${reminder}`);
     if (request.dialect === 'SQLSERVER') {
       warnings.push(
           `${ctx}: SQL Server text is translated to BigQuery on a ` +
@@ -349,8 +362,10 @@ export function bigQueryTranslation(
   const source = sourceToTranspile(node, DEFAULT_TARGET);
   const engine = loadedSqlEngine();
   if (!source || !engine) return undefined;
-  const {sql} = transpileWith(
-      engine, {id: '', ...source}, polyglotDialect(DEFAULT_TARGET)!);
+  const request = {id: '', ...source};
+  const {sql} = source.dialect === OSSIE_SQL ?
+      ossieResponse(request) :
+      transpileWith(engine, request, polyglotDialect(DEFAULT_TARGET)!);
   if (sql === undefined) return undefined;
   const reached = qualifiersReached(sql, DEFAULT_TARGET, entityNames);
   return !reached || sameSet(reached.exact, reached.anyCase) ? sql : undefined;
@@ -364,6 +379,11 @@ export function bigQueryTranslation(
 export function translatesToBigQuery(
     node: TranspileNode, entityNames: string[]): boolean {
   return bigQueryTranslation(node, entityNames) !== undefined;
+}
+
+// The answer of kcmd's Ossie translator to `r`, an OSSIE_SQL_2026 text.
+function ossieResponse(r: TranspileRequest): TranspileResponse {
+  return {id: r.id, ...ossieToBigQuery(r.expression)};
 }
 
 function sameSet(a: string[], b: string[]): boolean {
