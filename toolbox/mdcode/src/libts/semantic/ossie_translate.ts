@@ -158,6 +158,9 @@ const CAST_TYPES: Record<string, string> = {
   TIMESTAMP: 'TIMESTAMP', TIMESTAMP_NTZ: 'DATETIME',
 };
 
+// BigQuery's number types.
+const NUMBER_TYPES = new Set(['INT64', 'NUMERIC', 'BIGNUMERIC', 'FLOAT64']);
+
 // BigQuery's type for DECIMAL(p, s), whose `params` are p and any s: NUMERIC
 // where a NUMERIC holds it, with at most 9 places and 29 digits before the
 // point, else BIGNUMERIC, with at most 38 of each, and else none.
@@ -808,11 +811,15 @@ class Translator {
     const ranged = frame ? frame.unit === 'RANGE' : !FRAMELESS.has(name);
     const offset = [frame?.from, frame?.to].some(b => b?.kind === 'offset');
     // A ROWS offset, and a RANGE offset beside an ORDER BY value that is
-    // visibly an INT64, is an INT64.
+    // visibly an INT64, is an INT64. BigQuery takes no RANGE offset beside an
+    // ORDER BY value that is visibly not a number.
     const key = over.orderBy.length === 1 ? visibleType(over.orderBy[0].expr) : undefined;
     const whole = frame?.unit === 'ROWS' || key === 'INT64';
+    const offsetSql = (expr: OssieNode) => frame?.unit === 'RANGE' && key && !NUMBER_TYPES.has(key) ?
+        refuse(`the frame offset ${this.written(expr)}, since BigQuery takes no RANGE offset beside an ORDER BY value of type ${key}`) :
+        this.literal(expr, 'the frame offset', 0, whole);
     const bound = (b: OssieFrameBound) => b.kind === 'unbounded' ? `UNBOUNDED ${b.direction}` :
-        b.kind === 'currentRow' ? 'CURRENT ROW' : `${this.literal(b.expr, 'the frame offset', 0, whole)} ${b.direction}`;
+        b.kind === 'currentRow' ? 'CURRENT ROW' : `${offsetSql(b.expr)} ${b.direction}`;
     const clauses = [
       ...over.partitionBy.length ? [`PARTITION BY ${over.partitionBy.map(e => this.out(e).sql).join(', ')}`] : [],
       ...over.orderBy.length ? [`ORDER BY ${over.orderBy.map(i => this.sortItem(i, ranged, offset)).join(', ')}`] : [],

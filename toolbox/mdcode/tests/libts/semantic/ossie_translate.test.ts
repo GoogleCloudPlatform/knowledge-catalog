@@ -122,6 +122,8 @@ const ROWS: Row[] = [
    'kcmd does not translate the frame offset (2 - 5), since BigQuery takes only a literal INT64 of 0 or more there'],
   ['SUM(x) OVER (ORDER BY CAST(x AS INTEGER) NULLS FIRST RANGE BETWEEN 1.5 PRECEDING AND CURRENT ROW)',
    'kcmd does not translate the frame offset 1.5, since BigQuery takes only a literal INT64 of 0 or more there'],
+  ['SUM(x) OVER (ORDER BY CAST(ts AS DATE) NULLS FIRST RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)',
+   'kcmd does not translate the frame offset 1, since BigQuery takes no RANGE offset beside an ORDER BY value of type DATE'],
   ['LAG(x, 1234567890123456789) OVER (ORDER BY x) + x - 1234567890123456789',
    'LAG(x, 1234567890123456789) OVER (ORDER BY x NULLS LAST) + x - 1234567890123456789'],
 
