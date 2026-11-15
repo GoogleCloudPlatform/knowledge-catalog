@@ -591,11 +591,12 @@ class Translator {
     return nodes.map((n, i) => to && types[i] !== to ? atom(`CAST(${this.out(n).sql} AS ${to})`) : this.out(n));
   }
 
-  // `node`, a CASE. Its results, and a simple CASE's value with each WHEN
-  // value, get the casts to TIMESTAMP.
+  // `node`, a CASE. Its results get the casts to TIMESTAMP. A simple CASE
+  // compares its value with each WHEN value, so they get the casts of a
+  // comparison.
   private caseOf(node: Extract<OssieNode, {kind: 'case'}>): Out {
     const results = this.stamped([...node.whens.map(w => w.result), ...node.else ? [node.else] : []]);
-    const compared = node.operand ? this.stamped([node.operand, ...node.whens.map(w => w.condition)]) :
+    const compared = node.operand ? this.stamped([node.operand, ...node.whens.map(w => w.condition)], true) :
                                     [undefined, ...node.whens.map(w => this.out(w.condition))];
     const whens = node.whens.map((_, i) => ` WHEN ${compared[i + 1]!.sql} THEN ${results[i].sql}`);
     const operand = compared[0] ? ` ${compared[0].sql}` : '';
