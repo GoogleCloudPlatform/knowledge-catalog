@@ -128,9 +128,8 @@ refusal's choice and run pull again before you follow the next.
 kcmd import <file> --flavor <ossie|google>
 ```
 
-Imports a semantic model file into the flavor `--flavor` names. Import changes
-a value only when that flavor rejects it. When the file's own flavor rejects
-the value too, the change is a repair. A file another product wrote is
+Imports a semantic model file into the flavor `--flavor` names. A change to a
+value that both flavors reject is a repair. A file another product wrote is
 repaired, and each repair is reported as a warning. Under
 `--input first-party`, each repair is an error that says what the file needs.
 Renaming a dialect such as `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla
@@ -143,10 +142,17 @@ an entry in a supported dialect, and the error for the source asks for a table.
 On an abstract entity, each asks to remove the `expression` or `source`
 instead, since an abstract entity has no table and its fields take no
 expression.
-The other changes convert the file between flavors and are not reported. A
-conversion moves each value the two flavors place differently, such as a
-dataset's `extends`, between its own key and a `GOOGLE` block, as written. A
-conversion to vanilla drops an empty `extends`, `deployments` or relationship
+From a file another product wrote, import removes what kcmd's spec does not
+accept, and reports each removal: an extra model, a metric with no anchor whose
+expression reaches no entity or several, an entry in a dialect kcmd does not
+accept, and a `source` that is a query. It also truncates a description over
+2,000 characters. A metric left with no entry in a supported SQL dialect stops the
+import, and so does a `source` that is a query when import writes the vanilla
+flavor.
+The changes that only convert a file between kcmd's two flavors are not
+reported. A conversion moves each value the two flavors place differently, such
+as a dataset's `extends`, between its own key and a `GOOGLE` block, as written.
+A conversion to vanilla drops an empty `extends`, `deployments` or relationship
 `description` instead of writing a `GOOGLE` block for it, and drops an empty
 `custom`, with its `ai_context` when nothing else is left in it. A file written
 for kcmd converts between flavors exactly or not at all. The
@@ -164,8 +170,9 @@ metrics, tables and graph. A profile file beside a vanilla `<file>` and a
 make sure Knowledge Catalog can store each aspect push writes. The deployment
 checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
 description and synonym limits. Import reports what these checks reject as an
-error under `--input first-party` and as a warning otherwise, except a
-deployment target in no accepted form, which is an error either way. It reports
+error under `--input first-party` and as a warning otherwise, except a written
+file that does not load and a deployment target in no accepted form, which are
+errors either way. It reports
 their warnings as warnings in either mode. They include push's warnings about
 the Knowledge Catalog entries, about the fields each deployment leaves out and
 about each graph. Import leaves out push's notes. A profile file that does not
@@ -186,26 +193,91 @@ the model file's tables are in one database when only that table's entry can
 say. Tables of two systems are never in one database, so import still reports a
 profile or model file that binds a BigQuery table beside such a table. Nothing
 is written when the import reports an error. Import rewrites only the values it
-changes, and every other line of the file stays as written, with its comments,
-blank lines, quoting, indentation and line endings. The JSON `data` of a
+changes. In the usual layouts, every other line of the file stays as written,
+with its comments, blank lines, quoting and line endings. The conversion of a
+root-model file below indents the lines it moves. The JSON `data` of a
 `GOOGLE` block keeps its layout too. A translation that `--transpile` adds to a
 profile there is written like the entry beside it. A `data` written as a
 quoted string over several lines is written as one line of compact JSON
-instead, quoted as kcmd quotes a new block. Comments on anything import
-removes or moves elsewhere in the file are dropped, such as those on a key that
-goes into or out of a `GOOGLE` block. A flow collection over several lines that
+instead, quoted as kcmd quotes a new block. Comments on a key that goes into or
+out of a `GOOGLE` block are dropped. A flow collection over several lines that
 import changes is written again in block style, without the comments inside it.
 A value that import would write as a `|+` block scalar is double-quoted
 instead, and a `|+` block scalar that it moves is written again. A profile file
 written beside the model is rewritten the same way. A profile file's comments
 are dropped when its contents move into the model file. A JSON file is written
-as YAML, and import reports the conversion. Without `--out`, the files go into
+as YAML, and import reports the conversion. Import stops on a model whose
+`name` is missing or is not a string, since it names the file it writes after
+the model. Without `--out`, the files go into
 the scope's entry group folder, and an import that would leave one of the
 model's profile files there unwritten is refused. Without `--out`, an import is
 also refused when the entry group folder already holds another model's file,
 since an entry group holds one model. It is refused too when the input file is
 a `.yaml` file in that folder other than `<model>.yaml`, since the model would
 then have two files.
+
+Import also reads an Apache Ossie file that holds its model at the document
+root, with `datasets` and no `semantic_model` there: a `0.3.0.dev0` file, or a
+`0.2.0.dev0` file as the Ossie converters write it. A `0.3.0.dev0` file without
+`datasets`, such as an Ossie ontology or mapping file, holds no model, and
+import refuses it. Only an import without `--input first-party` reads a
+root-model file, and it reads no profile file beside it. Every other command
+refuses such a file and says to run `kcmd import`. Import stops on a `GOOGLE`
+block in such a file, on a `0.3.0.dev0` file with a `semantic_model` list, and
+on a name kcmd's name rules refuse. A third-party import that stops on a name
+changes nothing, so it reports only the names. It also reports any hyphens it
+gave the model name, since the errors use that name.
+
+Import converts what kcmd writes another way and reports each edit. It wraps
+the model in `semantic_model`, sets `version`, renames `nonportable_extensions`
+to `custom_extensions`, writes each extension block's `data` as JSON text, and
+moves each `sql` into an `OSSIE_SQL_2026` entry of `dialects`. When
+`dialects` already has an `OSSIE_SQL_2026` entry, the `sql` replaces that
+entry's text, since Ossie reads the `sql`. A metric a
+dataset lists moves to the model's metrics, anchored on that dataset unless its
+extension blocks are not a list. It takes
+the name `<dataset>_<metric>` when a model metric or an earlier moved metric
+has its name. When one of those has that name too, it keeps its name, with a
+warning. A dataset's empty `metrics` list goes, and import reports it.
+Comments and quoting stay in the usual layouts. A moved metric keeps
+its comments. The comments on and above a `sql` key stay with the `dialects`
+key that takes its place, unless the expression already has `dialects`. The
+SQL keeps its quoting or block style unless import changes its text. In a
+field's text, a qualifier that names the field's own dataset goes, since Ossie
+reads every name there as a column of the dataset's source. In a metric's
+`OSSIE_SQL_2026` text, each dataset and field name takes its declared spelling.
+In a moved metric's `OSSIE_SQL_2026` text, each field named without a qualifier
+also becomes `<dataset>.<field>`, and `source.<column>` becomes the field whose
+text is that column, which import adds when no field reads it. A name matches a
+dataset or field as Ossie compares names: without quotes in any letter case, and
+in quotes only as the declared name in upper case. In a text of another dialect,
+import converts qualifiers only: a field text loses its own dataset's, and a
+metric text writes each dataset qualifier in its declared spelling. A moved
+metric's text in another dialect keeps its fields without a qualifier and its
+`source.<column>`, with a warning. Import reads a double-quoted word of an
+`ANSI_SQL` text as a name. When it changes such a text on BigQuery tables, the
+report adds that BigQuery would read the double-quoted words as text. A
+relationship's `from` and `to` take the declared spelling of the dataset they
+name. A call of `AGG` in a model metric becomes the `OSSIE_SQL_2026` text of the
+metric it names, in parentheses, when that text names a field of the metric's
+dataset. A call whose metric's text names none, such as `COUNT(*)`, stays as
+written, with a warning. A key or join entry that names a field whose text is
+one column without a qualifier becomes that column. In this import and in every
+other import without `--input first-party`, a model name kcmd refuses gets a
+hyphen for each character the model-name rule refuses. A model name that does
+not start with a letter, or has more than 500 characters, stays refused.
+The editor schema line, `# yaml-language-server: $schema=...`, goes, since it
+names the schema of the input file. Any other import that writes another
+version removes it too, such as a vanilla file written as Google.
+
+What this conversion cannot convert stays as written, with a warning. Examples
+are a call of `AGG` it cannot replace, a key or join entry that names no field
+or a computed one, an `OSSIE_SQL_2026` text the parser cannot read, a moved
+metric's text in another dialect, and a `source.<column>` whose field name a
+field or metric has or kcmd refuses. When what stays keeps the written file
+from loading, the import stops with the loader's error. For example, extension
+`data` that JSON cannot hold, a `sql` that holds no SQL, a dataset's `fields`
+that is not a list and its `metrics` that is not a list of metrics each do so.
 
 | Flag | Effect |
 |------|--------|

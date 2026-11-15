@@ -1,25 +1,27 @@
 // Imports a third-party (or first-party) semantic model YAML document into a
 // valid kcmd semantic model document.
 
+import {isDeepStrictEqual} from 'node:util';
 import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
 import {deploymentTargetError, targetProblem} from './deployment_target';
-import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, metricTableEntities, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, OSSIE_SQL, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {bareNameParts, bareNameSegments, ConstructPlacement, dialectLookupKey, dottedPartProblem, entityWord, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, metricTableEntities, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_ROOT_VERSION, OSSIE_VERSION, parseSource, rootModelVersion, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
 import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
 import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
-import {columnsForSource, entitiesReached} from './sql_expr_utils';
-import {loadSqlEngine} from './sql_parser';
+import {OssieNode, ossieNodes, ossieReferences, ossieTree} from './ossie_parser';
+import {columnReferences, columnsForSource, entitiesReached, isColumnName, requalified, withoutQualifier} from './sql_expr_utils';
+import {loadSqlEngine, soleColumn} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
 import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
-import {linkNodes, parseForUpdate, updateText} from './yaml_update';
+import {linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -187,6 +189,12 @@ interface ImportDocument {
    * reads an `ANSI_SQL` text of the model file. Set by the repair step.
    */
   impliedDialect?: string|null;
+  /** The version of an Ossie file that held its model at the document root. */
+  rootVersion?: string;
+  /** The editor schema line import removes, which it reports when it writes. */
+  schemaLine?: string;
+  /** The line that reports the hyphens import gave the model name, if any. */
+  hyphenation?: string;
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
   /** True when any mutations have been applied to `root`. */
@@ -414,6 +422,740 @@ function documentHasGoogleBlock(doc: Record<string, any>): boolean {
   return false;
 }
 
+// An Apache Ossie file with its model at the document root: a '0.3.0.dev0'
+// file, or a '0.2.0.dev0' file as the Ossie converters write it. Import wraps
+// the model in `semantic_model`, moves each dataset's metrics to the model,
+// and converts what kcmd writes another way, reporting each edit.
+
+/** A metric a dataset listed, which import moves to the model's metrics. */
+interface MovedMetric {
+  metric: Record<string, any>;
+  /** The name of the dataset that listed it. */
+  dataset: string;
+  /** Its name as written. */
+  name: string;
+}
+
+/** A name as a text writes it, without quotes, and whether quotes wrap it. */
+interface WrittenName {
+  name: string;
+  quoted: boolean;
+}
+
+/**
+ * A column name a text reads: where it sits, in code units with the end
+ * excluded, from its qualifier when it has one, and its parts.
+ */
+interface TextName {
+  start: number;
+  nameStart: number;
+  end: number;
+  qualifier?: WrittenName;
+  name: WrittenName;
+}
+
+// The editor schema line, which names the schema of the file's version.
+const SCHEMA_LINE =
+    /^[ \t]*#[ \t]*yaml-language-server:[ \t]*\$schema=.*(?:\r?\n|$)/m;
+
+/**
+ * Why import stops on `doc`, the value of its input, or undefined: a
+ * '0.3.0.dev0' file with a `semantic_model` list, an Ossie file with its model
+ * at the document root under `--input first-party` (`strict`), or a GOOGLE
+ * block in such a file.
+ */
+function ossieFileError(doc: unknown, strict: boolean): string|undefined {
+  if (isRecord(doc) && doc.version === OSSIE_ROOT_VERSION &&
+      'semantic_model' in doc) {
+    return `Document is a '${OSSIE_ROOT_VERSION}' file with a ` +
+        `'semantic_model' list; such a file holds its model at the document ` +
+        `root. Move the model's keys to the root in place of 'semantic_model'.`;
+  }
+  const version = rootModelVersion(doc);
+  if (version === undefined) return undefined;
+  if (strict) {
+    return `Document is an Apache Ossie '${version}' file with its model at ` +
+        `the document root, which kcmd never writes; import it without ` +
+        `'--input first-party'.`;
+  }
+  const model = doc as Record<string, any>;
+  const datasets = asRecords(model.datasets);
+  const objects = [
+    model, ...datasets, ...asRecords(model.relationships),
+    ...asRecords(model.metrics),
+    ...datasets.flatMap(ds => [...asRecords(ds.fields), ...asRecords(ds.metrics)]),
+  ];
+  return objects.some(
+             o => hasGoogleBlock(asRecords(o.custom_extensions)) ||
+                 hasGoogleBlock(asRecords(o.nonportable_extensions))) ?
+      `Document holds a '${GOOGLE_VENDOR}' extension block, which kcmd never ` +
+          `writes in a file with the model at the document root; remove it.` :
+      undefined;
+}
+
+/**
+ * The datasets of `model`, an Ossie model's value, whose metrics import moves
+ * to the model: each whose `metrics` is a list of mappings with a `name`, when
+ * the model's own `metrics` is a list or empty. Any other `metrics` stays as
+ * written.
+ */
+function movingDatasets(model: Record<string, any>): Array<Record<string, any>> {
+  if (model.metrics != null && !Array.isArray(model.metrics)) return [];
+  return asRecords(model.datasets).filter(
+      ds => Array.isArray(ds.metrics) &&
+          ds.metrics.every((m: unknown) => isRecord(m) && typeof m.name === 'string'));
+}
+
+/**
+ * Moves the metrics each of `datasets`, datasets of `model`, lists to the end
+ * of the model's `metrics`, and removes each dataset's `metrics`.
+ */
+function moveDatasetMetrics(
+    model: Record<string, any>, datasets: Array<Record<string, any>>): void {
+  const metrics = datasets.flatMap(ds => ds.metrics);
+  for (const ds of datasets) delete ds.metrics;
+  if (!metrics.length) return;
+  if (!Array.isArray(model.metrics)) model.metrics = [];
+  model.metrics.push(...metrics);
+}
+
+/**
+ * `text`, which `document` parses and which holds an Ossie model at the
+ * document root, with the model wrapped in `semantic_model`, and then with the
+ * metrics its datasets list moved to the model (see movingDatasets). Each edit
+ * is made on the text, so every comment stays, when the edited text reads as
+ * the edited value. Gives the text, its document and the edits made.
+ */
+function rootModelText(text: string, document: yaml.Document.Parsed): {
+  text: string; document: yaml.Document.Parsed; wrapped: boolean;
+  moved: boolean;
+} {
+  const edited = (t: string, value: unknown) => {
+    const d = parseForUpdate(t).document;
+    return !d.errors.length && isDeepStrictEqual(d.toJS(), value) ?
+        {text: t, document: d} :
+        undefined;
+  };
+  const {version, ...model} = document.toJS();
+  // A root with no key but `version` has nothing to move by text.
+  const wrapped = Object.keys(model).length ?
+      edited(
+          wrappedRoot(text, document, 'semantic_model', 'version'),
+          {version, semantic_model: [model]}) :
+      undefined;
+  if (!wrapped) return {text, document, wrapped: false, moved: false};
+  const datasets = movingDatasets(model);
+  const at = datasets.map(ds => model.datasets.indexOf(ds));
+  moveDatasetMetrics(model, datasets);
+  const list = wrapped.document.getIn(['semantic_model', 0, 'datasets'], true);
+  const sources = at.map(i => yaml.isSeq(list) ? list.items[i] : undefined);
+  const movedText = sources.every(yaml.isMap) ?
+      movedItems(
+          wrapped.text, wrapped.document, sources,
+          wrapped.document.getIn(['semantic_model', 0], true) as yaml.YAMLMap,
+          'metrics') :
+      undefined;
+  const moved = movedText === undefined ?
+      undefined :
+      edited(movedText, {version, semantic_model: [model]});
+  return moved ? {...moved, wrapped: true, moved: true} :
+                 {...wrapped, wrapped: true, moved: false};
+}
+
+/**
+ * Renames key `from` of `obj`, an object of `doc.root`, to `to`, in its place
+ * among the keys, and in `doc.document`, so the writer changes only the key.
+ */
+function renameKey(
+    doc: ImportDocument, obj: Record<string, any>, from: string,
+    to: string): void {
+  const entries = Object.entries(obj);
+  for (const k of Object.keys(obj)) delete obj[k];
+  for (const [k, v] of entries) obj[k === from ? to : k] = v;
+  renameDocumentKey(doc, obj, from, to);
+}
+
+/** Renames key `from` of the node of `obj` in `doc.document` to `to`. */
+function renameDocumentKey(
+    doc: ImportDocument, obj: object, from: string, to: string): void {
+  const node = doc.links.get(obj);
+  const pair = yaml.isMap(node) ?
+      node.items.find(p => yaml.isScalar(p.key) && p.key.value === from) :
+      undefined;
+  if (pair) (pair.key as yaml.Scalar).value = to;
+}
+
+/**
+ * Whether `written`, a name as a text or an Ossie file writes it, names
+ * `declared`, as Ossie compares names: a name without quotes matches in any
+ * letter case, and a quoted name matches the declared name in upper case, as
+ * Ossie stores a name written without quotes.
+ */
+function ossieMatches(written: WrittenName, declared: string): boolean {
+  return written.quoted ? written.name === declared.toUpperCase() :
+                          written.name.toUpperCase() === declared.toUpperCase();
+}
+
+/**
+ * The name `text`, a name an Ossie file writes in its YAML, such as a key
+ * entry, reads as: a name in double quotes is a quoted name, with each `""`
+ * read as one quote.
+ */
+function yamlName(text: string): WrittenName {
+  const quoted = /^"((?:[^"]|"")*)"$/.exec(text);
+  return quoted ? {name: quoted[1].replace(/""/g, '"'), quoted: true} :
+                  {name: text, quoted: false};
+}
+
+/**
+ * The dataset of `doc` that `written`, a dataset name an Ossie file writes in
+ * its YAML (see yamlName), names as Ossie compares names, or undefined.
+ */
+function datasetNamed(
+    doc: ImportDocument, written: unknown): Record<string, any>|undefined {
+  return typeof written === 'string' ?
+      doc.datasets.find(
+          ds => typeof ds.name === 'string' &&
+              ossieMatches(yamlName(written), ds.name)) :
+      undefined;
+}
+
+/**
+ * Each text of `obj.expression` in a dialect kcmd reads, with that dialect and
+ * a function that replaces the text. A string expression is an ANSI_SQL text,
+ * and a vendor label reads as the first dialect DIALECT_ALIASES gives it.
+ */
+function expressionTexts(obj: Record<string, any>):
+    Array<{text: string; dialect: string; set: (text: string) => void}> {
+  if (typeof obj.expression === 'string') {
+    return [{
+      text: obj.expression,
+      dialect: 'ANSI_SQL',
+      set: t => void (obj.expression = t),
+    }];
+  }
+  return asRecords(obj.expression?.dialects).flatMap(d => {
+    const upper =
+        typeof d.dialect === 'string' ? d.dialect.trim().toUpperCase() : '';
+    const dialect = ALLOWED_DIALECT_SET.has(upper) ? upper :
+                                                     DIALECT_ALIASES[upper]?.[0];
+    return dialect && typeof d.expression === 'string' ?
+        [{text: d.expression, dialect, set: (t: string) => void (d.expression = t)}] :
+        [];
+  });
+}
+
+/**
+ * The column field `f` reads, as its first text names it (see
+ * expressionTexts), when that text is the column alone. A qualified name
+ * there names a sibling field. Undefined otherwise.
+ */
+function fieldColumn(f: Record<string, any>): WrittenName|undefined {
+  const [first] = expressionTexts(f);
+  const column = first && soleColumn(first.text, first.dialect);
+  if (!column || column.qualifier !== undefined) return undefined;
+  // An OSSIE_SQL_2026 text, which parses, says whether quotes wrap the name.
+  const [read] = first.dialect === OSSIE_SQL ? textNames(first.text) ?? [] : [];
+  return read?.name ?? {name: column.name, quoted: false};
+}
+
+// Whether `node` is a call of AGG, which takes a metric.
+function isAggCall(node: OssieNode): boolean {
+  return node.kind === 'functionCall' && !node.name.quoted &&
+      node.name.name.toUpperCase() === 'AGG';
+}
+
+/**
+ * The column names an OSSIE_SQL_2026 `text` reads, in the order written,
+ * without the argument of a call of AGG, or undefined when the parser cannot
+ * read it. A name of more than two parts, such as a struct path, is left out.
+ */
+function textNames(text: string): TextName[]|undefined {
+  const tree = ossieTree(text);
+  if (tree === undefined) return undefined;
+  return (tree ? ossieReferences(tree, isAggCall) : [])
+      .filter(parts => parts.length <= 2)
+      .map(parts => ({
+             start: parts[0].start,
+             nameStart: parts.at(-1)!.start,
+             end: parts.at(-1)!.end,
+             qualifier: parts.length === 2 ? parts[0] : undefined,
+             name: parts.at(-1)!,
+           }));
+}
+
+/**
+ * `<dataset>.<field>` as an OSSIE_SQL_2026 text writes it, with a part in
+ * double quotes where the parser does not read the part bare as that name.
+ */
+function qualifiedName(dataset: string, field: string): string {
+  const forms = [
+    [dataset, field], [`"${dataset}"`, field], [dataset, `"${field}"`],
+    [`"${dataset}"`, `"${field}"`],
+  ].map(([d, f]) => `${d}.${f}`);
+  return forms.find(form => {
+    const column = soleColumn(form, OSSIE_SQL);
+    return column?.qualifier === dataset && column.name === field;
+  }) ?? forms[3];
+}
+
+/**
+ * Writes each text of `obj`, which `label` names, with its names converted,
+ * and reports each text it changes. In an OSSIE_SQL_2026 text, each column
+ * name the parser reads is replaced by what `rewrite` gives for it, or kept
+ * when that is undefined. Such a text the parser cannot read stays as written,
+ * with a warning. A text in another dialect becomes what `vendor` gives for
+ * it. The report on an ANSI_SQL text with a double-quoted word adds that
+ * BigQuery reads such a word as text, when `onBigQuery` is set.
+ */
+function namesConverted(
+    doc: ImportDocument, obj: Record<string, any>, label: string,
+    rewrite: (name: TextName, text: string) => string|undefined,
+    vendor: (text: string, dialect: string) => string,
+    onBigQuery: boolean): void {
+  for (const t of expressionTexts(obj)) {
+    let after = t.text;
+    if (t.dialect !== OSSIE_SQL) {
+      after = vendor(t.text, t.dialect);
+    } else {
+      const names = textNames(t.text);
+      if (!names) {
+        doc.warnings.push(
+            `${label}: left its '${t.dialect}' text as written, since kcmd ` +
+            `cannot read it.`);
+        continue;
+      }
+      after = spliced(t.text, names.flatMap((n): Array<[number, number, string]> => {
+        const written = rewrite(n, t.text);
+        return written === undefined ? [] : [[n.start, n.end, written]];
+      }));
+    }
+    if (after === t.text) continue;
+    const asText = onBigQuery && t.dialect === 'ANSI_SQL' && after.includes('"');
+    doc.warnings.push(
+        `${label}: wrote its '${t.dialect}' text '${t.text}' as '${after}'` +
+        (asText ? ', and BigQuery would read its double-quoted words as text' :
+                  '') +
+        '.');
+    t.set(after);
+  }
+}
+
+/**
+ * Converts the names in the texts of `doc` to kcmd's naming, and reports each
+ * text it changes. A field text loses the qualifier that names its own
+ * dataset. A metric a dataset listed (see `moved`) names that dataset's
+ * fields as `<dataset>.<field>`, and its `source.<column>` as the field whose
+ * text is exactly that column, which import adds when no field reads it. A
+ * dataset or field name in another letter case takes its declared spelling.
+ * A text in another dialect is read with push's qualifier functions, so it
+ * gets the first conversion and the declared spelling of each dataset
+ * qualifier only. A moved metric's such text that names fields without a
+ * qualifier or reads `source.<column>` stays so, with a warning.
+ */
+function convertTextNames(doc: ImportDocument, moved: MovedMetric[]): void {
+  const word = entityWord(doc.targetVersion);
+  const named = doc.datasets.filter(ds => typeof ds.name === 'string');
+  const fieldsOf = (ds: Record<string, any>|undefined) =>
+      asRecords(ds?.fields).filter(f => typeof f.name === 'string');
+  const datasetOf = (n: WrittenName) => named.find(ds => ossieMatches(n, ds.name));
+  const fieldOf = (ds: Record<string, any>|undefined, n: WrittenName) =>
+      fieldsOf(ds).find(f => ossieMatches(n, f.name));
+  // Each way `text` writes `name` in any letter case. Push's qualifier
+  // functions match a name as written.
+  const spellings = (text: string, name: string) => new Set(text.match(
+      new RegExp(name.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&'), 'gi')));
+  // Push's qualifier functions read an ANSI_SQL text as BigQuery, as its graph
+  // runs it. Import reads it as ANSI SQL, where a double-quoted word is a
+  // name, through the engine's generic dialect.
+  const reading = (dialect: string) =>
+      dialect === 'ANSI_SQL' ? 'generic' : dialect;
+  // Push reads an ANSI_SQL text in the dialect the model's sources imply.
+  const onBigQuery = sourcesDialect({
+    entities: doc.datasets.map(ds => lookedUpEntity(ds, {})),
+  }) === 'BIGQUERY';
+  // A field text reads columns of its dataset's source without a qualifier.
+  for (const ds of named) {
+    for (const f of fieldsOf(ds)) {
+      namesConverted(
+          doc, f, `field '${ds.name}.${f.name}'`,
+          (n, text) => n.qualifier && ossieMatches(n.qualifier, ds.name) ?
+              text.slice(n.nameStart, n.end) :
+              undefined,
+          (text, dialect) => [...spellings(text, ds.name)].reduce(
+              (t, s) => withoutQualifier(t, s, reading(dialect)), text),
+          onBigQuery);
+    }
+  }
+  for (const mt of doc.metrics) {
+    const label = `metric '${mt.name}'`;
+    const dataset = moved.find(m => m.metric === mt)?.dataset;
+    const own = dataset === undefined ?
+        undefined :
+        named.find(ds => ds.name === dataset);
+    // `<dataset>.<field>` for the field of `own` whose text is exactly column
+    // `n`, which the text writes as `written`, added when no field reads it.
+    const sourceField =
+        (own: Record<string, any>, n: TextName, written: string) => {
+          const stored = (c: WrittenName) =>
+              c.quoted ? c.name : c.name.toUpperCase();
+          const found = fieldsOf(own).find(f => {
+            const c = fieldColumn(f);
+            return c && stored(c) === stored(n.name);
+          });
+          if (found) return qualifiedName(own.name, found.name);
+          const name = n.name.name;
+          const lower = name.toLowerCase();
+          const taken = fieldsOf(own).find(f => f.name.toLowerCase() === lower);
+          // Push refuses a field and a metric of one entity with one name.
+          const metric = doc.metrics.find(
+              m => typeof m.name === 'string' && m.name.toLowerCase() === lower);
+          const why = taken ?
+              `field '${own.name}.${taken.name}' reads another column` :
+              metric ?
+              `a field named '${name}' would collide with metric '${metric.name}'` :
+              nameProblem('field', name) ?
+              `a field named '${name}' breaks kcmd's name rules` :
+              own.fields != null && !Array.isArray(own.fields) ?
+              `'fields' of ${word} '${own.name}' is not a list` :
+              undefined;
+          if (why) {
+            doc.warnings.push(
+                `${label}: left '${written}' as written, since ${why}.`);
+            return undefined;
+          }
+          const column = written.slice(n.nameStart - n.start);
+          const f = {
+            name,
+            expression: {dialects: [{dialect: OSSIE_SQL, expression: column}]},
+          };
+          if (Array.isArray(own.fields)) {
+            own.fields.push(f);
+          } else {
+            own.fields = [f];
+          }
+          doc.warnings.push(
+              `${word} '${own.name}': added field '${name}', which reads ` +
+              `column '${column}', for metric '${mt.name}'.`);
+          return qualifiedName(own.name, name);
+        };
+    const vendor = (text: string, dialect: string) => {
+      let out = text;
+      for (const ds of named) {
+        for (const s of spellings(out, ds.name)) {
+          if (s !== ds.name) out = requalified(out, s, ds.name, reading(dialect));
+        }
+      }
+      if (!own) return out;
+      const columns = columnReferences(out, dialect) ?? [];
+      const cases = [
+        columns.some(
+            c => c.qualifier === undefined &&
+                fieldOf(own, {name: c.name, quoted: false})) &&
+            `names fields of ${word} '${own.name}' without a qualifier`,
+        columns.some(c => c.qualifier?.toLowerCase() === 'source') &&
+            `reads 'source.<column>'`,
+      ].filter(Boolean);
+      if (cases.length) {
+        doc.warnings.push(
+            `${label}: its '${dialect}' text ${cases.join(' and ')}; import ` +
+            `converts these only in an '${OSSIE_SQL}' text, so they stay as ` +
+            `written.`);
+      }
+      return out;
+    };
+    namesConverted(doc, mt, label, (n, text) => {
+      if (own && n.qualifier && ossieMatches(n.qualifier, 'source') &&
+          !fieldOf(own, {name: 'source', quoted: false})) {
+        return sourceField(own, n, text.slice(n.start, n.end));
+      }
+      const ds = n.qualifier ? datasetOf(n.qualifier) : own;
+      const field = fieldOf(ds, n.name);
+      return !ds || !field ||
+              n.qualifier?.name === ds.name && n.name.name === field.name ?
+          undefined :
+          qualifiedName(ds.name, field.name);
+    }, vendor, onBigQuery);
+  }
+  // kcmd matches the dataset a relationship's `from` or `to` names by its
+  // declared spelling.
+  for (const r of doc.relationships) {
+    for (const key of ['from', 'to']) {
+      const ds = datasetNamed(doc, r[key]);
+      if (!ds || ds.name === r[key]) continue;
+      doc.warnings.push(
+          `relationship '${r.name}': wrote '${key}' ${word} '${r[key]}' as ` +
+          `'${ds.name}'.`);
+      r[key] = ds.name;
+    }
+  }
+}
+
+/**
+ * Writes each call of AGG in the OSSIE_SQL_2026 text of a model metric of
+ * `doc` as the OSSIE_SQL_2026 text of the metric it names, one a dataset
+ * listed (see `moved`), in parentheses, and reports it. A call with FILTER or
+ * OVER, one that names no such metric with such a text, and one whose
+ * metric's text names no field of its dataset, such as `COUNT(*)`, stay as
+ * written, with a warning.
+ */
+function inlineAggCalls(doc: ImportDocument, moved: MovedMetric[]): void {
+  const word = entityWord(doc.targetVersion);
+  for (const mt of doc.metrics) {
+    if (moved.some(m => m.metric === mt)) continue;
+    const label = `metric '${mt.name}'`;
+    for (const t of expressionTexts(mt)) {
+      const tree = t.dialect === OSSIE_SQL ? ossieTree(t.text) : undefined;
+      if (!tree) continue;
+      let out = '';
+      let end = 0;
+      let covered = 0;
+      for (const call of ossieNodes(tree)) {
+        if (!isAggCall(call) || call.kind !== 'functionCall' ||
+            call.start < covered) {
+          continue;
+        }
+        covered = call.end;
+        const written = t.text.slice(call.start, call.end);
+        const [arg] = call.args;
+        const named = call.args.length === 1 && !call.star && !call.distinct &&
+                arg.kind === 'reference' && arg.parts.length === 2 ?
+            moved.find(
+                m => ossieMatches(arg.parts[0], m.dataset) &&
+                    ossieMatches(arg.parts[1], m.name)) :
+            undefined;
+        const text = named &&
+            expressionTexts(named.metric).find(x => x.dialect === OSSIE_SQL)?.text;
+        const inner = text === undefined ? undefined : ossieTree(text);
+        // The fields of its dataset that the text names place the metric there.
+        // Import wrote each as `<dataset>.<field>` in the declared spelling.
+        const placed = !!inner &&
+            textNames(text!)!.some(n => n.qualifier?.name === named!.dataset);
+        if (call.filter || call.over || !placed) {
+          doc.warnings.push(
+              `${label}: left '${written}' as written, since ` +
+              (call.filter ? 'AGG takes no FILTER clause.' :
+                   call.over ? 'kcmd cannot write a metric before OVER.' :
+                   !inner    ? `it does not name a dataset's metric with an ` +
+                           `'${OSSIE_SQL}' text.` :
+                               `the '${OSSIE_SQL}' text of that metric names ` +
+                           `no field of ${word} '${named!.dataset}'.`));
+          continue;
+        }
+        const replaced = `(${text!.slice(inner.start, inner.end)})`;
+        out += t.text.slice(end, call.start) + replaced;
+        end = call.end;
+        doc.warnings.push(`${label}: wrote '${written}' as '${replaced}'.`);
+      }
+      if (end) t.set(out + t.text.slice(end));
+    }
+  }
+}
+
+/**
+ * Writes the model name of `doc` with a hyphen for each character the
+ * model-name rule refuses, and reports it, when that makes the name valid.
+ */
+function hyphenateModelName(doc: ImportDocument): void {
+  // A model name may hold only letters, digits, underscores and hyphens.
+  const name: string = doc.model.name;
+  const hyphens =
+      Array.from(name, c => /[A-Za-z0-9_-]/.test(c) ? c : '-').join('');
+  if (!nameProblem('model', name) || nameProblem('model', hyphens)) return;
+  doc.hyphenation =
+      `model '${name}': wrote its name as '${hyphens}', since a model name ` +
+      `holds only letters, digits, underscores and hyphens.`;
+  doc.warnings.push(doc.hyphenation);
+  doc.model.name = hyphens;
+  doc.modified = true;
+}
+
+/**
+ * Converts what kcmd writes another way in `doc`, which holds the model of an
+ * Ossie file of version `version` that held it at the document root, and
+ * reports each edit: the version, the metrics its datasets listed (`moved`),
+ * the empty metrics lists of the datasets `emptied` names, the extension
+ * blocks, the `sql` of each expression, the names in texts and relationships,
+ * the calls of AGG, and the key and join entries.
+ */
+function convertRootModel(
+    doc: ImportDocument, version: string, moved: MovedMetric[],
+    emptied: string[]): void {
+  const word = entityWord(doc.targetVersion);
+  const report = (line: string) => void doc.warnings.push(line);
+  report(
+      `Moved the model from the document root into 'semantic_model'` +
+      (version === doc.targetVersion ?
+           '.' :
+           `, and wrote version '${doc.targetVersion}' in place of '${version}'.`));
+
+  // A moved metric whose name an earlier metric has takes the name
+  // `<dataset>_<metric>` when no metric has that.
+  const listed = new Set(moved.map(m => m.metric));
+  const taken = new Set(
+      doc.metrics.filter(mt => !listed.has(mt) && typeof mt.name === 'string')
+          .map(mt => mt.name.toLowerCase()));
+  // The anchor is a block in the metric's list of extension blocks, so a
+  // metric whose extension blocks are not a list gets none.
+  const unanchored = new Set([...listed].filter(mt => {
+    const blocks = mt.custom_extensions ?? mt.nonportable_extensions;
+    return blocks != null && !Array.isArray(blocks);
+  }));
+  for (const {metric, dataset, name} of moved) {
+    const other = `${dataset}_${name}`;
+    const clash = taken.has(name.toLowerCase());
+    const renamed = clash && !taken.has(other.toLowerCase()) &&
+        !nameProblem('metric', other);
+    if (renamed) metric.name = other;
+    taken.add(metric.name.toLowerCase());
+    report(
+        `${word} '${dataset}': moved metric '${name}' to the model's metrics` +
+        (renamed ? ` as '${other}'` : '') +
+        (unanchored.has(metric) ? '' : `, anchored on '${dataset}'`) +
+        (!clash      ? '.' :
+             renamed ? `, since another metric is named '${name}'.` :
+                       `; another metric is named '${name}', and so is one ` +
+                     `named '${other}', so rename it.`));
+    if (unanchored.has(metric)) {
+      report(
+          `metric '${metric.name}': did not anchor it on '${dataset}', since ` +
+          `its extension blocks are not a list.`);
+    }
+  }
+  for (const dataset of emptied) {
+    report(
+        `${word} '${dataset}': removed its empty 'metrics' list, since kcmd ` +
+        `lists every metric in the model's metrics.`);
+  }
+
+  const objects = [
+    {obj: doc.model, label: `model '${doc.model.name}'`},
+    ...doc.datasets.flatMap(ds => [
+      {obj: ds, label: `${word} '${ds.name}'`},
+      ...asRecords(ds.fields).map(
+          f => ({obj: f, label: `field '${ds.name}.${f.name}'`})),
+    ]),
+    ...doc.relationships.map(r => ({obj: r, label: `relationship '${r.name}'`})),
+    ...doc.metrics.map(mt => ({obj: mt, label: `metric '${mt.name}'`})),
+  ];
+  for (const {obj, label} of objects) {
+    // kcmd lists extension blocks under `custom_extensions`, each with its
+    // data as JSON text.
+    const renamed =
+        'nonportable_extensions' in obj && !('custom_extensions' in obj);
+    if (renamed) {
+      renameKey(doc, obj, 'nonportable_extensions', 'custom_extensions');
+    }
+    let wrote = false;
+    for (const b of asRecords(obj.custom_extensions)) {
+      const node = doc.links.get(b);
+      const json = isRecord(b.data) && yaml.isMap(node) ?
+          nodeJson(node.get('data', true), doc.document) :
+          undefined;
+      if (json === undefined) continue;
+      b.data = json;
+      wrote = true;
+    }
+    if (renamed || wrote) {
+      report(
+          `${label}: ` +
+          (renamed ? `renamed 'nonportable_extensions' to 'custom_extensions'` +
+                   (wrote ? ' and ' : '') :
+                     '') +
+          (wrote ? `wrote the data of its extension blocks as JSON text` : '') +
+          '.');
+    }
+
+    // kcmd reads an expression's texts from `dialects`.
+    const e = obj.expression;
+    if (!isRecord(e) || typeof e.sql !== 'string' ||
+        noSqlReason(e.sql, OSSIE_SQL) !== undefined ||
+        e.dialects !== undefined && !Array.isArray(e.dialects)) {
+      continue;
+    }
+    // Ossie reads the top-level `sql` as the OSSIE_SQL_2026 text, in place of
+    // such an entry of `dialects`.
+    const own = asRecords(e.dialects).find(
+        d => typeof d.dialect === 'string' &&
+            d.dialect.trim().toUpperCase() === OSSIE_SQL);
+    if (own) {
+      report(
+          `${label}: moved 'sql' into its '${OSSIE_SQL}' entry of 'dialects' ` +
+          `in place of the text '${own.expression}', since Ossie reads 'sql' ` +
+          `as the '${OSSIE_SQL}' text.`);
+      own.expression = e.sql;
+      delete e.sql;
+      continue;
+    }
+    // The writer keeps the comments on and above `sql` with the key, which
+    // the document names `dialects`, and moves the text of the SQL into the
+    // new entry. Beside a `dialects` list, the key goes, and the writer moves
+    // the text of the SQL from the key the document names `expression`.
+    renameDocumentKey(
+        doc, e, 'sql', Array.isArray(e.dialects) ? 'expression' : 'dialects');
+    const entry = {dialect: OSSIE_SQL, expression: e.sql};
+    delete e.sql;
+    if (Array.isArray(e.dialects)) {
+      e.dialects.unshift(entry);
+    } else {
+      e.dialects = [entry];
+    }
+    report(`${label}: moved 'sql' into an '${OSSIE_SQL}' entry of 'dialects'.`);
+  }
+
+  // Each moved metric is anchored on its dataset, after its extension blocks
+  // are converted.
+  for (const {metric, dataset} of moved) {
+    if (!unanchored.has(metric)) putGoogleBlock(metric, {entity: dataset});
+  }
+
+  convertTextNames(doc, moved);
+  inlineAggCalls(doc, moved);
+
+  // kcmd keys and join columns name columns.
+  const lists = [
+    ...doc.datasets.flatMap(ds => [
+      {owner: `${word} '${ds.name}'`, key: 'primary_key', list: ds.primary_key, ds},
+      ...(Array.isArray(ds.unique_keys) ? ds.unique_keys : [])
+          .map((list: unknown, j: number) => ({
+                 owner: `${word} '${ds.name}'`, key: `unique_keys[${j}]`, list, ds,
+               })),
+    ]),
+    ...doc.relationships.flatMap(r => [
+      {owner: `relationship '${r.name}'`, key: 'from_columns', list: r.from_columns, ds: datasetNamed(doc, r.from)},
+      {owner: `relationship '${r.name}'`, key: 'to_columns', list: r.to_columns, ds: datasetNamed(doc, r.to)},
+    ]),
+  ];
+  for (const {owner, key, list, ds} of lists) {
+    if (!Array.isArray(list) || !ds) continue;
+    list.forEach((entry: unknown, i: number) => {
+      if (typeof entry !== 'string') return;
+      const f = asRecords(ds.fields).find(
+          f => typeof f.name === 'string' && ossieMatches(yamlName(entry), f.name));
+      const column = f && fieldColumn(f)?.name;
+      const written = column === undefined || isColumnName(column) ? column :
+          column.includes('`')                                    ? undefined :
+                                                                    `\`${column}\``;
+      if (written === entry) return;
+      const left = `${owner}: left ${key} entry '${entry}' as written, since `;
+      if (!f) {
+        report(
+            `${left}it names no field of ${word} '${ds.name}'; kcmd reads ` +
+            `it as a column name.`);
+      } else if (written === undefined) {
+        report(
+            `${left}field '${ds.name}.${f.name}' does not read exactly one ` +
+            `column that a key can name.`);
+      } else {
+        list[i] = written;
+        report(
+            `${owner}: rewrote ${key} entry '${entry}' as column '${written}', ` +
+            `which field '${ds.name}.${f.name}' reads.`);
+      }
+    });
+  }
+}
+
 /** Moves non-standard `ai_context` sibling keys into `ai_context.custom`. */
 function adaptAiContext(ai: Record<string, unknown>): void {
   const customKeys =
@@ -428,24 +1170,77 @@ function adaptAiContext(ai: Record<string, unknown>): void {
 }
 
 /**
- * Phase 1 (Parse): Parses raw YAML, verifies the top-level document envelope,
+ * Phase 1 (Parse): Parses raw YAML, wraps an Ossie model held at the document
+ * root in `semantic_model`, verifies the top-level document envelope,
  * validates `opts.sourcePrefix` when present, refuses a document with a
  * `GOOGLE` block or a Google-flavor model to convert to vanilla unless
  * `strict` is set, and constructs the mutable `ImportDocument` (or returns a
- * fatal error string).
+ * fatal error string). It then checks the names (see validateInputDocument),
+ * and converts a root model when they pass.
  */
 function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
   // 1. Parse raw YAML with strict YAML 1.2 options (`YAML_OPTIONS`) so syntax
   // errors and duplicate keys are caught immediately.
-  const {document, text} = parseForUpdate(rawYaml);
-  let parsedDoc: unknown;
+  let {document, text} = parseForUpdate(rawYaml);
+  // A model file is YAML, so a JSON file is written as YAML.
+  const fromJson = text !== rawYaml;
+  let parsedDoc: any;
   try {
     if (document.errors.length > 0) throw document.errors[0];
     parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         yamlErrorMessage(err, text)}`;
+  }
+
+  // 1b. Import reads an Ossie file with its model at the document root in
+  // third-party mode only, as a '0.2.0.dev0' model wrapped in
+  // `semantic_model`. The editor schema line names the schema of the input
+  // file, so it goes when the import writes another version or moves the
+  // model.
+  const ossieError = ossieFileError(parsedDoc, !!opts.strict);
+  if (ossieError) return ossieError;
+  const rootVersion = rootModelVersion(parsedDoc);
+  // The root conversion edits the text, which a byte order mark would shift.
+  if (rootVersion !== undefined && text.startsWith('\uFEFF')) {
+    ({document, text} = parseForUpdate(text.slice(1)));
+  }
+  const written = isRecord(parsedDoc) ? parsedDoc.version : undefined;
+  const flavor = opts.flavor === 'google' ? GOOGLE_VERSION :
+      opts.flavor === 'ossie'             ? OSSIE_VERSION :
+                                            undefined;
+  const removesSchemaLine = rootVersion !== undefined ||
+      (written === OSSIE_VERSION || written === GOOGLE_VERSION) &&
+          flavor !== undefined && written !== flavor;
+  const schemaLine = removesSchemaLine ?
+      SCHEMA_LINE.exec(text.slice(0, document.contents?.range?.[0] ?? 0)) :
+      null;
+  if (schemaLine) {
+    ({document, text} = parseForUpdate(
+         text.slice(0, schemaLine.index) +
+         text.slice(schemaLine.index + schemaLine[0].length)));
+    parsedDoc = document.toJS();
+  }
+  // The datasets whose metrics go to the model, and the metrics they list,
+  // which go in the same order.
+  const moving = rootVersion === undefined ? [] : movingDatasets(parsedDoc);
+  const planned = moving.flatMap(
+      ds => ds.metrics.map(
+          (m: Record<string, any>) => ({dataset: String(ds.name), name: m.name})));
+  // The datasets whose `metrics` list is empty, which goes.
+  const emptied =
+      moving.filter(ds => !ds.metrics.length).map(ds => String(ds.name));
+  let wrapped = false;
+  let moved = false;
+  if (rootVersion !== undefined) {
+    ({text, document, wrapped, moved} = rootModelText(text, document));
+    parsedDoc = document.toJS();
+    if (!wrapped) {
+      const {version, ...model} = parsedDoc;
+      parsedDoc = {version, semantic_model: [model]};
+    }
+    parsedDoc.version = OSSIE_VERSION;
   }
 
   // 2. Verify the top-level document envelope (`version` is a recognized format
@@ -460,6 +1255,15 @@ function parseImportDocument(
     } catch (err: any) {
       return err?.message ?? String(err);
     }
+  }
+  // Import names the file it writes after the model.
+  const modelName = parsedDoc.semantic_model[0].name;
+  if (typeof modelName !== 'string') {
+    return modelName === undefined ?
+        `Model name is missing; give the model a 'name', since import names ` +
+            `the file it writes after it.` :
+        `Model name ${JSON.stringify(modelName)} is not a string; write it ` +
+            `as one, since import names the file it writes after it.`;
   }
 
   // 3. Validate `opts.sourcePrefix` against the supported first-party GCP
@@ -517,19 +1321,29 @@ function parseImportDocument(
   // alias references before in-place mutations, and assemble `ImportDocument`.
   const root = plainCopy(parsedDoc) as Record<string, any>;
   const model = root.semantic_model[0] as Record<string, any>;
+  const links = linkNodes(root, document.contents);
+  // A model the text edits could not wrap moves by value from the root, and
+  // so do metrics they could not move (see rootModelText).
+  if (rootVersion !== undefined && !wrapped) {
+    linkNodes(model, document.contents, links);
+  }
+  if (rootVersion !== undefined && !moved) {
+    moveDatasetMetrics(model, movingDatasets(model));
+  }
+  // The moved metrics end the model's metrics, in the order planned.
+  const movedMetrics = planned.map((p, i) => ({
+    ...p,
+    metric: model.metrics[model.metrics.length - planned.length + i],
+  }));
   const inputVersion = root.version as FormatVersion;
-  const targetVersion: FormatVersion = opts.flavor ?
-      (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
-      inputVersion;
-  // A model file is YAML, so a JSON file is written as YAML.
+  const targetVersion: FormatVersion = flavor ?? inputVersion;
   const fileName = opts.fileName ?? `${model.name}.yaml`;
-  const warnings =
-      text === rawYaml ? [] : [`Converted '${fileName}' to YAML.`];
+  const warnings = fromJson ? [`Converted '${fileName}' to YAML.`] : [];
   const errors: string[] = [];
-  return {
+  const doc: ImportDocument = {
     text,
     document,
-    links: linkNodes(root, document.contents),
+    links,
     root,
     model,
     datasets: asRecords(model.entities ?? model.datasets),
@@ -539,14 +1353,24 @@ function parseImportDocument(
     targetVersion,
     sourcePrefix,
     entryGroup,
+    rootVersion,
+    schemaLine: schemaLine?.[0].trim(),
     strict,
-    modified: false,
+    modified: rootVersion !== undefined,
     warnings,
     errors,
     warnOrError: (msg: string) => (strict ? errors : warnings).push(msg),
     repair: (done: string, needed: string) =>
         strict ? errors.push(needed) : warnings.push(done),
   };
+  if (!strict) hyphenateModelName(doc);
+  // The names are checked first, so an import that stops on one converts
+  // nothing.
+  validateInputDocument(doc);
+  if (rootVersion !== undefined && !errors.length) {
+    convertRootModel(doc, rootVersion, movedMetrics, emptied);
+  }
+  return doc;
 }
 
 /**
@@ -894,7 +1718,7 @@ function normalizeDatatype(
 }
 
 /**
- * Maps each dialect onto the 9 allowed SQL dialects and drops unsupported
+ * Maps each dialect onto the allowed SQL dialects and drops unsupported
  * non-SQL dialects on a field or metric, returning `'empty'` if all dialect
  * entries were dropped. A vendor label stays as written for
  * `relabelVendorDialects`.
@@ -1805,7 +2629,11 @@ function validateDeploymentTargets(
 function checkVanillaProfileFiles(
     doc: ImportDocument, profileFiles: SerializedFile[],
     modelFile: string): void {
-  if (doc.inputVersion !== OSSIE_VERSION || profileFiles.length === 0) return;
+  // Import reads no profile file beside a file with its model at the root.
+  if (doc.inputVersion !== OSSIE_VERSION || doc.rootVersion !== undefined ||
+      profileFiles.length === 0) {
+    return;
+  }
   const badName =
       profileFiles
           .map(pf => profileNameError(pf.fileName, parseProfileName(pf.fileName)))
@@ -2247,7 +3075,16 @@ export async function importSemanticModelYaml(
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
-  validateInputDocument(doc);
+  // A third-party import that stops on a name writes nothing, so it reports
+  // no edit but the hyphens it gave the model name, which the errors use.
+  if (!doc.strict && doc.errors.length) {
+    return {
+      ok: false,
+      files: [],
+      warnings: doc.hyphenation ? [doc.hyphenation] : [],
+      errors: doc.errors,
+    };
+  }
   checkVanillaProfileFiles(
       doc, opts.profileFiles ?? [], opts.fileName ?? `${doc.model.name}.yaml`);
 
@@ -2295,6 +3132,12 @@ export async function importSemanticModelYaml(
   }
   if (files.length > 0 && doc.errors.length === 0) {
     await validateOutputDocument(files, doc, opts, load);
+  }
+  // An import that stops writes no file, so it removes no schema line.
+  if (doc.schemaLine !== undefined && doc.errors.length === 0) {
+    doc.warnings.unshift(
+        `Removed the editor schema line '${doc.schemaLine}', which names the ` +
+        `input file's schema.`);
   }
   return {
     ok: doc.errors.length === 0,

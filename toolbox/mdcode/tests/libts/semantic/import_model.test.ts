@@ -106,6 +106,32 @@ describe('names', () => {
             .toBe(true);
       });
 
+  // [the import, the model names it writes and its errors for a model named
+  // 'Shop semantic model']
+  test.each([
+    ['in a third-party import', false, [['Shop-semantic-model'], []]],
+    ['never under --input first-party', true, [[], [
+      "Model name 'Shop semantic model' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
+          'a letter, then letters, digits, underscores or hyphens.',
+    ]]],
+  ] as Array<[string, boolean, [string[], string[]]]>)(
+      'gives a model name a hyphen for each character it refuses %s', async (_, strict, out) => {
+        const res = await importSemanticModelYaml(ossieDoc({modelName: 'Shop semantic model'}), {strict});
+        expect([res.files.map(f => yaml.parse(f.content).semantic_model[0].name), res.errors])
+            .toEqual(out);
+      });
+
+  test('reports the hyphens with the errors when a third-party import stops on a name', async () => {
+    const extra = '    deployments:\n      - name: bad.deploy\n        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g\n';
+    const res = await importSemanticModelYaml(googleDoc({modelName: 'sales model', extra}));
+    expect([res.warnings, res.errors]).toEqual([
+      ["model 'sales model': wrote its name as 'sales-model', since a model name holds only letters, digits, " +
+           'underscores and hyphens.'],
+      ["model 'sales-model': Deployment name 'bad.deploy' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
+           'a letter, then letters, digits, underscores or hyphens.'],
+    ]);
+  });
+
   test('accepts a model and deployment name with a hyphen', async () => {
     const extra =
         `    deployments:\n      - name: prod-bq\n        target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail\n`;
@@ -152,6 +178,11 @@ describe('conversion, strict mode, and translation', () => {
     [
       'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
       'version'
+    ],
+    [
+      'a model with no name',
+      ossieDoc().replace('  - name: retail\n    datasets:', '  - datasets:'), {},
+      "Model name is missing; give the model a 'name', since import names the file it writes after it."
     ],
     [
       'invalid FQN sourcePrefix', ossieDoc(), {sourcePrefix: 'bigquery:acme.sales'},
