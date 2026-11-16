@@ -28,7 +28,7 @@ import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, profileSources, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, holdsSubquery, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
+import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -578,9 +578,8 @@ const SPANNER_GRAPH_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
 
 // What Spanner refuses in the graph of `model` that `target` names, each as
 // the end of a sentence about a deployment: a name Spanner does not accept,
-// the name of a table of the target database that the graph reads, and a
-// property expression that holds a subquery. Names compare ignoring case, as
-// Spanner compares them.
+// and the name of a table of the target database that the graph reads. Names
+// compare ignoring case, as Spanner compares them.
 function spannerGraphProblems(
     model: SemanticModel, target: SpannerGraphTarget): string[] {
   const graph = target.graphName;
@@ -613,28 +612,6 @@ function spannerGraphProblems(
             owner(named)} reads; a graph cannot share its name with a table ` +
         `of its database, compared ignoring case. Rename the graph in the ` +
         `target.`);
-  }
-  // The tables that list each property whose SQL holds a subquery, by the
-  // property's name and SQL, so a property a subtype inherits is reported
-  // once.
-  const subqueries = new Map<string, {name: string; owners: string[]}>();
-  for (const e of elements) {
-    for (const {name, sql} of e.properties) {
-      if (!holdsSubquery(sql, 'SPANNER')) continue;
-      const key = `${name}\u0000${sql}`;
-      const found = subqueries.get(key);
-      if (found) {
-        found.owners.push(owner(e));
-      } else {
-        subqueries.set(key, {name, owners: [owner(e)]});
-      }
-    }
-  }
-  for (const {name, owners} of subqueries.values()) {
-    problems.push(
-        `targets Spanner, where property '${name}' of ${
-            listed(owners)} holds a subquery, which Spanner refuses in a ` +
-        `property expression; write the expression without a subquery.`);
   }
   return problems;
 }

@@ -23,6 +23,22 @@ test.each<[string, string, (value: any) => void, string?]>([
     'empty flow collections with a space or a comment inside, beside a changed key',
     'a: [ ]\nb: {\n  # c\n}\nd: 1\n', v => v.d = 2, 'a: [ ]\nb: {\n  # c\n}\nd: 2\n'
   ],
+  ['a flow mapping key with no value, beside a changed key', 'm: {a: 1, b}\nc: 1\n', v => v.c = 2, 'm: {a: 1, b}\nc: 2\n'],
+  [
+    'keys with no value set to values, in a flow and a block mapping',
+    'm: {a: 1, b}\np:\n  a: 1\n  ? b  # c\n', v => (v.m.b = 2, v.p.b = [1]),
+    'm: {a: 1, b: 2}\np:\n  a: 1\n  ? b  # c\n  :\n    - 1\n'
+  ],
+  [
+    'keys after `?`, an anchor or a tag, beside a new key, list and flow mapping, and a moved block scalar',
+    'm:\n  ? a\n  : 1\n? s\n:\n- x\nf: { &k c: 1 }\nc:\n  custom:\n    !!str t: |  # h\n      x\n',
+    v => (v.m.b = 2, v.z = [1], v.f.d = {e: 1}, v.c = {...v.c.custom}),
+    'm:\n  ? a\n  : 1\n  b: 2\n? s\n:\n- x\nf: { &k c: 1, d: { e: 1 } }\nc:\n  t: |  # h\n    x\nz:\n- 1\n'
+  ],
+  [
+    'the last key of a mapping removed through the final newline, beside a key added after the mapping',
+    'a:\n  k: 1\n  e:\n', v => (delete v.a.e, v.z = 1), 'a:\n  k: 1\nz: 1\n'
+  ],
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   [
@@ -105,6 +121,11 @@ test.each<[string, string, (value: any) => void, string?]>([
         'a:\n  team:\n    notes:  # n\n\n  s: 1\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 2\n  - k: 3\n',
     v => (v.l.splice(3, 1), v.l.splice(1, 1), v.a = {s: 1, custom: {team: v.a.team}}, v.m.splice(1, 1)),
     'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 3\n'
+  ],
+  [
+    'an item added after an item that ends in an empty value with no comment, and such an item removed',
+    'l:\n  - a: 1\n    d:\nm:\n  - e: 1\n    d:\n  - k: 1\n', v => (v.l.push({b: 2}), v.m.shift()),
+    'l:\n  - a: 1\n    d:\n  - b: 2\nm:\n  - k: 1\n'
   ],
   [
     'items that end in a deeper comment above a comment and a line of spaces, removed or moved',

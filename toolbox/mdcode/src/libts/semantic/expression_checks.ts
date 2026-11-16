@@ -5,7 +5,7 @@ import {inheritedNoSqlProblems, noSqlProblemOf, noSqlReason, OSSIE_VERSION, writ
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, resolveInheritance} from './resolve_inheritance';
 import {boundDeclaration, DialectLoad, expressionSources, fieldsOnTables, firstEntityPerDatabase, noTextFor, possibleDialects, sourcesDialect, textsFor} from './resolve_profiles';
-import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
+import {columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {hashStartsComment} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
@@ -85,6 +85,8 @@ export function declaredFields(model: SemanticModel): Map<string, Set<string>> {
 //        inherited field of `authoredEntity ?? entity`, since metrics and
 //        fields on one entity share a namespace. This runs before pruning, so
 //        a graph push catches it even when pruning drops either side.
+//     7. Reject a text that holds a query, such as a subquery or a CTE, since
+//        a metric reads fields. The rules above leave such a text out.
 //   - For each field on each entity E:
 //     1. Reject any reference to an entity other than E, and a qualifier that
 //        differs only in case from a declared entity.
@@ -93,12 +95,17 @@ export function declaredFields(model: SemanticModel): Map<string, Set<string>> {
 //     3. Reject a field that names itself, directly or through other fields of
 //        E, declared or inherited, since the graph renders a field that names
 //        a sibling from that sibling's SQL (see selfReferenceCycles).
+//     4. Reject a text that holds a query, since a field expression is a
+//        scalar expression over its own dataset. Rules 1 and 2 leave such a
+//        text out.
 //
 // With `load.readWithoutDialect`, an ANSI_SQL text of tables whose dialect no
 // lookup read is read as columnsWithoutDialect reads it in the dialects those
 // tables may have, where it is otherwise skipped. A metric text that read
 // leaves a name out of is then left out of the rules on which entities the
-// text reaches.
+// text reaches. With or without `load.readWithoutDialect`, an ANSI_SQL text of
+// such tables holds a query only when it holds one in each dialect they may
+// have.
 export function expressionProblems(
     model: SemanticModel, document: string, fieldsPruned = false,
     warnings: string[] = [], load: DialectLoad = {}): ExpressionProblem[] {
@@ -120,7 +127,7 @@ export function expressionProblems(
   // does not give, so the cycle check reads the sources' dialect as read.
   const cycles = selfReferences(model, sourcesRead);
   const candidates =
-      dialectless ? possibleDialects(model.entities ?? []) : [];
+      sourcesRead === null ? possibleDialects(model.entities ?? []) : [];
   // The columns `text` reads, and whether the read left a name out.
   const read = (text: string, dialect: string) => {
     if (dialect !== 'ANSI_SQL' || !dialectless) {
@@ -167,7 +174,12 @@ export function expressionProblems(
           s => noSqlReason(s.text, s.dialect, entity.name) === undefined);
       const allColumns: SqlColumn[] = [];
       const unreadDialects: string[] = [];
+      const queried: string[] = [];
       for (const {text, dialect} of sources) {
+        if (holdsSubquery(text, dialect, sourcesRead, candidates)) {
+          queried.push(dialect);
+          continue;
+        }
         const {columns} = read(text, dialect);
         if (!columns) {
           unreadDialects.push(dialect);
@@ -178,6 +190,11 @@ export function expressionProblems(
       addUnreadableWarning(
           `field '${entity.name}.${field.name}'`, sources.length,
           unreadDialects);
+      if (queried.length) {
+        errors.push({item, problem: queryProblem(
+            `field '${entity.name}.${field.name}' in model '${model.name}' (${
+                document})`, queried) + '.'});
+      }
       for (const other of others) {
         const refs = fieldsReadOn(allColumns, other);
         if (refs.length) {
@@ -210,14 +227,15 @@ export function expressionProblems(
     }
     // Each cycle once, though it may be read in several texts.
     const reported = new Set<string>();
-    for (const {cycle} of cycles.filter(c => c.entity === entity.name)) {
+    for (const {cycle, dialect} of cycles.filter(
+             c => c.entity === entity.name)) {
       if (reported.has(JSON.stringify(cycle))) continue;
       reported.add(JSON.stringify(cycle));
       errors.push({
         item: {entity: entity.name, field: cycle[0]},
         problem: selfReferenceMessage(
                      entity.name, cycle,
-                     ` in model '${model.name}' (${document})`) +
+                     ` in model '${model.name}' (${document})`, dialect) +
             '.',
       });
     }
@@ -258,9 +276,15 @@ export function expressionProblems(
         sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
     const allColumns: SqlColumn[] = [];
     const unreadDialects: string[] = [];
+    const queried: string[] = [];
     // Whether the read left a name out of a text.
     let partial = false;
     for (const {text, dialect} of readable) {
+      if (holdsSubquery(text, dialect, sourcesRead, candidates)) {
+        queried.push(dialect);
+        partial = true;
+        continue;
+      }
       const {columns, skipped} = read(text, dialect);
       if (!columns) {
         unreadDialects.push(dialect);
@@ -271,6 +295,11 @@ export function expressionProblems(
     }
     addUnreadableWarning(
         `metric '${metric.name}'`, readable.length, unreadDialects);
+    if (queried.length) {
+      errors.push({item, problem: queryProblem(
+          `metric '${metric.name}' in model '${model.name}' (${document})`,
+          queried, true) + '.'});
+    }
 
     const reached = entitiesReached(allColumns, entityNames);
 
@@ -365,6 +394,19 @@ export function expressionProblems(
   return errors;
 }
 
+// The problem of `what`, a field, or a metric when `metric` is set, whose
+// texts in `dialects` hold a query.
+export function queryProblem(
+    what: string, dialects: string[], metric = false): string {
+  const rule = metric ?
+      'a metric reads fields, so its expression may not hold a subquery or ' +
+          'a CTE' :
+      'a field expression is a scalar expression over its own dataset, so ' +
+          'it may not hold a subquery or a CTE';
+  return `${what}: its ${dialects.map(d => `'${d}'`).join(', ')} SQL holds ` +
+      `a query; ${rule}`;
+}
+
 // Why each field of `model` holds no SQL, in the loader's words. Each field
 // is read on the entity that declares it, and each field an entity inherits
 // is read on that entity, as the loader does. An association's field is an
@@ -415,10 +457,13 @@ function fieldNoSqlProblems(
 // cycle of the ancestor where it forms: of those that bind its fields, the one
 // with the most ancestors. An inherited text is read in `impliedDialect`, as
 // the runtime reads it. A dialect in which `#` starts a comment is read with
-// BigQuery's rules, which also start a comment at `#`.
+// BigQuery's rules, which also start a comment at `#`. A cycle gives `dialect`
+// when all the texts that form it, in every dialect read, are written in that
+// one dialect.
 export function selfReferences(
     model: SemanticModel, impliedDialect: string|null|undefined):
-    Array<{entity: string; cycle: string[]; texts: string[]}> {
+    Array<
+        {entity: string; cycle: string[]; texts: string[]; dialect?: string}> {
   const inheritedReading =
       impliedDialect && !hashStartsComment(impliedDialect) ? impliedDialect :
                                                              undefined;
@@ -433,6 +478,8 @@ export function selfReferences(
   // Each cycle, by its entity, fields and texts.
   const found =
       new Map<string, {entity: string; cycle: string[]; texts: string[]}>();
+  // The dialects each cycle's texts are written in, by its entity and fields.
+  const written = new Map<string, Set<string>>();
   for (const e of model.entities ?? []) {
     if (e.abstract) continue;
     const resolved = resolvedByName.get(e.name) ?? e;
@@ -448,9 +495,23 @@ export function selfReferences(
       const texts = owners.map(o => textsFor(o.field, dialect)[0]?.text ?? '');
       const key = JSON.stringify({entity, cycle, texts});
       if (!found.has(key)) found.set(key, {entity, cycle, texts});
+      // Each text is written in `dialect`, or is the ANSI_SQL text of a field
+      // with no text in it.
+      const byCycle = JSON.stringify({entity, cycle});
+      written.set(byCycle, new Set([
+        ...written.get(byCycle) ?? [],
+        ...owners.map(
+            o => expressionSources(o.field).some(s => s.dialect === dialect) ?
+                dialect :
+                'ANSI_SQL'),
+      ]));
     }
   }
-  return [...found.values()];
+  return [...found.values()].map(c => {
+    const [dialect, ...others] =
+        written.get(JSON.stringify({entity: c.entity, cycle: c.cycle}))!;
+    return others.length ? c : {...c, dialect};
+  });
 }
 
 // The fields of `entity`, an entity with the fields its table runs, that name

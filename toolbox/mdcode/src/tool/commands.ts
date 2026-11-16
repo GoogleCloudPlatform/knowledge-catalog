@@ -26,7 +26,7 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {listed, LoadedModel, loadModels, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadModels, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, withoutImportAdvice, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {catalogForm, updatedText} from '../libts/semantic/pull_update';
 import {storeMessage} from '../libts/semantic/parameters';
@@ -2187,7 +2187,8 @@ async function pullSemanticModel(
   }
 
   for (const w of warnings) console.warn(`Warning: [${pulled.name}] ${w}`);
-  const updated = updatedFiles(layout, source, pulled.name, pulledFiles);
+  const updated =
+      updatedFiles(layout, source, pulled.name, pulledFiles, options.dryRun);
   updated.push(...sidecars);
   const code = writePulledFiles(
       layout, pulled.name, updated, options, unwritten, removed.length);
@@ -2370,10 +2371,12 @@ function pulledModelFiles(layout: SemanticModelLayout, pulled: SemanticModel) {
 // is written as pull built it, with a warning, when the local file does not
 // load or names another model, and when the changed local file would not hold
 // what the catalog holds. One that is not valid UTF-8, which push refuses, is
-// written that way too, with a warning.
+// written that way too, with a warning. The warning about a model file that
+// does not load gives the loader's advice to run `kcmd import` on it only
+// under `dryRun`, since a pull that writes replaces the file.
 function updatedFiles(
     layout: SemanticModelLayout, source: SemanticModelSource, model: string,
-    files: SerializedFile[]): SerializedFile[] {
+    files: SerializedFile[], dryRun = false): SerializedFile[] {
   const doc = layout.modelDocuments().find(
       d => layout.modelFile(d.name) === layout.modelPath(model));
   if (!doc) return files;
@@ -2389,8 +2392,13 @@ function updatedFiles(
     return new Map(pulledModelFiles(layout, form.model)
                        .files.map(f => [f.fileName, f.content]));
   };
+  // The loader's error, without its advice to run `kcmd import` on a file
+  // pull replaces.
+  const loadError = (error: string) =>
+      dryRun ? error : withoutImportAdvice(error);
   const why = (read: {error: string}|{named: string}) => 'error' in read ?
-      `does not load, so pull writes it from the catalog: ${read.error}` :
+      `does not load, so pull writes it from the catalog: ${
+          loadError(read.error)}` :
       `names model '${read.named}', so pull writes it from the catalog.`;
   // `file` with its content in the local file at `localPath`, which holds
   // `text`, when `base`, pull's text for that file, differs from the

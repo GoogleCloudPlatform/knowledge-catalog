@@ -13,9 +13,10 @@
 // an inherited expression onto the entity inheriting it.
 //
 
-import {Field, fieldBinding} from './ir';
-import {quoteIfReserved} from './sql_identifiers';
-import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments, withoutEngineMessages} from './sql_parser';
+import {Field, fieldBinding, OSSIE_SQL} from './ir';
+import {OSSIE_RESERVED} from './ossie_parser';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
 // text with no dialect, is read as BigQuery.
@@ -152,9 +153,10 @@ function nameOf(t: SqlToken, chars: string[]): string {
 // field and runs through the fields it names back to it, and `where` follows
 // the field's name, as ` in model 'm' (doc)` does. The graph renders a field
 // that names a sibling field from that sibling's own SQL (see
-// graph_ddl.fieldSql), so a field that reaches itself has none.
+// graph_ddl.fieldSql), so a field that reaches itself has none. The advice
+// writes the column as a text in `dialect` writes it.
 export function selfReferenceMessage(
-    owner: string, cycle: string[], where = ''): string {
+    owner: string, cycle: string[], where = '', dialect?: string): string {
   const [field, ...through] = cycle;
   return `field '${owner}.${field}'${where} names itself` +
       (through.length ?
@@ -164,7 +166,17 @@ export function selfReferenceMessage(
       `itself, directly or through other fields` +
       (through.length ? '' :
                         `; to read the column of that name, write it ` +
-               `without the qualifier: '${quoteIfReserved(field)}'`);
+               `without the qualifier: '${columnIn(field, dialect)}'`);
+}
+
+// The column `name` as a text in `dialect` writes it. An OSSIE_SQL_2026 text
+// writes it in double quotes when Ossie reserves it or it is not a simple
+// identifier. A text in any other dialect writes it as quoteIfReserved does.
+function columnIn(name: string, dialect?: string): string {
+  if (dialect !== OSSIE_SQL) return quoteIfReserved(name);
+  return OSSIE_RESERVED.has(name.toUpperCase()) || !isSimpleIdentifier(name) ?
+      `"${name.replace(/"/g, '""')}"` :
+      name;
 }
 
 // `expression` with each `<from>.` qualifier it writes before a column (see
@@ -284,12 +296,7 @@ export function columnsForSource(
 export function columnsWithoutDialect(
     text: string, dialects: readonly string[]):
     {columns: SqlColumn[]; skipped: boolean}|undefined {
-  // T-SQL's parser panics on `IF(...)`, and the tables may not run T-SQL, so
-  // the engine's message stays out of the output.
-  if (withoutEngineMessages(
-          () => dialects.some(d => !columnReferences(text, d)))) {
-    return undefined;
-  }
+  if (dialects.some(d => !columnReferences(text, d))) return undefined;
   const tokens = sqlTokens(text, 'ANSI_SQL');
   if (!tokens) return undefined;
   // Each name in double quotes is read as a placeholder name, so the columns
@@ -624,17 +631,43 @@ function unwrapped(node: any): any {
 }
 
 // Whether `expression`, read in `dialect`, holds a subquery at any depth, such
-// as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`. False when
-// the SQL parser cannot read it.
-export function holdsSubquery(expression: string, dialect: string): boolean {
+// as `(SELECT ...)`, `EXISTS (SELECT ...)` or `x IN (SELECT ...)`, or is a
+// query, such as `WITH ... SELECT ...`, which the parser reads in parentheses.
+// A query is a SELECT, a VALUES list, a WITH, or a UNION, INTERSECT or EXCEPT
+// whose branches are queries. The text holds a subquery when a SELECT or a
+// WITH appears anywhere in it. It also holds one when a query is the body of
+// a subquery, of EXISTS or of IN, or the operand of ANY or ALL, as in
+// `(VALUES (1))` or `x = ANY(VALUES (1), (2))`. An `ANSI_SQL` text is read in
+// `impliedDialect` when that is set, as columnsForSource reads it. When that
+// is null, which no lookup read, the text holds a subquery only when it holds
+// one in each of `possible`, the dialects its tables may have. It holds none
+// when `possible` is empty. False when the SQL parser cannot read the text.
+export function holdsSubquery(
+    expression: string, dialect: string, impliedDialect?: string|null,
+    possible: readonly string[] = []): boolean {
+  if (dialect === 'ANSI_SQL' && impliedDialect === null) {
+    return possible.length > 0 &&
+        possible.every(d => holdsSubquery(expression, d));
+  }
+  const read = dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
+  const isQuery = (node: any): boolean => {
+    const kind = Object.keys(node ?? {})[0];
+    return kind === 'select' || kind === 'values' || kind === 'with' ||
+        (['union', 'intersect', 'except'].includes(kind) &&
+         isQuery(node[kind].left) && isQuery(node[kind].right));
+  };
   const holds = (node: unknown): boolean => {
     if (Array.isArray(node)) return node.some(holds);
     if (node === null || typeof node !== 'object') return false;
     return Object.entries(node).some(
-        ([kind, value]) =>
-            kind === 'subquery' || kind === 'select' || holds(value));
+        ([kind, value]) => kind === 'select' || kind === 'with' ||
+            ((kind === 'subquery' || kind === 'exists') &&
+             isQuery(value?.this)) ||
+            ((kind === 'any' || kind === 'all') && isQuery(value?.subquery)) ||
+            (kind === 'in' && isQuery(value?.query)) || holds(value));
   };
-  return holds(sqlExpressionTree(expression, dialect));
+  return holds(sqlExpressionTree(expression, read) ??
+               sqlExpressionTree(`(\n${expression}\n)`, read));
 }
 
 // Whether the parser's tree `node` holds an aggregate, a window or a subquery

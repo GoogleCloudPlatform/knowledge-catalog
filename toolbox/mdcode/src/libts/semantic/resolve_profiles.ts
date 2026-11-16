@@ -27,17 +27,15 @@
 //     columns rather than fields, so pruning fields never removes an entity or
 //     a relationship.
 
-import * as yaml from 'yaml';
-
-import {selfReferences} from './expression_checks';
+import {queryProblem, selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, COMMA_ADVICE, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {bigQueryTranslation} from './transpile';
-import {YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
+import {documentValue, yamlErrorMessage} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form).
@@ -429,7 +427,7 @@ export function loadProfileFile(
     opts: {skipActions?: boolean} = {}): ProfileSpec {
   let doc: any;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     throw new SemanticModelError(`profile '${profileName}' does not parse: ${
         yamlErrorMessage(err, text)}`);
@@ -1312,7 +1310,8 @@ function requireKeys(
         modelFileKeysAt(level).includes(k) ?
             notAllowed(at, k) :
             `${at}: unknown key '${k}'; it takes ${
-                listed([...allowed].map(a => `'${a}'`))}`);
+                listed([...allowed].map(a => `'${a}'`))}${
+                obj[k] === null ? `. ${COMMA_ADVICE}` : ''}`);
   }
 }
 
@@ -1800,9 +1799,20 @@ export function validateProfileCompleteness(
     // dialects the profile's tables may have, and not at all without.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
-      // A text with no SQL is reported above, and has nothing to read.
-      const readable = expressionSources(pf).filter(
-          s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
+      // A text with no SQL is reported above, and has nothing to read. A text
+      // that holds a query is reported here, and its columns are not read. An
+      // ANSI_SQL text whose dialect no lookup read holds a query only when it
+      // holds one in each dialect the profile's tables may have.
+      const texts = expressionSources(pf).filter(
+          s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
+      const queried = texts.filter(
+          s => holdsSubquery(s.text, s.dialect, dialect, candidates));
+      if (queried.length) {
+        errors.push(`${at}: ${queryProblem(
+            `field '${pe.name}.${pf.name}'`, queried.map(s => s.dialect))}`);
+      }
+      const readable = texts.filter(
+          s => !queried.includes(s) &&
               !(s.dialect === 'ANSI_SQL' && dialect === null &&
                 !opts.readWithoutDialect));
       for (const {text, dialect: written} of readable) {
@@ -1839,15 +1849,18 @@ export function validateProfileCompleteness(
   // database runs, as push reads a model file's fields (see selfReferences).
   // A cycle the caller reports in the model file, through the same texts, is
   // left out, and each other cycle is reported once.
+  const cycleKey =
+      ({entity, cycle, texts}: ReturnType<typeof selfReferences>[0]) =>
+          JSON.stringify({entity, cycle, texts});
   const callerReports = new Set(
       opts.ownSqlOnly ?
-          selfReferences(baseModel, opts.ownSqlOnly.dialect)
-              .map(c => JSON.stringify(c)) :
+          selfReferences(baseModel, opts.ownSqlOnly.dialect).map(cycleKey) :
           []);
   const cycles = new Set(
       selfReferences(profiled, dialect)
-          .filter(c => !callerReports.has(JSON.stringify(c)))
-          .map(c => `${at}: ${selfReferenceMessage(c.entity, c.cycle)}`));
+          .filter(c => !callerReports.has(cycleKey(c)))
+          .map(c => `${at}: ${
+                   selfReferenceMessage(c.entity, c.cycle, '', c.dialect)}`));
   errors.push(...cycles);
 
   // A profile's key columns are physical column names.

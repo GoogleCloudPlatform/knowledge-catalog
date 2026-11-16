@@ -172,8 +172,12 @@ export interface Dimension {
 export const ALLOWED_DIALECTS = [
   'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
   'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS',
+  'OSSIE_SQL_2026',
 ] as const;
 export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
+
+// The dialect Apache Ossie 0.3.0.dev0 writes its `sql` texts in.
+export const OSSIE_SQL: SqlDialect = 'OSSIE_SQL_2026';
 
 export interface DialectExpression {
   dialect: SqlDialect;

@@ -787,6 +787,32 @@ describe('document-level handling', () => {
     })).toThrow(/unknown version '9.9.9'/);
   });
 
+  test.each([
+    ['0.3.0.dev0', "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or '0.2.0.dev0/google'. "],
+    ['0.2.0.dev0', "the document: 'semantic_model' is missing; it takes a list\nthe document: unknown keys " +
+        "'name' and 'datasets'; it takes 'version' and 'semantic_model'\n"],
+  ])('a %s file with its model at the document root is refused with advice to import it', (version, problem) => {
+    const text = `version: "${version}"
+name: retail
+datasets:
+  - name: orders
+    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+    primary_key: [id]
+    fields: []
+`;
+    expect(loadSemanticModels([{name: 'retail', text}]).error).toBe(
+        `Model document 'retail': Semantic model load error: ${problem}` +
+        "Run 'kcmd import <file> --flavor <ossie|google>' to convert it.");
+  });
+
+  test('a 0.3.0.dev0 document with no datasets, such as an Ossie ontology, is refused as holding no model', () => {
+    const text = 'version: 0.3.0.dev0\nname: Flights\nontology:\n  concepts: []\n';
+    expect(loadSemanticModels([{name: 'flights', text}]).error).toBe(
+        "Model document 'flights': Semantic model load error: the document has version '0.3.0.dev0' and " +
+        "no 'datasets', so it holds no Apache Ossie semantic model. kcmd reads no other Ossie document, " +
+        'such as an ontology or a mapping.');
+  });
+
   test('an unknown key is a hard load error (objects are strict)', () => {
     // Objects are `.strict()`: an unrecognized key is rejected rather than
     // silently dropped, so a typo cannot slip through unnoticed.
@@ -858,6 +884,11 @@ describe('document-level handling', () => {
 
   test('unparseable input throws', () => {
     expect(() => loadModels('{ this is : not valid')).toThrow(/load error/);
+  });
+
+  test('an alias inside the value its anchor names throws, naming the alias', () => {
+    expect(() => loadModels('version: "0.2.0.dev0"\nx: &a {self: *a}\nsemantic_model: []\n')).toThrow(
+      "could not parse input: Alias '*a' at line 2, column 14 refers to a value that contains it");
   });
 });
 
@@ -1069,8 +1100,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all nine allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
-    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS'];
+  test('all ten allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS', 'OSSIE_SQL_2026'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',
@@ -1945,6 +1976,13 @@ semantic_model:
         "skipped (set 'entity' in a GOOGLE custom_extensions block on the metric, " +
         "or use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
         "backtick-quote a reserved qualifier, such as `Date`.amount)");
+
+    // Ossie's grammar reserves ORDER and quotes a name in double quotes.
+    const ossieUnparseable = load(GOOGLE, fullModel('metric', { expression: expr('SUM(Order.amount)', 'OSSIE_SQL_2026') }));
+    expect(ossieUnparseable.warnings).toContain(
+        "metric 'order_count': expression could not be parsed; entity inference was " +
+        "skipped (set 'entity' on the metric, or double-quote a reserved " +
+        'qualifier, such as "Order".amount)');
   });
 });
 
@@ -2825,17 +2863,20 @@ ${model}`;
     expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
   });
 
-  test('googleBlockProfiles skips profiles with no JSON form, such as a recursive alias', () => {
+  test('googleBlockProfiles reports the load error for an alias inside the value its anchor names', () => {
     const text = (block: string) => `version: "${VANILLA}"
 semantic_model:
   - name: m
     custom_extensions:
 ${block}`;
-    for (const block of [
-      '      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
-      '      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+    for (const [block, alias] of [
+      ['      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
+        "'*p' at line 8, column 19"],
+      ['      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+        "'*d' at line 9, column 21"],
     ]) {
-      expect(googleBlockProfiles(text(block))).toEqual([]);
+      expect(() => googleBlockProfiles(text(block))).toThrow(
+        `Semantic model load error: could not parse input: Alias ${alias} refers to a value that contains it`);
     }
   });
 });
@@ -2927,6 +2968,9 @@ describe('closed objects: custom_extensions and dimension', () => {
         ['dataset', { custom_extensions: null }, `${entity} 'orders': 'custom_extensions' is empty; it takes a list`],
         ['field', { colour: 'red', size: 3 }, "field 'orders.customer_id': unknown keys 'colour' and 'size'; it takes " +
           "'name', 'expression', 'datatype', 'description', 'label', 'dimension', 'ai_context' and 'custom_extensions'"],
+        ['field', { '2)': null }, "field 'orders.customer_id': unknown key '2)'; it takes 'name', 'expression', " +
+          "'datatype', 'description', 'label', 'dimension', 'ai_context' and 'custom_extensions'. A comma ends an " +
+          'entry of a flow mapping, so if the comma belongs to the text, quote the text.'],
         ['dataset', { name: undefined }, `${entity} number 1: 'name' is missing; it takes a string`],
         ['field', { name: undefined }, `field number 2 of ${entity} 'orders': 'name' is missing; it takes a string`],
         ['dataset', { primary_key: { id: 1 } }, `${entity} 'orders': 'primary_key' is a mapping; it takes a list`],

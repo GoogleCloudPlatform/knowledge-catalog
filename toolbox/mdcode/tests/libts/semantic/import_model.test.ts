@@ -106,6 +106,32 @@ describe('names', () => {
             .toBe(true);
       });
 
+  // [the import, the model names it writes and its errors for a model named
+  // 'Shop semantic model']
+  test.each([
+    ['in a third-party import', false, [['Shop-semantic-model'], []]],
+    ['never under --input first-party', true, [[], [
+      "Model name 'Shop semantic model' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
+          'a letter, then letters, digits, underscores or hyphens.',
+    ]]],
+  ] as Array<[string, boolean, [string[], string[]]]>)(
+      'gives a model name a hyphen for each character it refuses %s', async (_, strict, out) => {
+        const res = await importSemanticModelYaml(ossieDoc({modelName: 'Shop semantic model'}), {strict});
+        expect([res.files.map(f => yaml.parse(f.content).semantic_model[0].name), res.errors])
+            .toEqual(out);
+      });
+
+  test('reports the hyphens with the errors when a third-party import stops on a name', async () => {
+    const extra = '    deployments:\n      - name: bad.deploy\n        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g\n';
+    const res = await importSemanticModelYaml(googleDoc({modelName: 'sales model', extra}));
+    expect([res.warnings, res.errors]).toEqual([
+      ["model 'sales model': wrote its name as 'sales-model', since a model name holds only letters, digits, " +
+           'underscores and hyphens.'],
+      ["model 'sales-model': Deployment name 'bad.deploy' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
+           'a letter, then letters, digits, underscores or hyphens.'],
+    ]);
+  });
+
   test('accepts a model and deployment name with a hyphen', async () => {
     const extra =
         `    deployments:\n      - name: prod-bq\n        target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail\n`;
@@ -150,8 +176,18 @@ describe('conversion, strict mode, and translation', () => {
           'description: "*".'
     ],
     [
+      'an alias inside the value its anchor names',
+      ossieDoc({extra: '        custom_extensions: [{vendor_name: DBT, data: &a {self: *a}}]\n'}), {},
+      "Alias '*a' at line 13, column 64 refers to a value that contains it"
+    ],
+    [
       'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
       'version'
+    ],
+    [
+      'a model with no name',
+      ossieDoc().replace('  - name: retail\n    datasets:', '  - datasets:'), {},
+      "Model name is missing; give the model a 'name', since import names the file it writes after it."
     ],
     [
       'invalid FQN sourcePrefix', ossieDoc(), {sourcePrefix: 'bigquery:acme.sales'},
@@ -211,6 +247,11 @@ describe('conversion, strict mode, and translation', () => {
       `entity 'orders': unknown key 'colour'`
     ],
     [
+      'an empty metrics entry in a vanilla model converted to Google in strict mode',
+      ossieDoc({extra: '    metrics:\n      -\n'}), {flavor: 'google' as const, strict: true},
+      'metric number 1 is empty; it takes a mapping'
+    ],
+    [
       'two vanilla dataset names converted to Google in strict mode',
       ossieDoc({extra: `      - name: Orders\n        source: ${BQ_TABLE}\n`}),
       {flavor: 'google' as const, strict: true},
@@ -261,6 +302,9 @@ describe('conversion, strict mode, and translation', () => {
      googleDoc({extra: party(`        fields: [{name: id, expression: ${MDX_ONLY}}]\n`)}), 'google',
      "field 'party.id': 'expression' has no entry in a supported SQL dialect; remove 'expression', " +
      "since a field of abstract entity 'party' takes none."],
+    ['a metric with no supported dialect',
+     googleDoc({extra: `    metrics:\n      - {name: m, entity: orders, expression: ${MDX_ONLY}}\n`}), 'google',
+     "metric 'm': 'expression' has no entry in a supported SQL dialect; add one."],
     ['a vanilla datatype in another casing', ossieDoc({extra: '            datatype: integer\n'}), 'ossie',
      "field 'orders.order_id': write datatype 'integer' as 'Integer'."],
     ['a lowercase Opaque', ossieDoc({extra: '            datatype: opaque\n'}), 'ossie',
@@ -293,6 +337,9 @@ describe('conversion, strict mode, and translation', () => {
      "Move extra model 'other' from 'semantic_model' into its own file; the format allows one " +
      'model per document.'],
     ['a vanilla relationship description', ossieDoc({extra: joined('oc', '        description: d\n')}), 'ossie',
+     "relationship 'oc': move 'description' into a GOOGLE custom_extensions block for '0.2.0.dev0'."],
+    ['a vanilla relationship description beside a custom_extensions key with no value',
+     ossieDoc({extra: joined('oc', '        description: d\n        ? custom_extensions\n')}), 'ossie',
      "relationship 'oc': move 'description' into a GOOGLE custom_extensions block for '0.2.0.dev0'."],
   ] as Array<[string, string, 'ossie'|'google', string]>)(
       'refuses %s under --input first-party with what the input needs',
@@ -1804,25 +1851,32 @@ describe('dialects and datatypes', () => {
         expect(fields[2].expression).toBeUndefined();
       });
 
+  // Every import drops Opaque in any letter case, which kcmd reads as no
+  // datatype, and reports it.
   test.each([
-    ['a Google file', {strict: true}, ['datatype: integer', 'datatype: Opaque']],
+    ['a Google file', {strict: true}, ['datatype: integer']],
     [
       'a Google file converted to vanilla',
       {flavor: 'ossie' as const, strict: true},
-      ['datatype: Integer', 'datatype: Opaque', 'dialect: ANSI_SQL'],
+      ['datatype: Integer', 'dialect: ANSI_SQL'],
     ],
-  ])('keeps each datatype the output flavor accepts in %s', async (_, opts, lines) => {
+    ['a third-party Google file', {}, ['datatype: integer']],
+  ])('keeps each datatype the output flavor accepts, and drops Opaque, in %s', async (_, opts, lines) => {
     const res = await importSemanticModelYaml(
-        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
+        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: OPAQUE\n            expression: amount\n'}),
         opts);
 
     expect(res.errors).toEqual([]);
-    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([]);
+    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([
+      "field 'orders.amount': removed datatype 'OPAQUE', which kcmd reads as no datatype.",
+    ]);
     for (const line of lines) expect(res.files[0].content).toContain(line);
+    expect(res.files[0].content).not.toContain('OPAQUE');
   });
 
+  // A third-party import removes such a metric and reports it.
   test.each([false, true])(
-      'reports an error when a vanilla field or metric is left with no supported dialect, with --input first-party %p',
+      'reports an error when a vanilla field is left with no supported dialect, and for such a metric with --input first-party %p',
       async strict => {
         const extra =
             `    metrics:\n      - name: total_orders\n        expression:\n          dialects:\n            - {dialect: MAQL, expression: "SELECT COUNT(order_id)"}\n`;
@@ -1836,8 +1890,10 @@ describe('dialects and datatypes', () => {
         expect(res.errors).toContain(
             "field 'orders.order_id': 'expression' has no entry in a supported SQL dialect, and " +
             "version '0.2.0.dev0' requires an 'expression' on every field; add one.");
-        expect(res.errors).toContain(
-            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one.");
+        expect(strict ? res.errors : res.warnings).toContain(strict ?
+            "metric 'total_orders': 'expression' has no entry in a supported SQL dialect; add one." :
+            "metric 'total_orders': removed the metric, since 'expression' has no entry in a supported " +
+                'SQL dialect; add the metric back with one.');
       });
 
   test(

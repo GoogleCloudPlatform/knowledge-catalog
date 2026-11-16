@@ -8,6 +8,7 @@
 // or an unparseable expression degrades to a per-request `error`.
 
 import {describe, expect, spyOn, test} from 'bun:test';
+import {join} from 'node:path';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSqlEngine, mysqlForEngine, sqlExpressionTree} from '../../../src/libts/semantic/sql_parser';
@@ -138,6 +139,33 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
           expect(r.error).toContain('unsupported target dialect');
         }
       });
+
+  // The engine's parser never returns on a type followed by a parenthesis the
+  // text leaves open. Its T-SQL parser panics on IF(...), and after a few
+  // thousand panics the engine reads no text. So each text is translated and
+  // read 3,000 times in a child process stopped after 20 seconds, then a plain
+  // text is read, and what the engine printed is checked too.
+  test.each([
+    ['SNOWFLAKE', 'CAST(amount AS NUMBER(10, 2'],
+    ['SQLSERVER', 'IF(a, b, c)'],
+  ])('reads and translates %s %j without hanging or printing', (dialect, expression) => {
+    const module = (file: string) => JSON.stringify(join(__dirname, '../../../src/libts/semantic', file));
+    const run = Bun.spawnSync({
+      cmd: [process.execPath, '-e', `
+        const {loadSqlEngine, sqlColumns} = await import(${module('sql_parser')});
+        const {polyglotTranspiler} = await import(${module('transpile')});
+        await loadSqlEngine();
+        const [dialect, expression] = ${JSON.stringify([dialect, expression])};
+        const [translation] = await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY');
+        for (let i = 1; i < 3000; i++) sqlColumns(expression, dialect);
+        const columns = sqlColumns(expression, dialect) ?? null;
+        console.log(JSON.stringify({columns, translation, after: sqlColumns('a + b', 'POSTGRES') ?? null}));`],
+      timeout: 20000,
+    });
+    expect({stopped: run.exitedDueToTimeout, printed: run.stderr.toString(), ...JSON.parse(run.stdout.toString() || '{}')})
+        .toEqual({stopped: false, printed: '', columns: null, after: [{name: 'a'}, {name: 'b'}], translation: {
+          id: '0', error: 'kcmd does not translate a text it cannot read as one expression'}});
+  }, 30000);
 });
 
 describe('polyglotTranspiler (transformations)', () => {
@@ -198,7 +226,7 @@ describe('polyglotTranspiler (transformations)', () => {
   // constructs it leaves untranslated. Every construct a `sql` row uses gives
   // the source dialect's value in BigQuery for ordinary data, and every `sql`
   // passes a BigQuery dry run against a table that has each column the row
-  // names.
+  // names, given each query parameter it names.
   test.each([
     // Values, operators, CASE and NULL handling.
     ['POSTGRES', 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1', {sql: 'SUM(x) * COUNT(*) + COUNT(DISTINCT a) - 1'}],
@@ -209,6 +237,15 @@ describe('polyglotTranspiler (transformations)', () => {
     ['MYSQL', 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)', {sql: 'IF(a NOT IN (7, 8) AND z IS NOT NULL, NULLIF(a, 0), 0)'}],
     ['MYSQL', 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END', {sql: 'IF(flag, a + 1, a) = CASE WHEN NOT flag THEN a END'}],
     ['SQLSERVER', 'COALESCE([order total], 0) * 2 - 1', {sql: 'COALESCE(`order total`, 0) * 2 - 1'}],
+    ['POSTGRES', 'größe * 2', {sql: '`größe` * 2'}],
+    ['POSTGRES', 'extract + 1', {sql: '`extract` + 1'}],
+    ['SQLSERVER', 'amount > @threshold', {sql: 'amount > @threshold'}],
+    ['POSTGRES', '"a`b" + 1', {error: 'kcmd does not translate a name that holds a backtick or a backslash'}],
+    ['POSTGRES', 'orders."a\\b" + 1', {error: 'kcmd does not translate a name that holds a backtick or a backslash'}],
+    ['POSTGRES', 'copy IS NOT NULL', {sql: 'copy IS NOT NULL'}],
+    ['POSTGRES', "call = 'inbound'", {sql: "call = 'inbound'"}],
+    ['SQLSERVER', "call = 'inbound'", {error: 'kcmd does not translate a text it cannot read as one expression'}],
+    ['SQLSERVER', 'limit + 1', {sql: '`limit` + 1'}],
     ['POSTGRES', "s LIKE 'a%' OR NOT (a <> b) AND TRUE", {sql: "s LIKE 'a%' OR NOT (a <> b) AND TRUE"}],
     ['ALLOYDB', '"orders"."amount" + 1', {sql: '`orders`.`amount` + 1'}],
     ['SPANNER', 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)', {sql: 'SUM(IF(a = 1, a - b, 0)) / COUNT(*)'}],
@@ -285,6 +322,14 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', '/* a /* b */ c */ d', {sql: 'd /* a / * b * / c */'}],
     ['SQLSERVER', 'COALESCE(a, b) -- fallback', {sql: 'COALESCE(a, b) /* fallback */'}],
     ['POSTGRES', 'x /*note*/', {sql: 'x /* note */'}],
+    // Each comment is written as often as the text writes it, and a string
+    // that holds a comment's text is no comment. Comments that differ in the
+    // white space inside their text count apart.
+    ['SNOWFLAKE', "status = 'done' -- finished orders", {sql: "status = 'done' /* finished orders */"}],
+    ['POSTGRES', '-- c\nx + 1 -- c', {sql: 'x + 1 /* c */ /* c */'}],
+    ['POSTGRES', "((x = '/*c*/')) -- c", {sql: "((x = '/*c*/')) /* c */"}],
+    ['POSTGRES', '(x = y /* a b */) AND (z = 1 /* ab */)', {sql: '(x = y /* a b */) AND (z = 1 /* ab */)'}],
+    ['POSTGRES', 'x = y -- a b\nAND z = 1 -- ab', {sql: 'x = y /* a b */ AND z = 1 /* ab */'}],
     ['POSTGRES', "DATE_TRUNC('month' /* c */, d)", {sql: 'DATE_TRUNC(d, MONTH) /* c */'}],
     ['MYSQL', 'COALESCE(ordered_at, NOW())  # when the order was placed', {sql: "COALESCE(ordered_at, DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)) /* when the order was placed */"}],
     ['MYSQL', 'amount# note', {sql: 'amount /* note */'}],
@@ -444,6 +489,12 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SQLSERVER', 'DATEADD(day, 1, CAST(d AS DATE)) < GETDATE()', {sql: "DATE_ADD(CAST(d AS DATE), INTERVAL 1 DAY) < CURRENT_DATETIME('UTC')"}],
     ['DATABRICKS', 'date_add(d, 1) < current_timestamp()', {sql: 'TIMESTAMP(DATE_ADD(CAST(CAST(d AS DATETIME) AS DATE), INTERVAL 1 DAY)) < CURRENT_TIMESTAMP()'}],
     ['MYSQL', 'DATE_ADD(CURDATE(), INTERVAL 1 HOUR) < NOW()', {sql: "(CURRENT_DATE + INTERVAL 1 HOUR) < DATETIME_TRUNC(CURRENT_DATETIME('UTC'), SECOND)"}],
+    // Calls with no arguments: PI(), RANDOM() where RAND() gives its value, and
+    // calls off the list.
+    ['POSTGRES', 'PI() * r * r', {sql: 'ACOS(-1) * r * r'}],
+    ['POSTGRES', 'RANDOM()', {sql: 'RAND()'}],
+    ['SNOWFLAKE', 'RANDOM()', {error: 'kcmd does not translate RANDOM'}],
+    ['MYSQL', 'ROW_NUMBER() + 1', {error: 'kcmd does not translate ROW_NUMBER'}],
     // Date, format and conversion functions off the list.
     ['MYSQL', 'DAYNAME(order_date)', {error: 'kcmd does not translate DAYNAME'}],
     ['SQLSERVER', 'CONVERT(varchar(10), d, 103)', {error: 'kcmd does not translate CONVERT'}],

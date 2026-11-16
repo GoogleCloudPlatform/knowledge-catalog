@@ -29,9 +29,10 @@
 //     warning is emitted -- never a throw.
 //
 
-import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {Field, OSSIE_SQL, ProfileSpec, SemanticModel, SqlDialect} from './ir';
+import {ossieToBigQuery} from './ossie_translate';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
-import {isSimpleIdentifier} from './sql_identifiers';
+import {isReservedKeyword, isSimpleIdentifier} from './sql_identifiers';
 import {loadedSqlEngine, loadSqlEngine, mysqlForEngine, PolyglotEngine, SqlToken, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
@@ -49,10 +50,13 @@ export interface TranspileRequest {
 
 // The result for one request: exactly one of `sql` (success) or `error` (the
 // expression could not be transpiled and should be left to the imported form).
+// `reminders` holds a line for each form in `sql` whose value can differ from
+// the source's in a way the author should check.
 export interface TranspileResponse {
   id: string;
   sql?: string;
   error?: string;
+  reminders?: readonly string[];
 }
 
 // The pluggable transpilation mechanism. Must return one response per request
@@ -276,7 +280,15 @@ export async function transpileModel(
 
   if (!pending.length) return {model: clone, warnings};
 
-  const responses = await transpiler(pending.map(p => p.request), target);
+  // kcmd's Ossie translator translates an OSSIE_SQL_2026 text to BigQuery,
+  // and the transpiler every other text.
+  const ossie = (r: TranspileRequest) => r.dialect === OSSIE_SQL && target === DEFAULT_TARGET;
+  const requests = pending.map(p => p.request);
+  const others = requests.filter(r => !ossie(r));
+  const responses = [
+    ...requests.filter(ossie).map(ossieResponse),
+    ...others.length ? await transpiler(others, target) : [],
+  ];
   const byId = new Map(responses.map(r => [r.id, r]));
 
   for (const p of pending) {
@@ -314,6 +326,7 @@ export async function transpileModel(
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
+    for (const reminder of res.reminders ?? []) warnings.push(`${ctx}: ${reminder}`);
     if (request.dialect === 'SQLSERVER') {
       warnings.push(
           `${ctx}: SQL Server text is translated to BigQuery on a ` +
@@ -349,8 +362,10 @@ export function bigQueryTranslation(
   const source = sourceToTranspile(node, DEFAULT_TARGET);
   const engine = loadedSqlEngine();
   if (!source || !engine) return undefined;
-  const {sql} = transpileWith(
-      engine, {id: '', ...source}, polyglotDialect(DEFAULT_TARGET)!);
+  const request = {id: '', ...source};
+  const {sql} = source.dialect === OSSIE_SQL ?
+      ossieResponse(request) :
+      transpileWith(engine, request, polyglotDialect(DEFAULT_TARGET)!);
   if (sql === undefined) return undefined;
   const reached = qualifiersReached(sql, DEFAULT_TARGET, entityNames);
   return !reached || sameSet(reached.exact, reached.anyCase) ? sql : undefined;
@@ -364,6 +379,11 @@ export function bigQueryTranslation(
 export function translatesToBigQuery(
     node: TranspileNode, entityNames: string[]): boolean {
   return bigQueryTranslation(node, entityNames) !== undefined;
+}
+
+// The answer of kcmd's Ossie translator to `r`, an OSSIE_SQL_2026 text.
+function ossieResponse(r: TranspileRequest): TranspileResponse {
+  return {id: r.id, ...ossieToBigQuery(r.expression)};
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -456,21 +476,66 @@ function transpileWith(
         const found = unknownConstruct(engine, tree, rules);
         return found && writtenName(engine, text, r.dialect, read, rules, found);
       };
-      const unknown = misreadToken(engine, source, read) ??
-          (tree ? named() : 'a text it cannot read as one expression');
+      // BigQuery refuses a name that holds a backtick or a backslash, and the
+      // engine writes such a name as another name.
+      const oddName = quotedNames(tree).some(n => /[`\\]/.test(n)) &&
+          'a name that holds a backtick or a backslash';
+      const unknown = misreadToken(engine, source, read) ?? (oddName ||
+          (tree ? named() : 'a text it cannot read as one expression'));
       if (unknown) return {id: r.id, error: `kcmd does not translate ${unknown}`};
       if (spanner) repaired = spannerForBigQuery(engine, tree);
     }
     repaired ??= engineTranslation(engine, text, r.dialect, read, write);
     if ('error' in repaired) return {id: r.id, error: repaired.error};
-    // Each comment the engine did not keep goes last. The engine may space a
-    // comment it keeps another way.
-    const squash = (s: string) => s.replace(/\s+/g, '');
-    const dropped = comments.filter(c => !squash(repaired.sql).includes(squash(c)));
-    return {id: r.id, sql: [repaired.sql, ...dropped].join(' ')};
+    // Each comment the engine did not keep goes last, as often as the text
+    // writes it more than the translation does. Both count, by the engine's
+    // tokens, only the comments outside strings.
+    const sql = commentsAsWritten(engine, repaired.sql, write, comments);
+    const kept = sqlComments(engine, sql, write).comments.map(squash);
+    const dropped = comments.filter(c => {
+      const i = kept.indexOf(squash(c));
+      if (i >= 0) kept.splice(i, 1);
+      return i < 0;
+    });
+    return {id: r.id, sql: [sql, ...dropped].join(' ')};
   } catch (err) {
     return {id: r.id, error: errMessage(err)};
   }
+}
+
+// `s`, a block comment, without the white space at the start and the end of
+// its text, to compare a comment the engine writes another way than
+// sqlComments writes it. The engine adds a space after `/*` and before `*/`
+// where the text has none, and sqlComments trims the text of a line comment.
+function squash(s: string): string {
+  return s.replace(/^\/\*\s*/, '/*').replace(/\s*\*\/$/, '*/');
+}
+
+// `sql`, the engine's translation into its dialect `write` of a text with
+// `comments` (see sqlComments), with each of those comments as often as the
+// text writes it. The engine writes a comment once for each node that ends
+// where it stands, so `x = y -- c` becomes `x = y /* c */ /* c */`, and it may
+// write a copy after the next operator. Each copy past that count is removed,
+// with the spaces before it. The text between two tokens holds only spaces and
+// comments.
+function commentsAsWritten(engine: PolyglotEngine, sql: string, write: string, comments: string[]): string {
+  const tokens = engine.tokenize(sql, write).tokens;
+  if (!tokens) return sql;
+  const left = new Map<string, number>();
+  comments.forEach(c => left.set(squash(c), (left.get(squash(c)) ?? 0) + 1));
+  const chars = [...sql];
+  let out = '';
+  let end = 0;
+  for (const {span} of [...tokens, {span: {start: chars.length, end: chars.length}}]) {
+    out += chars.slice(end, span.start).join('').replace(/\s*(\/\*[\s\S]*?\*\/)/g, (copy, c) => {
+      const n = left.get(squash(c));
+      if (n !== undefined) left.set(squash(c), n - 1);
+      return n === undefined || n > 0 ? copy : '';
+    });
+    out += chars.slice(span.start, span.end).join('');
+    end = span.end;
+  }
+  return out;
 }
 
 // The engine's translation of `text`, an expression in `dialect` that the
@@ -487,16 +552,27 @@ function engineTranslation(
   // reads the expression alone first. After SELECT, the engine writes the
   // functions of a comparison or a CASE before a comment as the source does,
   // so it reads the expression there without its comments. transpileWith puts
-  // them last.
+  // them last. The engine reads a text that starts with a statement word alone
+  // as that statement, such as PostgreSQL's `call = 'inbound'` with a column
+  // named call. When the engine cannot read the text alone, the translation
+  // after SELECT is taken whenever the engine gives one, with no check that it
+  // is a BigQuery expression. When the text alone gives SQL that is not one
+  // BigQuery expression, or reads as a statement, the translation after SELECT
+  // is taken only when it is a BigQuery expression, and otherwise the text is
+  // not translated.
   let res = engine.transpile(sql, read, write);
-  if (!res.success) {
-    const chars = [...sql];
-    const code = (engine.tokenize(sql, read).tokens ?? [])
-        .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
+  const isExpression = (r: typeof res) =>
+      r.sql?.length === 1 && sqlExpressionTree(r.sql[0], 'BIGQUERY') !== undefined;
+  const chars = [...sql];
+  const code = (engine.tokenize(sql, read).tokens ?? [])
+      .map(t => chars.slice(t.span.start, t.span.end).join('')).join(' ');
+  const statement = res.success && write === 'bigquery' &&
+      (!isExpression(res) || readsAsStatement(engine, code, read));
+  if (!res.success || statement) {
     const selected = engine.transpile(`SELECT ${code}`, read, write);
-    if (selected.success) {
-      res = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
-    }
+    const written = {...selected, sql: selected.sql?.map(s => s.replace(/^SELECT /, ''))};
+    if (selected.success && (!statement || isExpression(written))) res = written;
+    else if (statement) return {error: 'kcmd does not translate a text it cannot read as one expression'};
   }
   if (!res.success || !res.sql || res.sql.length === 0)
     return {error: res.error ?? 'transpilation produced no output'};
@@ -507,6 +583,16 @@ function engineTranslation(
     return {error: `expected a single expression but got ${res.sql.length} statements`};
   return write === 'bigquery' ? repairForBigQuery(engine, res.sql[0], read) :
                                 {sql: res.sql[0]};
+}
+
+// Whether the engine reads `code`, a text without comments in its dialect
+// `read`, alone as another kind of node than the expression it reads after
+// SELECT. A text that starts with a statement word reads alone as that
+// statement.
+function readsAsStatement(engine: PolyglotEngine, code: string, read: string): boolean {
+  const kind = (node: any) => Object.keys(node ?? {})[0];
+  const selected = kind((engine.parse(`SELECT ${code}`, read).ast?.[0] as any)?.select?.expressions?.[0]);
+  return selected !== undefined && kind(engine.parse(code, read).ast?.[0]) !== selected;
 }
 
 // The text after the comments that start `sql`, in the engine's dialect
@@ -606,13 +692,18 @@ const CONVERTING = new Set(['mysql', 'tsql']);
 // of two integers is an integer on PostgreSQL tables, and its AVG of integers
 // an integer on SQL Server tables. A SPANNER text gives
 // BigQuery's value except where Spanner applies its default time zone (see
-// "SPANNER texts" below).
+// "SPANNER texts" below). PI() gives the double nearest pi in PostgreSQL,
+// MySQL, SQL Server, Snowflake and Databricks, as BigQuery's ACOS(-1) does.
+// ANSI SQL, Spanner and BigQuery have no PI(). RANDOM() gives a double from 0
+// to 1 in PostgreSQL and Databricks, as BigQuery's RAND() does, and a 64-bit
+// integer in Snowflake.
 const KINDS: Record<string, string[]> = Object.fromEntries([
-  ...['annotated', 'column', 'literal', 'boolean', 'paren', 'neg', 'add', 'sub',
+  ...['annotated', 'column', 'literal', 'boolean', 'null', 'paren', 'neg', 'add', 'sub',
       'mul', 'eq', 'neq', 'lt', 'lte', 'gt', 'gte', 'and', 'or', 'not', 'between',
       'in', 'is_null', 'case', 'coalesce', 'sum', 'count', 'min', 'max', 'trim',
       'upper', 'lower', 'like', 'abs', 'floor', 'ceil', 'cast',
       'try_cast'].map(kind => [kind, DIALECTS]),
+  ['pi', except('generic', 'spanner')], ['random', ['postgresql', 'databricks']],
   ['div', ['snowflake', 'databricks', 'spanner']], ['avg', except('mysql', 'tsql', 'generic')],
   ['length', except('mysql', 'tsql')],
   ['concat', except('tsql')], ['nvl', ['snowflake', 'databricks']],
@@ -2145,12 +2236,12 @@ function treeWithoutComments(node: any): any {
 }
 
 // Whether `v` is an engine node: an object with one key, its kind, whose value
-// is an object.
+// is an object, or null for a node with no parts, such as PI() or NULL.
 function isNode(v: any): boolean {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
   const values = Object.values(v);
-  return values.length === 1 && !!values[0] && typeof values[0] === 'object' &&
-      !Array.isArray(values[0]);
+  return values.length === 1 && (values[0] === null ||
+      (typeof values[0] === 'object' && !Array.isArray(values[0])));
 }
 
 // The kind of `node`, an engine node, or undefined.
@@ -2163,6 +2254,8 @@ function kindOf(node: any): string|undefined {
 // not translate the node.
 function nextNodes(kind: string, value: any, read: string):
     unknown[]|string|undefined {
+  // A node with no parts, such as NULL.
+  if (value === null) return KINDS[kind]?.includes(read) ? [] : undefined;
   const node = {[kind]: value};
   const nested = comparingKind(node) ? nestedComparison(node, read) : undefined;
   if (nested) return nested;
@@ -2511,11 +2604,13 @@ function swapped(node: any, swap: Map<any, any>): any {
 // truncates a DATE as a timestamp with time zone at midnight UTC, which a unit
 // of a day or less leaves at the date. A comparison, a negated value, and the
 // results of one COALESCE, NVL, IF or CASE, get the forms valueForms gives.
+// PI() is ACOS(-1), since BigQuery has no PI().
 function exactForm(node: any, read: string): any {
   const kind = kindOf(node) ?? '';
   const value = node[kind];
   const args: any[] = kind === 'function' ? value.args ?? [] : [];
   const name = String(value?.name).toUpperCase();
+  if (kind === 'pi') return formCall('ACOS(-1)', []);
   if (read === 'postgresql' && name === 'DATE_TRUNC' && args.length === 2 && isDate(args[1])) {
     const unit = TRUNC_PARTS[String(partName(args[0])).toLowerCase()];
     const day = ['DAY', ...SUB_DAY].includes(unit);
@@ -2931,12 +3026,13 @@ function constructName(engine: PolyglotEngine, node: any, read: string): string 
   // A `not` node here wraps an operator import does not translate, such as
   // ILIKE in `s NOT ILIKE p` (see nextNodes).
   if (kind === 'not') return `NOT ${constructName(engine, value.this, read)}`;
-  const written = [value.original_name, value.name].find(n => typeof n === 'string');
+  const written = [value?.original_name, value?.name].find(n => typeof n === 'string');
   if (written) return written.toUpperCase();
   if (kind === 'window_function') return 'OVER';
-  // The node with a column `x` for each node in it.
+  // The node with a column `x` for each node in it. A node such as PI() has
+  // none.
   const x = {column: {name: {name: 'x', quoted: false}, table: null}};
-  const bareNode = Object.fromEntries(Object.entries(value).map(([k, v]) =>
+  const bareNode = value && Object.fromEntries(Object.entries(value).map(([k, v]) =>
       [k, Array.isArray(v) ? v.map(e => isNode(e) ? x : e) : isNode(v) ? x : v]));
   const sql = engine.generate([{[kind]: bareNode}], read === 'spanner' ? 'bigquery' : read).sql?.[0] ?? '';
   const called = /^([A-Za-z_]\w*)\s*\(/.exec(sql)?.[1];
@@ -3125,12 +3221,14 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
   const tree = sqlExpressionTree(sql, 'BIGQUERY');
   if (!tree) return {sql};
   let changed = false;
-  const result = mapTree(tree, node => {
+  const result = mapTree(tree, visited => {
+    const named = withQuotedNames(visited);
+    const node: any = named ?? visited;
     // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
     // which it writes as DATETIME.
     if (node.data_type === 'timestamp') node.timezone = true;
     const dated = withPlainDates(node);
-    const repaired = repairNode(dated ?? node, read) ?? dated;
+    const repaired = repairNode(dated ?? node, read) ?? dated ?? named;
     if (repaired !== undefined) changed = true;
     return repaired;
   });
@@ -3140,6 +3238,30 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     return {error: written.error ?? 'the repaired SQL could not be written'};
   }
   return {sql: written.sql[0]};
+}
+
+// Whether BigQuery reads `name` as a name without quotes: a letter or
+// underscore followed by letters, digits and underscores, and no reserved
+// word.
+function plainBigQueryName(name: string): boolean {
+  return isSimpleIdentifier(name) && !isReservedKeyword(name);
+}
+
+// `node`, an engine node of BigQuery SQL, with the name of its column, its
+// table or its struct field quoted where BigQuery cannot read the name without
+// quotes, or undefined when no name needs them. The engine writes a name as
+// the source writes it, such as größe, which BigQuery refuses. It reads a
+// variable or a query parameter, such as @threshold, as a column, and that
+// name stays as written.
+function withQuotedNames(node: any): unknown {
+  const plain = (id: any) => !id || id.quoted || /^@/.test(id.name) || plainBigQueryName(id.name);
+  const quoted = (id: any) => plain(id) ? id : {...id, quoted: true};
+  const column = node.column;
+  if (column && !(plain(column.name) && plain(column.table))) {
+    return {...node, column: {...column, name: quoted(column.name), table: quoted(column.table)}};
+  }
+  if (node.dot && !plain(node.dot.field)) return {...node, dot: {...node.dot, field: quoted(node.dot.field)}};
+  return undefined;
 }
 
 // The node to put in place of `node`, an engine node of BigQuery SQL from the
@@ -3183,7 +3305,7 @@ function repairNode(node: any, read: string): unknown {
     // without its quotes, so put it back as a column, quoted if it must be.
     const col = args[1].var?.this;
     const date = col === undefined ? args[1] : {
-      column: {name: {name: col, quoted: !isSimpleIdentifier(col)}, table: null},
+      column: {name: {name: col, quoted: !plainBigQueryName(col)}, table: null},
     };
     return {function: {...fn, args: [date, {var: {this: truncPart}}]}};
   }

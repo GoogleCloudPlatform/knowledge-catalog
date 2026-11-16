@@ -276,7 +276,10 @@ handling, arithmetic beside a number or a SUM, COUNT or AVG, most comparisons,
 basic casts, and a few string and date functions. Its warning about any other
 text names the first part it does not translate. It names a function and a
 date part as the author wrote them, such as `CHAR_LENGTH` or `DATEPART` with
-part `w`.
+part `w`. A column name that BigQuery cannot read without quotes, such as
+`straße` or `extract`, gets backticks. An `OSSIE_SQL_2026` text follows its
+own rules, in
+[How import translates OSSIE_SQL_2026](#how-import-translates-ossie_sql_2026).
 
 It reads each database's SQL under that database's default settings:
 PostgreSQL, MySQL, SQL Server and Databricks in UTC, Snowflake in
@@ -516,6 +519,12 @@ The BigQuery value can differ from the source's value in these cases:
   text format, such as '12.5' for 12.50.
 - A MySQL date column plus a number gives a date in BigQuery where MySQL gives
   a number.
+- A DATE literal or a cast of a date string to DATE, compared with a column,
+  becomes the plain string. Snowflake, Databricks and SQL Server compare a
+  text column with a date as a date, so a text column holding
+  '2024-01-01 10:00:00' matches the date 2024-01-01 there and not in BigQuery.
+  A Databricks CAST to DATE stays SAFE_CAST instead, which BigQuery refuses
+  beside a text or TIMESTAMP column.
 - A Snowflake TIMESTAMP_LTZ or TIMESTAMP_TZ column plus or minus days or weeks
   can be an hour off across a daylight saving change. Snowflake adds a day in
   its default time zone, America/Los_Angeles, where BigQuery adds 24 hours.
@@ -543,6 +552,90 @@ metrics that read it, so that they name its time zone.
 Snowflake's default time zone is written into the current date and time
 functions of a `SNOWFLAKE` text, and UTC into the current timestamp of a
 `MYSQL` or `SQLSERVER` text.
+
+### How import translates OSSIE_SQL_2026
+
+`kcmd import --transpile` reads an `OSSIE_SQL_2026` text with kcmd's parser of
+Apache Ossie's expression grammar, and writes the BigQuery SQL an author would
+write by hand for each construct. A text that holds a construct with no such
+form stays untranslated, and the warning names the construct. These are the
+places where the BigQuery SQL can differ from the source. Import's report adds
+a reminder line for `SPLIT_PART`, `SUBSTRING` with a constant start below 1,
+`REGEXP_EXTRACT` with a capturing group, a cast to `VARCHAR(n)` or
+`STRING(n)`, `EXTRACT(SECOND)` and `DATE_PART('second')`, `EXTRACT(DAYOFWEEK)`
+and `DATE_PART('dayofweek')`, and `MEDIAN`, `PERCENTILE_CONT` and
+`PERCENTILE_DISC` without `OVER`.
+
+- `SPLIT_PART(s, d, n)` becomes `SPLIT(s, d)[SAFE_ORDINAL(n)]`, which gives
+  NULL past the last part and for a negative part, where Snowflake, Databricks
+  and PostgreSQL give `''` past the last part and count a negative part from
+  the end.
+- `SPLIT_PART` with an empty delimiter splits the text into single
+  characters, while Snowflake and PostgreSQL give the whole text.
+- `SUBSTRING` reads a start of 0 as 1 and counts a negative start from the
+  end, so `SUBSTRING('abcdef', 0, 3)` is `'abc'` and ANSI SQL:2003 gives
+  `'ab'` instead.
+- A cast to `VARCHAR(n)` or `STRING(n)` becomes
+  `SUBSTRING(CAST(x AS STRING), 1, n)`, which cuts the text of any value to
+  `n` characters, while ANSI SQL:2003 raises an error for a longer value that
+  is not a string.
+- `EXTRACT(SECOND FROM x)` and `DATE_PART('second', x)` give whole seconds,
+  whereas ANSI SQL:2003 keeps the fraction.
+- `EXTRACT(WEEK FROM x)` and `DATE_PART('week', x)` give the ISO 8601 week,
+  BigQuery's `ISOWEEK`, so 2021-01-01 is in week 53, and a week starts on
+  Monday in `DATE_TRUNC` and `DATEDIFF` too.
+- `EXTRACT(DAYOFWEEK FROM x)` and `DATE_PART('dayofweek', x)` number the days
+  from Sunday as 1 to Saturday as 7, where Snowflake and PostgreSQL count
+  Sunday as 0 and Saturday as 6.
+- `MEDIAN`, `PERCENTILE_CONT` and `PERCENTILE_DISC` without `OVER` become
+  `APPROX_QUANTILES`, an approximate value of the exact percentile the source
+  gives.
+- `APPROX_QUANTILES` gives one of the values without interpolating, so the
+  median of 1, 2, 3 and 4 is 2, where the source gives 2.5.
+- `REGEXP_EXTRACT(s, p)` gives the match of the capturing group when `p` has
+  one, where Ossie gives the whole first match, and BigQuery refuses a pattern
+  with two or more groups in `REGEXP_EXTRACT` and `REGEXP_COUNT`.
+- `REGEXP_LIKE(s, p)` becomes `REGEXP_CONTAINS(s, p)`, which is true when `p`
+  matches any part of `s`, as in Databricks and PostgreSQL, while Snowflake
+  matches `p` only against the whole of `s`.
+- A cast to `DECIMAL` or `NUMERIC` without a precision keeps 9 decimal places,
+  so `CAST(2.75 AS DECIMAL)` is 2.75, where ANSI SQL:2003 gives such a cast a
+  scale of 0.
+- A cast reads a string by BigQuery's rules, so `CAST('12.5' AS INTEGER)`
+  raises an error, while ANSI SQL:2003 reads the number the string holds.
+- A cast of a `BOOLEAN` to `VARCHAR` gives `'true'` or `'false'` in lower
+  case, and ANSI SQL:2003 writes them in upper case.
+- A cast of an exact number to `VARCHAR` writes no zeros at the end of its
+  fraction, so `CAST(CAST(12.5 AS DECIMAL(5, 2)) AS VARCHAR)` is `'12.5'`,
+  where ANSI SQL:2003 gives `'12.50'`.
+- A number with an exponent beside a `NUMERIC` value becomes a `NUMERIC` with
+  9 decimal places, so `v * 1e-10` is 0 for a `NUMERIC` value of 1, where
+  Ossie keeps the number as a `DOUBLE`.
+- A decimal literal such as `0.075` is a `FLOAT64`, so arithmetic with it is
+  approximate, and `ROUND(qty * 0.075, 2)` gives 0.07 for a qty of 1 and
+  `qty * 0.1 = 0.3` is false for a qty of 3, where Ossie's exact numbers give
+  0.08 and true.
+- `NULLIF` of a `DATE` and a `DATETIME` gives a `DATETIME`, and of a `DATE`
+  and a `TIMESTAMP` a `TIMESTAMP`, whereas ANSI SQL:2003 keeps the type of the
+  first value.
+- `LIKE` reads a backslash in its pattern as an escape character, which
+  Ossie's `LIKE` does not have.
+- A `TIMESTAMP` is BigQuery's, a point in time read in UTC, whereas ANSI
+  SQL:2003's `TIMESTAMP` has no time zone.
+- kcmd casts a `DATE` or `DATETIME` beside a visible `TIMESTAMP` to
+  `TIMESTAMP`, and compares a visible `DATE` and a column as `DATETIME`s, so
+  `created_at >= DATE '2024-01-01'` runs on a `DATE`, `DATETIME` or
+  `TIMESTAMP` column and reads a `TIMESTAMP` at its wall-clock time in UTC.
+- `DATEDIFF` becomes `DATE_DIFF`, which counts whole units between
+  `TIMESTAMP`s and unit boundaries between `DATE`s or `DATETIME`s. So from
+  23:00 to 01:00 the next day is 0 days between `TIMESTAMP`s and 1 day
+  between `DATETIME`s.
+- BigQuery refuses some of these forms for some types of value, and push then
+  fails. For example, BigQuery refuses a `DATE` column beside a `TIMESTAMP`
+  column, a part shorter than a day of a `DATE`, a week or longer of a
+  `TIMESTAMP` column in `DATEADD` and `DATEDIFF`, a `TIME` in `DATE_TRUNC`,
+  `DATEADD` and `DATEDIFF`, `%` and `MOD()` of a `FLOAT64`, and `PARTITION BY`
+  a `FLOAT64`.
 
 ## To Spanner
 

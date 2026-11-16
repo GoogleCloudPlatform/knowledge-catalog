@@ -11,14 +11,13 @@
 import * as glob from 'glob';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
 import {listed, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
-import {YAML_OPTIONS, yamlErrorMessage} from '../semantic/yaml_options';
+import {documentValue, yamlErrorMessage} from '../semantic/yaml_options';
 
 import {frontmatterText, joinFrontmatter, splitFrontmatter} from './documents';
 
@@ -679,7 +678,7 @@ export class SemanticModelLayout implements CatalogLayout {
       const text = this.files.read(localPath).toString('utf8');
       let doc: any;
       try {
-        doc = yaml.parse(text, YAML_OPTIONS);
+        doc = documentValue(text);
       } catch {
         // A YAML error; the name stays undefined.
       }
@@ -901,7 +900,7 @@ function parseProfileName(text: string, file: string, name: string):
     string|undefined {
   let doc: any;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     throw new ProfileFileError(
         profileParseError(file, yamlErrorMessage(err, text)));

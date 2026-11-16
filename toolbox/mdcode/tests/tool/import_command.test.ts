@@ -416,17 +416,23 @@ describe('kcmd import', () => {
         `Profile file '${file}' sits beside '${modelFile}', which is a 0.2.0.dev0 document; ` +
         'sibling profile files are Google-flavor only, and a 0.2.0.dev0 model keeps its ' +
         'profiles in its GOOGLE block.';
-    // [label, the model file, --flavor, the error]. With --transpile, PROFILE
-    // has the BigQuery SQL push requires.
-    for (const [label, text, flavor, error] of [
+    // [label, the model file, --flavor, the error, the profile file if not
+    // PROFILE]. With --transpile, PROFILE has the BigQuery SQL push requires.
+    for (const [label, text, flavor, error, profile = PROFILE] of [
       ['a Google model converted to vanilla', google, 'ossie',
        `the import does not write ${PROFILE_FILE}, which would stay beside the model`],
       ['a vanilla model converted to Google', model(), 'google',
        besideVanilla('retail.profile.prod.yaml', 'retail.yaml')],
+      ['a Google model whose profile file holds an alias inside the value its anchor names',
+       google, 'google',
+       "Profile file 'retail.profile.prod.yaml' does not parse: Alias '*a' at line 13, column 25 " +
+           'refers to a value that contains it; JSON cannot hold such a value.',
+       `${PROFILE}actions:\n  - name: a\n    executor: &a {self: *a}\n`],
     ]) {
       test(`${label} in place is refused, naming the profile file`, async () => {
         setUp();
         write(MODEL_FILE, text);
+        write(PROFILE_FILE, profile);
         expect(await importModel(MODEL_FILE, {flavor, input: 'first-party', transpile: true}))
             .toBe(1);
         expect(errors).toEqual([expect.stringContaining(`Error: ${error}`)]);

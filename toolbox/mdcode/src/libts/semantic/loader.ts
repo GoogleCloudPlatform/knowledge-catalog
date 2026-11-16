@@ -13,14 +13,14 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 
 import {deploymentTargetKey} from './deployment_target';
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, OSSIE_SQL, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, importCommand, importHint, noTextFor, profileSpecOf, sourcesDialect, TableDialects, tableDialects, TranspileOutcomes} from './resolve_profiles';
 import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
-import {parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
+import {documentValue, parseLeniently, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -123,6 +123,19 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
 export const GOOGLE_VERSION = '0.2.0.dev0/google';
+// The version an Apache Ossie 0.3.0.dev0 file declares. Such a file holds its
+// model at the document root.
+export const OSSIE_ROOT_VERSION = '0.3.0.dev0';
+// The sentence a load error adds for a file only `kcmd import` reads.
+const IMPORT_ADVICE =
+    `Run 'kcmd import <file> --flavor <ossie|google>' to convert it.`;
+// `error`, a load error, without the sentence at its end that advises running
+// `kcmd import` on the file: IMPORT_ADVICE, or the advice to complete bare
+// table names (see parseSource).
+export function withoutImportAdvice(error: string): string {
+  return error.replace(
+      /\s+(?:Run|Or run) 'kcmd import <file>[^']*' to [^'\n]*$/, '');
+}
 // How a vanilla author declares deployments: in a GOOGLE block on the model,
 // or under `deployments:` after a switch to the Google flavor.
 const DEPLOYMENTS_VERSION_HINT =
@@ -1562,26 +1575,27 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  * Text that is not valid YAML is read as far as it parses. A document whose
  * root keys are all strings, and that sets `version` once, to a string other
  * than the vanilla one, gives none when each YAML error is a key set twice, an
- * alias whose anchor is not set, or more aliases than a load expands. Otherwise
- * its profiles are read as in text that parses, and only when that reading is
- * unambiguous. Each YAML error is a key set twice or an alias whose anchor is
- * not set, since any other error, such as a bad indent, can move the blocks,
- * cut them short or change the version. The document sets `version` once, to
- * the vanilla one, and `semantic_model` at most once. Its model sets
- * `custom_extensions` at most once, and each block that is a mapping sets
- * `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles` at
- * most once each, and holds no alias. Every key of a mapping on that path is a
- * string, so not an alias or a merge key, and no value on it is an alias. No
- * key is set twice inside `custom_extensions`. When any of these fails, when a
- * GOOGLE block cannot be read, or when a load rejects its profiles, it throws
- * the error a load reports for the text. So does a vanilla model whose text has
- * more aliases than a load expands, or a merge key whose value is not a
- * mapping.
+ * alias whose anchor is not set, an alias inside the value its anchor names,
+ * or more aliases than a load expands. Otherwise its profiles are read as in
+ * text that parses, and only when that reading is unambiguous. Each YAML error
+ * is a key set twice, an alias whose anchor is not set, or an alias inside the
+ * value its anchor names, since any other error, such as a bad indent, can
+ * move the blocks, cut them short or change the version. The document sets
+ * `version` once, to the vanilla one, and `semantic_model` at most once. Its
+ * model sets `custom_extensions` at most once, and each block that is a
+ * mapping sets `vendor_name` once, to a string. A GOOGLE block sets `data` and
+ * `profiles` at most once each, and holds no alias. Every key of a mapping on
+ * that path is a string, so not an alias or a merge key, and no value on it is
+ * an alias. No key is set twice inside `custom_extensions`. When any of these
+ * fails, when a GOOGLE block cannot be read, or when a load rejects its
+ * profiles, it throws the error a load reports for the text. So does a vanilla
+ * model whose text has more aliases than a load expands, or a merge key whose
+ * value is not a mapping.
  */
 export function googleBlockProfiles(text: string): ProfileSpec[] {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     return googleBlockProfilesPastYamlError(text, yamlErrorMessage(err, text));
   }
@@ -1665,13 +1679,13 @@ function googleBlockProfilesPastYamlError(
  * it. Valid YAML gives its version. Past a YAML error, the version is read
  * only when every root key is a string and the root sets `version` once, to a
  * string. Each error must be a key set twice, an alias whose anchor is not
- * set, or more aliases than a load expands. Undefined otherwise, and when the
- * text sets no string version.
+ * set, an alias inside the value its anchor names, or more aliases than a
+ * load expands. Undefined otherwise, and when the text sets no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch {
     return versionPastYamlError(
         yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
@@ -1885,16 +1899,18 @@ function protoMemberError(
 
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into
- * the Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
+ * the Semantic Model IR. `yaml.parseDocument` accepts JSON too, so both are
+ * supported.
  *
  * A document with a field or metric expression that is not blank needs the SQL
  * parser, so call `loadSqlEngine()` first. Without it, this throws a plain
- * Error instead of a SemanticModelError.
+ * Error instead of a SemanticModelError. The Ossie parser reads an
+ * OSSIE_SQL_2026 text without it.
  */
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
-    doc = yaml.parse(text, YAML_OPTIONS);
+    doc = documentValue(text);
   } catch (err: any) {
     throw new SemanticModelError(
         `Semantic model load error: could not parse input: ${
@@ -1909,7 +1925,10 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  * `warnings` rather than thrown.
  */
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
-  const version = readVersion(doc);
+  // Only `kcmd import` reads a model at the document root, so the load error
+  // says to run it.
+  const advice = rootModelVersion(doc) ? IMPORT_ADVICE : undefined;
+  const version = readVersion(doc, advice);
   const extended = version === GOOGLE_VERSION;
   const proto =
       protoMemberError(doc, extended, opts.messageFlavor ?? version);
@@ -1925,7 +1944,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
         schemaProblems(result.error.issues, {
           schema, doc: normalized, authored: doc, extended,
           subject: 'the document', words: opts.messageFlavor,
-        })}`);
+        })}${advice ? `\n${advice}` : ''}`);
   }
 
   const warnings: string[] = [];
@@ -2123,12 +2142,13 @@ export function inferMetricEntities(
     if (text) sources.push({text, dialect});
   }
   const allCols: SqlColumn[] = [];
-  let unparsed = false;
+  // The dialect of the first text that could not be parsed.
+  let unparsed: string|undefined;
   for (const {text, dialect} of sources) {
     if (!text) continue;
     const cols = columnsForSource(text, dialect, impliedDialect ?? undefined);
     if (cols === undefined) {
-      unparsed = true;
+      unparsed ??= dialect;
     } else {
       allCols.push(...cols);
     }
@@ -2140,12 +2160,15 @@ export function inferMetricEntities(
             `metric, or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
             `the metric` :
         `set 'entity' on the metric`;
+    // Ossie's grammar quotes a name in double quotes, and reserves ORDER.
+    const quoting = unparsed === OSSIE_SQL ?
+        'double-quote a reserved qualifier, such as "Order".amount' :
+        'backtick-quote a reserved qualifier, such as `Date`.amount';
     return {
       referenced,
       warning: unparsed ?
           `${ctx}: expression could not be parsed; entity inference was ` +
-              `skipped (${entityHint}, or backtick-quote a reserved ` +
-              `qualifier, such as \`Date\`.amount)` :
+              `skipped (${entityHint}, or ${quoting})` :
           `${ctx}: expression references no known entity; ` +
               `it may not be placeable downstream`,
     };
@@ -2198,8 +2221,11 @@ export function entityAndMetricWarnings(
 // Reads and validates the top-level `version`. It is REQUIRED and must be one
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
-// error rather than a warning (agreed with Dmitri).
-function readVersion(doc: unknown): FormatVersion {
+// error rather than a warning (agreed with Dmitri). An unknown version's error
+// ends with `advice` when given. An Apache Ossie '0.3.0.dev0' document with
+// neither `datasets` nor `semantic_model`, such as an Ossie ontology or mapping
+// document, holds no semantic model, and its error says so.
+function readVersion(doc: unknown, advice?: string): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
   if (typeof version !== 'string' || version.length === 0) {
@@ -2208,12 +2234,37 @@ function readVersion(doc: unknown): FormatVersion {
         `'${OSSIE_VERSION}' (vanilla Ossie) or '${GOOGLE_VERSION}' (the ` +
         `extended profile) at the top level.`);
   }
+  if (version === OSSIE_ROOT_VERSION && isRecord(doc) &&
+      !('datasets' in doc) && !('semantic_model' in doc)) {
+    throw new SemanticModelError(
+        `Semantic model load error: the document has version ` +
+        `'${OSSIE_ROOT_VERSION}' and no 'datasets', so it holds no Apache ` +
+        `Ossie semantic model. kcmd reads no other Ossie document, such as an ` +
+        `ontology or a mapping.`);
+  }
   if (!isFormatVersion(version)) {
     throw new SemanticModelError(
         `Semantic model load error: unknown version ` +
-        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.`);
+        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.` +
+        (advice ? ` ${advice}` : ''));
   }
   return version;
+}
+
+/**
+ * The version of `doc` when it holds an Ossie model at the document root,
+ * with `datasets` and no `semantic_model`: an Apache Ossie '0.3.0.dev0' file,
+ * or a '0.2.0.dev0' file as the Ossie converters write it. Undefined for any
+ * other document.
+ */
+export function rootModelVersion(doc: unknown): string|undefined {
+  if (!isRecord(doc) || 'semantic_model' in doc || !('datasets' in doc)) {
+    return undefined;
+  }
+  const {version} = doc;
+  return version === OSSIE_ROOT_VERSION || version === OSSIE_VERSION ?
+      version :
+      undefined;
 }
 
 
@@ -3184,6 +3235,12 @@ function schemaProblems(
       .join('\n');
 }
 
+// The sentence a message about an unknown key with no value ends with. YAML
+// ends a flow-mapping entry at a comma, so an unquoted text that holds a comma
+// leaves the rest of the text as a key with no value.
+export const COMMA_ADVICE = 'A comma ends an entry of a flow mapping, so if ' +
+    'the comma belongs to the text, quote the text.';
+
 function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   if (issue.code === 'invalid_union') {
     // When only one alternative takes the value's type, report its problems.
@@ -3204,9 +3261,11 @@ function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
   switch (issue.code) {
     case 'unrecognized_keys': {
       const keys = keysAt(input.schema, issue.path).map(k => `'${spelled(k)}'`);
+      const noValue = issue.keys.some(k => (value as any)?.[k] === null);
       return `${subject}: unknown key${issue.keys.length > 1 ? 's' : ''} ${
           listed(issue.keys.map(k => `'${k}'`))}${
-          place ? ` in ${place}` : ''}; it takes ${listed(keys)}`;
+          place ? ` in ${place}` : ''}; it takes ${listed(keys)}${
+          noValue ? `. ${COMMA_ADVICE}` : ''}`;
     }
     case 'invalid_type':
       return takes(expected(issue.expected));

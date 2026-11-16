@@ -1074,6 +1074,38 @@ describe('validateProfileCompleteness', () => {
     expect(validateProfileCompleteness(irModel(), profile())).toEqual([]);
   });
 
+  // An ANSI_SQL text is read in the profile's dialect, where # starts a comment.
+  test('a field binding whose text holds a query is reported', () => {
+    const ltv = {name: 'lifetimeValue', dialects: [
+      {dialect: 'ANSI_SQL' as const, expression: '(SELECT SUM(o.total) FROM shop.orders AS o) # note'}]};
+    expect(validateProfileCompleteness(irModel(), profile({
+      entities: [{...profile().entities[0], fields: [...CUSTOMER_COLUMNS, ltv]}, profile().entities[1]],
+    }))).toEqual([
+      "profile 'prod': field 'Customer.lifetimeValue': its 'ANSI_SQL' SQL holds a query; a field " +
+          'expression is a scalar expression over its own dataset, so it may not hold a subquery ' +
+          'or a CTE',
+    ]);
+  });
+
+  // An OSSIE_SQL_2026 text is read with the Ossie parser, under the rules of
+  // every other dialect.
+  test('a field binding whose only text is OSSIE_SQL_2026 reads only its own entity', () => {
+    const m = irModel();
+    m.entities[1].fields.push({name: 'doubled'});
+    const doubled = {name: 'doubled', dialects: [
+      {dialect: 'OSSIE_SQL_2026' as const, expression: 'Customer.key * 2'}]};
+    expect(validateProfileCompleteness(m, profile({
+      entities: [profile().entities[0],
+                 {...profile().entities[1], fields: [...profile().entities[1].fields!, doubled]}],
+    }))).toEqual([
+      "profile 'prod': field 'Order.doubled' reads entity 'Customer'; a field expression reads " +
+          'only its own entity',
+      "profile 'prod': field 'Order.doubled' has no expression for BIGQUERY or ANSI_SQL, and " +
+          "this profile's sources are BIGQUERY; give it one, or add one with 'kcmd import " +
+          "<file> --input first-party --flavor <ossie|google> --transpile'",
+    ]);
+  });
+
   test('unknown entity, field, relationship and metric names are reported', () => {
     const errors = validateProfileCompleteness(irModel(), profile({
       entities: [...profile().entities, {name: 'Ghost', source: BQ('g')}],
@@ -2117,6 +2149,9 @@ describe('profile rules', () => {
       {dialect: 'ALLOYDB', expression: "party.code || 'x'"},
       {dialect: 'BIGQUERY', expression: 'party.code + 1'},
     ]}, {name: 'data', expression: 'data'}, BQ('party'), [], {ownSqlOnly: {}}],
+    ['a cycle the caller reports in an ANSI_SQL text', {dialects: [
+      {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
+    ]}, {name: 'data', expression: 'data'}, BQ('party'), [], {ownSqlOnly: {}}],
     ['tables whose dialect no lookup read', {dialects: [
       {dialect: 'SPANNER', expression: 'c_code'},
       {dialect: 'ANSI_SQL', expression: 'party.code + 1'},
@@ -2210,6 +2245,18 @@ describe('profile rules', () => {
         .toThrow(
             "field 'a': unknown key 'note' in entry 1 of 'dialects' of " +
             "'expression'; it takes 'dialect' and 'expression'");
+  });
+
+  // YAML ends a flow-mapping entry at a comma, so an unquoted text that holds a
+  // comma leaves a key with no value.
+  test('an unknown key with no value advises to quote the text', () => {
+    expect(() => loadProfileFile(
+               'name: prod\nentities:\n  - {name: o, fields: [{name: a, expression: ROUND(x, 2)}]}\n',
+               'prod'))
+        .toThrow(new Error(
+            "profile 'prod': entity 'o': field 'a': unknown key '2)'; it takes 'name' and " +
+            "'expression'. A comma ends an entry of a flow mapping, so if the comma belongs to " +
+            'the text, quote the text.'));
   });
 
   // A blank expression, one that is only a comment and one that is only its
@@ -3037,6 +3084,25 @@ describe('profile completeness: dialects and struct paths', () => {
                    shop({expression: text, dialects: [{dialect: 'ANSI_SQL', expression: text}]}),
                    atSource(undefined as any), [], READ))
             .toEqual(["profile 'p': entity 'orders' has no source in this profile"]);
+      });
+
+  // On Spanner tables whose dialect no lookup read, an ANSI_SQL text holds a
+  // query only when it holds one in both dialects the tables may have, with
+  // readWithoutDialect or without. Spanner's GoogleSQL reads the second text
+  // as a string.
+  test.each([['(SELECT 1)', true], ["'''a' || (SELECT 1) || 'b'''", false]])(
+      'with no dialect known, the ANSI_SQL binding %s holds a query: %p', (expression, holds) => {
+        const amount = {name: 'amount', dialects: [{dialect: 'ANSI_SQL' as const, expression}]};
+        for (const opts of [{}, {readWithoutDialect: true}]) {
+          expect(validateProfileCompleteness(
+                     shop({expression: 'amt'}),
+                     {name: 'p', entities: [keyedById('orders', SP('orders'), amount)], relationships: []},
+                     [], opts))
+              .toEqual(!holds ? [] : [
+                "profile 'p': field 'orders.amount': its 'ANSI_SQL' SQL holds a query; a field " +
+                    'expression is a scalar expression over its own dataset, so it may not hold a ' +
+                    'subquery or a CTE']);
+        }
       });
 
   // A Cloud SQL table written as its resource name takes the dialect its
@@ -4644,7 +4710,7 @@ entities:
           "profile 'prod': entity 'base': field 'note': Unknown dialect " +
               "'NOPE' in expression dialects. Expected one of ANSI_SQL, " +
               'BIGQUERY, SPANNER, MYSQL, POSTGRES, ALLOYDB, SQLSERVER, ' +
-              'SNOWFLAKE, DATABRICKS.',
+              'SNOWFLAKE, DATABRICKS, OSSIE_SQL_2026.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.
