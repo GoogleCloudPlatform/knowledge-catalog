@@ -377,7 +377,7 @@ export async function pull(options: PullOptions = {}): Promise<number> {
     if (!result.success) {
       throw new Error(result.details || 'Error pulling OKF bundle');
     }
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -992,6 +992,11 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
+    const contextSet = snapshot.manifest.contextSet;
+    // The two-phase push checks these too (so `kcmd profiles` reports them),
+    // but a context-set workspace may push no model.
+    const contextSetErrors = metadataErrors(contextSet);
+    if (contextSetErrors.length) return printErrors(...contextSetErrors);
     // In a context-set workspace that has no model YAML (unless --deployment
     // was explicitly requested), skip the semantic-model push leg and proceed
     // directly to the OKF bundle leg.
@@ -1003,36 +1008,42 @@ export async function push(options: PushOptions): Promise<number> {
         source,
         docs: layoutDocs,
         profileDocs,
-        contextSet: snapshot.manifest.contextSet,
+        contextSet,
       });
-      if (code !== 0 || !splitWorkspace) return code;
+      if (code !== 0) return code;
     }
-    const catalog = new dataplex.CatalogClient(ctx);
-    const sync = new kcmd.CatalogSync(catalog, snapshot);
-    const result = await sync.push({
-      force: options.force,
-      validateOnly: options.validateOnly,
-      ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
-    });
-    if (!result.success) {
-      if (result.details) console.error(`Error: ${result.details}`);
-      return 1;
-    }
-    const overviewContent = okfRoot(
-        snapshot.basePath || '.', source.project, source.location,
-        source.entryGroup).overview;
-    if (!options.validateOnly && overviewContent) {
-      const ov = await publishContextSetOverview(
-          catalog, ctx, source.project, source.location, source.entryGroup,
-          overviewContent);
-      if (!ov.written) {
-        console.warn(
-            `Warning: could not update context set overview on ` +
-            `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
-            `(last status: ${ov.lastStatus ?? 'unknown'}).`);
+    if (splitWorkspace) {
+      const catalog = new dataplex.CatalogClient(ctx);
+      const sync = new kcmd.CatalogSync(catalog, snapshot);
+      const result = await sync.push({
+        force: options.force,
+        validateOnly: options.validateOnly,
+        ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
+      });
+      if (!result.success) {
+        if (result.details) console.error(`Error: ${result.details}`);
+        return 1;
+      }
+      const overviewContent = okfRoot(
+          snapshot.basePath || '.', source.project, source.location,
+          source.entryGroup).overview;
+      if (!options.validateOnly && overviewContent) {
+        const ov = await publishContextSetOverview(
+            catalog, ctx, source.project, source.location, source.entryGroup,
+            overviewContent);
+        if (!ov.written) {
+          console.warn(
+              `Warning: could not update context set overview on ` +
+              `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
+              `(last status: ${ov.lastStatus ?? 'unknown'}).`);
+        }
       }
     }
-    return 0;
+    // Last, so a refused update (a role that can write entries but not update
+    // the entry group, or a write quota) leaves the model, its graphs and the
+    // bundle written. Under --validate-only it reports the pending change.
+    return await pushContextSet(
+        ctx, contextSetOf(source)!, contextSet, options);
   }
 
   // These flags only take effect on a semantic-model push; on a regular
@@ -1129,7 +1140,7 @@ interface TwoPhaseScope {
 // own model. Returns a process exit code.
 async function pushInTwoPhases(
     options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
-  const {ctx, source, contextSet} = scope;
+  const {ctx, source} = scope;
   const fail = printErrors;
   const {named, negated} = deploymentFlags(options.deployment);
   if (named && negated) {
@@ -1140,7 +1151,6 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
-  const contextSetRef = contextSetOf(source)!;
   const {plans, kcModels, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
@@ -1188,9 +1198,6 @@ async function pushInTwoPhases(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
           options);
     }
-    const pendingCode =
-        await pushContextSet(ctx, contextSetRef, contextSet, options);
-    if (pendingCode !== 0) return pendingCode;
     return reportCatalogResult(preflight.result!, options);
   }
   for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
@@ -1223,9 +1230,7 @@ async function pushInTwoPhases(
       return code;
     }
   }
-  // Last, so a refused update (a role that can write entries but not update
-  // the entry group, or a write quota) leaves every graph deployed.
-  return await pushContextSet(ctx, contextSetRef, contextSet, options);
+  return 0;
 }
 
 // The local checks of a two-phase push, which call no service: it stops at

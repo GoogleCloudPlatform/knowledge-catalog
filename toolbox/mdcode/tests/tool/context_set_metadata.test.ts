@@ -385,3 +385,70 @@ describe('OKF workspace', () => {
     expect(fs.readFileSync('catalog.yaml', 'utf8')).toContain('layout: okf');
   });
 });
+
+
+describe('context-set workspace', () => {
+  const SPLIT_SCOPE = 'scope: context-set.test-project.us.commerce_eg\n';
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join('catalog', 'EntryGroups', 'commerce_eg'),
+                 {recursive: true});
+    fs.mkdirSync('bundle', {recursive: true});
+    spyOn(kcmd.CatalogSync.prototype, 'push').mockImplementation(async () => {
+      events.push('sync.push');
+      return {success: true} as any;
+    });
+    spyOn(kcmd.CatalogSync.prototype, 'pull').mockImplementation(async () => {
+      events.push('sync.pull');
+      return {success: true} as any;
+    });
+  });
+
+  test('pull sets the keys after the model and the bundle', async () => {
+    fs.writeFileSync('catalog.yaml', SPLIT_SCOPE);
+    spyOn(pullKc, 'pullKnowledgeCatalog').mockImplementation(async () => {
+      events.push('pullModel');
+      return {models: [], warnings: []} as any;
+    });
+    expect(await commands.pull()).toBe(0);
+    expect(events).toEqual(['pullModel', 'sync.pull', 'getEntryGroup']);
+    expect(readContextSetMetadata('catalog.yaml'))
+        .toEqual({displayName: 'Commerce', description: 'In KC.'});
+  });
+
+  test('push updates the context set after the bundle, with no model',
+       async () => {
+         fs.writeFileSync('catalog.yaml', SPLIT_SCOPE + 'displayName: Shop\n');
+         expect(await commands.push({})).toBe(0);
+         expect(events).toEqual(
+             ['sync.push', 'getEntryGroup', 'updateEntryGroup']);
+         expect(updateGroup.mock.calls[0].slice(3))
+             .toEqual([{displayName: 'Shop'}, ['displayName']]);
+       });
+
+  test('push with a model updates the context set after both legs',
+       async () => {
+         writeScope(dir, {});
+         fs.renameSync(
+             path.join('catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'),
+             path.join('catalog', 'EntryGroups', 'commerce_eg', 'model.yaml'));
+         fs.mkdirSync('bundle', {recursive: true});
+         fs.writeFileSync(
+             'catalog.yaml', SPLIT_SCOPE + 'description: Edited locally.\n');
+         expect(await commands.push({skipSourceCheck: true})).toBe(0);
+         expect(events).toEqual([
+           'preflight', 'apply', 'sync.push', 'getEntryGroup',
+           'updateEntryGroup',
+         ]);
+       });
+
+  test('an over-long display name fails before any write, with no model',
+       async () => {
+         fs.writeFileSync(
+             'catalog.yaml', SPLIT_SCOPE + `displayName: ${'n'.repeat(257)}\n`);
+         expect(await commands.push({})).toBe(1);
+         expect(events).toEqual([]);
+         expect(errors).toEqual(
+             [expect.stringContaining('257 characters long')]);
+       });
+});
