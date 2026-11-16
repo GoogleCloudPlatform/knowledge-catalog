@@ -112,6 +112,40 @@ describe('semantic-model push', () => {
     expect(printed).toContain('Would update the context set\'s display name.');
   });
 
+  test('validate-only reports the context set before the summary line',
+       async () => {
+         semanticWorkspace('displayName: Shop\n');
+         expect(await commands.push({skipSourceCheck: true, validateOnly: true}))
+             .toBe(0);
+         const pending =
+             printed.indexOf('Would update the context set\'s display name.');
+         const summary =
+             printed.indexOf('Validation complete; no changes applied.');
+         expect(pending).toBeGreaterThanOrEqual(0);
+         expect(pending).toBeLessThan(summary);
+       });
+
+  test('validate-only fails before the summary when the context set cannot be read',
+       async () => {
+         semanticWorkspace('displayName: Shop\n');
+         spyOn(CatalogClient.prototype, 'getEntryGroup')
+             .mockImplementation(async () => ({status: 404, message: 'Not found'}));
+         expect(await commands.push({skipSourceCheck: true, validateOnly: true}))
+             .toBe(1);
+         expect(errors).toEqual([
+           'Error: reading context set \'test-project.us.commerce_eg\': ' +
+               'Not found',
+         ]);
+         expect(printed).not.toContain('Validation complete; no changes applied.');
+       });
+
+  test('a model or flag error comes before an over-long value', async () => {
+    semanticWorkspace(`description: ${'d'.repeat(1025)}\n`);
+    expect(await commands.push({deployment: ['g1', false] as any})).toBe(1);
+    expect(errors).toEqual(
+        ['Error: Cannot combine --no-deployment with --deployment.']);
+  });
+
   test('without the keys, the entry group is not read', async () => {
     semanticWorkspace();
     expect(await commands.push({skipSourceCheck: true})).toBe(0);
