@@ -425,6 +425,22 @@ test.each<[string, string, (value: any) => void, string?]>([
   if (expected) expect(output).toBe(expected);
 });
 
+// kcmd reads a value under a tag outside YAML's core schema, such as
+// `!!binary`, or under a `%TAG` shorthand, as text, so a new string keeps it.
+test.each([
+  ['a: !!binary aGVsbG8=\n', 'd29ybGQ=', 'a: !!binary d29ybGQ=\n'],
+  ['a: !!timestamp 2001-12-14\n', '2002-01-01', 'a: !!timestamp "2002-01-01"\n'],
+  ['%TAG !e! tag:example.com,2000:\n---\na: !e!foo x\n', 'y',
+   '%TAG !e! tag:example.com,2000:\n---\na: !e!foo "y"\n'],
+])('%j set to a string keeps its tag', (input, a, expected) => {
+  const {document, text} = parseForUpdate(input);
+  const value = plainCopy(document.toJS());
+  const links = linkNodes(value, document.contents);
+  value.a = a;
+
+  expect(updateText(text, document, value, links)).toBe(expected);
+});
+
 test('a key renamed in the document keeps its tag and its value\'s', () => {
   const {document, text} = parseForUpdate('!!str datasets: !!seq\n  - a\n');
   ((document.contents as yaml.YAMLMap).items[0].key as yaml.Scalar).value = 'entities';
