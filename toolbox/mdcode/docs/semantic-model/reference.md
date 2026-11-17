@@ -1250,11 +1250,11 @@ Writing an entry with aspects needs permission on **both** the entry operation
 and each aspect type attached, so a push needs, on the destination entry group:
 
 * `dataplex.entries.create`, `dataplex.entries.update`, `dataplex.entries.delete`,
-  `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
-  entity / metric entries, deletes orphaned ones, reads each entry the model
-  defines that the catalog already holds, with every aspect type push writes
-  or removes on it, to skip the unchanged ones, and reads the model entry again
-  before it labels the push finished
+  `dataplex.entries.list` and `dataplex.entries.get` — push creates or updates
+  the model's entries. It deletes orphaned entries. It reads each entry the
+  model defines that the catalog already holds, to skip the unchanged ones.
+  Each read requests every aspect type push writes or removes on that entry.
+  It reads the model entry again before it labels the push finished.
 * `dataplex.entryLinks.create`, `dataplex.entryLinks.get`,
   `dataplex.entryLinks.update`, `dataplex.entryLinks.delete` and
   `dataplex.entries.link` — push creates and reads the `semantic-link` and

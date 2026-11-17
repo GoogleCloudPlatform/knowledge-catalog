@@ -118,7 +118,8 @@ export interface KcDeployResult {
   created: number;
   // Existing entries updated in place: those whose stored copy differs from
   // what the push writes, and those push wrote without a successful read (0
-  // for validateOnly). The comparison ignores the kcmd-push-state label.
+  // for validateOnly). No label counts as a difference. An emitted entry sets
+  // none, and the update carries over every stored label it does not set.
   updated: number;
   // Existing entries that already hold what the push writes, so push read them
   // and sent no write, apart from the push-state label on the model entry (0
@@ -665,8 +666,9 @@ interface WriteModelsOutcome {
 interface WritePlan {
   // The emitted entries to write, in emitted order: the ones the listing
   // lacks, those whose read failed, and those whose stored copy differs from
-  // what the update would leave. The comparison ignores the kcmd-push-state
-  // label, which `setPushState` writes on the model entry.
+  // what the update would leave. No label counts as a difference. An emitted
+  // entry sets none, and the update carries over every stored label it does
+  // not set.
   writes: Entry[];
   // The number of emitted entries the catalog already holds as the update
   // would leave them.
@@ -798,12 +800,14 @@ async function planModelWrites(
  */
 function isNothingToWrite(
     resources: kcEmit.KcResources, plan: WritePlan): boolean {
+  // An emitted link that shares its ID with a stale link fails this check,
+  // since `staleLinks.current` leaves out that ID.
   const linksUnchanged = resources.entryLinks.every(link => {
     const found = plan.staleLinks.current.get(linkId(link));
     return found !== undefined && holdsAspects(found.aspects, link.aspects);
   });
   return !plan.writes.length && linksUnchanged && !plan.orphanedLinks.length &&
-      !plan.staleLinks.links.length && !plan.orphanedEntries.length &&
+      !plan.orphanedEntries.length &&
       plan.storedAnchor?.entrySource?.labels?.[PUSH_STATE_LABEL] ===
       PUSH_FINISHED;
 }
@@ -1827,18 +1831,14 @@ const OUTPUT_SOURCE_FIELDS: ReadonlySet<string> = new Set(['location']);
 
 /**
  * Returns true when the entrySource `sent` would leave `stored` as it is. The
- * kcmd-push-state label and the fields Dataplex sets itself are not compared,
- * and an empty string, list or map counts as unset, as Dataplex returns it.
+ * fields Dataplex sets itself are not compared, and an empty string, list or
+ * map counts as unset, as Dataplex returns it.
  */
 function sameSource(
     sent: Entry['entrySource'], stored: Entry['entrySource']): boolean {
-  const compared = (source: Entry['entrySource']) => {
-    const {labels, ...fields} = source ?? {};
-    const {[PUSH_STATE_LABEL]: _, ...otherLabels} = labels ?? {};
-    return Object.fromEntries(
-        Object.entries({...fields, labels: otherLabels})
-            .filter(([k, v]) => !OUTPUT_SOURCE_FIELDS.has(k) && !isUnset(v)));
-  };
+  const compared = (source: Entry['entrySource']) => Object.fromEntries(
+      Object.entries(source ?? {})
+          .filter(([k, v]) => !OUTPUT_SOURCE_FIELDS.has(k) && !isUnset(v)));
   return isDeepStrictEqual(compared(sent), compared(stored));
 }
 

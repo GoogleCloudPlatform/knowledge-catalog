@@ -735,18 +735,20 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
     }));
   }
 
-  // A stub catalog that holds `held` and lists `others` beside it. `writes`
-  // records each write in order: an entry update as
-  // `update:<id>:<push state it sets>`, and each create, delete and link
-  // write by its id.
+  // A stub catalog that holds `held` and lists `others` beside it. The
+  // listing carries each held entry's entrySource. `writes` records each write
+  // in order: an entry update as `update:<id>:<push state it sets>`, and each
+  // create, delete and link write by its id.
   function holding(
       held: Map<string, any>, more: Parameters<typeof stubClient>[0] = {},
       others: {id: string, type?: string}[] = []) {
     const stub = stubClient({
       create: EXISTS,
       existing: [
-        ...[...held.values()].map(
-            e => ({id: entryIdOf(e.name), type: e.entryType})),
+        ...[...held.values()].map(e => {
+          const {labels, ...source} = e.entrySource ?? {};
+          return {id: entryIdOf(e.name), type: e.entryType, labels, source};
+        }),
         ...others,
       ],
       lookup: id => held.has(id) ? ok(held.get(id)) : err(404, 'not found'),
