@@ -600,6 +600,7 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
            'unchanged',
        async () => {
          const types = 'google.com:dataplex-autopush-types';
+         // crm's cache outlives the test, so no other test uses this number.
          const number = '987654321098';
          const opts = {...OPTS, systemTypeProject: types};
          const held = await pushed(opts);
@@ -634,6 +635,31 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
              {success: true, created: 0, updated: 0, unchangedEntries: 3});
          expect(create).not.toHaveBeenCalled();
          expect(update).not.toHaveBeenCalled();
+       });
+
+  // An aspect key that names no aspect type stops the read before it is sent.
+  // The push then writes every entry as it would with no read.
+  test('an entry whose aspect key names no aspect type is written unread',
+       async () => {
+         const {lookup, create, update} = stubClient({
+           create: EXISTS,
+           existing: ['sales', ENTITY, 'sales/metrics/total_revenue'],
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, systemTypeProject: ''});
+
+         expect(result)
+             .toMatchObject({success: true, updated: 3, unchangedEntries: 0});
+         expect(lookup).not.toHaveBeenCalled();
+         expect(create).toHaveBeenCalledTimes(3);
+         expect(update.mock.calls.map(([e, mask]) => [entryIdOf(e.name), mask]))
+             .toEqual([
+               ['sales', ['entry_source', 'aspects']],
+               [ENTITY, ['entry_source', 'aspects']],
+               ['sales/metrics/total_revenue', ['entry_source', 'aspects']],
+               ['sales', ['entry_source']],
+             ]);
        });
 
   test('a failed write of the label alone names the label', async () => {
