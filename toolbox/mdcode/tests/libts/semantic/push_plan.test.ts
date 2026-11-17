@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
+import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import * as bqDeploy from '../../../src/libts/semantic/deploy_bigquery';
 import * as kcDeploy from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
@@ -186,6 +187,10 @@ semantic_model:
     const pulled = modelsFromCatalogResources(entries);
 
     spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue(pulled);
+    // Pull also reads the entry group for the context set's display name and
+    // description; this one sets neither.
+    spyOn(CatalogClient.prototype, 'getEntryGroup').mockResolvedValue(
+        {status: 200, result: {name: 'sales_eg'}});
 
     const code = await pull();
     expect(code).toBe(0);

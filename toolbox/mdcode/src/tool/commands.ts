@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import * as kcmd from '../libts';
+import {ContextSetMetadata, contextSetOf, describeChanged, EntryGroupRef, metadataErrors, pullContextSetMetadata, pushContextSetMetadata, readContextSetMetadata} from '../libts/context_set';
 import {BigLakeClient} from '../libts/gcp/biglake';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
@@ -353,11 +354,13 @@ export async function pull(options: PullOptions = {}): Promise<number> {
     if (!result.success) {
       throw new Error(result.details || 'Error pulling OKF bundle');
     }
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    return await pullSemanticModel(ctx, snapshot, options);
+    const code = await pullSemanticModel(ctx, snapshot, options);
+    if (code !== 0) return code;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   if (snapshot.manifest.source.type === Sources.CONTEXT_SET) {
@@ -374,7 +377,7 @@ export async function pull(options: PullOptions = {}): Promise<number> {
     if (!result.success) {
       throw new Error(result.details || 'Error pulling OKF bundle');
     }
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -390,7 +393,7 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 
   if (result.success) {
     if (!options.dryRun) console.log('Successfully updated local snapshot.');
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   } else {
     console.error('Error pulling catalog entries:', result.details);
     return 1;
@@ -670,29 +673,20 @@ function catalogAspects(
   });
 }
 
-const EG_DESCRIPTION_MAX_CHARS = 1024;
-const EG_DISPLAY_NAME_MAX_CHARS = 500;
-
-function extractOkfRootMetadata(
+// An OKF bundle's root concept, from the first of the root candidates that
+// parses: its markdown body, which push writes as the context set's overview
+// (the first candidate that has one, with the bundle's OKF metadata section
+// left out), and, when that root is an untyped `index.md`, its front matter.
+// The context set's display name and description come from catalog.yaml (see
+// context_set.ts), not from here. A typed root such as `agents.md` (`type:
+// Knowledge Base Root`) is an entry whose `title` and `description` are its
+// own, so its front matter is not returned.
+function okfRoot(
   basePath: string,
   project: string,
   location: string,
   groupId: string,
-): {displayName?: string; description?: string; overviewContent?: string} {
-  const manifestPath = path.join(basePath, 'catalog.yaml');
-  const rawManifest = fs.existsSync(manifestPath)
-    ? (yaml.parse(fs.readFileSync(manifestPath, 'utf8')) ?? {})
-    : {};
-  let displayName =
-    typeof rawManifest.displayName === 'string' && rawManifest.displayName.trim()
-      ? rawManifest.displayName.trim()
-      : undefined;
-  let description =
-    typeof rawManifest.description === 'string' && rawManifest.description.trim()
-      ? rawManifest.description.trim()
-      : undefined;
-  let overviewContent: string | undefined;
-
+): {overview?: string; untypedIndex?: Record<string, unknown>} {
   const bundleRoot = path.join(basePath, 'bundle');
   const candidates = [
     path.join(bundleRoot, `${groupId}_entry.md`),
@@ -701,6 +695,9 @@ function extractOkfRootMetadata(
     path.join(bundleRoot, groupId, project, location, 'agents.md'),
     path.join(bundleRoot, 'index.md'),
   ];
+  let frontmatter: Record<string, unknown>|undefined;
+  let rootFile: string|undefined;
+  let overview: string|undefined;
   for (const cand of candidates) {
     if (!fs.existsSync(cand)) continue;
     try {
@@ -708,43 +705,43 @@ function extractOkfRootMetadata(
         fs.readFileSync(cand, 'utf8'),
         path.basename(cand, '.md'),
       );
-      const fmTitle =
-        typeof concept.frontmatter['title'] === 'string'
-          ? concept.frontmatter['title'].trim()
-          : '';
-      const fmDesc =
-        typeof concept.frontmatter['description'] === 'string'
-          ? concept.frontmatter['description'].trim()
-          : '';
-      const bodyClean = concept.body
+      if (!frontmatter) {
+        frontmatter = concept.frontmatter;
+        rootFile = cand;
+      }
+      const body = concept.body
         .replace(/\n*##\s+OKF\s+Metadata\b[\s\S]*$/i, '')
         .trim();
-      const h1Match = bodyClean.match(/^#\s+(.+?)\s*$/m);
-      const headingTitle = h1Match?.[1]?.trim() ?? '';
-      const firstPara = bodyClean
-        .split(/\n\s*\n/)
-        .map((p) => p.trim())
-        .find((p) => p && !/^([#*|-]|\d+\.)/.test(p));
-      if (!displayName && (fmTitle || headingTitle)) {
-        displayName = fmTitle || headingTitle;
-      }
-      if (!description && (fmDesc || firstPara)) {
-        description = (fmDesc || firstPara || '').replace(/\s+/g, ' ').trim();
-      }
-      if (!overviewContent && bodyClean) {
-        overviewContent = bodyClean;
-      }
+      if (body) overview ??= body;
     } catch {
       // Ignore unparseable candidate here; CatalogSync reports concept errors.
     }
+    if (frontmatter && overview) break;
   }
-  if (displayName) {
-    displayName = displayName.slice(0, EG_DISPLAY_NAME_MAX_CHARS);
+  const untyped = rootFile !== undefined &&
+      path.basename(rootFile) === 'index.md' && frontmatter?.['type'] === undefined;
+  return {overview, untypedIndex: untyped ? frontmatter : undefined};
+}
+
+// A warning for each display name or description an untyped `bundle/index.md`
+// gives that catalog.yaml does not: before catalog.yaml held them, OKF push
+// took them from there.
+function okfRootMetadataWarnings(
+  frontmatter: Record<string, unknown>,
+  contextSet: ContextSetMetadata,
+): string[] {
+  const warnings: string[] = [];
+  const keys = [['title', 'displayName', 'display name'],
+                ['description', 'description', 'description']] as const;
+  for (const [field, key, label] of keys) {
+    if (contextSet[key] === undefined &&
+        typeof frontmatter[field] === 'string') {
+      warnings.push(
+          `bundle/index.md's '${field}' no longer sets the context set's ` +
+          `${label}; add '${key}:' to catalog.yaml, or run kcmd pull.`);
+    }
   }
-  if (description) {
-    description = description.slice(0, EG_DESCRIPTION_MAX_CHARS);
-  }
-  return {displayName, description, overviewContent};
+  return warnings;
 }
 
 async function publishContextSetOverview(
@@ -885,8 +882,14 @@ export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
 
   if (okf) {
+    const contextSet = readContextSetMetadata('catalog.yaml');
+    const contextSetErrors = metadataErrors(contextSet);
+    if (contextSetErrors.length) return printErrors(...contextSetErrors);
     let snapshot: kcmd.CatalogSnapshot;
     let createdEg = false;
+    // The entry group does not exist yet, and a --validate-only push leaves it
+    // uncreated.
+    let pendingEg = false;
     try {
       snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
     } catch (err: any) {
@@ -915,17 +918,14 @@ export async function push(options: PushOptions): Promise<number> {
           'okf',
         );
         snapshot = await kcmd.CatalogSnapshot.fromManifest('.', pendingManifest, ctx);
+        pendingEg = true;
       } else {
-        const rootMeta = extractOkfRootMetadata('.', project, location, groupId);
         const created = await dataplex.createContextSet(
           new dataplex.CatalogClient(ctx),
           project,
           location,
           groupId,
-          {
-            ...(rootMeta.displayName ? {displayName: rootMeta.displayName} : {}),
-            ...(rootMeta.description ? {description: rootMeta.description} : {}),
-          },
+          contextSet,
         );
         if (created.error) return printErrors(created.error);
         // A group that already existed (a create race) is reconciled below.
@@ -937,54 +937,12 @@ export async function push(options: PushOptions): Promise<number> {
     const {project, location, entryGroup: groupId} = entryGroupCoordinates(
       snapshot.manifest.source,
     );
-    const rootMeta = extractOkfRootMetadata(
-      snapshot.basePath || '.',
-      project,
-      location,
-      groupId,
-    );
-    const catalog = new dataplex.CatalogClient(ctx);
-
-    if (
-      !options.validateOnly &&
-      !createdEg &&
-      (rootMeta.displayName || rootMeta.description)
-    ) {
-      const egRes = await catalog.getEntryGroup(project, location, groupId);
-      if (egRes.status === 200 && egRes.result) {
-        const patchBody: Record<string, any> = {};
-        const updateMask: string[] = [];
-        if (
-          rootMeta.displayName &&
-          egRes.result.displayName !== rootMeta.displayName
-        ) {
-          patchBody.displayName = rootMeta.displayName;
-          updateMask.push('displayName');
-        }
-        if (
-          rootMeta.description &&
-          egRes.result.description !== rootMeta.description
-        ) {
-          patchBody.description = rootMeta.description;
-          updateMask.push('description');
-        }
-        if (updateMask.length) {
-          const patchRes = await catalog.updateEntryGroup(
-            project,
-            location,
-            groupId,
-            patchBody,
-            updateMask,
-          );
-          if (
-            patchRes.status === 200 &&
-            patchRes.result?.name?.includes('/operations/')
-          ) {
-            await catalog.awaitOperation(patchRes.result, 'updateEntryGroup');
-          }
-        }
-      }
+    const root = okfRoot(snapshot.basePath || '.', project, location, groupId);
+    const overviewContent = root.overview;
+    for (const w of okfRootMetadataWarnings(root.untypedIndex ?? {}, contextSet)) {
+      console.warn(`Warning: ${w}`);
     }
+    const catalog = new dataplex.CatalogClient(ctx);
 
     const sync = new kcmd.CatalogSync(catalog, snapshot);
     const result = await sync.push({
@@ -997,9 +955,18 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
 
-    if (!options.validateOnly && rootMeta.overviewContent) {
+    // A context set this push created took catalog.yaml's display name and
+    // description in the create; one --validate-only leaves uncreated has
+    // none to compare with.
+    if (!createdEg && !pendingEg) {
+      const code = await pushContextSet(
+        ctx, {project, location, entryGroup: groupId}, contextSet, options);
+      if (code !== 0) return code;
+    }
+
+    if (!options.validateOnly && overviewContent) {
       const ov = await publishContextSetOverview(
-          catalog, ctx, project, location, groupId, rootMeta.overviewContent,
+          catalog, ctx, project, location, groupId, overviewContent,
           createdEg);
       if (!ov.written) {
         console.warn(
@@ -1014,8 +981,8 @@ export async function push(options: PushOptions): Promise<number> {
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   if (options.force) console.warn('Warning: --force has no effect.');
 
-  const contextSet = snapshot.manifest.source.type === Sources.CONTEXT_SET;
-  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL || contextSet) {
+  const splitWorkspace = snapshot.manifest.source.type === Sources.CONTEXT_SET;
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL || splitWorkspace) {
     const legacy = legacyProfileFormErrors(snapshot);
     if (legacy.length) return printErrors(...legacy);
     const layout = semanticLayoutOf(snapshot)!;
@@ -1025,41 +992,58 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
+    const contextSet = snapshot.manifest.contextSet;
+    // What runs after the model leg: a context-set workspace's bundle, then
+    // the context set's display name and description. Last, so a refused
+    // update (a role that can write entries but not update the entry group,
+    // or a write quota) leaves the model, its graphs and the bundle written.
+    // Under --validate-only each step reports what it would do.
+    const finish = async (): Promise<number> => {
+      if (splitWorkspace) {
+        const catalog = new dataplex.CatalogClient(ctx);
+        const sync = new kcmd.CatalogSync(catalog, snapshot);
+        const result = await sync.push({
+          force: options.force,
+          validateOnly: options.validateOnly,
+          ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
+        });
+        if (!result.success) {
+          if (result.details) console.error(`Error: ${result.details}`);
+          return 1;
+        }
+        const overviewContent = okfRoot(
+            snapshot.basePath || '.', source.project, source.location,
+            source.entryGroup).overview;
+        if (!options.validateOnly && overviewContent) {
+          const ov = await publishContextSetOverview(
+              catalog, ctx, source.project, source.location, source.entryGroup,
+              overviewContent);
+          if (!ov.written) {
+            console.warn(
+                `Warning: could not update context set overview on ` +
+                `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
+                `(last status: ${ov.lastStatus ?? 'unknown'}).`);
+          }
+        }
+      }
+      return await pushContextSet(
+          ctx, contextSetOf(source)!, contextSet, options);
+    };
     // In a context-set workspace that has no model YAML (unless --deployment
     // was explicitly requested), skip the semantic-model push leg and proceed
     // directly to the OKF bundle leg.
-    if (!contextSet || layoutDocs.length > 0 ||
+    if (!splitWorkspace || layoutDocs.length > 0 ||
         deploymentFlags(options.deployment).named) {
-      const code = await pushInTwoPhases(
-          options, {ctx, layout, source, docs: layoutDocs, profileDocs});
-      if (code !== 0 || !contextSet) return code;
+      return await pushInTwoPhases(
+          options,
+          {ctx, layout, source, docs: layoutDocs, profileDocs, contextSet},
+          finish);
     }
-    const catalog = new dataplex.CatalogClient(ctx);
-    const sync = new kcmd.CatalogSync(catalog, snapshot);
-    const result = await sync.push({
-      force: options.force,
-      validateOnly: options.validateOnly,
-      ...(propagationTimeoutMs !== undefined ? {propagationTimeoutMs} : {}),
-    });
-    if (!result.success) {
-      if (result.details) console.error(`Error: ${result.details}`);
-      return 1;
-    }
-    const rootMeta = extractOkfRootMetadata(
-        snapshot.basePath || '.', source.project, source.location,
-        source.entryGroup);
-    if (!options.validateOnly && rootMeta.overviewContent) {
-      const ov = await publishContextSetOverview(
-          catalog, ctx, source.project, source.location, source.entryGroup,
-          rootMeta.overviewContent);
-      if (!ov.written) {
-        console.warn(
-            `Warning: could not update context set overview on ` +
-            `${ov.entries.map(e => `'${e}'`).join(' or ')} ` +
-            `(last status: ${ov.lastStatus ?? 'unknown'}).`);
-      }
-    }
-    return 0;
+    // The two-phase checks hold the length check; with no model to check,
+    // it runs here.
+    const contextSetErrors = metadataErrors(contextSet);
+    if (contextSetErrors.length) return printErrors(...contextSetErrors);
+    return await finish();
   }
 
   // These flags only take effect on a semantic-model push; on a regular
@@ -1081,6 +1065,10 @@ export async function push(options: PushOptions): Promise<number> {
     }
   }
 
+  const contextSet = snapshot.manifest.contextSet;
+  const contextSetErrors = metadataErrors(contextSet);
+  if (contextSetErrors.length) return printErrors(...contextSetErrors);
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
@@ -1090,6 +1078,11 @@ export async function push(options: PushOptions): Promise<number> {
   const result = await sync.push(options);
 
   if (result.success) {
+    const ref = contextSetOf(snapshot.manifest.source);
+    if (ref) {
+      const code = await pushContextSet(ctx, ref, contextSet, options);
+      if (code !== 0) return code;
+    }
     console.log(
         options.validateOnly ? 'Validation complete; no changes applied.' :
                                'Successfully pushed catalog entries.');
@@ -1138,13 +1131,18 @@ interface TwoPhaseScope {
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
   load: DialectLoad;
+  // catalog.yaml's display name and description for the context set.
+  contextSet: ContextSetMetadata;
 }
 
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
 // Knowledge Catalog and deploys each selected deployment in order with its
-// own model. Returns a process exit code.
+// own model, then runs `finish`. Under --validate-only, `finish` runs before
+// the summary line, so everything a validation reports comes before it.
+// Returns a process exit code.
 async function pushInTwoPhases(
-    options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
+    options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>,
+    finish: () => Promise<number>): Promise<number> {
   const {ctx, source} = scope;
   const fail = printErrors;
   const {named, negated} = deploymentFlags(options.deployment);
@@ -1203,6 +1201,8 @@ async function pushInTwoPhases(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
           options);
     }
+    const finished = await finish();
+    if (finished !== 0) return finished;
     return reportCatalogResult(preflight.result!, options);
   }
   for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
@@ -1235,7 +1235,7 @@ async function pushInTwoPhases(
       return code;
     }
   }
-  return 0;
+  return await finish();
 }
 
 // The local checks of a two-phase push, which call no service: it stops at
@@ -1330,6 +1330,10 @@ async function checkBeforeWrites(
       {docs, loaded, models, profileDocs, declaredBy, load}, warn,
       noDeployment ? [] : selected);
   if ('errors' in checked) return checked;
+  // A display name or description Knowledge Catalog refuses would fail the
+  // push after the entries are written, so it stops the push here.
+  const contextSetErrors = metadataErrors(scope.contextSet);
+  if (contextSetErrors.length) return fail(...contextSetErrors);
   // What pruning leaves out of each deployment's model.
   const leftOut = checked.plans.flatMap(pruningLines);
   return {plans: checked.plans, kcModels: models, leftOut, overviews};
@@ -1645,7 +1649,16 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // The errors of a plain push's local checks, each reported under the model
   // and profile it belongs to.
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+      {}, {
+        ctx,
+        layout,
+        source,
+        docs,
+        profileDocs,
+        load,
+        contextSet: snapshot.manifest.contextSet,
+      },
+      true);
   const pushErrors = 'errors' in checked ? checked.errors : [];
   // Push prints the emitter's warnings and checks every aspect's size once the
   // local checks pass, before any write.
@@ -1928,6 +1941,50 @@ function reportCatalogResult(
 }
 
 
+// Writes catalog.yaml's display name and description to the context set
+// `ref` names when they differ from it, and prints what changed. Under
+// --validate-only it changes nothing and prints what a push would change.
+// Returns a process exit code (0 on success).
+async function pushContextSet(
+    ctx: context.ApiContext, ref: EntryGroupRef, local: ContextSetMetadata,
+    options: {validateOnly?: boolean}): Promise<number> {
+  const {changed, error} = await pushContextSetMetadata(
+      new dataplex.CatalogClient(ctx), ref, local,
+      {validateOnly: options.validateOnly});
+  if (error) return printErrors(error);
+  if (changed.length) {
+    console.log(
+        options.validateOnly ? `Would update ${describeChanged(changed)}.` :
+                               `Updated ${describeChanged(changed)}.`);
+  }
+  return 0;
+}
+
+
+// Sets catalog.yaml's display name and description from the context set the
+// workspace's scope names, and prints what changed. A scope with no entry
+// group has nothing to pull. Under --dry-run it writes nothing and prints what
+// a pull would change. Returns a process exit code (0 on success).
+async function pullContextSet(
+    ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
+    options: {dryRun?: boolean}): Promise<number> {
+  const ref = contextSetOf(snapshot.manifest.source);
+  if (!ref) return 0;
+  const {changed, error} = await pullContextSetMetadata(
+      new dataplex.CatalogClient(ctx), ref,
+      path.join(snapshot.basePath || '.', 'catalog.yaml'),
+      {dryRun: options.dryRun});
+  if (error) return printErrors(error);
+  if (changed.length) {
+    console.log(
+        options.dryRun ?
+            `Would update ${describeChanged(changed)} in catalog.yaml.` :
+            `Updated ${describeChanged(changed)} in catalog.yaml.`);
+  }
+  return 0;
+}
+
+
 // Pulls the semantic model's Knowledge Catalog entries back into local model
 // documents (catalog/EntryGroups/<entryGroup>/<model>.yaml) and prints the
 // result. The destination coordinates come from the scope
@@ -1966,8 +2023,8 @@ async function pullSemanticModel(
 
   if (!result.models.length) {
     console.log(
-        result.firstGeneration ? 'Wrote nothing.' :
-                                 'No semantic models found; nothing to pull.');
+        result.firstGeneration ? 'Wrote no model files.' :
+                                 'No semantic models found.');
     return 0;
   }
 
@@ -2255,8 +2312,10 @@ async function pushRefusal(
     transpileOutcomes: await transpileOutcomes(
         ctx, docs, profileDocs, layout, {}, noDialects, true),
   };
+  // The files pull writes are checked here; catalog.yaml's display name and
+  // description come from Knowledge Catalog, which holds them to its limits.
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, load}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load, contextSet: {}}, true);
   let first = 'errors' in checked ? checked.errors[0] : undefined;
   // Once those pass, push checks the size of each aspect the catalog stores.
   if ('kcModels' in checked) {
