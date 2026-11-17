@@ -1903,7 +1903,7 @@ function reportCatalogResult(
   }
   const n = result.created + result.updated;
   // Push sends no write to an entry it finds unchanged, apart from the
-  // push-state label on the model entry. Those entries are counted apart.
+  // push-state label on the model entry. Those entries are counted separately.
   const unchangedEntries = result.unchangedEntries ?
       ` (${result.unchangedEntries} unchanged)` :
       '';
@@ -1912,7 +1912,7 @@ function reportCatalogResult(
                                    '';
   // The relationships of an ordered entity pair share one link, so the count
   // is of links. Links push found unchanged got no request and are counted
-  // apart.
+  // separately.
   const plural = result.linked === 1 ? '' : 's';
   const unchanged =
       result.unchangedLinks ? ` (${result.unchangedLinks} unchanged)` : '';
