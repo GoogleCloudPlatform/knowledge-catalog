@@ -158,6 +158,27 @@ test.each<[string, string, (value: any) => void, string?]>([
     '\uFEFFa: 1\nb: 2\n', v => v.c = 3, '\uFEFFa: 1\nb: 2\nc: 3\n'
   ],
   [
+    'empty values whose key has an anchor, removed from the end of a flow mapping and a flow list',
+    'm: {a: 1, &k }\ng: *k\nl: [a, ? &j]\nh: *j\n', v => {
+      delete v.m[''];
+      v.l = ['a'];
+    },
+    'm: {a: 1}\ng: null\nl: [a]\nh: null\n'
+  ],
+  [
+    'alias keys in flow mappings over several lines whose value stays, written out when their anchor changes',
+    'a: &k p\nc: {*k : 1,\n  q: b}\nd: &j r\ne: {*j : 1,\n  q: b}\n', v => {
+      v.a = 'z';
+      delete v.d;
+    },
+    'a: &k z\nc: {p : 1,\n  q: b}\ne: {r : 1,\n  q: b}\n'
+  ],
+  [
+    'flow mappings over several lines with alias keys whose value stays, beside a changed key',
+    'k: &k key\nv: &v val\nx: 1\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n',
+    v => v.x = 2, 'k: &k key\nv: &v val\nx: 2\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n'
+  ],
+  [
     'flow collections over several lines whose value changes exactly, written in block style',
     'u: [null,\n  1]\nm: {a: null,\n  b: 1}\nw: [old,\n  .inf]  # c\nz: [0,\n  1]\ne: [.nan,\n  1]\n',
     v => {

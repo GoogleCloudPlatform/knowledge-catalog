@@ -104,7 +104,7 @@ export function updateText(
       s => MARKS.includes(s.type));
   patch(u, value, root, {col: 0, prefix: '', flow: false, props: marks});
   // An alias whose anchor changed or went is written out. The text of the
-  // value it names starts at that value's anchor or tag.
+  // value or key it names starts at its anchor or tag.
   const props = new Map<unknown, yaml.CST.SourceToken[]>();
   if (u.aliases.length) {
     yaml.visit(doc, {
@@ -112,6 +112,11 @@ export function updateText(
         const item = n.items[i];
         props.set(yaml.isPair(item) ? item.value : item, p);
       }),
+      Pair: (_, p) => {
+        const marks = p.srcToken?.start.filter(
+            s => s.type === 'anchor' || s.type === 'tag');
+        if (marks?.length && p.key) props.set(p.key, marks);
+      },
     });
   }
   for (const [alias, v, slot] of u.aliases) {
@@ -280,16 +285,30 @@ function keep(
         pair.key.source !== pair.key.value) {
       setScalar(u, pair.key, pair.key.value, {col: 0, prefix: ':', flow: true});
     }
-    const n = pair ? pair.value : item;
-    const v = pair ? (value as Record<string, unknown>)[keyOf(pair)] :
-                     (value as unknown[])[i];
-    if (yaml.isAlias(n)) {
-      u.aliases.push(
-          [n, v, {col: 0, prefix: '', after: n.range![0], flow: true}]);
-    } else if (yaml.isCollection(n)) {
-      keep(u, v, n);
+    if (pair) {
+      // An alias key reads as the value its anchor names.
+      const key = yaml.isAlias(pair.key) ? pair.key.resolve(u.doc) : pair.key;
+      if (!yaml.isScalar(pair.key)) {
+        record(u, pair.key, yaml.isNode(key) ? key.toJS(u.doc) : key);
+      }
+      record(u, pair.value, (value as Record<string, unknown>)[keyName(key)]);
+    } else {
+      record(u, item, (value as unknown[])[i]);
     }
   });
+}
+
+/**
+ * Records `node`, an alias or a collection in a collection whose text stays,
+ * as keep does, with `value`, the value it reads as.
+ */
+function record(u: Update, node: unknown, value: unknown): void {
+  if (yaml.isAlias(node)) {
+    u.aliases.push(
+        [node, value, {col: 0, prefix: '', after: node.range![0], flow: true}]);
+  } else if (yaml.isCollection(node)) {
+    keep(u, value, node);
+  }
 }
 
 /** Where an item of a collection sits in the text. */
@@ -1339,8 +1358,13 @@ function scalarKey(key: string, value: unknown): string {
 }
 
 function keyOf(pair: yaml.Pair): string {
-  const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
-  return key === null ? '' : String(key);
+  return keyName(pair.key);
+}
+
+/** The key of a mapping's value object that `key`, a key node, gives. */
+function keyName(key: unknown): string {
+  const k = yaml.isScalar(key) ? key.value : key;
+  return k === null ? '' : String(k);
 }
 
 /** Whether `node` is the `data` of a GOOGLE block. */
