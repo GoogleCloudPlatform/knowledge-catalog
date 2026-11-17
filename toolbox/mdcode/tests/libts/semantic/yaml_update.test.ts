@@ -179,6 +179,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: &k z\nc: {p : 1,\n  q: b}\ne: {r : 1,\n  q: b}\n'
   ],
   [
+    'flow mappings over several lines whose keys repeat through an alias key whose anchor goes',
+    'a: &k p\nm: {\n  *k : 1,\n  *k : 2\n}\no: {\n  p: 1,\n  *k : 2\n}\n', v => delete v.a,
+    'm:\n  p: 2\no:\n  p: 2\n'
+  ],
+  [
     'flow mappings over several lines with alias keys whose value stays, beside a changed key',
     'k: &k key\nv: &v val\nx: 1\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n',
     v => v.x = 2, 'k: &k key\nv: &v val\nx: 2\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n'

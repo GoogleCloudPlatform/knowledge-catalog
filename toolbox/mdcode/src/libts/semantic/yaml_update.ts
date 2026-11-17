@@ -246,9 +246,11 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const edits = u.edits.length;
   // A flow collection over several lines keeps its text when its value
   // stays, even when a linked item in it moved, since the text reads as the
-  // value. It is written again in block style when its value changes.
+  // value, and when its keys stay apart once an alias key reads as its
+  // anchor's value. It is written again in block style otherwise.
   if (yaml.isCollection(node) && node.flow && spansLines(u.text, node)) {
-    if (canonical(node.toJS(u.doc)) === canonical(value)) {
+    if (canonical(node.toJS(u.doc)) === canonical(value) &&
+        uniqueKeys(u, node)) {
       keep(u, value, node);
     } else {
       replace(u, value, node, slot);
@@ -296,6 +298,23 @@ function keep(
       record(u, item, (value as unknown[])[i]);
     }
   });
+}
+
+/**
+ * Whether the keys of each mapping in `node` differ once each alias key is
+ * read as the value its anchor names. The parser checks them as written, so
+ * a key written out for an alias can repeat another.
+ */
+function uniqueKeys(u: Update, node: yaml.Node): boolean {
+  let unique = true;
+  yaml.visit(node, {
+    Map: (_, m) => {
+      const keys = m.items.map(
+          p => keyName(yaml.isAlias(p.key) ? p.key.resolve(u.doc) : p.key));
+      unique &&= new Set(keys).size === keys.length;
+    },
+  });
+  return unique;
 }
 
 /**
