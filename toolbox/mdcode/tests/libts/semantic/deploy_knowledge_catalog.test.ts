@@ -457,11 +457,11 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
   const ENTITY = 'sales/entities/orders';
   const TYPES = 'projects/dataplex-types/locations/global/aspectTypes';
 
-  // The entries a first push of DOCS creates, by entry id, as the catalog
-  // then holds them: the model entry labeled finished.
-  async function pushed(): Promise<Map<string, any>> {
+  // The entries a first push of DOCS with `opts` creates, by entry id, as the
+  // catalog then holds them: the model entry labeled finished.
+  async function pushed(opts = OPTS): Promise<Map<string, any>> {
     const {create} = stubClient();
-    await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+    await deployKnowledgeCatalog(models(DOCS), CTX, opts);
     const held = new Map(create.mock.calls.map(c => {
       const entry: any = structuredClone(c[4]);
       if (entry.entrySource.labels) entry.entrySource.labels = FINISHED;
@@ -471,18 +471,18 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
     return held;
   }
 
-  // Pushes DOCS again over `held`. An entry `held` lacks is listed, and its
-  // read fails.
-  async function repush(held: Map<string, any>, ids: string[]) {
+  // Pushes DOCS again with `opts` over `held`. An entry `held` lacks is
+  // listed, and its read fails.
+  async function repush(held: Map<string, any>, ids: string[], opts = OPTS) {
     const stub = stubClient({
       create: EXISTS,
       existing: ids.map(id => ({id, type: (held.get(id) ?? {}).entryType})),
       lookup: id => held.has(id) ? ok(held.get(id)) : err(500, 'unavailable'),
     });
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
     const updates = stub.update.mock.calls.map(
         ([e, mask]) => [entryIdOf(e.name), mask, e.entrySource?.labels]);
-    return {result, updates};
+    return {result, updates, lookup: stub.lookup};
   }
 
   const entity = (held: Map<string, any>) => held.get(ENTITY);
@@ -573,6 +573,68 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
       ]);
     });
   }
+
+  // A domain-scoped project ID holds a dot.
+  test('an entry whose types live in a project with a dot in its ID is read',
+       async () => {
+         const types = 'google.com:dataplex-autopush-types';
+         const opts = {...OPTS, systemTypeProject: types};
+         const held = await pushed(opts);
+
+         const {result, updates, lookup} =
+             await repush(held, [...held.keys()], opts);
+
+         expect(result)
+             .toMatchObject({success: true, updated: 0, unchangedEntries: 3});
+         expect(updates).toEqual([]);
+         const read = lookup.mock.calls.find(c => c[2] === entryName('sales'))!;
+         expect(read[3]!.aspects)
+             .toContain(
+                 `projects/${types}/locations/global/aspectTypes/` +
+                 'semantic-model');
+       });
+
+  // Dataplex spells the project of each type as a number, and the real read
+  // turns it back into the project ID through Resource Manager.
+  test('an entry Dataplex returns with its types project as a number is ' +
+           'unchanged',
+       async () => {
+         const types = 'google.com:dataplex-autopush-types';
+         const number = '987654321098';
+         const opts = {...OPTS, systemTypeProject: types};
+         const held = await pushed(opts);
+         const byNumber = (s: string) => s.replace(types, number);
+         spyOn(CatalogClient.prototype, '_get')
+             .mockImplementation((async (name: string, params: any) => {
+               if (!name.endsWith(':lookupEntry')) return err(404, 'not found');
+               const entry = held.get(entryIdOf(params.entry));
+               return ok({
+                 ...structuredClone(entry),
+                 entryType: byNumber(entry.entryType),
+                 aspects: Object.fromEntries(
+                     Object.entries(entry.aspects)
+                         .map(([key, a]: [string, any]) => [
+                           byNumber(key),
+                           {...a, aspectType: byNumber(a.aspectType)},
+                         ])),
+               });
+             }) as any);
+         const {create, update} = stubClient({
+           existing: [...held.keys()],
+           project: p => p === number ?
+               ok({name: `projects/${number}`, projectId: types}) :
+               err(403, 'Permission denied'),
+         });
+         // stubClient replaces lookupEntry; the real one reads through `_get`.
+         (CatalogClient.prototype.lookupEntry as any).mockRestore();
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+
+         expect(result).toMatchObject(
+             {success: true, created: 0, updated: 0, unchangedEntries: 3});
+         expect(create).not.toHaveBeenCalled();
+         expect(update).not.toHaveBeenCalled();
+       });
 
   test('a failed write of the label alone names the label', async () => {
     const held = await pushed();

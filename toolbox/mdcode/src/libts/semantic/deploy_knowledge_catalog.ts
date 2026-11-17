@@ -813,14 +813,15 @@ function isNothingToWrite(
 async function readStored(
     cat: CatalogClient, opts: KcDeployOptions,
     entry: Entry): Promise<Entry|undefined> {
-  const types = [...new Set(
-      [...entryAspectKeys(entry, opts)].map(key => key.split('@')[0]))];
-  const res =
-      await readEveryAspect(
-          cat, opts, entry, types.map(ref => _typeRefToName(ref, 'aspect')),
-          {keepSourceResource: true})
-          .catch(() => undefined);
-  return res && isOkStatus(res) ? res.result : undefined;
+  try {
+    const types = [...new Set([...entryAspectKeys(entry, opts)].map(
+        key => _typeRefToName(key.split('@')[0], 'aspect')))];
+    const res = await readEveryAspect(
+        cat, opts, entry, types, {keepSourceResource: true});
+    return isOkStatus(res) ? res.result : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

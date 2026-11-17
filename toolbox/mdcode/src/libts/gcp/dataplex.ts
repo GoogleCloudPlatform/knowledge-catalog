@@ -596,13 +596,19 @@ export function catalogContainer(project: string, location: string, entryGroup: 
   return container;
 }
 
+// A type reference, project.location.type. Only a domain-scoped project ID,
+// domain:project, holds dots, and only in its domain. No part is empty or holds
+// an '@' or a '/', and the location and the type hold no dot and no colon.
+const TYPE_REF = /^((?:[^.:@/]+(?:\.[^.:@/]+)*:)?[^.:@/]+)\.([^.:@/]+)\.([^.:@/]+)$/;
+
 // Converts project.location.type to projects/${project}/locations/${location}/typeTypes/${type}
 export function _typeRefToName(ref: string, type: string): string {
-  const refParts = ref.split('.');
-  if (refParts.length !== 3) {
+  const m = TYPE_REF.exec(ref);
+  if (!m) {
     throw new Error(`Invalid type reference: ${ref}`);
   }
-  return `projects/${refParts[0]}/locations/${refParts[1]}/${type}Types/${refParts[2]}`;
+  const [, project, location, typeId] = m;
+  return `projects/${project}/locations/${location}/${type}Types/${typeId}`;
 }
 
 // Converts projects/${project}/locations/${location}/typeTypes/${type} -> project.location.type
