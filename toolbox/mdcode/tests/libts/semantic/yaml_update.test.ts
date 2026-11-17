@@ -77,6 +77,16 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.a = 5, v.b = 6, v.c = 6, v.d = 7, v.e = 8), 'a: 5\nb: &k 6\nc: !!int 6\nd:\n  7\ne: 8\n'
   ],
   [
+    'numbers after a tag set to numbers it reads as other values, and to one it reads alike',
+    'a: !!float 1.0\nb: !!int 1\nc: !!float 1.5\n', v => (v.a = 2, v.b = 2.5, v.c = 2.5),
+    'a: 2\nb: 2.5\nc: !!float 2.5\n'
+  ],
+  [
+    'scalars after an anchor and a tag in either order set to a number',
+    'a: !!str &k x\ne: &j !!str\n  w\nk:\n  !!str\n', v => (v.a = 5, v.e = 8, v.k = 9),
+    'a: &k 5\ne: &j\n  8\nk:\n  9\n'
+  ],
+  [
     'flow values after an anchor or a tag, set to values of another kind',
     'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
     'g: [1]\nm: {a: [1], b: [2]}\n'
@@ -406,6 +416,7 @@ test.each<[string, string, (value: any) => void, string?]>([
 // stays.
 test.each([
   ['!!seq [1]\n', '{a: 1}\n'],
+  ['!!str\n', '{a: 1}\n'],
   ['--- !!seq\n[1]\n', '---\n{a: 1}\n'],
 ])('the root of %j set to a mapping', (input, expected) => {
   const {document, text} = parseForUpdate(input);

@@ -210,7 +210,7 @@ interface Slot {
   after?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
-  /** The anchor and tag tokens of the node, as itemProps gives them. */
+  /** The anchor and tag tokens of the node. */
   props?: yaml.CST.SourceToken[];
 }
 
@@ -474,11 +474,6 @@ function blockEnd(t: string, end: number, col: number, node?: unknown): number {
 function setScalar(
     u: Update, node: yaml.Scalar, value: unknown, slot: Slot): void {
   const [from, to, lead] = rangeOf(u, node);
-  // A tag names the type of the value, so it goes when that type changes.
-  const tags = typeof node.value === typeof value ?
-      [] :
-      (slot.props ?? []).filter(s => s.type === 'tag');
-  const {start, cuts} = propsOut(u.text, tags, from, slot);
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
   // A double-quoted string that writes its line breaks as `\n` escapes on one
@@ -521,6 +516,12 @@ function setScalar(
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';
   s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
+  // A tag stays when the new text reads back as the value under it.
+  const tag = (slot.props ?? []).filter(t => t.type === 'tag');
+  const typed = tag.length > 0 &&
+      readsInBlock(`_: ${tag[0].source} ${s}`, value);
+  const {start, cuts} =
+      propsOut(u.text, tag.length && !typed ? tag : [], from, slot);
   s = (start < from ? '' : lead) + s;
   u.edits.push(...cuts, [start, to, u.text[to - 1] === '\n' ? s + u.nl : s]);
 }
@@ -528,7 +529,8 @@ function setScalar(
 /**
  * Writes `value` in place of `node`, its anchor and its tag (see propsOut).
  * The comment on the line where `node` starts stays on that line, and so does
- * the comment after an anchor or tag.
+ * a comment after an anchor or tag, except on the lines between a key and a
+ * block collection under it, which go with the collection.
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
@@ -609,12 +611,14 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
 }
 
 /**
- * How `tokens`, anchor and tag tokens of the value at `from` in `slot`, leave
- * the text. Those on the line where the value starts go with its text, which
- * then starts at `start`. Those on the line of the key or `-` above it go with
- * the text after the `:` or `-`, up to `keyEnd`. One on a line between goes
- * with the spaces after it, and with its line when nothing else is on it.
- * `cuts` holds the edits for the last two.
+ * The edits that take the anchor and tag tokens `tokens` out of the text of
+ * the value at `from` in `slot`, and where the value's own edit starts. Each
+ * line's tokens go together. Those with text before them on their line go
+ * with the spaces between. Those that start their line go with the spaces
+ * after them, and with the line when nothing else is on it. When the value
+ * follows them on that line, its edit starts where they do instead. `keyEnd`
+ * is where the tokens on the line of the key or `-` end, or the slot's
+ * `after` when none are there.
  */
 function propsOut(
     t: string, tokens: yaml.CST.SourceToken[], from: number, slot: Slot):
@@ -625,28 +629,25 @@ function propsOut(
   const own = lineStart(t, from);
   const last = tokens.filter(s => s.offset < own && s.offset < keyLine).at(-1);
   const keyEnd = last ? last.offset + last.source.length : slot.after;
-  const cuts: Array<[number, number, string]> =
-      last ? [[slot.after!, keyEnd!, '']] : [];
-  // The runs of tokens on one line.
   const runs: Array<[number, number]> = [];
-  for (const s of tokens.filter(s => s.offset > keyLine && s.offset < own)) {
+  for (const s of tokens) {
     const run = runs.at(-1);
     const end = s.offset + s.source.length;
     if (run && lineStart(t, run[0]) === lineStart(t, s.offset)) run[1] = end;
     else runs.push([s.offset, end]);
   }
+  let start = from;
+  const cuts: Array<[number, number, string]> = [];
   for (const [a, end] of runs) {
-    let b = end;
-    while (/[ \t]/.test(t[b] ?? '')) b++;
-    // Text before them on their line, such as a root's `---`, stays.
     const ls = lineStart(t, a);
-    const before = t.slice(ls, a).trimEnd();
-    cuts.push(
-        b < lineEnd(t, b) ? [a, b, ''] :
-        before            ? [ls + before.length, b, ''] :
-                            [ls, nextLine(t, a), '']);
+    let [pre, b] = [a, end];
+    while (/[ \t]/.test(t[pre - 1] ?? '')) pre--;
+    while (/[ \t]/.test(t[b] ?? '')) b++;
+    if (pre > ls) cuts.push([pre, end, '']);
+    else if (b === from) start = a;
+    else if (b === lineEnd(t, b)) cuts.push([ls, nextLine(t, a), '']);
+    else cuts.push([a, b, '']);
   }
-  const start = tokens.find(s => s.offset >= own)?.offset ?? from;
   return {start, keyEnd, cuts};
 }
 
