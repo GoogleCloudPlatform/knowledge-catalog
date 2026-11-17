@@ -562,12 +562,16 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
   };
   // A plain copy, so that an alias and its anchor are two values.
   const {version, ...model} = plainCopy(document.toJS());
+  // The value of each text. The input's root stands for the model and for the
+  // root that wraps it, so its `version` stands for the wrapped root's.
+  const root = {version, semantic_model: [model]};
+  const links =
+      linkNodes(model, document.contents).set(root, document.contents!);
   // A root with no key but `version` has nothing to move by text.
   const wrapped = Object.keys(model).length ?
       edited(
-          wrappedRoot(text, document, 'semantic_model', 'version'),
-          {version, semantic_model: [model]}, document,
-          linkNodes(model, document.contents)) :
+          wrappedRoot(text, document, 'semantic_model', 'version'), root,
+          document, links) :
       undefined;
   if (!wrapped) return {text, document, wrapped: false, moved: false};
   const datasets = movingDatasets(model);
@@ -583,9 +587,7 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
       undefined;
   const moved = movedText === undefined ?
       undefined :
-      edited(
-          movedText, {version, semantic_model: [model]}, wrapped.document,
-          wrapped.links);
+      edited(movedText, root, wrapped.document, wrapped.links);
   return moved ? {...moved, wrapped: true, moved: true} :
                  {...wrapped, wrapped: true, moved: false};
 }
@@ -593,8 +595,11 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
 /**
  * Whether each alias of `from` whose name `from` defines more than once names
  * the same node in `to`. Two nodes are the same when `fromLinks` and `toLinks`
- * map one object to them, or when they sit under one scalar key, or at one
- * place, in two such nodes.
+ * map one object to them. Their items are the same as each other's: a pair
+ * with a scalar key as the pair with that key, another pair as the pair at its
+ * place among such pairs, and a list item as the item of `to` that holds its
+ * object, such as a metric moved to another list, or else the item at its
+ * place.
  */
 function sameAliasNodes(
     from: yaml.Document, fromLinks: ReadonlyMap<object, yaml.Node>,
@@ -602,18 +607,38 @@ function sameAliasNodes(
   const same = new Map<unknown, unknown>();
   const keyOf = (p: unknown) =>
       yaml.isPair(p) && yaml.isScalar(p.key) ? p.key.value : p;
-  for (const [value, node] of fromLinks) {
-    const other = toLinks.get(value) as yaml.YAMLMap|yaml.YAMLSeq|undefined;
-    same.set(node, other);
-    (node as yaml.YAMLMap|yaml.YAMLSeq).items.forEach((item: unknown, i) => {
-      if (!yaml.isPair(item)) return void same.set(item, other?.items[i]);
-      const match = (other?.items as unknown[] | undefined)
-                        ?.find(p => keyOf(p) === keyOf(item));
-      if (yaml.isPair(match)) {
-        same.set(item.key, match.key).set(item.value, match.value);
-      }
-    });
+  const holder = new Map<unknown, unknown>();
+  for (const [value, node] of toLinks) {
+    if (!Array.isArray(value)) continue;
+    value.forEach((v, i) => void (typeof v === 'object' && v !== null &&
+                                  holder.set(v, (node as yaml.YAMLSeq).items[i])));
   }
+  const unkeyed = (n: unknown) =>
+      (yaml.isCollection(n) ? n.items as unknown[] : [])
+          .filter(p => yaml.isPair(p) && !yaml.isScalar(p.key));
+  // Pairs `node`, whose value is `value` when it has a link, with `other`,
+  // and then its items. A linked item pairs through its own link.
+  const linked = new Set<unknown>(fromLinks.values());
+  const pair = (node: unknown, other: unknown, value?: unknown) => {
+    same.set(node, other);
+    if (!yaml.isCollection(node)) return;
+    const items = yaml.isCollection(other) ? other.items as unknown[] : [];
+    const others = unkeyed(other);
+    (node.items as unknown[]).forEach((item, i) => {
+      const v = Array.isArray(value) ? value[i] : undefined;
+      if (!yaml.isPair(item)) {
+        if (!linked.has(item)) pair(item, holder.get(v) ?? items[i]);
+        return;
+      }
+      const match = yaml.isScalar(item.key) ?
+          items.find(p => keyOf(p) === keyOf(item)) :
+          others.shift();
+      if (!yaml.isPair(match)) return;
+      same.set(item.key, match.key);
+      if (!linked.has(item.value)) pair(item.value, match.value);
+    });
+  };
+  for (const [value, node] of fromLinks) pair(node, toLinks.get(value), value);
   // An alias whose name is defined once names that definition or none, and
   // the value read back shows which.
   const names: string[] = [];

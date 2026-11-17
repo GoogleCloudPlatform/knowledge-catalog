@@ -240,6 +240,8 @@ semantic_model:
 
   const WRAPPED = "Moved the model from the document root into 'semantic_model', and " +
       "wrote version '0.2.0.dev0/google' in place of '0.3.0.dev0'.";
+  // A dataset metric of orders with a comment above it.
+  const SUM = '    metrics:\n      # The sum.\n      - name: m\n        expression:\n          sql: SUM(amount)\n';
   // [what the input holds, the input, the options, the line that reports it,
   // and a line of the written file]
   test.each([
@@ -350,6 +352,30 @@ semantic_model:
          'version: &v 0.3.0.dev0\nrelationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
          'to_columns: [id], ai_context: {instructions: *v}}]\n',
      {}, WRAPPED, '        to_columns: [id]\n        ai_context:\n          instructions: 0.3.0.dev0\n'],
+    ['an anchored version that stays first, whose name a dataset defines again',
+     ossieFile({version: '&v 0.3.0.dev0', orders: '    description: *v\n' + SUM,
+                rest: '    description: &v 0.3.0.dev0\n'}),
+     {}, WRAPPED, '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an alias key whose name the file defines twice',
+     ossieFile({orders: SUM, rest: '    ai_context: {note: &k a, instructions: &k b}\n' +
+                    'relationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
+                    'to_columns: [id], ai_context: {*k : c}}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an alias in the value of an alias key, whose name the file defines twice',
+     ossieFile({orders: '    ai_context:\n      note: &k a\n      instructions: &k b\n      custom:\n        *k : {x: *k}\n' + SUM}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['a dataset metric written as an alias whose name the file defines twice',
+     ossieFile({orders: '    metrics:\n      # The sum.\n      - &w\n        name: m\n        expression:\n          sql: SUM(amount)\n',
+                rest: '    metrics:\n      - *w\ndescription: &w The shop.\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - &w\n        name: m\n'],
+    ["an alias in a moved metric whose anchor's name a later dataset defines again",
+     ossieFile({orders: '    ai_context: {synonyms: [&n total]}\n' + SUM + '        ai_context: {synonyms: [*n]}\n',
+                rest: '    ai_context: {synonyms: [&n total]}\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '        ai_context:\n          synonyms:\n            - total\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',
