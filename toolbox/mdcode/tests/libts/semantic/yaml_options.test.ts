@@ -19,7 +19,9 @@ test('places a YAML error after text above it that ends inside a line', () => {
 
 // An error that reports a `[` or `{` left open points at it, though YAML
 // places the error before the spaces and line breaks that end it. Any other
-// error keeps YAML's place, even where a value left open ends.
+// error keeps YAML's place, even where a value left open ends. So does an
+// error about a `{` that a later `}` closes, and a `}` inside quoted text or
+// a comment closes nothing.
 const FLOW_MAP = 'Flow map in block collection must be sufficiently ' +
     'indented and end with a }';
 const FLOW_SEQ = 'Flow sequence in block collection must be sufficiently ' +
@@ -40,6 +42,14 @@ test.each([
   ['a flow sequence closed by } inside a flow map left open',
    'a: {k: [x, y}\n', `${FLOW_SEQ} at line 1, column 13:\n\na: {k: [x, y}\n` +
        '            ^\n'],
+  ['a flow map whose } sits under its parent key', 'a:\n  b: {\n    k: v\n}\n',
+   `${FLOW_MAP} at line 4, column 1:\n\n    k: v\n}\n^\n`],
+  ['a flow map with a line indented less than its key',
+   'a:\n  b: {\n    k1: v1,\n  k2: v2\n    }\n',
+   `${FLOW_MAP} at line 4, column 3:\n\n    k1: v1,\n  k2: v2\n  ^\n`],
+  ['a flow map left open before a } in quotes and a comment',
+   'a: {k: v\nb: "}" # }\n',
+   `${FLOW_MAP} at line 1, column 4:\n\na: {k: v\n   ^\n`],
   ['an indent error where a flow sequence left open ends', '? [1, 2\n: 1\n',
    'All mapping items must start at the same column at line 2, column 1:' +
        '\n\n? [1, 2\n: 1\n^\n'],
