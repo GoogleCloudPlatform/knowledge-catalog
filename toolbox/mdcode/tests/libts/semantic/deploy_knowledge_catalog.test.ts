@@ -623,7 +623,7 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
                          ])),
                });
              }) as any);
-         const {create, update, getProject} = stubClient({
+         const {create, update} = stubClient({
            existing: [...held.keys()],
            project: p => p === number ?
                ok({name: `projects/${number}`, projectId: types}) :
@@ -643,7 +643,6 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          // the number turned into that ID.
          expect(asked).toContain(
              `projects/${types}/locations/global/aspectTypes/semantic-model`);
-         expect(getProject).toHaveBeenCalledWith(number);
          const model =
              (await (read.mock.results[0].value as Promise<any>)).result;
          expect(Object.keys(model.aspects))

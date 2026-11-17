@@ -337,8 +337,9 @@ The summary counts those entries and links in parentheses, so a push that
 changes nothing prints
 `Wrote 0 new and 0 updated Knowledge Catalog entries (6 unchanged); wrote 0 entry links (3 unchanged).`
 An unchanged model entry still gets the `kcmd-push-state` label writes when
-anything else in the push changes. An aspect edited in the console no longer
-matches, so the next push writes that entry again.
+anything else in Knowledge Catalog changes, or when its label does not already
+say `finished`. An aspect edited in the console no longer matches, so the next
+push writes that entry again.
 
 ## Pull
 
