@@ -1902,6 +1902,10 @@ function reportCatalogResult(
     return 1;
   }
   const n = result.created + result.updated;
+  // Entries push found unchanged got no request and are counted apart.
+  const unchangedEntries = result.unchangedEntries ?
+      ` (${result.unchangedEntries} unchanged)` :
+      '';
   const removed = result.deleted ? `; removed ${result.deleted} orphaned entr${
                                        result.deleted === 1 ? 'y' : 'ies'}` :
                                    '';
@@ -1922,8 +1926,8 @@ function reportCatalogResult(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
           `Wrote ${result.created} new and ${result.updated} updated ` +
-              `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${
-                  linked}${unlinked}.`);
+              `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${
+                  unchangedEntries}${removed}${linked}${unlinked}.`);
   return 0;
 }
 

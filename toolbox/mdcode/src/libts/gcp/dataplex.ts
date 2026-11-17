@@ -195,8 +195,10 @@ export class CatalogClient extends api.ApiClient {
   // With `opts.aspects`, `opts.paths` keeps only the aspects at those paths.
   // The path '' is the entry itself, and `Schema.<field>` is a field. Passing
   // `{view: 'ALL'}` reads every aspect without naming aspect types.
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async lookupEntry(project: string, location: string, name: string,
-                    opts: LookupEntryOptions = {}): Promise<api.ApiResult<Entry>> {
+                    opts: LookupEntryOptions = {},
+                    fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const params: Record<string, any> = { entry: name, view: opts.view ?? 'BASIC' };
     if (opts.view !== 'ALL' && opts.aspects && opts.aspects.length) {
@@ -207,7 +209,7 @@ export class CatalogClient extends api.ApiClient {
 
     const res = await this._get<Entry>(container, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
