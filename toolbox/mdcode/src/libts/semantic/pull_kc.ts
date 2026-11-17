@@ -17,7 +17,7 @@
 // the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
 // logic moves.
 
-import {catalogContainer, CatalogClient, Entry} from '../gcp/dataplex';
+import {CatalogClient, Entry} from '../gcp/dataplex';
 
 import {missingEntryGroupMessage} from './deploy_knowledge_catalog';
 import {actionAspectTypes} from './kc_actions';
@@ -25,6 +25,7 @@ import {constraintAspectTypes} from './kc_constraints';
 import {FirstGenerationModel, modelsFromCatalogResources, ReadResult} from './kc_converter';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf} from './kc_ids';
+import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
 import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
@@ -35,9 +36,6 @@ export interface KcPullOptions {
   // Id of the source entry group to pull from.
   entryGroup: string;
 }
-
-// Upper bound on in-flight aspect-hydration fetches during a pull.
-const HYDRATE_CONCURRENCY = 8;
 
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
@@ -88,7 +86,7 @@ export async function pullKnowledgeCatalog(
   // Hydrate every semantic entry. A failed fetch means part of the model would
   // be silently missing, so abort rather than reconstruct an incomplete model.
   const hydrated = await mapConcurrent(
-      targets, HYDRATE_CONCURRENCY,
+      targets, READ_CONCURRENCY,
       ({entry, aspectTypes}) =>
           fetchEveryAspect(cat, opts, entry, aspectTypes));
 
@@ -143,88 +141,18 @@ function firstGenerationWarning(
 }
 
 
-// Fetches `entry` with the aspects of `aspectTypes`, at `paths` when given.
-// Throws on a failed fetch.
-async function fetchEntry(
+// Fetches `entry` with every aspect of `aspectTypes`. Throws on a failed
+// fetch.
+async function fetchEveryAspect(
     cat: CatalogClient, opts: KcPullOptions, entry: Entry,
-    aspectTypes: string[], paths?: string[]): Promise<Entry> {
-  const res = await cat.lookupEntry(
-      opts.project, opts.location, entry.name,
-      {aspects: aspectTypes, paths});
+    aspectTypes: string[]): Promise<Entry> {
+  const res = await readEveryAspect(cat, opts, entry, aspectTypes);
   if (res.status !== 200 || !res.result) {
     throw new Error(`failed to fetch entry '${entry.name}' (status ${
         res.status}); pull aborted`);
   }
   return res.result;
 }
-
-// Most aspects Dataplex returns for one entry in one read.
-const MAX_ASPECTS_PER_READ = 100;
-// Most bytes of path and query Dataplex accepts in a GET.
-const MAX_URL_BYTES = 16_384;
-
-// Fetches `entry` with every aspect of `aspectTypes`, one read at a time. A
-// read that returns MAX_ASPECTS_PER_READ is repeated once per type, and a type
-// that returns that many is read again at the entry and at each field.
-async function fetchEveryAspect(
-    cat: CatalogClient, opts: KcPullOptions, entry: Entry,
-    aspectTypes: string[]): Promise<Entry> {
-  const full = (e: Entry) =>
-      Object.keys(e.aspects ?? {}).length >= MAX_ASPECTS_PER_READ;
-  const read = await fetchEntry(cat, opts, entry, aspectTypes);
-  if (!full(read)) return read;
-  const byType: Entry[] = [];
-  for (const t of aspectTypes) {
-    byType.push(await fetchEntry(cat, opts, entry, [t]));
-  }
-  const schema =
-      byType[aspectTypes.findIndex(t => t.endsWith('/aspectTypes/schema'))];
-  const paths = [
-    '',
-    ...Object.values(schema?.aspects ?? {})
-        .flatMap(a => a.data?.fields ?? [])
-        .map(f => `Schema.${f.name}`)
-  ];
-  const byPath: Entry[] = [];
-  for (const t of aspectTypes.filter((_, i) => full(byType[i]))) {
-    for (const batch of pathBatches(opts, entry, t, paths)) {
-      byPath.push(await fetchEntry(cat, opts, entry, [t], batch));
-    }
-  }
-  const reads = [...byType, ...byPath];
-  return {...read, aspects: Object.assign({}, ...reads.map(r => r.aspects))};
-}
-
-// Splits `paths` into batches for reads of `type` on `entry`, each within
-// MAX_URL_BYTES. A batch holds fewer than MAX_ASPECTS_PER_READ paths, and a
-// path holds at most one instance of a type, so no read comes back cut.
-function pathBatches(
-    opts: KcPullOptions, entry: Entry, type: string,
-    paths: string[]): string[][] {
-  // Bytes of `params` in the URL, with the '?' or '&' before them.
-  const bytes = (params: string[][]) =>
-      new URLSearchParams(params).toString().length + 1;
-  const base =
-      `/v1/${catalogContainer(opts.project, opts.location)}:lookupEntry`
-          .length +
-      bytes([['entry', entry.name], ['view', 'CUSTOM'], ['aspectTypes', type]]);
-  const batches: string[][] = [];
-  let batch: string[] = [];
-  let size = base;
-  for (const path of paths) {
-    const add = bytes([['paths', path]]);
-    if (batch.length === MAX_ASPECTS_PER_READ - 1 ||
-        size + add > MAX_URL_BYTES) {
-      batches.push(batch);
-      batch = [];
-      size = base;
-    }
-    batch.push(path);
-    size += add;
-  }
-  return [...batches, batch];
-}
-
 
 
 // The aspect types each second-generation entry type is read with.
@@ -265,32 +193,4 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
     default:
       return undefined;
   }
-}
-
-
-// Maps `items` through `fn` with at most `limit` calls in flight, returning
-// results in input order (so downstream ordering stays deterministic).
-async function mapConcurrent<T, R>(
-    items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  let failed = false;
-  async function worker(): Promise<void> {
-    // Stop claiming new items once any worker has thrown: Promise.all rejects on
-    // the first failure, so fanning out more fetches is wasted work whose own
-    // rejections would surface as unhandled-rejection noise.
-    while (next < items.length && !failed) {
-      const i = next++;
-      try {
-        results[i] = await fn(items[i]);
-      } catch (err) {
-        failed = true;
-        throw err;
-      }
-    }
-  }
-  const workers =
-      Array.from({length: Math.min(limit, items.length)}, () => worker());
-  await Promise.all(workers);
-  return results;
 }

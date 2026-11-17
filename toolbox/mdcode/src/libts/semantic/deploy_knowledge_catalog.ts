@@ -23,8 +23,10 @@
 //     (unless `--force-remove` is set), and checks that any required custom
 //     entry/aspect types exist in the target project. It also checks every
 //     aspect's size.
-//   * Apply creates or updates each model's entries in dependency order: the
-//     `semantic-model` anchor first, then independent child entries
+//   * Apply first reads each emitted entry the listing holds, with the aspect
+//     types its update names, and sends no write for one the update would
+//     leave as stored. It creates or updates the others in dependency order:
+//     the `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
 //     `semantic-explore`).
 //   * Relationships are published as entry links after that model's entries
@@ -41,8 +43,11 @@
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
-//   * The anchor's write labels it `kcmd-push-state: writing`, and the push's
-//     last write, after the deletions, relabels it `finished`.
+//   * The model's first write labels the anchor `kcmd-push-state: writing`.
+//     Under `--force-remove`, the deletes of foreign models come before it.
+//     The model's last write, after its orphaned entries are deleted,
+//     relabels the anchor `finished`. A model with nothing to create, update
+//     or delete, whose anchor is labeled `finished`, gets no write.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -53,12 +58,13 @@ import {isDeepStrictEqual} from 'node:util';
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import * as crm from '../gcp/crm';
-import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {_typeRefToName, Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
 import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
+import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -110,9 +116,15 @@ export interface KcDeployResult {
   warnings: string[];
   // New entries created in the entry group (0 for validateOnly).
   created: number;
-  // Existing entries updated in place by an idempotent re-push (0 for
-  // validateOnly).
+  // Existing entries updated in place: those whose stored copy differs from
+  // what the push writes, and those push wrote without a successful read (0
+  // for validateOnly). No label counts as a difference. An emitted entry sets
+  // none, and the update carries over every stored label it does not set.
   updated: number;
+  // Existing entries that already hold what the push writes, so push read them
+  // and sent no write, apart from the push-state label on the model entry (0
+  // for validateOnly).
+  unchangedEntries: number;
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
@@ -137,6 +149,7 @@ export interface KcDeployResult {
 interface Counts {
   created: number;
   updated: number;
+  unchangedEntries: number;
   deleted: number;
   linked: number;
   unchangedLinks: number;
@@ -200,9 +213,12 @@ export async function preflightKnowledgeCatalog(
  * Writes a preflight-checked Knowledge Catalog deployment.
  *
  * The method performs the following actions:
- *   1. Removes foreign models when `--force-remove` is set.
- *   2. Writes each emitted model's entries and relationship links and deletes
- *      any orphaned links and entries.
+ *   1. Works out what each emitted model's push writes and deletes, before
+ *      any write (see `planModelWrites`).
+ *   2. Removes foreign models when `--force-remove` is set.
+ *   3. Writes each emitted model's new and changed entries and relationship
+ *      links and deletes any orphaned links and entries. A model with nothing
+ *      to write or delete, whose anchor is labeled finished, gets no write.
  */
 export async function applyKnowledgeCatalog(
     prepared: KcPreparedDeploy, ctx: context.ApiContext,
@@ -212,6 +228,7 @@ export async function applyKnowledgeCatalog(
       Counts = {
         created: 0,
         updated: 0,
+        unchangedEntries: 0,
         deleted: 0,
         linked: 0,
         unchangedLinks: 0,
@@ -225,6 +242,18 @@ export async function applyKnowledgeCatalog(
   const {emitted, existing} = prepared;
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
+
+  // Read what the catalog holds before the first write. A thrown error, such
+  // as a network failure, is reported like a failed read.
+  const writePlans: WritePlan[] = [];
+  for (const {model, resources} of emitted) {
+    const planned =
+        await planModelWrites(
+            cat, opts, model, resources, existing, isScopeProject)
+            .catch((err: any) => ({error: String(err?.message || err).trim()}));
+    if ('error' in planned) return result(false, planned.error);
+    writePlans.push(planned);
+  }
 
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
@@ -250,7 +279,7 @@ export async function applyKnowledgeCatalog(
   // leave out what the step that threw had already written.
   const written =
       await writeEmittedModels(
-          cat, opts, emitted, existing, counts, isScopeProject)
+          cat, opts, emitted, writePlans, counts)
           .catch((err: any): WriteModelsOutcome =>
                      ({error: String(err?.message || err).trim()}));
   if (written.error) return result(false, written.error);
@@ -309,6 +338,7 @@ async function preflightEmittedModels(
   const counts: Counts = {
     created: 0,
     updated: 0,
+    unchangedEntries: 0,
     deleted: 0,
     linked: 0,
     unchangedLinks: 0,
@@ -630,18 +660,187 @@ interface WriteModelsOutcome {
 }
 
 /**
+ * What one model's push writes and deletes, worked out before the first write
+ * by `planModelWrites`.
+ */
+interface WritePlan {
+  // The emitted entries to write, in emitted order: the ones the listing
+  // lacks, those whose read failed, and those whose stored copy differs from
+  // what the update would leave. No label counts as a difference. An emitted
+  // entry sets none, and the update carries over every stored label it does
+  // not set.
+  writes: Entry[];
+  // The number of emitted entries the catalog already holds as the update
+  // would leave them.
+  unchanged: number;
+  // The entrySource each listed entry holds, by entry ID: the one read for
+  // the plan, or the listed one when that read failed.
+  sources: Map<string, Entry['entrySource']>;
+  // The model entry as read for the plan. Unset when the listing lacks it or
+  // its read failed.
+  storedAnchor?: Entry;
+  // The model's relationship links that it no longer emits. They and the
+  // stale links in `staleLinks` are deleted before the link writes.
+  orphanedLinks: EntryLink[];
+  staleLinks: StaleLinksOutcome;
+  // The emitted links the lookup missed that a read found with the same
+  // endpoints.
+  foundUnchanged: Set<string>;
+  // The entries the model owns but no longer emits.
+  orphanedEntries: Entry[];
+}
+
+/**
+ * Works out what the push of one model writes and deletes, and returns the
+ * error that stops it. Writes nothing.
+ *
+ * The method performs the following actions:
+ *   1. Reads each emitted entry the pre-write listing `existing` holds, with
+ *      the aspect types its update names, at most READ_CONCURRENCY at a time,
+ *      and sorts out the entries the update would leave as stored. A read
+ *      that fails counts as a difference.
+ *   2. Looks up the model's existing relationship links when `existing`
+ *      contains entities owned by the model, and finds the orphaned links (no
+ *      longer emitted) and stale links (changed endpoints) owned by the model.
+ *      When there are any, reads each emitted link ID the lookup did not
+ *      return, and fails when a read fails.
+ *   3. Finds the existing entries owned by the model that are no longer
+ *      emitted.
+ */
+async function planModelWrites(
+    cat: CatalogClient, opts: KcDeployOptions, model: string,
+    resources: kcEmit.KcResources, existing: Entry[],
+    isScopeProject: ProjectMatcher): Promise<WritePlan|{error: string}> {
+  const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
+  const listed = resources.entries.filter(e => sources.has(entryId(e)));
+  const stored = await mapConcurrent(
+      listed, READ_CONCURRENCY, e => readStored(cat, opts, e));
+  const unchanged = new Set<Entry>();
+  listed.forEach((entry, i) => {
+    const held = stored[i];
+    if (!held) return;
+    sources.set(entryId(entry), held.entrySource);
+    if (isUnchanged(entry, held, opts)) unchanged.add(entry);
+  });
+  const anchor = resources.entries[0];
+  const anchorIndex = anchor ? listed.indexOf(anchor) : -1;
+
+  // When the pre-write listing contains entity entries this model owns, look
+  // up the model's existing links once and share the map between
+  // findOrphanedEntryLinks (to delete dropped or renamed links) and
+  // findStaleEntryLinks (to delete links whose endpoints changed).
+  // Look up links via the model's entity entries known to the server (the
+  // pre-write snapshot `existing`), not the ones this push emits: only a
+  // server-side entry can already carry a link, and enumerating the snapshot
+  // also reaches a link both of whose endpoints were removed in this push
+  // (neither is re-emitted, but both entries are still present in `existing`
+  // until `deleteEntries` deletes them at the end). On a first push there are
+  // no such entries, so no lookup is made.
+  const existingEntityNames = resources.entries.length ?
+      collectEntityNames(collectOwnedEntries(resources, existing)) :
+      [];
+  let existingLinks = new Map<string, EntryLink>();
+  if (existingEntityNames.length) {
+    const lookedUp = await lookupEntryLinks(
+        cat, opts, existingEntityNames, isScopeProject);
+    if (lookedUp.error) {
+      const {entryId, message} = lookedUp.error;
+      return {
+        error: `Looking up entry links for '${entryId}' from model '${
+            model}' failed: ${message}`,
+      };
+    }
+    existingLinks = lookedUp.links;
+  }
+
+  // Orphaned links (dropped or renamed) and stale links (same ID, changed
+  // endpoints) are deleted BEFORE the current links are created, so renamed
+  // links, swapped endpoint pairs, and taken-over endpoint pairs do not
+  // collide with an existing link.
+  const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
+  const staleLinks = findStaleEntryLinks(resources, existingLinks);
+  // Before a link is deleted, read each emitted ID the lookup did not
+  // return. A read that fails here could fail that link's write after the
+  // delete too, and leave the relationship with no link.
+  const foundUnchanged = new Set<string>();
+  if (orphanedLinks.length || staleLinks.links.length) {
+    for (const link of resources.entryLinks) {
+      if (existingLinks.has(linkId(link))) continue;
+      const read =
+          await readEmittedLink(cat, link)
+              .catch((err: any): ReadLinkOutcome => ({
+                       error: `entry link '${linkId(link)}': ${
+                           String(err?.message || err).trim()}`,
+                     }));
+      if (read.error) return {error: `Model '${model}': ${read.error}`};
+      if (read.existing && !isStaleLink(read.existing, link)) {
+        foundUnchanged.add(linkId(link));
+      }
+    }
+  }
+
+  return {
+    writes: resources.entries.filter(e => !unchanged.has(e)),
+    unchanged: unchanged.size,
+    sources,
+    ...(anchorIndex >= 0 && stored[anchorIndex] ?
+            {storedAnchor: stored[anchorIndex]} :
+            {}),
+    orphanedLinks,
+    staleLinks,
+    foundUnchanged,
+    orphanedEntries: findOrphanedEntries(resources, existing),
+  };
+}
+
+/**
+ * Returns true when the push of `resources` that `plan` describes has nothing
+ * to write or delete and the model entry is labeled finished, so the push
+ * sends no write for the model.
+ */
+function isNothingToWrite(
+    resources: kcEmit.KcResources, plan: WritePlan): boolean {
+  // An emitted link that shares its ID with a stale link fails this check,
+  // since `staleLinks.current` leaves out that ID.
+  const linksUnchanged = resources.entryLinks.every(link => {
+    const found = plan.staleLinks.current.get(linkId(link));
+    return found !== undefined && holdsAspects(found.aspects, link.aspects);
+  });
+  return !plan.writes.length && linksUnchanged && !plan.orphanedLinks.length &&
+      !plan.orphanedEntries.length &&
+      plan.storedAnchor?.entrySource?.labels?.[PUSH_STATE_LABEL] ===
+      PUSH_FINISHED;
+}
+
+/**
+ * Returns the emitted entry `entry` as the catalog holds it, read with the
+ * aspect types its update names and with its source `resource` as stored, or
+ * undefined when the read fails.
+ */
+async function readStored(
+    cat: CatalogClient, opts: KcDeployOptions,
+    entry: Entry): Promise<Entry|undefined> {
+  try {
+    const types = [...new Set([...entryAspectKeys(entry, opts)].map(
+        key => _typeRefToName(key.split('@')[0], 'aspect')))];
+    const res = await readEveryAspect(
+        cat, opts, entry, types, {keepSourceResource: true});
+    return isOkStatus(res) ? res.result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Writes every model's entries and relationship links and deletes orphaned
- * resources in model order.
+ * resources in model order, as `writePlans` lays out.
  *
  * For each model, the method performs the following actions:
- *   1. Creates or updates the model's entries (anchor first, labeled as
- *      writing).
- *   2. Looks up the model's existing relationship links when the pre-write
- *      entry group contains entities owned by the model.
- *   3. Deletes any orphaned relationship links (no longer emitted) and stale
- *      relationship links (changed endpoints) owned by the model. Before the
- *      first delete, reads each emitted link ID the lookup did not return,
- *      and fails when a read fails.
+ *   1. Writes nothing for a model with nothing to write or delete whose anchor
+ *      is labeled finished.
+ *   2. Labels the anchor writing, and creates or updates the model's new and
+ *      changed entries.
+ *   3. Deletes the orphaned and stale relationship links.
  *   4. Creates the model's new relationship links, and updates a looked-up
  *      link only when its aspects changed.
  *   5. Deletes any existing entries owned by the model that are no longer
@@ -653,68 +852,21 @@ interface WriteModelsOutcome {
  */
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[], counts: Counts,
-    isScopeProject: ProjectMatcher): Promise<WriteModelsOutcome> {
-  for (const {model, resources} of emitted) {
-    const entries =
-        await writeEntries(cat, opts, resources.entries, existing);
+    writePlans: WritePlan[], counts: Counts): Promise<WriteModelsOutcome> {
+  for (const [i, {model, resources}] of emitted.entries()) {
+    const plan = writePlans[i];
+    counts.unchangedEntries += plan.unchanged;
+    if (isNothingToWrite(resources, plan)) {
+      counts.unchangedLinks += resources.entryLinks.length;
+      continue;
+    }
+
+    const entries = await writeEntries(cat, opts, resources.entries, plan);
     counts.created += entries.created;
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
 
-    // When the pre-write listing contains entity entries this model owns, look
-    // up the model's existing links once and share the map between
-    // findOrphanedEntryLinks (to delete dropped or renamed links) and
-    // findStaleEntryLinks (to delete links whose endpoints changed).
-    // Look up links via the model's entity entries known to the server (the
-    // pre-write snapshot `existing`), not the ones this push emits: only a
-    // server-side entry can already carry a link, and enumerating the snapshot
-    // also reaches a link both of whose endpoints were removed in this push
-    // (neither is re-emitted, but both entries are still present in `existing`
-    // until `deleteEntries` deletes them at the end). On a first push there are
-    // no such entries, so no lookup is made.
-    const existingEntityNames = resources.entries.length ?
-        collectEntityNames(collectOwnedEntries(resources, existing)) :
-        [];
-    let existingLinks = new Map<string, EntryLink>();
-    if (existingEntityNames.length) {
-      const lookedUp = await lookupEntryLinks(
-          cat, opts, existingEntityNames, isScopeProject);
-      if (lookedUp.error) {
-        const {entryId, message} = lookedUp.error;
-        return {
-          error: `Looking up entry links for '${entryId}' from model '${
-              model}' failed: ${message}`,
-        };
-      }
-      existingLinks = lookedUp.links;
-    }
-
-    // Find orphaned links (dropped or renamed) and stale links (same ID,
-    // changed endpoints) in `existingLinks` and delete both BEFORE creating
-    // current links so renamed links, swapped endpoint pairs, and taken-over
-    // endpoint pairs do not collide with an existing link.
-    const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
-    const staleLinks = findStaleEntryLinks(resources, existingLinks);
-    // Before a link is deleted, read each emitted ID the lookup did not
-    // return. A read that fails here could fail that link's write after the
-    // delete too, and leave the relationship with no link.
-    const foundUnchanged = new Set<string>();
-    if (orphanedLinks.length || staleLinks.links.length) {
-      for (const link of resources.entryLinks) {
-        if (existingLinks.has(linkId(link))) continue;
-        const read =
-            await readEmittedLink(cat, link)
-                .catch((err: any): ReadLinkOutcome => ({
-                         error: `entry link '${linkId(link)}': ${
-                             String(err?.message || err).trim()}`,
-                       }));
-        if (read.error) return {error: `Model '${model}': ${read.error}`};
-        if (read.existing && !isStaleLink(read.existing, link)) {
-          foundUnchanged.add(linkId(link));
-        }
-      }
-    }
+    const {orphanedLinks, staleLinks, foundUnchanged} = plan;
     // `deletedLinks` collects the links deleted so far. An error after a
     // delete gets the push-again hint when a link is missing because of it.
     const deletedLinks: EntryLink[] = [];
@@ -764,8 +916,7 @@ async function writeEmittedModels(
     }
 
     // Finally, delete any entry this model owns but no longer emits.
-    const orphanedEntries = findOrphanedEntries(resources, existing);
-    const deleted = await deleteEntries(cat, opts, orphanedEntries);
+    const deleted = await deleteEntries(cat, opts, plan.orphanedEntries);
     counts.deleted += deleted.deleted;
     if (deleted.error) {
       const {entryId, message} = deleted.error;
@@ -777,15 +928,11 @@ async function writeEmittedModels(
 
     if (resources.entries.length) {
       const anchor = resources.entries[0];
-      const error =
-          await finishPush(cat, opts, anchor)
-              .catch((err: any) =>
-                         String(err?.message || err).trim() || 'unknown error');
+      const error = await setPushState(cat, opts, anchor, PUSH_FINISHED);
       if (error) {
         return {
-          error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
-              `entry '${entryId(anchor)}' to ${PUSH_FINISHED} failed: ` +
-              `${error.replace(/\.$/, '')}. Push again before you pull.`,
+          error: `Model '${model}': ${
+              pushStateError(anchor, PUSH_FINISHED, error)}`,
         };
       }
     }
@@ -794,23 +941,42 @@ async function writeEmittedModels(
 }
 
 /**
- * Labels the model entry `anchor` finished, and returns the error when that
- * fails. It reads the entry first and sends back the entrySource the entry
- * holds then, so what another writer set during the push stays. The update
- * names only the entrySource.
+ * Sets the push-state label of the model entry `anchor` to `state`, and
+ * returns the error when that fails. The update names only the entrySource and
+ * sends back the one `stored` holds, the model entry as read for the plan.
+ * Without `stored`, it reads the entry first and sends back the entrySource
+ * the entry holds then, so what another writer set during the push stays.
  */
-async function finishPush(
-    cat: CatalogClient, opts: KcDeployOptions,
-    anchor: Entry): Promise<string|undefined> {
-  const read = await cat.getEntry(
-      opts.project, opts.location, opts.entryGroup, entryId(anchor),
-      undefined, {keepSourceResource: true});
-  if (!isOkStatus(read)) return errText(read);
-  const {name, entryType} = anchor;
-  const entrySource = withPushState(read.result?.entrySource, PUSH_FINISHED);
-  const res =
-      await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
-  return isOkStatus(res) ? undefined : errText(res);
+async function setPushState(
+    cat: CatalogClient, opts: KcDeployOptions, anchor: Entry, state: string,
+    stored?: Entry): Promise<string|undefined> {
+  try {
+    let held = stored;
+    if (!held) {
+      const read = await cat.getEntry(
+          opts.project, opts.location, opts.entryGroup, entryId(anchor),
+          undefined, {keepSourceResource: true});
+      if (!isOkStatus(read)) return errText(read);
+      held = read.result;
+    }
+    const {name, entryType} = anchor;
+    const entrySource = withPushState(held?.entrySource, state);
+    const res =
+        await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
+    return isOkStatus(res) ? undefined : errText(res);
+  } catch (err: any) {
+    return String(err?.message || err).trim() || 'unknown error';
+  }
+}
+
+/**
+ * Returns the error for a failed write of the push-state label of the model
+ * entry `anchor` as `state`, whose cause is `cause`.
+ */
+function pushStateError(anchor: Entry, state: string, cause: string): string {
+  return `setting the ${PUSH_STATE_LABEL} label of entry '${
+             entryId(anchor)}' to ${state} failed: ` +
+      `${cause.replace(/\.$/, '')}. Push again before you pull.`;
 }
 
 // `source` with its kcmd-push-state label set to `state`.
@@ -1206,11 +1372,14 @@ interface EntriesOutcome {
 }
 
 /**
- * Creates or updates a model's entries in dependency order.
+ * Creates or updates the entries of a model, `entries`, that `plan` says to
+ * write, in dependency order.
  *
  * The method writes entries in three stages:
- *   1. Writes the model anchor (`entries[0]`) first, labeled as writing, since
- *      it is the parent of every child entry.
+ *   1. Labels the model anchor (`entries[0]`) as writing. An anchor to write
+ *      carries the label in its own write, since it is the parent of every
+ *      child entry and goes first. An unchanged anchor gets a write of the
+ *      label alone.
  *   2. Writes independent child entries (such as entities, relationships,
  *      actions, and constraints) concurrently.
  *   3. Writes dependent child entries (`semantic-metric` via
@@ -1218,25 +1387,42 @@ interface EntriesOutcome {
  *      `semantic-explore.baseEntity` / `joins[].fromEntity`, which reference
  *      entities by name) concurrently.
  *
- * An entry that already exists is updated in place (idempotent re-push).
+ * An entry that already exists is updated in place.
  */
 async function writeEntries(
     cat: CatalogClient, opts: KcDeployOptions, entries: Entry[],
-    existing: Entry[] = []): Promise<EntriesOutcome> {
+    plan: WritePlan): Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
-  // The entrySource each entry had before this push. An update keeps the
-  // fields kcmd does not own.
-  const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
-  const write = (e: Entry) => writeEntry(cat, opts, e, sources);
-  const [anchor, ...children] = entries;
+  const write = (e: Entry) => writeEntry(cat, opts, e, plan.sources);
+  const [anchor] = entries;
+  const writes = new Set(plan.writes);
 
-  const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
-  const anchorRes = await write({...anchor, entrySource});
-  if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
+  let created = 0;
+  let updated = 0;
+  if (writes.has(anchor)) {
+    const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
+    const anchorRes = await write({...anchor, entrySource});
+    if (anchorRes.error) {
+      return {created: 0, updated: 0, error: anchorRes.error};
+    }
+    if (anchorRes.updated) {
+      updated++;
+    } else {
+      created++;
+    }
+  } else {
+    const error = await setPushState(
+        cat, opts, anchor, PUSH_WRITING, plan.storedAnchor);
+    if (error) {
+      return {
+        created: 0,
+        updated: 0,
+        error: pushStateError(anchor, PUSH_WRITING, error),
+      };
+    }
+  }
 
-  let created = anchorRes.updated ? 0 : 1;
-  let updated = anchorRes.updated ? 1 : 0;
-
+  const children = plan.writes.filter(e => e !== anchor);
   const independentEntries = children.filter(e => !isDependentEntry(e));
   const dependentEntries = children.filter(isDependentEntry);
 
@@ -1367,7 +1553,7 @@ async function writeEntryLink(
   const id = linkId(link);
   const found = current.get(id);
   if (found) {
-    if (hasLinkAspects(found, link)) return {unchanged: true};
+    if (holdsAspects(found.aspects, link.aspects)) return {unchanged: true};
     return linkOutcome(link, await updateEntryLink(cat, link));
   }
   const res = await cat.createEntryLink(
@@ -1448,18 +1634,20 @@ async function replaceEntryLink(
 }
 
 /**
- * Returns true when the looked-up link `existing` already holds every aspect
- * of the emitted link `link` with the same data, so an update of `link` would
- * change nothing. An aspect matches by its key without the project part,
- * because Dataplex spells the project of a type as a number. Fields Dataplex
- * adds to an aspect, such as its times and aspectSource, are not compared.
+ * Returns true when `stored`, the aspects a link or an entry holds, has every
+ * aspect of `sent` with the same data, so writing `sent` would change none of
+ * them. An aspect matches by its key without the project part, because
+ * Dataplex spells the project of a type as a number. Fields Dataplex adds to
+ * an aspect, such as its times and aspectSource, are not compared.
  */
-function hasLinkAspects(existing: EntryLink, link: EntryLink): boolean {
-  const stored = new Map(Object.entries(existing.aspects ?? {})
-                             .map(([key, a]) => [keyWithoutProject(key), a]));
-  return Object.entries(link.aspects ?? {}).every(([key, aspect]) => {
-    const found = stored.get(keyWithoutProject(key));
-    // The emitted data is compared as its JSON, which is what push sends.
+function holdsAspects(
+    stored: Record<string, Aspect>|undefined,
+    sent: Record<string, Aspect>|undefined): boolean {
+  const byKey = new Map(Object.entries(stored ?? {})
+                            .map(([key, a]) => [keyWithoutProject(key), a]));
+  return Object.entries(sent ?? {}).every(([key, aspect]) => {
+    const found = byKey.get(keyWithoutProject(key));
+    // The sent data is compared as its JSON, which is what push sends.
     return found !== undefined &&
         isDeepStrictEqual(
                JSON.parse(JSON.stringify(aspect.data ?? {})), found.data ?? {});
@@ -1576,21 +1764,37 @@ const KEPT_SOURCE_FIELDS =
  * aspects `entryAspectKeys` lists, so it removes any that the model does not
  * declare even if someone added them in the console. Every other
  * aspect another tool attached is left alone, since `aspectKeys` names only the
- * types kcmd writes.
- *
- * The update mask replaces the whole entrySource, so the update carries over
- * fields from `source`, the entrySource the entry had before this push. Of
- * those fields kcmd owns the display name and the description. The update
- * keeps another writer's `resource`, `system`, `platform`, `createTime` and
- * `updateTime`, and every label. A label `entry` carries, such as the model
- * entry's `kcmd-push-state`, replaces the stored one. Dataplex refuses an
- * update that leaves out an `updateTime` the entry has, or moves it back. A
- * kept field another writer changes after `source` was read is written back
- * with the old value. For `updateTime` the update fails instead.
+ * types kcmd writes. The body is `updateBody(entry, source)`.
  */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
     source?: Entry['entrySource']): Promise<WriteOutcome> {
+  entry = updateBody(entry, source);
+  const aspectKeys = entryAspectKeys(entry, opts);
+  const upd = await cat.updateEntry(
+      entry, ['entry_source', 'aspects'], [...aspectKeys],
+      /* deleteMissingAspects= */ true);
+  if (!isOkStatus(upd)) {
+    return {error: `entry '${entryId(entry)}': ${errText(upd)}`};
+  }
+  return {updated: true};
+}
+
+/**
+ * Returns the entry `updateEntry` sends to update `entry`, given `source`, the
+ * entrySource the entry holds before this push.
+ *
+ * The update mask replaces the whole entrySource, so the update carries over
+ * fields from `source`. Of those fields kcmd owns the display name and the
+ * description. The update keeps another writer's `resource`, `system`,
+ * `platform`, `createTime` and `updateTime`, and every label. A label `entry`
+ * carries, such as the model entry's `kcmd-push-state`, replaces the stored
+ * one. Dataplex refuses an update that leaves out an `updateTime` the entry
+ * has, or moves it back. A kept field another writer changes after `source`
+ * was read is written back with the old value. For `updateTime` the update
+ * fails instead.
+ */
+function updateBody(entry: Entry, source?: Entry['entrySource']): Entry {
   const labels = {...source?.labels, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
       KEPT_SOURCE_FIELDS.filter(k => source?.[k] !== undefined)
@@ -1600,15 +1804,67 @@ async function updateEntry(
     ...entry.entrySource,
     ...(Object.keys(labels).length ? {labels} : {}),
   };
-  if (Object.keys(merged).length) entry = {...entry, entrySource: merged};
-  const aspectKeys = entryAspectKeys(entry, opts);
-  const upd = await cat.updateEntry(
-      entry, ['entry_source', 'aspects'], [...aspectKeys],
-      /* deleteMissingAspects= */ true);
-  if (!isOkStatus(upd)) {
-    return {error: `entry '${entryId(entry)}': ${errText(upd)}`};
-  }
-  return {updated: true};
+  return Object.keys(merged).length ? {...entry, entrySource: merged} : entry;
+}
+
+/**
+ * Returns true when the update of the emitted entry `entry` would leave
+ * `stored`, the entry as read with the aspect types the update names, exactly
+ * as it is:
+ *   1. The entrySource the update sends matches the stored one (see
+ *      `sameSource`).
+ *   2. `stored` holds every aspect of `entry` with the same data.
+ *   3. `entry` carries every stored aspect the update's aspect keys name, so
+ *      the update removes none.
+ */
+function isUnchanged(
+    entry: Entry, stored: Entry, opts: KcDeployOptions): boolean {
+  const sent = updateBody(entry, stored.entrySource).entrySource;
+  return sameSource(sent, stored.entrySource) &&
+      holdsAspects(stored.aspects, entry.aspects) &&
+      sendsNamedAspects(
+             stored.aspects, entry.aspects, entryAspectKeys(entry, opts));
+}
+
+// The entrySource fields Dataplex sets itself, which an update cannot change.
+const OUTPUT_SOURCE_FIELDS: ReadonlySet<string> = new Set(['location']);
+
+/**
+ * Returns true when the entrySource `sent` would leave `stored` as it is. The
+ * fields Dataplex sets itself are not compared, and an empty string, list or
+ * map counts as unset, as Dataplex returns it.
+ */
+function sameSource(
+    sent: Entry['entrySource'], stored: Entry['entrySource']): boolean {
+  const compared = (source: Entry['entrySource']) => Object.fromEntries(
+      Object.entries(source ?? {})
+          .filter(([k, v]) => !OUTPUT_SOURCE_FIELDS.has(k) && !isUnset(v)));
+  return isDeepStrictEqual(compared(sent), compared(stored));
+}
+
+// Whether Dataplex stores `value` as unset.
+function isUnset(value: unknown): boolean {
+  return value === undefined || value === null || value === '' ||
+      (typeof value === 'object' && !Object.keys(value).length);
+}
+
+/**
+ * Returns true when `sent` carries every aspect in `stored` that `keys`, the
+ * aspect keys of an update with `deleteMissingAspects`, name. Such an update
+ * removes each named aspect it does not carry. A key names the instance at
+ * the entry itself, and `<type>@*` names every instance at a path.
+ */
+function sendsNamedAspects(
+    stored: Record<string, Aspect>|undefined,
+    sent: Record<string, Aspect>|undefined, keys: Set<string>): boolean {
+  const named = new Set([...keys].map(keyWithoutProject));
+  const sentKeys = new Set(Object.keys(sent ?? {}).map(keyWithoutProject));
+  return Object.keys(stored ?? {}).map(keyWithoutProject).every(key => {
+    const at = key.indexOf('@');
+    const isNamed =
+        named.has(key) || (at >= 0 && named.has(`${key.slice(0, at)}@*`));
+    return !isNamed || sentKeys.has(key);
+  });
 }
 
 /**

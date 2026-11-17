@@ -195,8 +195,10 @@ export class CatalogClient extends api.ApiClient {
   // With `opts.aspects`, `opts.paths` keeps only the aspects at those paths.
   // The path '' is the entry itself, and `Schema.<field>` is a field. Passing
   // `{view: 'ALL'}` reads every aspect without naming aspect types.
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async lookupEntry(project: string, location: string, name: string,
-                    opts: LookupEntryOptions = {}): Promise<api.ApiResult<Entry>> {
+                    opts: LookupEntryOptions = {},
+                    fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const params: Record<string, any> = { entry: name, view: opts.view ?? 'BASIC' };
     if (opts.view !== 'ALL' && opts.aspects && opts.aspects.length) {
@@ -207,7 +209,7 @@ export class CatalogClient extends api.ApiClient {
 
     const res = await this._get<Entry>(container, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
@@ -594,13 +596,19 @@ export function catalogContainer(project: string, location: string, entryGroup: 
   return container;
 }
 
+// A type reference, project.location.type. Only a domain-scoped project ID,
+// domain:project, holds dots, and only in its domain. No part is empty or holds
+// an '@' or a '/', and the location and the type hold no dot and no colon.
+const TYPE_REF = /^((?:[^.:@/]+(?:\.[^.:@/]+)*:)?[^.:@/]+)\.([^.:@/]+)\.([^.:@/]+)$/;
+
 // Converts project.location.type to projects/${project}/locations/${location}/typeTypes/${type}
 export function _typeRefToName(ref: string, type: string): string {
-  const refParts = ref.split('.');
-  if (refParts.length !== 3) {
+  const m = TYPE_REF.exec(ref);
+  if (!m) {
     throw new Error(`Invalid type reference: ${ref}`);
   }
-  return `projects/${refParts[0]}/locations/${refParts[1]}/${type}Types/${refParts[2]}`;
+  const [, project, location, typeId] = m;
+  return `projects/${project}/locations/${location}/${type}Types/${typeId}`;
 }
 
 // Converts projects/${project}/locations/${location}/typeTypes/${type} -> project.location.type

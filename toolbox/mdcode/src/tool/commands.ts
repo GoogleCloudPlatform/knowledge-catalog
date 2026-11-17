@@ -1902,12 +1902,17 @@ function reportCatalogResult(
     return 1;
   }
   const n = result.created + result.updated;
+  // Push sends no write to an entry it finds unchanged, apart from the
+  // push-state label on the model entry. Those entries are counted separately.
+  const unchangedEntries = result.unchangedEntries ?
+      ` (${result.unchangedEntries} unchanged)` :
+      '';
   const removed = result.deleted ? `; removed ${result.deleted} orphaned entr${
                                        result.deleted === 1 ? 'y' : 'ies'}` :
                                    '';
   // The relationships of an ordered entity pair share one link, so the count
   // is of links. Links push found unchanged got no request and are counted
-  // apart.
+  // separately.
   const plural = result.linked === 1 ? '' : 's';
   const unchanged =
       result.unchangedLinks ? ` (${result.unchangedLinks} unchanged)` : '';
@@ -1922,8 +1927,8 @@ function reportCatalogResult(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
           `Wrote ${result.created} new and ${result.updated} updated ` +
-              `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${
-                  linked}${unlinked}.`);
+              `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${
+                  unchangedEntries}${removed}${linked}${unlinked}.`);
   return 0;
 }
 

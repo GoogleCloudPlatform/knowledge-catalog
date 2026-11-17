@@ -95,8 +95,9 @@ afterEach(() => {
 
 describe('push prints Knowledge Catalog warnings', () => {
   const RESULT = {
-    success: true, created: 1, updated: 0, deleted: 0, linked: 0,
-    unchangedLinks: 0, unlinked: 0, warnings: ['a relationship is skipped'],
+    success: true, created: 1, updated: 0, unchangedEntries: 0, deleted: 0,
+    linked: 0, unchangedLinks: 0, unlinked: 0,
+    warnings: ['a relationship is skipped'],
     plan: [],
   };
   // The model binds no table and declares no named profile, so push warns
@@ -3430,6 +3431,15 @@ describe('a --force-remove rename that stopped after deleting the old model', ()
 describe('the push-state label on the model entry', () => {
   const ANCHOR = 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
       'entries/commerce';
+  // A push with nothing to write writes no label, so a test of the label's
+  // writes changes the model entry first.
+  const editModelDescription = () => {
+    const file = path.join(entryGroupDir(), 'commerce.yaml');
+    fs.writeFileSync(
+        file,
+        fs.readFileSync(file, 'utf8')
+            .replace('Orders and customers', 'Orders and buyers'));
+  };
   test('pull refuses after a push that stopped at any write, until a push ' +
            'finishes',
        async () => {
@@ -3480,6 +3490,7 @@ describe('the push-state label on the model entry', () => {
          writeRoundTripWorkspace();
          const {entries} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
+         editModelDescription();
          // Another writer changes the model entry right after the push
          // writes it. Like Dataplex, the fake then refuses an entrySource
          // update that leaves the update time out or moves it back.
@@ -3524,6 +3535,7 @@ describe('the push-state label on the model entry', () => {
            writeRoundTripWorkspace();
            fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
+           editModelDescription();
            (CatalogClient.prototype.getEntry as unknown as Mock<any>)
                .mockImplementationOnce(read);
            expect(await push({deployment: false})).toBe(1);
@@ -3693,6 +3705,7 @@ describe('push applies, loads and checks a profile', () => {
         warnings: [],
         created: 0,
         updated: 0,
+        unchangedEntries: 0,
         deleted: 0,
         linked: 0,
         unchangedLinks: 0,
@@ -4043,8 +4056,9 @@ semantic_model:
     spyOn(kc, 'preflightKnowledgeCatalog').mockResolvedValue(
         {prepared: {emitted: [], existing: [], warnings: [], plan: []}});
     const applySpy = spyOn(kc, 'applyKnowledgeCatalog').mockResolvedValue(
-        {success: true, warnings: [], created: 0, updated: 0, deleted: 0,
-         linked: 0, unchangedLinks: 0, unlinked: 0, plan: []});
+        {success: true, warnings: [], created: 0, updated: 0,
+         unchangedEntries: 0, deleted: 0, linked: 0, unchangedLinks: 0,
+         unlinked: 0, plan: []});
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
 
@@ -4599,6 +4613,47 @@ semantic_model:
   }
 });
 
+describe('a push with nothing changed', () => {
+  // A model file that binds no table, whose deployment names profile prod.
+  const GRAPH =
+      'bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g';
+  const BOUND_BY_PROFILE = MODEL_YAML.replace(
+      '  - name: commerce\n', `  - name: commerce
+    deployments:
+      - { name: g, target: "${GRAPH}", profile: prod }
+`);
+  const UNCHANGED =
+      'Wrote 0 new and 0 updated Knowledge Catalog entries (2 unchanged).';
+  const rows = [
+    ['a model with no optional keys', MODEL_YAML, [UNCHANGED]],
+    ['a model bound only through a named profile, with a BigQuery deployment',
+     BOUND_BY_PROFILE, [UNCHANGED, 'Deployed 1 BigQuery Graph(s).']],
+  ] as const;
+  for (const [what, model, lines] of rows) {
+    test(`writes no entry for ${what}`, async () => {
+      writeWorkspace();
+      fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
+      fs.writeFileSync(
+          path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
+          PROD_PROFILE);
+      const {create} = fakeCatalog();
+      mockBigQuery();
+      expect(await push({})).toBe(0);
+      const update =
+          CatalogClient.prototype.updateEntry as unknown as Mock<any>;
+      create.mockClear();
+      update.mockClear();
+      (console.log as unknown as Mock<any>).mockClear();
+
+      expect(await push({})).toBe(0);
+      expect(create).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(messages(console.log).split('\n'))
+          .toEqual(expect.arrayContaining([...lines]));
+    });
+  }
+});
+
 describe('what a push says about relationships', () => {
   const TWO_ON_ONE_PAIR = `${MODEL_YAML}      - name: Order
         primary_key: [id]
@@ -4640,16 +4695,16 @@ describe('what a push says about relationships', () => {
      "Error: relationship 'referred_by' in model 'commerce' (commerce) " +
          "runs from 'Customer' to itself; a relationship joins two " +
          'different entities.'],
-    ['an unchanged re-push counts its entry links as unchanged',
+    ['an unchanged re-push counts its entries and entry links as unchanged',
      TWO_ON_ONE_PAIR, 0,
-     'Wrote 0 new and 5 updated Knowledge Catalog entries; wrote 0 entry ' +
-         'links (5 unchanged).',
+     'Wrote 0 new and 0 updated Knowledge Catalog entries (5 unchanged); ' +
+         'wrote 0 entry links (5 unchanged).',
      TWO_ON_ONE_PAIR],
-    ['a re-push that adds a relationship on a linked pair counts the entry ' +
-         'links it wrote and the unchanged ones',
+    ['a re-push that adds a relationship on a linked pair counts the entries ' +
+         'and entry links it wrote and the unchanged ones',
      TWO_ON_ONE_PAIR, 0,
-     'Wrote 1 new and 4 updated Knowledge Catalog entries; wrote 3 entry ' +
-         'links (2 unchanged).',
+     'Wrote 1 new and 0 updated Knowledge Catalog entry (4 unchanged); ' +
+         'wrote 3 entry links (2 unchanged).',
      TWO_ON_ONE_PAIR.replace(PAID_BY, '\n')],
   ];
   for (const [title, model, code, line, before] of cases) {

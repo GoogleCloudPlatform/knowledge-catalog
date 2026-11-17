@@ -329,10 +329,19 @@ Deployed 1 BigQuery Graph(s).
 A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
 BigQuery line.
 
-Push sends no request for an entry link that the catalog already holds with the
-same two entries and the same aspect data. The summary counts those links in
-parentheses, so a push that changes no link prints
-`wrote 0 entry links (3 unchanged)`.
+Push first reads each entry the model defines that the catalog already holds,
+with every aspect type push writes or removes on that entry. It sends no write
+for one whose display name, description, labels, other source fields and
+push-owned aspects already match what push would write. It sends no write
+either for an entry link the catalog holds with the same two entries and the
+same aspect data.
+The summary counts those entries and links in parentheses, so a push that
+changes nothing prints
+`Wrote 0 new and 0 updated Knowledge Catalog entries (6 unchanged); wrote 0 entry links (3 unchanged).`
+An unchanged model entry still gets the `kcmd-push-state` label writes when
+anything else in the model changes, or when its label does not already say
+`finished`. An aspect edited in the console no longer matches, so the next push
+writes that entry again.
 
 ## Pull
 
@@ -389,9 +398,11 @@ catalog's model under another file name, pull says so. Renaming the file to
 `<model>.yaml`, and each of its profile files to `<model>.profile.<name>.yaml`,
 keeps them with their comments. Pull never touches the data store.
 
-Every push sets the `kcmd-push-state` label of the model entry to `writing` when
-it writes the model entry, before the model's other entries, and to `finished`
-with its last write, after it deletes what the model no longer has. Pull
+Every push that changes the model sets the `kcmd-push-state` label of the
+model entry to `writing` before it writes the model's other entries, and to
+`finished` with its last write, after it deletes what the model no longer has.
+A push that finds the whole model unchanged and the label `finished` writes
+nothing to the model. Pull
 refuses a model entry still labeled `writing`: it writes and deletes nothing and
 asks you to push again. A model with no such label, such as one an older `kcmd`
 pushed, counts as finished.

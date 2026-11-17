@@ -8,7 +8,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
-import {_fixEntry, CatalogClient, createContextSet, createEntryGroupAndWait, Entry, EntryLink, FixOptions, isOperation} from '../../../src/libts/gcp/dataplex';
+import {_fixEntry, _typeRefToName, CatalogClient, createContextSet, createEntryGroupAndWait, Entry, EntryLink, FixOptions, isOperation} from '../../../src/libts/gcp/dataplex';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SCHEMA_JOIN =
@@ -462,6 +462,32 @@ test('GCP_LOG logs each request as its method and URL, with any body on ' +
          [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
        ]);
      });
+
+
+describe('_typeRefToName', () => {
+  // A domain-scoped project ID holds a dot.
+  test('reads a project ID that holds a dot', () => {
+    expect(_typeRefToName('google.com:types.global.overview', 'aspect'))
+        .toBe('projects/google.com:types/locations/global/aspectTypes/overview');
+  });
+
+  for (const [what, ref] of [
+    ['an aspect key with its path', 'dataplex-types.global.guidelines@Schema.id'],
+    ['an empty part in the project', 'google.com..global.overview'],
+    ['an empty project', '.global.guidelines'],
+    ['a resource name',
+     'projects/corp.google.com:types/locations/global/aspectTypes/overview'],
+    ['a type ID with a dot', 'dataplex-types.global.semantic.model'],
+    ['a dot after the colon', 'google.com:my.types.global.overview'],
+    ['an empty project after the colon', 'google.com:.global.overview'],
+    ['an empty domain', ':types.global.overview'],
+  ]) {
+    test(`refuses ${what}`, () => {
+      expect(() => _typeRefToName(ref, 'aspect'))
+          .toThrow(`Invalid type reference: ${ref}`);
+    });
+  }
+});
 
 
 describe('isOperation', () => {

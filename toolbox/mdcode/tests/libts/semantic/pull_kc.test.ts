@@ -660,4 +660,39 @@ semantic_model:
         expect(peak).toBe(1);
         expect(maxUrl).toBe(16_384);
       });
+
+  // The entity's 100 guidelines aspects make pull read it by type, and then
+  // read its guidelines by path.
+  test.each([
+    ['by type', (read: any) => read.aspects?.length === 1 && !read.paths],
+    ['by path', (read: any) => !!read.paths],
+  ])('a failed read %s of an entity with 100 aspects of one type aborts the pull',
+     async (_, fails) => {
+       const model: SemanticModel = {
+         name: 'wide',
+         entities: [{
+           name: 'events',
+           dataSource: '',
+           keys: [],
+           fields: Array.from(
+               {length: 100},
+               (_, i) =>
+                   ({name: `f${i}`, aiContext: {instructions: 'Say it.'}})),
+         }],
+         relationships: [],
+         metrics: [],
+       };
+       const {entries} = generateCatalogResources(model, OPTS);
+       const {lookup} = stubClient(entries, entries);
+       const serve = lookup.getMockImplementation();
+       lookup.mockImplementation(
+           async (...args: any[]) =>
+               fails(args[3]) ? err(500, 'boom') : serve(...args));
+       const entity =
+           entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+
+       await expect(pullKnowledgeCatalog(cat, OPTS))
+           .rejects.toThrow(new Error(`failed to fetch entry '${
+               entity.name}' (status 500); pull aborted`));
+     });
 });

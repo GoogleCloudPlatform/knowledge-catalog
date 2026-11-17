@@ -18,6 +18,7 @@ import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {entryIdOf, semanticLinkId} from '../../../src/libts/semantic/kc_ids';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -130,6 +131,9 @@ function stubClient(opts: {
   delLink?: (linkId: string) => ApiResult<any>,
   // Result of getEntry, keyed by entry id. Default: 200 with no entrySource.
   getEntry?: (entryId: string) => ApiResult<any>,
+  // Result of lookupEntry, push's read of an entry it is about to write, keyed
+  // by entry id. Default: the listed entry with no aspects, or 404.
+  lookup?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
   aspectType?: (typeId: string) => ApiResult<any>,
@@ -147,26 +151,30 @@ function stubClient(opts: {
                              (opts.create ?? (() => ok({})))(entryId));
   const update = spyOn(CatalogClient.prototype, 'updateEntry')
                      .mockImplementation(async () => opts.update ?? ok({}));
+  const listed = (opts.existing ?? []).map(e => {
+    const id = typeof e === 'string' ? e : e.id;
+    const entryType =
+        typeof e === 'string' ? 'semantic' : (e.type ?? 'semantic');
+    const labels = typeof e === 'string' ? undefined : e.labels;
+    const source = typeof e === 'string' ? undefined : e.source;
+    return {
+      name: entryName(id, opts.existingProject),
+      entryType,
+      ...(labels || source ? {entrySource: {...source, labels}} : {}),
+    } as any;
+  });
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
-                     for (const e of opts.existing ?? []) {
-                       const id = typeof e === 'string' ? e : e.id;
-                       const entryType = typeof e === 'string' ?
-                           'semantic' :
-                           (e.type ?? 'semantic');
-                       const labels =
-                           typeof e === 'string' ? undefined : e.labels;
-                       const source =
-                           typeof e === 'string' ? undefined : e.source;
-                       yield {
-                         name: entryName(id, opts.existingProject),
-                         entryType,
-                         ...(labels || source ?
-                                 {entrySource: {...source, labels}} :
-                                 {}),
-                       } as any;
-                     }
+                     yield* listed;
                    });
+  const lookup =
+      spyOn(CatalogClient.prototype, 'lookupEntry')
+          .mockImplementation(async (_p, _l, name: string) => {
+            const id = entryIdOf(name);
+            if (opts.lookup) return opts.lookup(id);
+            const found = listed.find(e => entryIdOf(e.name) === id);
+            return found ? ok(structuredClone(found)) : err(404, 'not found');
+          });
   const del = spyOn(CatalogClient.prototype, 'deleteEntry')
                   .mockImplementation(
                       async (_p, _l, _eg, entryId) =>
@@ -211,6 +219,7 @@ function stubClient(opts: {
     create,
     update,
     list,
+    lookup,
     del,
     createLink,
     updateLink,
@@ -308,6 +317,19 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
 
          const result = await deployKnowledgeCatalog(
              models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result).toMatchObject({success: false, details: 'fetch failed'});
+         expect(create).not.toHaveBeenCalled();
+       });
+
+  test('a link lookup that throws fails the push before any write',
+       async () => {
+         const {create} = stubClient({
+           existing: [{id: 'sales/entities/orders', type: ENTITY_TYPE}],
+           links: fetchFailed,
+         });
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
          expect(result).toMatchObject({success: false, details: 'fetch failed'});
          expect(create).not.toHaveBeenCalled();
@@ -424,19 +446,547 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
              .mockImplementation(
                  (async (name: string) => name.endsWith('/entries') ?
                       ok({entries: [listed]}) :
+                      name.endsWith(':lookupEntry') ?
+                      ok(structuredClone(listed)) :
                       err(404, 'not found')) as any);
          const lookup =
              spyOn(ResourceManagerClient.prototype, 'getProject')
                  .mockResolvedValue(ok({projectId: 'other-proj'}) as any);
          const {update} = stubClient({create: exists});
-         // stubClient replaces listEntries; the real one reads through `_get`.
+         // stubClient replaces listEntries and lookupEntry; the real ones read
+         // through `_get`.
          (CatalogClient.prototype.listEntries as any).mockRestore();
+         (CatalogClient.prototype.lookupEntry as any).mockRestore();
 
          expect((await deployKnowledgeCatalog(models(DOCS), CTX, OPTS)).success)
              .toBe(true);
          expect(updated(update, 'sales')[0].entrySource.resource)
              .toBe(resource);
          expect(lookup).not.toHaveBeenCalled();
+       });
+});
+
+
+describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
+  const ENTITY = 'sales/entities/orders';
+  const TYPES = 'projects/dataplex-types/locations/global/aspectTypes';
+
+  // The entries a first push of DOCS with `opts` creates, by entry id, as the
+  // catalog then holds them: the model entry labeled finished.
+  async function pushed(opts = OPTS): Promise<Map<string, any>> {
+    const {create} = stubClient();
+    await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+    const held = new Map(create.mock.calls.map(c => {
+      const entry: any = structuredClone(c[4]);
+      if (entry.entrySource.labels) entry.entrySource.labels = FINISHED;
+      return [c[3], entry];
+    }));
+    mock.restore();
+    return held;
+  }
+
+  // Pushes DOCS again with `opts` over `held`. An entry `held` lacks is
+  // listed, and its read fails.
+  async function repush(held: Map<string, any>, ids: string[], opts = OPTS) {
+    const stub = stubClient({
+      create: EXISTS,
+      existing: ids.map(id => ({id, type: (held.get(id) ?? {}).entryType})),
+      lookup: id => held.has(id) ? ok(held.get(id)) : err(500, 'unavailable'),
+    });
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+    const updates = stub.update.mock.calls.map(
+        ([e, mask]) => [entryIdOf(e.name), mask, e.entrySource?.labels]);
+    return {result, updates, lookup: stub.lookup};
+  }
+
+  const entity = (held: Map<string, any>) => held.get(ENTITY);
+  const rows: [string, (held: Map<string, any>) => void, boolean][] = [
+    ['an entry held as push writes it', () => {}, false],
+    ['a display name edited in the console',
+     held => entity(held).entrySource.displayName = 'Orders', true],
+    ['a stored location, which Dataplex sets',
+     held => entity(held).entrySource.location = 'us', false],
+    ['an empty list stored where the update sends none',
+     held => entity(held).entrySource.ancestors = [], false],
+    ['a stored source field the update drops',
+     held => entity(held).entrySource.ancestors = [{name: 'a', type: 't'}],
+     true],
+    ['a label another writer set',
+     held => entity(held).entrySource.labels = {owner: 'data-team'}, false],
+    // As Dataplex returns aspects: keyed with the types project number, and
+    // with their data in its own key order.
+    ['aspect keys with the types project number and data in another order',
+     held => entity(held).aspects = Object.fromEntries(
+         Object.entries(entity(held).aspects).map(([key, a]: [string, any]) => [
+           key.replace('dataplex-types.', '655216118709.'),
+           {...a, data: Object.fromEntries(Object.entries(a.data).reverse())},
+         ])),
+     false],
+    ['an aspect edited in the console',
+     held => entity(held).aspects['dataplex-types.global.semantic-entity']
+                 .data.primaryKey = ['o_totalprice'],
+     true],
+    ['a push-owned aspect push does not send',
+     held => entity(held).aspects['dataplex-types.global.overview'] =
+         {aspectType: `${TYPES}/overview`, data: {examples: []}},
+     true],
+    ['a field instance of a type the update names only at the entry',
+     held => entity(held).aspects[
+         'dataplex-types.global.sql-expressions@Schema.o_orderkey'] =
+         {aspectType: `${TYPES}/sql-expressions`, data: {}},
+     false],
+    ['a field instance push does not send',
+     held => entity(held).aspects[
+         'dataplex-types.global.guidelines@Schema.o_orderkey'] =
+         {aspectType: `${TYPES}/guidelines`, data: {instructions: 'Key.'}},
+     true],
+    ['a read that fails', held => held.delete(ENTITY), true],
+  ];
+  for (const [what, edit, written] of rows) {
+    test(`${what} ${written ? 'is' : 'is not'} written`, async () => {
+      const held = await pushed();
+      const ids = [...held.keys()];
+      edit(held);
+
+      const {result, updates} = await repush(held, ids);
+
+      expect(result).toMatchObject({
+        success: true,
+        created: 0,
+        updated: written ? 1 : 0,
+        unchangedEntries: written ? 2 : 3,
+      });
+      // The unchanged model entry gets its labels in writes of their own.
+      expect(updates).toEqual(
+          written ? [
+            ['sales', ['entry_source'], WRITING],
+            [ENTITY, ['entry_source', 'aspects'], undefined],
+            ['sales', ['entry_source'], FINISHED],
+          ] :
+                    []);
+    });
+  }
+
+  // A push that stopped before its last write leaves the label at writing.
+  // One from before the label has none.
+  for (const [what, labels] of [
+         ['labeled writing', WRITING],
+         ['with no label', undefined],
+       ] as const) {
+    test(`an unchanged model entry ${what} gets both labels`, async () => {
+      const held = await pushed();
+      held.get('sales').entrySource.labels = labels;
+
+      const {result, updates} = await repush(held, [...held.keys()]);
+
+      expect(result)
+          .toMatchObject({success: true, updated: 0, unchangedEntries: 3});
+      expect(updates).toEqual([
+        ['sales', ['entry_source'], WRITING],
+        ['sales', ['entry_source'], FINISHED],
+      ]);
+    });
+  }
+
+  // A domain-scoped project ID holds a dot.
+  test('an entry whose types live in a project with a dot in its ID is read',
+       async () => {
+         const types = 'google.com:dataplex-autopush-types';
+         const opts = {...OPTS, systemTypeProject: types};
+         const held = await pushed(opts);
+
+         const {result, updates, lookup} =
+             await repush(held, [...held.keys()], opts);
+
+         expect(result)
+             .toMatchObject({success: true, updated: 0, unchangedEntries: 3});
+         expect(updates).toEqual([]);
+         const read = lookup.mock.calls.find(c => c[2] === entryName('sales'))!;
+         expect(read[3]!.aspects)
+             .toContain(
+                 `projects/${types}/locations/global/aspectTypes/` +
+                 'semantic-model');
+       });
+
+  // Dataplex spells the project of each type as a number, and the real read
+  // turns it back into the project ID through Resource Manager.
+  test('an entry Dataplex returns with its types project as a number is ' +
+           'unchanged',
+       async () => {
+         const types = 'google.com:dataplex-autopush-types';
+         // crm's cache outlives the test, so no other test uses this number.
+         const number = '987654321098';
+         const opts = {...OPTS, systemTypeProject: types};
+         const held = await pushed(opts);
+         const byNumber = (s: string) => s.replace(types, number);
+         const asked: string[] = [];
+         spyOn(CatalogClient.prototype, '_get')
+             .mockImplementation((async (name: string, params: any) => {
+               if (!name.endsWith(':lookupEntry')) return err(404, 'not found');
+               asked.push(...params.aspectTypes);
+               const entry = held.get(entryIdOf(params.entry));
+               return ok({
+                 ...structuredClone(entry),
+                 entryType: byNumber(entry.entryType),
+                 aspects: Object.fromEntries(
+                     Object.entries(entry.aspects)
+                         .map(([key, a]: [string, any]) => [
+                           byNumber(key),
+                           {...a, aspectType: byNumber(a.aspectType)},
+                         ])),
+               });
+             }) as any);
+         const {create, update} = stubClient({
+           existing: [...held.keys()],
+           project: p => p === number ?
+               ok({name: `projects/${number}`, projectId: types}) :
+               err(403, 'Permission denied'),
+         });
+         // stubClient replaces lookupEntry; the real one reads through `_get`.
+         (CatalogClient.prototype.lookupEntry as any).mockRestore();
+         const read = spyOn(CatalogClient.prototype, 'lookupEntry');
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+
+         expect(result).toMatchObject(
+             {success: true, created: 0, updated: 0, unchangedEntries: 3});
+         expect(create).not.toHaveBeenCalled();
+         expect(update).not.toHaveBeenCalled();
+         // The read names each type with the project ID, and comes back with
+         // the number turned into that ID.
+         expect(asked).toContain(
+             `projects/${types}/locations/global/aspectTypes/semantic-model`);
+         const model =
+             (await (read.mock.results[0].value as Promise<any>)).result;
+         expect(Object.keys(model.aspects))
+             .toContain(`${types}.global.semantic-model`);
+       });
+
+  // An aspect key that names no aspect type stops the read of its entry
+  // before the read is sent. Push then writes that entry as it would with no
+  // read, and reads the others.
+  test('an entry whose aspect key names no aspect type is written unread',
+       async () => {
+         const held = await pushed();
+         const resources =
+             generateCatalogResources(models(DOCS)[0].model, OPTS);
+         resources.entries.find(e => entryIdOf(e.name) === ENTITY)!
+             .aspects!['bad'] = {aspectType: 'bad', data: {}};
+         const {lookup, create, update} = stubClient({
+           create: EXISTS,
+           existing: [...held.keys()],
+           lookup: id => ok(held.get(id)),
+         });
+
+         const result = await deployEmittedModels(
+             [{model: 'sales', resources}], [], CTX, OPTS);
+
+         expect(result).toMatchObject(
+             {success: true, created: 0, updated: 1, unchangedEntries: 2});
+         expect(lookup.mock.calls.map(c => entryIdOf(c[2])).sort())
+             .toEqual(['sales', 'sales/metrics/total_revenue']);
+         expect(create.mock.calls.map(c => c[3])).toEqual([ENTITY]);
+         const T = 'dataplex-types.global';
+         expect(update.mock.calls.map(
+                    ([e, mask, keys, deleteMissing]) =>
+                        [entryIdOf(e.name), mask, keys?.sort(), deleteMissing]))
+             .toEqual([
+               ['sales', ['entry_source'], undefined, undefined],
+               [
+                 ENTITY, ['entry_source', 'aspects'],
+                 [
+                   'bad', `${T}.guidelines`, `${T}.guidelines@*`,
+                   `${T}.overview`, `${T}.overview@*`, `${T}.schema`,
+                   `${T}.semantic-entity`, `${T}.semantic-extensions`,
+                   `${T}.semantic-extensions@*`, `${T}.sql-expressions`
+                 ],
+                 true
+               ],
+               ['sales', ['entry_source'], undefined, undefined],
+             ]);
+       });
+
+  test('a failed write of the label alone names the label', async () => {
+    const held = await pushed();
+    entity(held).entrySource.displayName = 'Orders';
+    stubClient({
+      create: EXISTS,
+      update: err(503, 'Service unavailable.'),
+      existing: [...held.keys()],
+      lookup: id => ok(held.get(id)),
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.details)
+        .toBe(
+            'Model \'sales\': setting the kcmd-push-state label of entry ' +
+            '\'sales\' to writing failed: Service unavailable. Push again ' +
+            'before you pull.');
+  });
+
+  // The catalog's copy of `resources`: each entry as emitted, with the model
+  // entry labeled finished.
+  function storedCopy(resources: {entries: any[]}): Map<string, any> {
+    return new Map(resources.entries.map((e, i) => {
+      const entry = structuredClone(e);
+      if (!i) entry.entrySource = {...entry.entrySource, labels: FINISHED};
+      return [entryIdOf(entry.name), entry];
+    }));
+  }
+
+  // A stub catalog that holds `held` and lists `others` beside it. The
+  // listing carries each held entry's entrySource. `writes` records each write
+  // in order: an entry update as `update:<id>:<push state it sets>`, and each
+  // create, delete and link write by its id.
+  function holding(
+      held: Map<string, any>, more: Parameters<typeof stubClient>[0] = {},
+      others: {id: string, type?: string}[] = []) {
+    const stub = stubClient({
+      create: EXISTS,
+      existing: [
+        ...[...held.values()].map(e => {
+          const {labels, ...source} = e.entrySource ?? {};
+          return {id: entryIdOf(e.name), type: e.entryType, labels, source};
+        }),
+        ...others,
+      ],
+      lookup: id => held.has(id) ? ok(held.get(id)) : err(404, 'not found'),
+      ...more,
+    });
+    const writes: string[] = [];
+    const record = (spy: any, name: (...args: any[]) => string) => {
+      const answer = spy.getMockImplementation();
+      spy.mockImplementation(async (...args: any[]) => {
+        writes.push(name(...args));
+        return answer(...args);
+      });
+    };
+    record(stub.update, e => `update:${entryIdOf(e.name)}:${
+                            e.entrySource?.labels?.['kcmd-push-state'] ?? ''}`);
+    record(stub.create, (_p, _l, _eg, id) => `create:${id}`);
+    record(stub.del, (_p, _l, _eg, id) => `delete:${id}`);
+    record(stub.createLink, (_p, _l, _eg, id) => `createLink:${id}`);
+    record(stub.updateLink, link => `updateLink:${entryIdOf(link.name)}`);
+    record(stub.delLink, (_p, _l, _eg, id) => `deleteLink:${id}`);
+    return {...stub, writes};
+  }
+
+  const emitted = (docs: typeof DOCS, opts: Record<string, any> = OPTS) =>
+      generateCatalogResources(models(docs)[0].model, opts as any);
+  const BRACKETED = (...writes: string[]) =>
+      ['update:sales:writing', ...writes, 'update:sales:finished'];
+
+  test('deleting another model under --force-remove writes no label on an ' +
+           'unchanged model',
+       async () => {
+         const {update, writes} = holding(
+             storedCopy(emitted(DOCS)), {}, [{id: 'other', type: MODEL_TYPE}]);
+         // A label write that failed would leave the model at writing.
+         let updates = 0;
+         const answer = update.getMockImplementation()!;
+         update.mockImplementation(
+             async (...args: any[]) => ++updates === 2 ?
+                 err(503, 'Service unavailable.') :
+                 (answer as any)(...args));
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 3,
+           deleted: 1,
+         });
+         expect(writes).toEqual(['delete:other']);
+       });
+
+  test('a model that only drops an entry deletes it between the labels',
+       async () => {
+         const {writes} = holding(storedCopy(emitted(DOCS)));
+         const withoutMetric = [{
+           name: 'sales.yaml',
+           text: OSSIE.replace(/\n    metrics:[\s\S]*$/, '\n'),
+         }];
+
+         const result =
+             await deployKnowledgeCatalog(models(withoutMetric), CTX, OPTS);
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 2,
+           deleted: 1,
+         });
+         expect(writes)
+             .toEqual(BRACKETED('delete:sales/metrics/total_revenue'));
+       });
+
+  // STAR's links as lookupEntryLinks returns them after a push of STAR.
+  // Dataplex spells a looked-up link's project with the number.
+  const starLinks = () =>
+      structuredClone(emitted(STAR_DOCS).entryLinks).map(link => ({
+        ...link,
+        name: link.name!.replace('/dest/', '/123456789/'),
+        entryReferences: link.entryReferences.map(
+            r => ({...r, name: r.name.replace('/dest/', '/123456789/')})),
+      }));
+
+  // Pushes STAR again over the entries `held`, by default the ones a push of
+  // STAR left, while lookupEntryLinks finds `links`.
+  async function repushStar(
+      links: any[], held = storedCopy(emitted(STAR_DOCS))) {
+    const {writes} = holding(held, {links: linksTo(...links)});
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+    return {result, writes};
+  }
+
+  test('a link whose aspect changed is updated between the labels',
+       async () => {
+         const links = starLinks();
+         const edited =
+             links.find(l => entryIdOf(l.name) === STAR_SEMANTIC_LINK)!;
+         Object.values(edited.aspects!)[0].data = {};
+
+         const {result, writes} = await repushStar(links);
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 6,
+           linked: 1,
+           unchangedLinks: 2,
+         });
+         expect(writes).toEqual(BRACKETED(`updateLink:${STAR_SEMANTIC_LINK}`));
+       });
+
+  // An entity that no longer extends another leaves its reference link.
+  test('an orphaned link is deleted between the labels', async () => {
+    const id = semanticLinkId('extends', 'sales', 'orders', 'customer');
+    const orphan = directed(
+        'reference', id, 'sales/entities/orders', 'sales/entities/customer');
+
+    const {result, writes} = await repushStar([...starLinks(), orphan]);
+
+    expect(result).toMatchObject({
+      success: true,
+      updated: 0,
+      unchangedEntries: 6,
+      linked: 0,
+      unchangedLinks: 3,
+      unlinked: 1,
+    });
+    expect(writes).toEqual(BRACKETED(`deleteLink:${id}`));
+  });
+
+  // A push that changed the relationship's `from` entity from supplier to
+  // orders stopped while deleting the old reference link, which kept its ID.
+  // It had written every entry and deleted the semantic-link from supplier
+  // to customer. The model entry is still labeled writing. The supplier
+  // entity is still there, since push deletes entries last.
+  test('a link whose endpoints changed is deleted and created again between ' +
+           'the labels',
+       async () => {
+         const held = storedCopy(emitted(STAR_DOCS));
+         held.get('sales').entrySource.labels = WRITING;
+         const supplier = 'sales/entities/supplier';
+         held.set(supplier, {
+           ...structuredClone(held.get('sales/entities/customer')),
+           name: entryName(supplier),
+         });
+         const stale = directed(
+             'reference', STAR_REFERENCES[0],
+             'sales/relationships/orders_to_customer', supplier);
+         const target = starLinks().filter(
+             l => entryIdOf(l.name) === STAR_REFERENCES[1]);
+
+         const {result, writes} = await repushStar([...target, stale], held);
+
+         expect(result).toMatchObject({
+           success: true,
+           updated: 0,
+           unchangedEntries: 6,
+           deleted: 1,
+           linked: 2,
+           unchangedLinks: 1,
+           unlinked: 0,
+         });
+         expect(writes).toEqual(BRACKETED(
+             `deleteLink:${STAR_REFERENCES[0]}`,
+             `createLink:${STAR_SEMANTIC_LINK}`,
+             `createLink:${STAR_REFERENCES[0]}`, `delete:${supplier}`));
+       });
+
+  // Actions live in custom types in the destination project, here a
+  // domain-scoped one. The model entry also carries an overview sidecar.
+  test('an unchanged model with actions and an overview sidecar gets no write',
+       async () => {
+         const opts = {
+           ...OPTS,
+           project: 'google.com:dest',
+           overviews: new Map([['commerce', {content: '# Commerce'}]]),
+         };
+         const held = storedCopy(emitted(ACTIONS_DOCS, opts));
+         const {lookup, writes} = holding(held);
+
+         const result = await deployKnowledgeCatalog(
+             models(ACTIONS_DOCS), CTX, opts);
+
+         expect(result).toMatchObject(
+             {success: true, updated: 0, unchangedEntries: held.size});
+         expect(writes).toEqual([]);
+         expect(lookup.mock.calls.flatMap(c => c[3]?.aspects ?? []))
+             .toContain(
+                 'projects/google.com:dest/locations/global/aspectTypes/' +
+                 'semantic-action');
+       });
+
+  // An entity whose fields carry `aiContext`, one entry per field, and a
+  // lookup that answers as Dataplex does: at most 100 aspects per read, of
+  // the types and at the paths the read names.
+  const wideDocs = (fields: number, aiContext: string) => [{
+    name: 'sales.yaml',
+    text: OSSIE.replace(/\n    metrics:[\s\S]*$/, '\n')
+              .replace(/        fields:\n[\s\S]*$/, `        fields:\n${
+                  Array.from({length: fields}, (_, i) =>
+                      `          - name: o_orderkey${i ? i : ''}\n` +
+                          `            expression: o_orderkey${i}\n` +
+                          `            ai_context: ${aiContext}\n`)
+                      .join('')}`),
+  }];
+  const capped = (held: Map<string, any>) =>
+      async (_p: string, _l: string, name: string, read: any = {}) => {
+    const entry = held.get(entryIdOf(name));
+    if (!entry) return err(404, 'not found');
+    const named = ([key, a]: [string, any]) =>
+        read.aspects.includes(a.aspectType) &&
+        (!read.paths || read.paths.includes(key.split('@')[1] ?? ''));
+    const aspects = Object.entries(entry.aspects).filter(named).slice(-100);
+    return ok(
+        {...structuredClone(entry), aspects: Object.fromEntries(aspects)});
+  };
+
+  // Every field aspect Knowledge Catalog returns sits at a path the stored
+  // schema lists, so the reads by type and by path find them all.
+  test('a wide entity with 100 instances of one type is read whole and gets ' +
+           'no write',
+       async () => {
+         const docs = wideDocs(100, '{instructions: Doc.}');
+         const held = storedCopy(emitted(docs));
+         const {lookup, writes} = holding(held);
+         lookup.mockImplementation(capped(held) as any);
+
+         const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
+
+         expect(result)
+             .toMatchObject({success: true, updated: 0, unchangedEntries: 2});
+         expect(writes).toEqual([]);
+         // The entity's guidelines came back full, so they were read by path.
+         expect(lookup.mock.calls.some(c => c[3]?.paths)).toBe(true);
        });
 });
 
@@ -2892,9 +3442,9 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
 
   test(
       'returns an error when lookupEntryLinks fails while snapshotting ' +
-          'existing links',
+          'existing links, before any write',
       async () => {
-        stubClient({
+        const {create, update} = stubClient({
           existing: [
             {id: 'sales', type: MODEL_TYPE},
             {id: 'sales.entities.orders', type: ENTITY_TYPE},
@@ -2909,6 +3459,8 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
             .toBe(
                 'Looking up entry links for \'sales.entities.orders\' from ' +
                 'model \'sales\' failed: lookup failed');
+        expect(create).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
       });
 });
 
