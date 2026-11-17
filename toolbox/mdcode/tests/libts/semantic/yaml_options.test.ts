@@ -67,12 +67,22 @@ test.each([
   expect(yamlErrorMessage(err, text)).toBe(message);
 });
 
-// kcmd's own parsing produces none of these errors. An error with no position
-// text keeps its message. So does an error at position -1, even when its
-// message ends in the position text YAML would add there. YAML adds no snippet
-// for an error on a first line of only spaces. The message then gives the
-// error's line and snippet in the file.
+const LONG_LINE = 'contentType: MARKDOWN\n' + 'b'.repeat(100) + '\n';
+// Each row gives a YAML error, its text, the text above it and the expected
+// message.
 test.each([
+  // An overview sidecar's frontmatter sits below its `---` line. The carets
+  // under a line longer than 80 characters stop at the snippet's 80th column.
+  ["a long line in an overview sidecar's frontmatter",
+   yaml.parseDocument(LONG_LINE).errors[0], LONG_LINE, '---\n',
+   'Implicit map keys need to be followed by map values at line 3, ' +
+       `column 1:\n\ncontentType: MARKDOWN\n${'b'.repeat(79)}…\n` +
+       `${'^'.repeat(80)}\n`],
+  // kcmd reports none of the errors below. An error with no position text
+  // keeps its message. So does an error at position -1, even when its message
+  // ends in ' at line 0, column -1', the text positionText computes for that
+  // position. YAML adds no snippet for an error on a first line of only
+  // spaces. The message then gives the error's line and snippet in the file.
   ['an error parsed without pretty errors',
    yaml.parseDocument('a: "x\n', {...YAML_OPTIONS, prettyErrors: false})
        .errors[0],
