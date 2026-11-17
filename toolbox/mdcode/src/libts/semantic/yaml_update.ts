@@ -904,10 +904,16 @@ function flowValue(u: Update, key: string, value: unknown): string {
   return movedText(u, key, value)?.[0].trim() ?? scalarText(u, value, 0, true);
 }
 
-/** Whether `text` reads as `value` in a flow collection. */
+/**
+ * Whether `text` reads as `value` as the value of a key in a flow mapping.
+ * An empty text does not count, so that the key gets a value written after
+ * its `:` instead of nothing.
+ */
 function readsInFlow(text: string, value: unknown): boolean {
   try {
-    return canonical(yaml.parse(`[${text}]`, YAML_OPTIONS)[0]) === canonical(value);
+    return text !== '' &&
+        canonical(yaml.parse(`{_: ${text}}`, YAML_OPTIONS)) ===
+        canonical({_: value});
   } catch {
     return false;
   }

@@ -522,6 +522,18 @@ test.each<[string, string, (value: any) => void, string?]>([
     'g: {\n  k: 1}\nf: [{ name: a, e: { d: [{ k: x }] } }]\n'
   ],
   [
+    'a mapping whose first key has an anchor, moved into a flow mapping', 'm:\n  e:\n    &k e: 1\nk: {a: 1}\n',
+    v => (v.k.e = v.m.e, delete v.m.e, v.m.z = 1), 'm:\n  z: 1\nk: {a: 1, e: {e: 1}}\n'
+  ],
+  [
+    'a mapping whose first key has a tag, moved into a flow mapping', 'm:\n  e:\n    !!str e: 1\nk: {a: 1}\n',
+    v => (v.k.e = v.m.e, delete v.m.e, v.m.z = 1), 'm:\n  z: 1\nk: {a: 1, e: {e: 1}}\n'
+  ],
+  [
+    'an empty value moved into a flow mapping', 'm:\n  e:\nk: {a: 1}\n',
+    v => (v.k.e = v.m.e, delete v.m.e, v.m.z = 1), 'm:\n  z: 1\nk: {a: 1, e: null}\n'
+  ],
+  [
     'a first key removed above a comment at column 0',
     'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
   ],
