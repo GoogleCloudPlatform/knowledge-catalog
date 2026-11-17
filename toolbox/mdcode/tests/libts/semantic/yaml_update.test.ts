@@ -87,6 +87,19 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: &k 5\ne: &j\n  8\nk:\n  9\n'
   ],
   [
+    'empty values after an anchor or a tag alone on their line, before a comment or a space',
+    'a:\n  &x  # c\nb: *x\nc:\n  &y \nd:\n  !!str  # e\nz: 1\n', v => (v.a = [1, 3], v.c = {k: 1}, v.d = 5),
+    'a:\n  - 1  # c\n  - 3\nb: null\nc:\n  k: 1\nd:\n  5  # e\nz: 1\n'
+  ],
+  [
+    'scalars after a core tag set to text the tag cannot read',
+    'a: !!int 1\nb: !!null ~\n', v => (v.a = 'hello', v.b = 'x'), 'a: hello\nb: x\n'
+  ],
+  [
+    'scalars after a custom tag set to a string and to a number it reads as a string',
+    'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
+  ],
+  [
     'flow values after an anchor or a tag, set to values of another kind',
     'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
     'g: [1]\nm: {a: [1], b: [2]}\n'
@@ -410,6 +423,15 @@ test.each<[string, string, (value: any) => void, string?]>([
   expect(output.endsWith('\n'))
       .toBe(text.endsWith('\n') || endsInKeptBlock(output));
   if (expected) expect(output).toBe(expected);
+});
+
+test('a key renamed in the document keeps its tag and its value\'s', () => {
+  const {document, text} = parseForUpdate('!!str datasets: !!seq\n  - a\n');
+  ((document.contents as yaml.YAMLMap).items[0].key as yaml.Scalar).value = 'entities';
+  const value = {entities: ['a']};
+
+  expect(updateText(text, document, value, linkNodes(value, document.contents)))
+      .toBe('!!str entities: !!seq\n  - a\n');
 });
 
 // A root set to a value of another kind loses its tag. The `---` before it

@@ -121,6 +121,12 @@ metrics:
         .toBe(local.replace('Old', 'New'));
   });
 
+  test('writes a value whose anchor stood alone before a comment', () => {
+    expect(updatedText('x:\n  &a  # later\ny: *a\n', 'x: null\ny: null\n',
+                       'x: {k: 1}\ny: null\n'))
+        .toBe('x:\n  k: 1  # later\ny: null\n');
+  });
+
   test('writes a changed list in the space inside its brackets, without its ' +
            'item\'s anchor',
        () => {

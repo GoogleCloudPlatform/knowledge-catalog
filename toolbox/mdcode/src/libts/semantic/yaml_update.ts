@@ -345,9 +345,11 @@ function patchItems(
     if (yaml.isPair(item)) {
       const key = item.key;
       // A key renamed in the document, such as `datasets` to `entities`.
+      // The anchor and tag of the slot are its value's, so the key leaves
+      // them as they are.
       if (yaml.isScalar(key) && typeof key.value === 'string' &&
           key.source !== key.value) {
-        setScalar(u, key, key.value, slotOf(at[i]));
+        setScalar(u, key, key.value, {...slotOf(at[i]), props: undefined});
       }
       patch(u, v, item.value, slotOf(at[i]));
     } else if (at[i] >= 0) {
@@ -516,10 +518,13 @@ function setScalar(
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';
   s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
-  // A tag stays when the new text reads back as the value under it.
+  // A tag stays when the new text reads back as the value under it. A core
+  // YAML tag must read it back with no warning. The parser warns about any
+  // other tag, whose meaning kcmd cannot check, so that warning is ignored.
   const tag = (slot.props ?? []).filter(t => t.type === 'tag');
+  const core = !!node.tag?.startsWith('tag:yaml.org,2002:');
   const typed = tag.length > 0 &&
-      readsInBlock(`_: ${tag[0].source} ${s}`, value);
+      readsInBlock(`_: ${tag[0].source} ${s}`, value, core);
   const {start, cuts} =
       propsOut(u.text, tag.length && !typed ? tag : [], from, slot);
   s = (start < from ? '' : lead) + s;
@@ -616,9 +621,9 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
  * line's tokens go together. Those with text before them on their line go
  * with the spaces between. Those that start their line go with the spaces
  * after them, and with the line when nothing else is on it. When the value
- * follows them on that line, its edit starts where they do instead. `keyEnd`
- * is where the tokens on the line of the key or `-` end, or the slot's
- * `after` when none are there.
+ * follows them on that line, its edit starts where they do instead, as for an
+ * empty value right after them. `keyEnd` is where the tokens on the line of
+ * the key or `-` end, or the slot's `after` when none are there.
  */
 function propsOut(
     t: string, tokens: yaml.CST.SourceToken[], from: number, slot: Slot):
@@ -644,7 +649,7 @@ function propsOut(
     while (/[ \t]/.test(t[pre - 1] ?? '')) pre--;
     while (/[ \t]/.test(t[b] ?? '')) b++;
     if (pre > ls) cuts.push([pre, end, '']);
-    else if (b === from) start = a;
+    else if (end <= from && from <= b) start = a;
     else if (b === lineEnd(t, b)) cuts.push([ls, nextLine(t, a), '']);
     else cuts.push([a, b, '']);
   }
@@ -783,12 +788,15 @@ function readsInFlow(text: string, value: unknown): boolean {
 
 /**
  * Whether `text`, one key and its value, reads as that key holding `value`.
- * An alias in it must have its anchor in it.
+ * An alias in it must have its anchor in it. With `clean`, a text the parser
+ * warns about does not read as `value`.
  */
-function readsInBlock(text: string, value: unknown): boolean {
+function readsInBlock(text: string, value: unknown, clean = false): boolean {
   try {
     const read = yaml.parse(text, YAML_OPTIONS);
-    return isRecord(read) && canonical(Object.values(read)[0]) === canonical(value);
+    return isRecord(read) &&
+        canonical(Object.values(read)[0]) === canonical(value) &&
+        !(clean && yaml.parseDocument(text, YAML_OPTIONS).warnings.length);
   } catch {
     return false;
   }
