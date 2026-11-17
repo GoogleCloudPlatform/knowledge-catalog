@@ -154,6 +154,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: &a\n  - c\n  - d\nw: [\n  [c],\n  [[c]]\n]\n'
   ],
   [
+    'a key added after the first line of a text that starts with a byte order mark',
+    '\uFEFFa: 1\nb: 2\n', v => v.c = 3, '\uFEFFa: 1\nb: 2\nc: 3\n'
+  ],
+  [
     'flow collections over several lines whose value changes exactly, written in block style',
     'u: [null,\n  1]\nm: {a: null,\n  b: 1}\nw: [old,\n  .inf]  # c\nz: [0,\n  1]\ne: [.nan,\n  1]\n',
     v => {
@@ -542,19 +546,20 @@ test('a key renamed in the document keeps its tag and its value\'s', () => {
       .toBe('!!str entities: !!seq\n  - a\n');
 });
 
-// A root set to a value of another kind loses its tag. The `---` before it
-// stays.
-test.each([
-  ['!!seq [1]\n', '{a: 1}\n'],
-  ['!!str\n', '{a: 1}\n'],
-  ['--- !!seq\n[1]\n', '---\n{a: 1}\n'],
-  ['--- !!seq  \n[1]\n', '---\n{a: 1}\n'],
-])('the root of %j set to a mapping', (input, expected) => {
+// A root set to a value of another kind loses its tag. The `---` or byte
+// order mark before it stays.
+test.each<[string, unknown, string]>([
+  ['!!seq [1]\n', {a: 1}, '{a: 1}\n'],
+  ['!!str\n', {a: 1}, '{a: 1}\n'],
+  ['--- !!seq\n[1]\n', {a: 1}, '---\n{a: 1}\n'],
+  ['--- !!seq  \n[1]\n', {a: 1}, '---\n{a: 1}\n'],
+  ['\uFEFF!!seq\n[1]\n', {a: 1}, '\uFEFF{a: 1}\n'],
+])('the root of %j set to another kind', (input, value, expected) => {
   const {document, text} = parseForUpdate(input);
 
-  const output = updateText(text, document, {a: 1}, new Map());
+  const output = updateText(text, document, value, new Map());
 
-  expect(yaml.parse(output)).toEqual({a: 1});
+  expect(yaml.parse(output)).toEqual(value);
   expect(output).toBe(expected);
 });
 

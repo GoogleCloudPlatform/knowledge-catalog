@@ -1278,8 +1278,13 @@ function blockIndent(
   return line === undefined ? undefined : /^ */.exec(line)![0].length;
 }
 
+/**
+ * The offset where the line holding `p` starts. The first line starts after
+ * a byte order mark.
+ */
 function lineStart(t: string, p: number): number {
-  return t.lastIndexOf('\n', p - 1) + 1;
+  const start = t.lastIndexOf('\n', p - 1) + 1;
+  return start === 0 && p > 0 && t.startsWith('\uFEFF') ? 1 : start;
 }
 
 /** The offset where the text of the line holding `p` ends. */
