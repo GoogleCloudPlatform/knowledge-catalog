@@ -35,6 +35,13 @@ const onModelFile = (advice: string) =>
 const TWO_FIT = onModelFile(
     "Profiles 'ops' and 'Replica' bind these entities to tables in that " +
     "database. Set the deployment's profile to one of them.");
+// A vanilla model's refusal. It lists the fitting GOOGLE block profiles in
+// name order, whatever order the block gives them.
+const VANILLA_FIT =
+    "[commerce] deployment 'sp' targets Spanner database 'test-project/i/db', " +
+    "but the model file binds dataset 'Customer' to a table outside that " +
+    "database. Profiles 'ops' and 'Replica' bind this dataset to a table in " +
+    "that database. Set the deployment's profile to one of them.";
 
 const fails = (name: string, scope: Scope, error: string,
                flags: PushOptions = {}): Case => ({
@@ -118,18 +125,20 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
           "'test-project/i/db', but profile 'x' binds entities 'Customer' " +
           "and 'Orders' to tables outside that database. Bind each entity " +
           "to a table in that database in profile 'x'."),
-  fails(
-      'a vanilla model\'s error calls an entity a dataset and names the GOOGLE block profile that fits', {
-        google: {
-          deployments: [{name: 'sp', target: spannerGraph('g')}],
-          profiles: [{name: 'ops', entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}]}],
+  {
+    ...fails(
+        'a vanilla model\'s error calls an entity a dataset and lists the fitting GOOGLE block profiles in name order, also under --print-store', {
+          google: {
+            deployments: [{name: 'sp', target: spannerGraph('g')}],
+            profiles: ['Replica', 'ops'].map(name => ({
+              name, entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+            })),
+          },
         },
-      },
-      "[commerce] deployment 'sp' targets Spanner database " +
-          "'test-project/i/db', but the model file binds dataset 'Customer' " +
-          "to a table outside that database. Profile 'ops' binds this " +
-          "dataset to a table in that database. Set the deployment's " +
-          "profile to 'ops'."),
+        VANILLA_FIT),
+    report: {flags: {printStore: true}, code: 1,
+             check: (_, errors) => expect(errors).toEqual([err(VANILLA_FIT)])},
+  },
   {
     name: 'a profile source in no accepted form gets the profile check\'s error first',
     deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],

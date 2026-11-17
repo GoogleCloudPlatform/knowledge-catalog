@@ -113,8 +113,8 @@ describe('where a model says it lives', () => {
 
 
 describe('a binding that disagrees with the target', () => {
-  // Push refuses a Spanner deployment whose database holds no table an
-  // entity is bound to, so the store fails with push's error.
+  // Push refuses a Spanner deployment that binds an entity to a table outside
+  // its database, so the store fails with push's error.
   test('an entity bound to another database or system gets push\'s error',
        () => {
          for (const table of [
