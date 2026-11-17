@@ -306,6 +306,17 @@ semantic_model:
      {}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
      '        primary_key: [ &k order_id ]\n        fields:\n          - name: order_id\n' +
          '            expression: {dialects: [ {dialect: OSSIE_SQL_2026, expression: order_id} ]}\n'],
+    ['model metrics with an anchor another value names',
+     ossieFile({orders: '    metrics:\n      - name: m\n        expression:\n          sql: SUM(amount)\n',
+                rest: 'metrics: &mm []\nai_context: {x: *mm}\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    ai_context: {custom: {x: []}}\n'],
+    ['a moved metric with an anchor a later dataset names',
+     ossieFile({orders: '    metrics:\n      - name: m\n        description: &d Total amount\n' +
+                    '        expression:\n          sql: SUM(amount)\n'})
+         .replace('  - name: customers\n', '  - name: customers\n    description: *d\n'),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '      - name: customers\n        description: Total amount\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',

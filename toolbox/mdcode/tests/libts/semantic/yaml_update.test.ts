@@ -62,6 +62,16 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\n  - 1\n  - 3\nb:\n  - 1\n  - 2\nd:  # c\n  - w\ne:\n  x\n'
   ],
   [
+    'values under an anchor or a tag on a line of its own, set to lists, two before a comment',
+    'a:\n  &x  # c\n  {k: 1}\nb:\n  !!str  # d\n  x\ne:\n  &z !!map\n  {k: 1}\n',
+    v => (v.a = [1], v.b = [1], v.e = [1]), 'a:\n  # c\n  [1]\nb:\n  # d\n  - 1\ne:\n  [1]\n'
+  ],
+  [
+    'anchored empty values removed from the end of a flow list and a flow mapping',
+    'f: [a, &b]\ng: *b\nm: {a: 1, b: &y}\nh: *y\n', v => (v.f.pop(), delete v.m.b),
+    'f: [a]\ng: null\nm: {a: 1}\nh: null\n'
+  ],
+  [
     'flow values after an anchor or a tag, set to values of another kind',
     'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
     'g: [1]\nm: {a: [1], b: [2]}\n'

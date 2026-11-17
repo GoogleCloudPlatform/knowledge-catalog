@@ -96,10 +96,21 @@ export function updateText(
   };
   hold(u, value, doc.contents);
   patch(u, value, doc.contents, {col: 0, prefix: '', flow: false});
-  // An alias whose anchor changed or went is written out.
+  // An alias whose anchor changed or went is written out. The text of the
+  // value it names starts at that value's anchor or tag.
+  const props = new Map<unknown, yaml.CST.SourceToken[]>();
+  if (u.aliases.length) {
+    yaml.visit(doc, {
+      Collection: (_, n) => itemProps(n).forEach((p, i) => {
+        const item = n.items[i];
+        props.set(yaml.isPair(item) ? item.value : item, p);
+      }),
+    });
+  }
   for (const [alias, v, slot] of u.aliases) {
     const anchor = alias.resolve(doc) as yaml.Node;
-    const [a, b] = anchor.range!;
+    const a = props.get(anchor)?.[0]?.offset ?? anchor.range![0];
+    const b = anchor.range![1];
     if (u.dirty.has(anchor) || u.edits.some(([p, q]) => p < b && q > a)) {
       replace(u, v, alias, slot);
     }
@@ -192,10 +203,7 @@ interface Slot {
   after?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
-  /**
-   * The anchor and tag tokens of the node, after the `:` or `-` or between
-   * flow list items, and the `?` of a pair written as a flow list item.
-   */
+  /** The anchor and tag tokens of the node, as itemProps gives them. */
   props?: yaml.CST.SourceToken[];
 }
 
@@ -275,7 +283,7 @@ function patchItems(
   const col = g[0].start - lineStart(t, g[0].start);
   // The text between two items.
   const sep = g.length > 1 ? t.slice(g[0].end, g[1].start) : ', ';
-  const marks = marksOf(node);
+  const props = itemProps(node);
   const slotOf = (i: number): Slot => {
     const item = items[i];
     const sep = yaml.isPair(item) ?
@@ -286,10 +294,7 @@ function patchItems(
     // after it.
     const after = sep !== undefined ? sep + 1 :
         ((item as yaml.Pair).key as yaml.Node).range![1];
-    const v = (yaml.isPair(item) ? item.value : item) as yaml.Node|null;
-    const props = sep === undefined || !v?.range ? [] :
-        marks.filter(s => s.offset >= sep && s.offset < v.range![0]);
-    return {col, prefix, after, flow, props};
+    return {col, prefix, after, flow, props: props[i]};
   };
   // Removes each run of items no entry keeps.
   for (let a = 0; a < items.length; a++) {
@@ -509,8 +514,9 @@ function setScalar(
 }
 
 /**
- * Writes `value` in place of `node`, its anchor and its tag. The comment on
- * the line where `node` starts stays on that line.
+ * Writes `value` in place of `node`. The anchor and tag of a node in a
+ * collection go with it. The comment on the line where `node` starts stays on
+ * that line, and so does the comment after an anchor or tag.
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
@@ -528,21 +534,39 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
   // An anchor or tag on the line of the key or `-` goes with the text after
-  // the `:` or `-`, and the others go with the text of `node`. An alias of
-  // the anchor is written out (see updateText).
+  // the `:` or `-`. One on the line where `node` starts goes with its text.
+  // One on a line between goes with the spaces after it, and with its line
+  // when nothing else is on it. An alias of the anchor is written out (see
+  // updateText).
   const props = slot.props ?? [];
   const keyLine = slot.flow || slot.after === undefined ?
       -1 :
       lineEnd(t, slot.after);
+  const own = lineStart(t, from);
   const last = props.filter(s => s.offset < keyLine).at(-1);
-  const cut: [number, number, string]|undefined =
-      last && [slot.after!, last.offset + last.source.length, ''];
-  const start = props.find(s => s.offset > keyLine)?.offset ?? from;
+  const keyEnd = last ? last.offset + last.source.length : slot.after;
+  const cuts: Array<[number, number, string]> =
+      last ? [[slot.after!, keyEnd!, '']] : [];
+  const runs: Array<[number, number]> = [];
+  for (const s of props.filter(s => s.offset > keyLine && s.offset < own)) {
+    const run = runs.at(-1);
+    const end = s.offset + s.source.length;
+    if (run && lineStart(t, run[0]) === lineStart(t, s.offset)) run[1] = end;
+    else runs.push([s.offset, end]);
+  }
+  for (const [a, end] of runs) {
+    let b = end;
+    while (/[ \t]/.test(t[b] ?? '')) b++;
+    cuts.push(b === lineEnd(t, b) ? [lineStart(t, a), nextLine(t, a), ''] :
+                                    [a, b, '']);
+  }
+  const start =
+      props.find(s => s.offset > keyLine && s.offset >= own)?.offset ?? from;
   // A flow collection on one line stays flow.
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value) &&
           !spansLines(u.text, node)) {
-    if (cut) u.edits.push(cut);
+    u.edits.push(...cuts);
     u.edits.push([
       start, to,
       (start < from ? '' : lead) + scalarText(u, value, slot.col, true),
@@ -577,7 +601,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
                                        '';
-  if (under && cut) u.edits.push(cut);
+  if (under) u.edits.push(...cuts);
   if (under && !isFull(value)) {
     // As a block scalar, text of several lines would take the text after it.
     const type = typeof value === 'string' && value.includes('\n') ?
@@ -591,7 +615,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     u.edits.push([start, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
-  const tail = from > keyLine ? t.slice(cut?.[1] ?? slot.after, keyLine) : after;
+  const tail = from > keyLine ? t.slice(keyEnd, keyLine) : after;
   const head = first.slice(col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
 }
@@ -1093,6 +1117,25 @@ function itemStarts(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
     const mark = marks.find(s => s.offset >= from && s.offset < at);
     from = end;
     return mark?.offset ?? at;
+  });
+}
+
+/**
+ * The anchor and tag tokens of the value of each item of `node`. A pair's
+ * value has those after its `:`. A block list item has those after its `-`.
+ * A flow list item has those after the item before it, or after the bracket,
+ * and a pair written as a flow list item has its `?` there too.
+ */
+function itemProps(node: yaml.YAMLMap|yaml.YAMLSeq): yaml.CST.SourceToken[][] {
+  const marks = marksOf(node);
+  const starts = itemStarts(node);
+  return (node.items as unknown[]).map((item, i) => {
+    const v = (yaml.isPair(item) ? item.value : item) as yaml.Node|null;
+    const from = yaml.isPair(item) ?
+        item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
+        starts[i];
+    return from === undefined || !v?.range ? [] :
+        marks.filter(s => s.offset >= from && s.offset < v.range![0]);
   });
 }
 
