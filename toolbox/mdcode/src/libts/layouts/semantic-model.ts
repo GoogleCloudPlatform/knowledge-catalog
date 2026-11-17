@@ -18,7 +18,7 @@ import * as md from '../metadata';
 import {listed, ModelDocument, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
-import {documentValue, yamlErrorMessage} from '../semantic/yaml_options';
+import {documentValue, YAML_OPTIONS, yamlErrorMessage} from '../semantic/yaml_options';
 
 import {frontmatterText, joinFrontmatter, splitFrontmatter} from './documents';
 
@@ -775,12 +775,17 @@ export function parseOverviewSidecar(
   try {
     split = splitFrontmatter(unmarked);
   } catch (err: any) {
-    // The frontmatter below its opening `---` line, as in the file, so a YAML
-    // error gives the file's line and snippet.
-    const inFile = `---\n${frontmatterText(unmarked)}`;
-    const [error] = yaml.parseDocument(inFile).errors;
+    // The frontmatter is parsed again below its opening `---` line, as in the
+    // file. When that parse gives an error of the same code, the message gives
+    // the file's line and snippet. Otherwise it keeps the error the
+    // frontmatter alone gives.
+    const front = frontmatterText(unmarked) ?? '';
+    const inFile = `---\n${front}`;
+    const [again] = yaml.parseDocument(inFile, YAML_OPTIONS).errors;
     throw fail(`its frontmatter does not parse: ${
-        yamlErrorMessage(error ?? err, inFile)}`);
+        again && again.code === err?.code ?
+            yamlErrorMessage(again, inFile) :
+            yamlErrorMessage(err, front)}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

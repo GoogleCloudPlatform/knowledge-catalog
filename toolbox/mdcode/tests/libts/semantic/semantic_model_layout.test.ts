@@ -538,6 +538,12 @@ describe('SemanticModelLayout overview sidecars', () => {
                  'its frontmatter does not parse: Missing closing "quote at ' +
                      'line 4, column 10:\n\n  - url: "https://example.com\n' +
                      '         ^\n'],
+                // Below its `---` line, YAML reads the directive as text and
+                // gives another error, so the message keeps the first one.
+                ['---\n%YAML 1.2\n---\nOverview.\n',
+                 'its frontmatter does not parse: Missing directives-end ' +
+                     'indicator line at line 1, column 10:\n\n%YAML 1.2\n' +
+                     '         ^\n'],
                 ['---\ncontentType: *\n---\n',
                  'its frontmatter does not parse: Alias cannot be an empty ' +
                      'string at line 2, column 14:\n\ncontentType: *\n' +

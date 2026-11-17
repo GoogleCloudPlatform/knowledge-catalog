@@ -873,8 +873,9 @@ defined in [model spec §1](model_spec.md#1-status-and-baseline),
 [§2](model_spec.md#2-document-shape), [§6](model_spec.md#6-the-extension-mechanism),
 and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie). The error names the
 model file by its path. A YAML syntax error gives its line and column. When YAML
-reports a quote, `[` or `{` that is never closed, the error points where it
-opens.
+reports a quote, `[` or `{` that is never closed, the error points at where it
+opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position at
+that bracket.
 
 * **Every deployment target must be a valid BigQuery Graph, Spanner Graph, or
   AlloyDB database resource name.** Each deployment in `deployments:` (or in a

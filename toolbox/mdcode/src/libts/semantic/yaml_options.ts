@@ -112,9 +112,16 @@ function openTokenMessage(err: any, text: string): string|undefined {
   return bare && bare.message + positionText(text, lines, start);
 }
 
+// The text of a closed quoted value. In double quotes a backslash escapes the
+// character after it, and in single quotes `''` is one quote, so neither
+// closes the value.
+const CLOSED_QUOTE = {
+  'double-quoted-scalar': /^"(?:[^"\\]|\\[^])*"$/,
+  'single-quoted-scalar': /^'(?:[^']|'')*'$/,
+};
+
 // Where YAML reports `token` left open: the end of a quoted value or flow
-// collection that lacks its closing character, as the yaml package reads it.
-// Undefined for any other token.
+// collection that lacks its closing character. Undefined for any other token.
 function openEnd(token: yaml.CST.Token): number|undefined {
   if (token.type === 'flow-collection') {
     const close = token.start.source === '{' ? '}' : ']';
@@ -126,10 +133,9 @@ function openEnd(token: yaml.CST.Token): number|undefined {
       token.type !== 'single-quoted-scalar') {
     return undefined;
   }
-  const {source} = token;
-  return source.length > 1 && source.endsWith(source[0]) ?
+  return CLOSED_QUOTE[token.type].test(token.source) ?
       undefined :
-      token.offset + source.length;
+      token.offset + token.source.length;
 }
 
 // Where `offset` is in `text`, in the yaml package's own error snippet layout.
