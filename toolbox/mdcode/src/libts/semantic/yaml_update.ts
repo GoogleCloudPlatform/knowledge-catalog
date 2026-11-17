@@ -331,7 +331,13 @@ function patchItems(
   const items = node.items as unknown[];
   const entries = entriesOf(value);
   const at = matchItems(u, entries, node);
-  if (at.every(i => i < 0)) return replace(u, value, node, slot);
+  // A pair written as a flow list item, as `a: 1` in `[a: 1]`, has no braces,
+  // so it is written again with them when it comes to hold more than one.
+  if (at.every(i => i < 0) ||
+      yaml.isMap(node) && flow && node.srcToken?.type !== 'flow-collection' &&
+          entries.length > 1) {
+    return replace(u, value, node, slot);
+  }
   // The kept item each new entry goes after, or -1.
   const follows = at.map((j, i) => j < 0 ? Math.max(-1, ...at.slice(0, i)) : NaN);
   const g = geometry(u, node, flow);

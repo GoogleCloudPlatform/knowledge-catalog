@@ -166,6 +166,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm: {a: 1}\ng: null\nl: [a]\nh: null\n'
   ],
   [
+    'pairs written as flow list items, without braces, that gain a second entry',
+    'l: [ &k a: 1 ]\nm: [a: 1]\n', v => (v.l[0].b = 2, v.m[0].b = 2),
+    'l: [ {a: 1, b: 2} ]\nm: [{a: 1, b: 2}]\n'
+  ],
+  [
     'alias keys in flow mappings over several lines whose value stays, written out when their anchor changes',
     'a: &k p\nc: {*k : 1,\n  q: b}\nd: &j r\ne: {*j : 1,\n  q: b}\n', v => {
       v.a = 'z';
