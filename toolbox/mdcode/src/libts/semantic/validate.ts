@@ -2010,14 +2010,13 @@ function missingExecutorFields(ex: Executor): string[] {
 
 // The error for `deployment` when it binds entities to tables outside the
 // database it deploys to, or none. Sources come from the deployment's profile
-// in `model.profiles`, or from the model file for `default`. The profiles are
-// read with the dialects in `load`.
+// in `model.profiles`, or from the model file for `default`.
 export function deploymentTableErrors(
-    document: string, model: SemanticModel, deployment: ResolvedDeployment,
-    load: DialectLoad): string[] {
+    document: string, model: SemanticModel,
+    deployment: ResolvedDeployment): string[] {
   return tablesOutsideTarget(
       document, model, deployment, e => e.authoredSource,
-      model.profiles ?? [], load);
+      model.profiles ?? []);
 }
 
 // The error for a Spanner `deployment` on the model file's own bindings when
@@ -2180,7 +2179,7 @@ export async function localChecks(
       ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(
           d => ofProfile(
               document, d.profile,
-              ...deploymentTableErrors(document, model, d, load))));
+              ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
   // A Spanner graph holds no metric, and Spanner creates no property graph in
   // a PostgreSQL-dialect database, which the dialect already read shows. Both

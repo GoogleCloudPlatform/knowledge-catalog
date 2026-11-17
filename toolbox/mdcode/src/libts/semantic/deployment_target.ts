@@ -33,7 +33,7 @@
 
 import {DeploymentSpec, Entity, ProfileSpec, SemanticModel} from './ir';
 import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, entityWord, listed, resourceUriFix} from './loader';
-import {acceptedProfiles, DEFAULT_PROFILE, DialectLoad, profileSources} from './resolve_profiles';
+import {DEFAULT_PROFILE, profileSources} from './resolve_profiles';
 
 
 // A BigQuery Graph deployment target.
@@ -475,13 +475,13 @@ function entitiesOutside(
 // an entity the profile gives no source is unbound under it. A named profile
 // not in `profiles` is in a profile file that does not load, which push
 // reports instead. For a deployment on the model file's bindings, the error
-// names each profile the deployment could name instead. Push accepts such a
-// profile against `model`, read with the dialects in `load`, so it binds every
-// entity. The deployment passes this check with it.
+// names each profile that binds every entity it lists and with which the
+// deployment would pass this check. Push's other checks may still refuse such
+// a profile.
 export function tablesOutsideTarget(
     document: string, model: SemanticModel, deployment: ResolvedDeployment,
     modelSource: (e: Entity) => string | undefined,
-    profiles: readonly ProfileSpec[], load: DialectLoad): string[] {
+    profiles: readonly ProfileSpec[]): string[] {
   const {database, target, outside, inside} = targetDatabase(deployment);
   const named = deployment.profile !== DEFAULT_PROFILE;
   const profile =
@@ -496,12 +496,11 @@ export function tablesOutsideTarget(
   const kind = !many ? one : one === 'entity' ? 'entities' : 'datasets';
   const each = `${many ? 'each' : 'the'} ${one}`;
   const these = `${many ? 'these' : 'this'} ${kind} to ${inside[many ? 1 : 0]}`;
-  const fits = named ? [] :
-      acceptedProfiles(model, profiles, load, document)
-          .filter(
-              p => !entitiesOutside(model, database, profileSources(p)).length)
-          .map(p => p.name)
-          .sort();
+  const fits = named ? [] : profiles.filter(p => {
+    const sourceOf = profileSources(p);
+    return entities.every(e => sourceOf(e)?.trim()) &&
+        !entitiesOutside(model, database, sourceOf).length;
+  }).map(p => p.name).sort();
   let advice: string;
   if (named) {
     advice = `Bind ${each} to ${inside[0]} in profile '${deployment.profile}'.`;

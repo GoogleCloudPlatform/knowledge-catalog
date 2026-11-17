@@ -20,7 +20,7 @@ import {ApiResult} from '../../gcp/api';
 import {AlloyDbTarget, deploymentTargetError, googleDeploymentTargets, ParsedDeploymentTarget, resolveModelDeployments, tablesOutsideTarget} from '../deployment_target';
 import {ProfileSpec, SemanticModel} from '../ir';
 import {asResourceName, databaseOf, listed, OSSIE_VERSION, writtenSource} from '../loader';
-import {DEFAULT_PROFILE, DialectLoad} from '../resolve_profiles';
+import {DEFAULT_PROFILE} from '../resolve_profiles';
 
 
 /** A Spanner database. An action's statements can write to it. */
@@ -194,7 +194,7 @@ export interface StoreError {
  * BigQuery targets name. Two graphs in one BigQuery dataset or one Spanner
  * database are one store. `document` names the model file in push's errors.
  * Push's error for a table outside a deployment's database reads `profiles`,
- * the profiles the model declares, with the dialects in `load`.
+ * the profiles the model declares.
  *
  * Fails six ways:
  *
@@ -212,7 +212,7 @@ export interface StoreError {
  *    BigQuery store the error is not named.
  */
 export function resolveStore(
-    model: SemanticModel, profiles: readonly ProfileSpec[], load: DialectLoad,
+    model: SemanticModel, profiles: readonly ProfileSpec[],
     profile: string = DEFAULT_PROFILE, document = model.name):
     ChosenStore|StoreError {
   // Push checks the target of every deployment the model declares, so the
@@ -293,8 +293,8 @@ export function resolveStore(
   const resolved = resolveModelDeployments(scoped);
   const outside = 'error' in resolved ? [] : resolved.deployments
       .filter(d => targetStore(d).name === store.name)
-      .flatMap(d => tablesOutsideTarget(
-                   document, model, d, writtenSource, profiles, load));
+      .flatMap(
+          d => tablesOutsideTarget(document, model, d, writtenSource, profiles));
   if (outside.length) return {error: outside.join('\n'), named: true};
 
   // Only an action writes, so only a model that declares one needs every

@@ -21,7 +21,7 @@ import {AlloyDbDatabase, resolveStore, storeLine, withPrimaryInstance} from '../
 // The store `model` runs against under `profile`, read with no declared
 // profile.
 const storeOf = (model: SemanticModel, profile?: string) =>
-    resolveStore(model, [], {}, profile);
+    resolveStore(model, [], profile);
 
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = 'bigquery.googleapis.com/projects/p/datasets/s';
@@ -146,7 +146,7 @@ describe('a binding that disagrees with the target', () => {
     });
     expect(resolveStore(m, [
       profile('partial', 'Customer'), profile('full', 'Customer', 'Orders'),
-    ], {})).toEqual({
+    ])).toEqual({
       error: "[m] deployment 'default' targets Spanner database 'p/i/d', " +
           "but the model file binds entities 'Customer' and 'Orders' to " +
           "tables outside that database. Profile 'full' binds these " +

@@ -15,7 +15,7 @@ import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../sr
 // The store `model` runs against under `profile`, read with no declared
 // profile.
 const storeOf = (model: SemanticModel, profile?: string) =>
-    resolveStore(model, [], {}, profile);
+    resolveStore(model, [], profile);
 
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const SPANNER_GRAPH = `${DB}/graphs/g`;
