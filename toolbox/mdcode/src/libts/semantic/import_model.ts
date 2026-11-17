@@ -21,7 +21,7 @@ import {loadSqlEngine, soleColumn} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
 import {documentValue, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
-import {linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
+import {aliasNodes, linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -620,15 +620,12 @@ function sameAliasNodes(
   yaml.visit(from, {
     Node: (_, n) => void (!yaml.isAlias(n) && n.anchor && names.push(n.anchor)),
   });
-  let kept = true;
-  yaml.visit(from, {
-    Alias: (_, a) => {
-      const b = same.get(a);
-      kept &&= names.indexOf(a.source) === names.lastIndexOf(a.source) ||
-          yaml.isAlias(b) && same.get(a.resolve(from)) === b.resolve(to);
-    },
+  const toNodes = aliasNodes(to);
+  return [...aliasNodes(from)].every(([a, node]) => {
+    const b = same.get(a);
+    return names.indexOf(a.source) === names.lastIndexOf(a.source) ||
+        yaml.isAlias(b) && same.get(node) === toNodes.get(b);
   });
-  return kept;
 }
 
 /**

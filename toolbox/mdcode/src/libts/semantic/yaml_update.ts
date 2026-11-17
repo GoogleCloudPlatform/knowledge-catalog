@@ -61,6 +61,23 @@ export function linkNodes(
 }
 
 /**
+ * The node each alias of `doc` names: the last node above it with its anchor,
+ * or undefined when there is none.
+ */
+export function aliasNodes(doc: yaml.Document):
+    Map<yaml.Alias, yaml.Node|undefined> {
+  const named = new Map<yaml.Alias, yaml.Node|undefined>();
+  const anchors = new Map<string, yaml.Node>();
+  yaml.visit(doc, {
+    Node: (_, n) => {
+      if (yaml.isAlias(n)) named.set(n, anchors.get(n.source));
+      else if (n.anchor) anchors.set(n.anchor, n);
+    },
+  });
+  return named;
+}
+
+/**
  * Returns `text`, which `doc` parses, changed to hold `value`. An object or
  * array keeps the node `links` maps it to, and any other value keeps the node
  * under the same key, or the list item with the same key (see `itemKeys`). A
@@ -119,8 +136,9 @@ export function updateText(
       },
     });
   }
+  const named = u.aliases.length ? aliasNodes(doc) : new Map();
   for (const [alias, v, slot] of u.aliases) {
-    const anchor = alias.resolve(doc) as yaml.Node;
+    const anchor = named.get(alias) as yaml.Node;
     const a = props.get(anchor)?.[0]?.offset ?? anchor.range![0];
     const b = anchor.range![1];
     if (u.dirty.has(anchor) || u.edits.some(([p, q]) => p < b && q > a)) {
@@ -132,7 +150,7 @@ export function updateText(
   // alias and its anchor. A value written fresh holds no anchor, so every
   // other alias still names the same node.
   let [made, out] = composed(u);
-  const misread = misreadAliases(u, made, out);
+  const misread = misreadAliases(u, named, made, out);
   if (misread.length) {
     u.fresh = true;
     for (const [alias, v, slot] of misread) replace(u, v, alias, slot);
@@ -186,27 +204,22 @@ function composed(u: Update): [Array<[number, number, string]>, string] {
 
 /**
  * The aliases of `u.aliases` whose text stays and that name another node in
- * `out` than in `u.text`, or none. The edits `made` give `out`. An alias names
- * the last node above it with its anchor.
+ * `out` than in `u.text`, or none. `named` gives the node each alias of
+ * `u.doc` names (see aliasNodes), and the edits `made` give `out`.
  */
 function misreadAliases(
-    u: Update, made: ReadonlyArray<[number, number, string]>,
+    u: Update, named: ReadonlyMap<yaml.Alias, yaml.Node|undefined>,
+    made: ReadonlyArray<[number, number, string]>,
     out: string): Update['aliases'] {
   const kept = u.aliases.filter(([alias]) => {
     const [a, b] = alias.range!;
     return !u.edits.some(([p, q]) => p < b && q > a);
   });
   if (!kept.length) return [];
-  const doc = yaml.parseDocument(out, YAML_OPTIONS);
-  // The node each alias of `doc` names, by the offset of the alias.
-  const named = new Map<number, yaml.Node|undefined>();
-  const anchors = new Map<string, yaml.Node>();
-  yaml.visit(doc, {
-    Node: (_, n) => {
-      if (yaml.isAlias(n)) named.set(n.range![0], anchors.get(n.source));
-      else if (n.anchor) anchors.set(n.anchor, n);
-    },
-  });
+  // The node each alias of `out` names, by the offset of the alias.
+  const outNamed = new Map(
+      [...aliasNodes(yaml.parseDocument(out, YAML_OPTIONS))].map(
+          ([alias, node]) => [alias.range![0], node]));
   // The offset in `out` of an offset of `u.text` inside no edit.
   const moved = (at: number) =>
       made.reduce((s, [p, q, t]) => q <= at ? s + t.length - (q - p) : s, at);
@@ -214,8 +227,8 @@ function misreadAliases(
   // each kept alias names keeps its text, and starts where its start in
   // `u.text` moves to.
   return kept.filter(([alias]) => {
-    const node = alias.resolve(u.doc) as yaml.Node;
-    return named.get(moved(alias.range![0]))?.range![0] !==
+    const node = named.get(alias) as yaml.Node;
+    return outNamed.get(moved(alias.range![0]))?.range![0] !==
         moved(node.range![0]);
   });
 }
