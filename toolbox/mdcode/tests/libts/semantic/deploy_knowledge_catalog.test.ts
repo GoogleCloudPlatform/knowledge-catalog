@@ -833,11 +833,11 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
             r => ({...r, name: r.name.replace('/dest/', '/123456789/')})),
       }));
 
-  // Pushes STAR again over the entries a push of STAR left, while
-  // lookupEntryLinks finds `links`.
-  async function repushStar(links: any[]) {
-    const {writes} =
-        holding(storedCopy(emitted(STAR_DOCS)), {links: linksTo(...links)});
+  // Pushes STAR again over the entries `held`, by default the ones a push of
+  // STAR left, while lookupEntryLinks finds `links`.
+  async function repushStar(
+      links: any[], held = storedCopy(emitted(STAR_DOCS))) {
+    const {writes} = holding(held, {links: linksTo(...links)});
     const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
     return {result, writes};
   }
@@ -881,27 +881,42 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
     expect(writes).toEqual(BRACKETED(`deleteLink:${id}`));
   });
 
+  // A push that changed the relationship's `from` entity from supplier to
+  // orders stopped while deleting the old reference link, which kept its ID.
+  // It had written every entry and deleted the semantic-link from supplier
+  // to customer. The model entry is still labeled writing. The supplier
+  // entity is still there, since push deletes entries last.
   test('a link whose endpoints changed is deleted and created again between ' +
            'the labels',
        async () => {
-         const links = starLinks().filter(
-             l => entryIdOf(l.name) !== STAR_SEMANTIC_LINK);
-         const reversed =
-             semanticLink(STAR_SEMANTIC_LINK, 'customer', 'orders');
+         const held = storedCopy(emitted(STAR_DOCS));
+         held.get('sales').entrySource.labels = WRITING;
+         const supplier = 'sales/entities/supplier';
+         held.set(supplier, {
+           ...structuredClone(held.get('sales/entities/customer')),
+           name: entryName(supplier),
+         });
+         const stale = directed(
+             'reference', STAR_REFERENCES[0],
+             'sales/relationships/orders_to_customer', supplier);
+         const target = starLinks().filter(
+             l => entryIdOf(l.name) === STAR_REFERENCES[1]);
 
-         const {result, writes} = await repushStar([...links, reversed]);
+         const {result, writes} = await repushStar([...target, stale], held);
 
          expect(result).toMatchObject({
            success: true,
            updated: 0,
            unchangedEntries: 6,
-           linked: 1,
-           unchangedLinks: 2,
+           deleted: 1,
+           linked: 2,
+           unchangedLinks: 1,
            unlinked: 0,
          });
          expect(writes).toEqual(BRACKETED(
-             `deleteLink:${STAR_SEMANTIC_LINK}`,
-             `createLink:${STAR_SEMANTIC_LINK}`));
+             `deleteLink:${STAR_REFERENCES[0]}`,
+             `createLink:${STAR_SEMANTIC_LINK}`,
+             `createLink:${STAR_REFERENCES[0]}`, `delete:${supplier}`));
        });
 
   // Actions live in custom types in the destination project, here a

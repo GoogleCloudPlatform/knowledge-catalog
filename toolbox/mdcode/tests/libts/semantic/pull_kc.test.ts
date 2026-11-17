@@ -664,7 +664,7 @@ semantic_model:
   // The entity's 100 guidelines aspects make pull read it by type, and then
   // read its guidelines by path.
   test.each([
-    ['by type', (read: any) => read.aspects.length === 1 && !read.paths],
+    ['by type', (read: any) => read.aspects?.length === 1 && !read.paths],
     ['by path', (read: any) => !!read.paths],
   ])('a failed read %s of an entity with 100 aspects of one type aborts the pull',
      async (_, fails) => {
