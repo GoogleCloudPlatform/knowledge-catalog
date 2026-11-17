@@ -337,6 +337,19 @@ semantic_model:
                     'to_columns: [id], ai_context: {synonyms: [*n]}}]\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      'to_columns: [id], ai_context: {synonyms: [buyers]}}]\n'],
+    ["a moved metric with an anchored key whose name a later dataset defines again for a join column",
+     ossieFile({orders: '      - name: sql\n        expression: {sql: dialects}\n    metrics:\n      - name: m\n' +
+                    '        expression: {\n          &k sql: COUNT(orders.sql)\n        }\n',
+                rest: '    ai_context: {note: &k sql}\nmetrics:\n  - {name: c, expression: {sql: COUNT(customers.id)}}\n' +
+                    'relationships: [{name: r, from: orders, to: customers, from_columns: [*k], to_columns: [id]}]\n'}),
+     {flavor: 'ossie'},
+     "relationship 'r': rewrote from_columns entry 'sql' as column 'dialects', which field 'orders.sql' reads.",
+     'from_columns: [dialects]'],
+    ['an anchored version after the other keys, whose name a dataset defines again',
+     ossieFile({orders: '    ai_context: {instructions: &v 0.3.0.dev0}\n'}).replace('version: 0.3.0.dev0\n', '') +
+         'version: &v 0.3.0.dev0\nrelationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
+         'to_columns: [id], ai_context: {instructions: *v}}]\n',
+     {}, WRAPPED, '        to_columns: [id]\n        ai_context:\n          instructions: 0.3.0.dev0\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',
@@ -358,9 +371,10 @@ semantic_model:
     expect(res.files[0].content).toContain(written);
   });
 
-  // An Ossie file where a dataset's metric defines `&note` as `moved`, a later
-  // dataset defines it again as `later`, and a relationship names it.
-  const notes = (moved: string, later: string) => `version: "0.3.0.dev0"
+  // An Ossie file where a dataset's metric defines `&note` as `moved` under
+  // `key` in its ai_context, a later dataset defines it again as `later`, and a
+  // relationship names it.
+  const notes = (moved: string, later: string, key = 'note') => `version: "0.3.0.dev0"
 name: shop
 datasets:
   - name: orders
@@ -373,7 +387,7 @@ datasets:
       - name: order_count
         expression: {sql: COUNT(orders.id)}
         ai_context:
-          note: &note ${moved}
+          ${key}: &note ${moved}
   - name: customers
     source: ${TABLES}/customers
     primary_key: [id]
@@ -381,7 +395,7 @@ datasets:
       - name: id
         expression: {sql: id}
     ai_context:
-      note: &note ${later}
+      ${key}: &note ${later}
 metrics:
   - name: customer_count
     expression: {sql: COUNT(customers.id)}
@@ -392,7 +406,7 @@ relationships:
     from_columns: [id]
     to_columns: [id]
     ai_context:
-      note: *note
+      ${key}: *note
 `;
 
   test("writes out an alias when a moved metric defines its anchor's name again above it", async () => {
@@ -439,12 +453,16 @@ semantic_model:
 `);
   });
 
+  // The Google flavor moves `note` into `custom` and leaves `instructions` in
+  // place.
   test.each([
-    ['.nan', 'null', 'null'],
-    ['-0', '0', '0'],
-  ])('writes out such an alias when the moved anchor holds %s and its own anchor %s', async (moved, later, written) => {
-    const res = await importSemanticModelYaml(notes(moved, later), {flavor: 'ossie'});
-    expect(res.files[0].content).toEndWith(`to_columns: [id]\n        ai_context:\n          note: ${written}\n`);
+    ['ossie', 'note', '.nan', 'null', 'null'],
+    ['ossie', 'note', '-0', '0', '0'],
+    ['ossie', 'note', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
+    ['google', 'instructions', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
+  ] as const)('writes out such an alias in the %s flavor under %s when the moved anchor holds %s and its own anchor %s', async (flavor, key, moved, later, written) => {
+    const res = await importSemanticModelYaml(notes(moved, later, key), {flavor});
+    expect(res.files[0].content).toEndWith(`to_columns: [id]\n        ai_context:\n          ${key}: ${written}\n`);
   });
 
   // The load error of a written file whose dataset orders keeps its `metrics`.
