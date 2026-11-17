@@ -321,6 +321,19 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
          expect(result).toMatchObject({success: false, details: 'fetch failed'});
          expect(create).not.toHaveBeenCalled();
        });
+
+  test('a link lookup that throws fails the push before any write',
+       async () => {
+         const {create} = stubClient({
+           existing: [{id: 'sales/entities/orders', type: ENTITY_TYPE}],
+           links: fetchFailed,
+         });
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+         expect(result).toMatchObject({success: false, details: 'fetch failed'});
+         expect(create).not.toHaveBeenCalled();
+       });
 });
 
 
@@ -810,27 +823,33 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
              .toEqual(BRACKETED('delete:sales/metrics/total_revenue'));
        });
 
+  // STAR's links as lookupEntryLinks returns them after a push of STAR.
+  // Dataplex spells a looked-up link's project with the number.
+  const starLinks = () =>
+      structuredClone(emitted(STAR_DOCS).entryLinks).map(link => ({
+        ...link,
+        name: link.name!.replace('/dest/', '/123456789/'),
+        entryReferences: link.entryReferences.map(
+            r => ({...r, name: r.name.replace('/dest/', '/123456789/')})),
+      }));
+
+  // Pushes STAR again over the entries a push of STAR left, while
+  // lookupEntryLinks finds `links`.
+  async function repushStar(links: any[]) {
+    const {writes} =
+        holding(storedCopy(emitted(STAR_DOCS)), {links: linksTo(...links)});
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+    return {result, writes};
+  }
+
   test('a link whose aspect changed is updated between the labels',
        async () => {
-         const resources = emitted(STAR_DOCS);
-         // Dataplex spells a looked-up link's project with the number.
-         const links = structuredClone(resources.entryLinks).map(link => ({
-           ...link,
-           name: link.name!.replace('/dest/', '/123456789/'),
-           entryReferences: link.entryReferences.map(
-               r => ({...r, name: r.name.replace('/dest/', '/123456789/')})),
-         }));
+         const links = starLinks();
          const edited =
              links.find(l => entryIdOf(l.name) === STAR_SEMANTIC_LINK)!;
          Object.values(edited.aspects!)[0].data = {};
-         const {writes} = holding(storedCopy(resources), {
-           links: entry => ok(links.filter(
-               l => l.entryReferences.some(
-                   r => entryIdOf(r.name) === entryIdOf(entry)))),
-         });
 
-         const result =
-             await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+         const {result, writes} = await repushStar(links);
 
          expect(result).toMatchObject({
            success: true,
@@ -841,6 +860,48 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
            unchangedLinks: 2,
          });
          expect(writes).toEqual(BRACKETED(`updateLink:${STAR_SEMANTIC_LINK}`));
+       });
+
+  // An entity that no longer extends another leaves its reference link.
+  test('an orphaned link is deleted between the labels', async () => {
+    const id = semanticLinkId('extends', 'sales', 'orders', 'customer');
+    const orphan = directed(
+        'reference', id, 'sales/entities/orders', 'sales/entities/customer');
+
+    const {result, writes} = await repushStar([...starLinks(), orphan]);
+
+    expect(result).toMatchObject({
+      success: true,
+      updated: 0,
+      unchangedEntries: 6,
+      linked: 0,
+      unchangedLinks: 3,
+      unlinked: 1,
+    });
+    expect(writes).toEqual(BRACKETED(`deleteLink:${id}`));
+  });
+
+  test('a link whose endpoints changed is deleted and created again between ' +
+           'the labels',
+       async () => {
+         const links = starLinks().filter(
+             l => entryIdOf(l.name) !== STAR_SEMANTIC_LINK);
+         const reversed =
+             semanticLink(STAR_SEMANTIC_LINK, 'customer', 'orders');
+
+         const {result, writes} = await repushStar([...links, reversed]);
+
+         expect(result).toMatchObject({
+           success: true,
+           updated: 0,
+           unchangedEntries: 6,
+           linked: 1,
+           unchangedLinks: 2,
+           unlinked: 0,
+         });
+         expect(writes).toEqual(BRACKETED(
+             `deleteLink:${STAR_SEMANTIC_LINK}`,
+             `createLink:${STAR_SEMANTIC_LINK}`));
        });
 
   // Actions live in custom types in the destination project, here a
