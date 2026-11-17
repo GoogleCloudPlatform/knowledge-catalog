@@ -43,10 +43,11 @@
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
-//   * The push's first write labels the anchor `kcmd-push-state: writing`, and
-//     its last write, after the deletions, relabels it `finished`. A model
-//     with nothing to create, update or delete, whose anchor is labeled
-//     `finished`, gets no write.
+//   * The model's first write labels the anchor `kcmd-push-state: writing`.
+//     Under `--force-remove`, the deletes of foreign models come before it.
+//     The push's last write, after the deletions, relabels the anchor
+//     `finished`. A model with nothing to create, update or delete, whose
+//     anchor is labeled `finished`, gets no write.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -115,8 +116,9 @@ export interface KcDeployResult {
   warnings: string[];
   // New entries created in the entry group (0 for validateOnly).
   created: number;
-  // Existing entries updated in place because what they hold differs from
-  // what the push writes (0 for validateOnly).
+  // Existing entries updated in place: those whose stored copy differs from
+  // what the push writes, and those push wrote without a successful read (0
+  // for validateOnly).
   updated: number;
   // Existing entries that already hold what the push writes, so push read them
   // and sent no write, apart from the push-state label on the model entry (0
@@ -661,8 +663,9 @@ interface WriteModelsOutcome {
  * by `planModelWrites`.
  */
 interface WritePlan {
-  // The emitted entries to write, in emitted order: the new ones and those
-  // whose stored copy differs from what the update would leave.
+  // The emitted entries to write, in emitted order: the ones the listing
+  // lacks, those whose read failed, and those whose stored copy differs from
+  // what the update would leave.
   writes: Entry[];
   // The number of emitted entries the catalog already holds as the update
   // would leave them.

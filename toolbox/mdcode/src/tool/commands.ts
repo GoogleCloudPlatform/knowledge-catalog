@@ -1902,7 +1902,8 @@ function reportCatalogResult(
     return 1;
   }
   const n = result.created + result.updated;
-  // Entries push found unchanged got no request and are counted apart.
+  // Push sends no write to an entry it finds unchanged, apart from the
+  // push-state label on the model entry. Those entries are counted apart.
   const unchangedEntries = result.unchangedEntries ?
       ` (${result.unchangedEntries} unchanged)` :
       '';
