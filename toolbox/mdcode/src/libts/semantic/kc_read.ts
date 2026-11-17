@@ -35,6 +35,14 @@ function isRead(res: ApiResult<Entry>): boolean {
   return res.status === 200 && res.result !== undefined;
 }
 
+/** What `readEveryAspect` returns. */
+export type EveryAspectRead = ApiResult<Entry>&{
+  // The types in `aspectTypes` whose own read returned MAX_ASPECTS_PER_READ.
+  // They are read again at the entry and at each field the stored schema
+  // lists, so an instance at any other path can be missing.
+  fullTypes?: string[];
+};
+
 /**
  * Reads `entry` with every aspect of `aspectTypes`, one read at a time, and
  * returns the first response that failed or carried no entry. A read that
@@ -44,7 +52,7 @@ function isRead(res: ApiResult<Entry>): boolean {
  */
 export async function readEveryAspect(
     cat: CatalogClient, place: Place, entry: Entry, aspectTypes: string[],
-    fix: FixOptions = {}): Promise<ApiResult<Entry>> {
+    fix: FixOptions = {}): Promise<EveryAspectRead> {
   const full = (e: Entry) =>
       Object.keys(e.aspects ?? {}).length >= MAX_ASPECTS_PER_READ;
   const read = await readEntry(cat, place, entry, aspectTypes, fix);
@@ -63,8 +71,9 @@ export async function readEveryAspect(
         .flatMap(a => a.data?.fields ?? [])
         .map(f => `Schema.${f.name}`)
   ];
+  const fullTypes = aspectTypes.filter((_, i) => full(byType[i]));
   const byPath: Entry[] = [];
-  for (const t of aspectTypes.filter((_, i) => full(byType[i]))) {
+  for (const t of fullTypes) {
     for (const batch of pathBatches(place, entry, t, paths)) {
       const res = await readEntry(cat, place, entry, [t], fix, batch);
       if (!isRead(res)) return res;
@@ -78,6 +87,7 @@ export async function readEveryAspect(
       ...read.result!,
       aspects: Object.assign({}, ...reads.map(r => r.aspects)),
     },
+    fullTypes,
   };
 }
 

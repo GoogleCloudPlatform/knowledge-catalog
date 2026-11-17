@@ -339,7 +339,10 @@ changes nothing prints
 An unchanged model entry still gets the `kcmd-push-state` label writes when
 anything else in the model changes, or when its label does not already say
 `finished`. An aspect edited in the console no longer matches, so the next push
-writes that entry again.
+writes that entry again. Push writes an entity that holds 100 or more
+instances of the guidelines, overview or semantic-extensions aspect on every
+push. Knowledge Catalog returns at most 100 aspects in one read, so push cannot
+be sure it saw every instance its write would remove.
 
 ## Pull
 

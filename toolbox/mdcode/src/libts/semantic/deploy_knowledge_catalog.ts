@@ -807,16 +807,23 @@ function isNothingToWrite(
 /**
  * Returns the emitted entry `entry` as the catalog holds it, read with the
  * aspect types its update names and with its source `resource` as stored, or
- * undefined when the read fails.
+ * undefined when the read fails. The read also counts as failed when a type
+ * the update names at every path (`<type>@*`) came back with as many
+ * instances as one read returns, since the read can then miss an instance
+ * the update would remove.
  */
 async function readStored(
     cat: CatalogClient, opts: KcDeployOptions,
     entry: Entry): Promise<Entry|undefined> {
   try {
-    const types = [...new Set([...entryAspectKeys(entry, opts)].map(
-        key => _typeRefToName(key.split('@')[0], 'aspect')))];
+    const keys = [...entryAspectKeys(entry, opts)];
+    const typeName = (key: string) =>
+        _typeRefToName(key.split('@')[0], 'aspect');
+    const everyPath = new Set(keys.filter(k => k.endsWith('@*')).map(typeName));
     const res = await readEveryAspect(
-        cat, opts, entry, types, {keepSourceResource: true});
+        cat, opts, entry, [...new Set(keys.map(typeName))],
+        {keepSourceResource: true});
+    if (res.fullTypes?.some(t => everyPath.has(t))) return undefined;
     return isOkStatus(res) ? res.result : undefined;
   } catch {
     return undefined;

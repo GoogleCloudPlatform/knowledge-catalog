@@ -759,6 +759,8 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
 
   const emitted = (docs: typeof DOCS, opts: Record<string, any> = OPTS) =>
       generateCatalogResources(models(docs)[0].model, opts as any);
+  const BRACKETED = (...writes: string[]) =>
+      ['update:sales:writing', ...writes, 'update:sales:finished'];
 
   test('deleting another model under --force-remove writes no label on an ' +
            'unchanged model',
@@ -785,6 +787,57 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          });
          expect(writes).toEqual(['delete:other']);
        });
+
+  // An entity whose fields carry `aiContext`, one entry per field, and a
+  // lookup that answers as Dataplex does: at most 100 aspects per read, of
+  // the types and at the paths the read names.
+  const wideDocs = (fields: number, aiContext: string) => [{
+    name: 'sales.yaml',
+    text: OSSIE.replace(/\n    metrics:[\s\S]*$/, '\n')
+              .replace(/        fields:\n[\s\S]*$/, `        fields:\n${
+                  Array.from({length: fields}, (_, i) =>
+                      `          - name: o_orderkey${i ? i : ''}\n` +
+                          `            expression: o_orderkey${i}\n` +
+                          `            ai_context: ${aiContext}\n`)
+                      .join('')}`),
+  }];
+  const capped = (held: Map<string, any>) =>
+      async (_p: string, _l: string, name: string, read: any = {}) => {
+    const entry = held.get(entryIdOf(name));
+    if (!entry) return err(404, 'not found');
+    const named = ([key, a]: [string, any]) =>
+        read.aspects.includes(a.aspectType) &&
+        (!read.paths || read.paths.includes(key.split('@')[1] ?? ''));
+    const aspects = Object.entries(entry.aspects).filter(named).slice(-100);
+    return ok(
+        {...structuredClone(entry), aspects: Object.fromEntries(aspects)});
+  };
+
+  // A type read that comes back full is read again only at the paths the
+  // stored schema lists, so an instance at another path can be missed.
+  test('a wide entity whose fields fill one type is written', async () => {
+    const docs = wideDocs(100, '{instructions: Doc.}');
+    const held = storedCopy(emitted(docs));
+    const orders = held.get('sales/entities/orders');
+    orders.aspects = {
+      'dataplex-types.global.guidelines@Schema.stale': {
+        aspectType: 'projects/dataplex-types/locations/global/aspectTypes/' +
+            'guidelines',
+        data: {instructions: 'Stale.', userManaged: true},
+      },
+      ...orders.aspects,
+    };
+    const {lookup, update, writes} = holding(held);
+    lookup.mockImplementation(capped(held) as any);
+
+    const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
+
+    expect(result)
+        .toMatchObject({success: true, updated: 1, unchangedEntries: 1});
+    expect(writes).toEqual(BRACKETED(
+        'create:sales/entities/orders', 'update:sales/entities/orders:'));
+    expect(update.mock.calls[1][3]).toBe(true);
+  });
 });
 
 
