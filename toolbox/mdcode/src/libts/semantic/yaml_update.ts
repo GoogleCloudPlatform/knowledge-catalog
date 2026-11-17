@@ -521,9 +521,9 @@ function setScalar(
   // A tag stays when the new text reads back as the value under it. The
   // read-back puts the text at the column of its key or `-`, which a block
   // scalar's indentation indicator counts from, and takes the file's
-  // directives, since a `%TAG` shorthand needs them. A tag of YAML's core schema must read it back with no warning. The
-  // parser warns about any other tag, whose meaning kcmd cannot check, so
-  // that warning is ignored.
+  // directives, since a `%TAG` shorthand needs them. A tag of YAML's core
+  // schema must read it back with no warning. The parser warns about any
+  // other tag, whose meaning kcmd cannot check, so that warning is ignored.
   const tag = (slot.props ?? []).filter(t => t.type === 'tag');
   const directives = u.doc.directives?.toString(u.doc);
   const typed = tag.length > 0 &&
@@ -625,11 +625,13 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
  * The edits that take the anchor and tag tokens `tokens` out of the text of
  * the value at `from` in `slot`, and where the value's own edit starts. Each
  * line's tokens go together. Those with text before them on their line go
- * with the spaces between. Those that start their line go with the spaces
- * after them, and with the line when nothing else is on it. When the value
- * follows them on that line, its edit starts where they do instead, as for an
- * empty value right after them. `keyEnd` is where the tokens on the line of
- * the key or `-` end, or the slot's `after` when none are there.
+ * with the spaces between, and with the spaces after them that end a line
+ * the value is not on. Those that start their line go with the spaces after
+ * them, and with the line when nothing else is on it. When the value follows
+ * them on that line, its edit starts where they do instead, as for an empty
+ * value right after them. `keyEnd` is where the tokens on the line of the key
+ * or `-` end, or that line's end when only spaces follow them, or the slot's
+ * `after` when none are there.
  */
 function propsOut(
     t: string, tokens: yaml.CST.SourceToken[], from: number, slot: Slot):
@@ -639,7 +641,8 @@ function propsOut(
       lineEnd(t, slot.after);
   const own = lineStart(t, from);
   const last = tokens.filter(s => s.offset < own && s.offset < keyLine).at(-1);
-  const keyEnd = last ? last.offset + last.source.length : slot.after;
+  let keyEnd = last ? last.offset + last.source.length : slot.after;
+  if (last && !t.slice(keyEnd, keyLine).trim()) keyEnd = keyLine;
   const runs: Array<[number, number]> = [];
   for (const s of tokens) {
     const run = runs.at(-1);
@@ -654,7 +657,8 @@ function propsOut(
     let [pre, b] = [a, end];
     while (/[ \t]/.test(t[pre - 1] ?? '')) pre--;
     while (/[ \t]/.test(t[b] ?? '')) b++;
-    if (pre > ls) cuts.push([pre, end, '']);
+    const stop = b === lineEnd(t, b) && from > b ? b : end;
+    if (pre > ls) cuts.push([pre, stop, '']);
     else if (end <= from && from <= b) start = a;
     else if (b === lineEnd(t, b)) cuts.push([ls, nextLine(t, a), '']);
     else cuts.push([a, b, '']);

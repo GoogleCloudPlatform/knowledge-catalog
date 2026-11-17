@@ -101,6 +101,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm:\n  a: !!str |2\n     y\n  b: !foo |2\n     y\n'
   ],
   [
+    'values under a key whose line ends in an anchor or a tag and spaces, set to other values',
+    'a: !!str  \n  x\nb: &x  \n  x\nc: !!seq  \n  - 1\nd: !!str  \n',
+    v => (v.a = 5, v.b = [1], v.c = 'v', v.d = 8), 'a:\n  5\nb:\n  - 1\nc: v\nd: 8\n'
+  ],
+  [
     'scalars after a custom tag set to a string and to a number it reads as a string',
     'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
   ],
@@ -461,6 +466,7 @@ test.each([
   ['!!seq [1]\n', '{a: 1}\n'],
   ['!!str\n', '{a: 1}\n'],
   ['--- !!seq\n[1]\n', '---\n{a: 1}\n'],
+  ['--- !!seq  \n[1]\n', '---\n{a: 1}\n'],
 ])('the root of %j set to a mapping', (input, expected) => {
   const {document, text} = parseForUpdate(input);
 
