@@ -774,12 +774,9 @@ export function parseOverviewSidecar(
   try {
     split = splitFrontmatter(unmarked);
   } catch (err: any) {
-    // The frontmatter is the file's lines after its opening `---` line, so
-    // placed after that line, the error gives the file's line, column and
-    // snippet.
-    const front = frontmatterText(unmarked) ?? '';
+    // The frontmatter is the file's lines below its opening `---` line.
     throw fail(`its frontmatter does not parse: ${
-        yamlErrorMessage(err, front, {text: `---\n${front}`, offset: 4})}`);
+        yamlErrorMessage(err, frontmatterText(unmarked) ?? '', '---\n')}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

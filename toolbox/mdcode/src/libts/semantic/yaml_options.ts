@@ -66,16 +66,15 @@ export function documentValue(
 
 // The message of `err`, a YAML error in `text`. YAML reports a quote, `[` or
 // `{` left open where it stops reading it, so the message gives the line and
-// column where the innermost one opens instead. When `text` is part of a file,
-// such as an overview sidecar's frontmatter, `inFile` gives the file's text
-// and the offset `text` starts at in it, and the message gives the line,
-// column and snippet in the file. YAML reads an unquoted `*` as an alias, so a
-// value such as `metrics_exclude: *` does not parse, and the message then
-// shows its line with the `*` quoted, when that line parses.
-export function yamlErrorMessage(
-    err: any, text: string, inFile?: {text: string; offset: number}): string {
+// column where the innermost one opens instead. `above` is the text of the
+// file before `text`, such as the `---` line above an overview sidecar's
+// frontmatter, and the line, column and snippet are those in the file. YAML
+// reads an unquoted `*` as an alias, so a value such as `metrics_exclude: *`
+// does not parse, and the message then shows its line with the `*` quoted,
+// when that line parses.
+export function yamlErrorMessage(err: any, text: string, above = ''): string {
   const message =
-      placedMessage(err, text, inFile) ?? String(err?.message ?? err);
+      placedMessage(err, text, above) ?? String(err?.message ?? err);
   const at = err?.pos?.[0];
   if (err?.code !== 'BAD_ALIAS' || typeof at !== 'number' || text[at] !== '*' ||
       !/^Alias cannot be an empty string/.test(message)) {
@@ -94,42 +93,36 @@ export function yamlErrorMessage(
       `alias; write it in quotes, as in ${quoted.trim()}.`;
 }
 
-// The message of `err`, a YAML error in `text`, in YAML's words, at the start
-// of the innermost quoted value, flow sequence or flow mapping left open that
-// ends where `err` is, and in `inFile` when it is given. Undefined when
-// neither applies, or when `err` has no position in `text`.
+// The message of `err`, a YAML error in `text`, in YAML's own words. It
+// points at the start of the innermost quoted value, flow sequence or flow
+// mapping left open that ends where `err` is. Its line, column and snippet are
+// those in `above` followed by `text`. It is undefined when no value is left
+// open there and `above` is empty. It is also undefined when `err` has no
+// position, or when its message does not end in the position text YAML adds.
 function placedMessage(
-    err: any, text: string,
-    inFile?: {text: string; offset: number}): string|undefined {
+    err: any, text: string, above: string): string|undefined {
   const pos: unknown = err?.pos;
   if (!Array.isArray(pos) || !(pos[0] >= 0)) return undefined;
   // The lines YAML counts as it parses, which its positions use.
   const lines = new yaml.LineCounter();
   const tokens = [...new yaml.Parser(lines.addNewLine).parse(text)];
   const start = openStart(tokens, pos[0]);
-  if (start === undefined && !inFile) return undefined;
-  // The error's message without the position YAML added to it.
+  if (start === undefined && !above) return undefined;
   const added = positionText(text, lines, pos);
   const message = String(err.message);
   if (!message.endsWith(added)) return undefined;
-  const words = message.slice(0, -added.length);
-  const range = start === undefined ? pos : [start, start + 1];
-  if (!inFile) return words + positionText(text, lines, range);
-  // The file's lines down to `text`, then the lines YAML counts in `text`.
-  const {offset} = inFile;
+  // The lines of `above`, then the lines YAML counts in `text`.
   const fileLines = new yaml.LineCounter();
   fileLines.addNewLine(0);
-  for (let i = inFile.text.indexOf('\n'); i >= 0 && i < offset;
-       i = inFile.text.indexOf('\n', i + 1)) {
+  for (let i = above.indexOf('\n'); i >= 0; i = above.indexOf('\n', i + 1)) {
     fileLines.addNewLine(i + 1);
   }
-  for (const s of lines.lineStarts) {
-    if (offset + s > fileLines.lineStarts.at(-1)!) {
-      fileLines.addNewLine(offset + s);
-    }
+  for (const s of lines.lineStarts.slice(1)) {
+    fileLines.addNewLine(above.length + s);
   }
-  return words +
-      positionText(inFile.text, fileLines, range.map(p => p + offset));
+  const range = start === undefined ? pos : [start, start + 1];
+  return message.slice(0, -added.length) +
+      positionText(above + text, fileLines, range.map(p => p + above.length));
 }
 
 // Where the innermost quoted value, flow sequence or flow mapping left open
