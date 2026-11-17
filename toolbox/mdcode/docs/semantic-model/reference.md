@@ -871,7 +871,9 @@ be only its entity's qualifier, such as `orders.`. A load failure is reported th
 same way as a validation failure — nothing is touched, non-zero exit — and is
 defined in [model spec §1](model_spec.md#1-status-and-baseline),
 [§2](model_spec.md#2-document-shape), [§6](model_spec.md#6-the-extension-mechanism),
-and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
+and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie). The error names the
+model file by its path. A YAML syntax error gives its line and column. For a
+quote, `[` or `{` that is never closed, that is where it opens.
 
 * **Every deployment target must be a valid BigQuery Graph, Spanner Graph, or
   AlloyDB database resource name.** Each deployment in `deployments:` (or in a

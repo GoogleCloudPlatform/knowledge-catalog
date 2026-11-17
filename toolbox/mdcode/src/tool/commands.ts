@@ -2386,7 +2386,7 @@ function updatedFiles(
   // name.
   const texts = (text: string, profiles: ProfileDocs):
       Map<string, string>|{error: string}|{named: string} => {
-    const form = catalogForm({name: doc.name, text}, profiles, source);
+    const form = catalogForm({...doc, text}, profiles, source);
     if ('error' in form) return form;
     if (form.model.name !== model) return {named: form.model.name};
     return new Map(pulledModelFiles(layout, form.model)

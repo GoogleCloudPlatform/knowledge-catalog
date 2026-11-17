@@ -23,7 +23,7 @@ import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {ProfileSpec, SemanticModel} from '../ir';
-import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
+import {bindsThirdPartyTable, loadSemanticModels, ModelDocument, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, profileSources, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
@@ -211,7 +211,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   };
 
   // The model files the inline bindings are used for, loaded together.
-  const inline: Array<{name: string; text: string}> = [];
+  const inline: ModelDocument[] = [];
   // A profile applies to its model file loaded on its own, with its
   // exclusions already marked.
   const appliedByDoc = new Map<string, SemanticModel>();
@@ -219,7 +219,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const fileWarnings = new Map<string, string[]>();
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
-      inline.push({name: doc.name, text: doc.text});
+      inline.push(doc);
       continue;
     }
     const available = profilesByDoc.get(doc.name) ?? [];

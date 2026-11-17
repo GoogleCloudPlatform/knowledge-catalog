@@ -66,7 +66,7 @@ describe('SemanticModelLayout write path', () => {
         expect(fs.readFileSync(p, 'utf8')).toBe('version: x\n');
         // Indexed, so a subsequent read surfaces it as a model document.
         expect(l.modelDocuments()).toEqual([
-          {name: 'sales', text: 'version: x\n'}
+          {name: 'sales', text: 'version: x\n', path: p}
         ]);
       });
 
@@ -535,8 +535,8 @@ describe('SemanticModelLayout overview sidecars', () => {
                  'links is a list of entries, each a url and an optional title.'],
                 ['---\ncontentType: "x\n---\n',
                  'its frontmatter does not parse: Missing closing "quote at ' +
-                     'line 1, column 16:\n\ncontentType: "x\n' +
-                     '               ^\n'],
+                     'line 1, column 14:\n\ncontentType: "x\n' +
+                     '             ^\n'],
                 ['---\ncontentType: *\n---\n',
                  'its frontmatter does not parse: Alias cannot be an empty ' +
                      'string at line 1, column 14:\n\ncontentType: *\n' +

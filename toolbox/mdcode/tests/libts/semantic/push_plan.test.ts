@@ -86,15 +86,13 @@ semantic_model:
     expect(bqSpy).not.toHaveBeenCalled();
     expect(kcSpy).not.toHaveBeenCalled();
     const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(errors).toContain(
-        "Model document 'a': Semantic model load error: model 'a': " +
-        "'deployment_target' is no longer supported");
+    const error = `Model document '${
+        path.join('catalog', 'EntryGroups', 'sales_eg', 'a.yaml')}': Semantic ` +
+        "model load error: model 'a': 'deployment_target' is no longer supported";
+    expect(errors).toContain(error);
 
-    expect(await createSemanticRuntimes({ctx: CTX})).toEqual({
-      error: expect.stringContaining(
-          "Model document 'a': Semantic model load error: model 'a': " +
-          "'deployment_target' is no longer supported"),
-    });
+    expect(await createSemanticRuntimes({ctx: CTX}))
+        .toEqual({error: expect.stringContaining(error)});
 
     // `kcmd profiles` reports the bad file as push does, and still lists the
     // good one.

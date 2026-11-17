@@ -276,6 +276,41 @@ describe('conversion, strict mode, and translation', () => {
     expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
   });
 
+  // A quote, `[` or `{` left open to the end of the file is reported where
+  // the innermost one opens. Any other YAML error keeps the place YAML gives.
+  const HEAD = 'version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: retail\n';
+  test.each([
+    ['a double quote',
+     `${HEAD}    description: "Sales by store, region and day, for the ` +
+         'quarterly review of every finance lead\n    entities: []\n',
+     'Missing closing "quote at line 4, column 18:\n\n    description: ' +
+         '"Sales by store, region and day, for the quarterly review of e…\n' +
+         '                 ^\n'],
+    ['a single quote',
+     `${HEAD}    description: 'Sales by store\n    entities: []\n`,
+     "Missing closing 'quote at line 4, column 18:\n\n    description: " +
+         "'Sales by store\n                 ^\n"],
+    ['a flow sequence', `${HEAD}    entities:\n      [orders, customers\n`,
+     'Flow sequence in block collection must be sufficiently indented and ' +
+         'end with a ] at line 5, column 7:\n\n    entities:\n      ' +
+         '[orders, customers\n      ^\n'],
+    ['a flow mapping', `${HEAD}    entities: []\n    ai_context: {a: x\n`,
+     'Flow map in block collection must be sufficiently indented and end ' +
+         'with a } at line 5, column 17:\n\n    ai_context: {a: x\n' +
+         '                ^\n'],
+    ['a quote inside a flow sequence',
+     `${HEAD}    entities: [orders, "customers\n`,
+     'Missing closing "quote at line 4, column 24:\n\n    entities: ' +
+         '[orders, "customers\n                       ^\n'],
+    ['no open quote or bracket',
+     `${HEAD}    entities: []\n      relationships: []\n`,
+     'All mapping items must start at the same column at line 5, column ' +
+         '1:\n\n    entities: []\n      relationships: []\n^\n'],
+  ])('reports YAML with %s', async (_, input, problem) => {
+    expect((await importSemanticModelYaml(input, {})).errors).toEqual(
+        [`Semantic model load error: could not parse input: ${problem}`]);
+  });
+
   const MDX_ONLY = '{dialects: [{dialect: MDX, expression: x}]}';
   // Abstract entity party, whose line ends with `line`, and its subtype person.
   const party = (line: string) =>

@@ -810,7 +810,8 @@ semantic_model:
          const r = await runAll();
          for (const k of ['push', 'printStore', 'skills']) {
            expect(r[k].code).toBe(1);
-           expect(r[k].out).toContain("Error: Model document 'commerce'");
+           expect(r[k].out).toContain(`Error: Model document '${path.join(
+               'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml')}'`);
            expect(r[k].out).not.toContain("sets 'bogus'");
          }
        });
