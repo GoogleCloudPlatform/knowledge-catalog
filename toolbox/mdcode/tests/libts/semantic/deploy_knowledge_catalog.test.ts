@@ -788,6 +788,85 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          expect(writes).toEqual(['delete:other']);
        });
 
+  test('a model that only drops an entry deletes it between the labels',
+       async () => {
+         const {writes} = holding(storedCopy(emitted(DOCS)));
+         const withoutMetric = [{
+           name: 'sales.yaml',
+           text: OSSIE.replace(/\n    metrics:[\s\S]*$/, '\n'),
+         }];
+
+         const result =
+             await deployKnowledgeCatalog(models(withoutMetric), CTX, OPTS);
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 2,
+           deleted: 1,
+         });
+         expect(writes)
+             .toEqual(BRACKETED('delete:sales/metrics/total_revenue'));
+       });
+
+  test('a link whose aspect changed is updated between the labels',
+       async () => {
+         const resources = emitted(STAR_DOCS);
+         // Dataplex spells a looked-up link's project with the number.
+         const links = structuredClone(resources.entryLinks).map(link => ({
+           ...link,
+           name: link.name!.replace('/dest/', '/123456789/'),
+           entryReferences: link.entryReferences.map(
+               r => ({...r, name: r.name.replace('/dest/', '/123456789/')})),
+         }));
+         const edited =
+             links.find(l => entryIdOf(l.name) === STAR_SEMANTIC_LINK)!;
+         Object.values(edited.aspects!)[0].data = {};
+         const {writes} = holding(storedCopy(resources), {
+           links: entry => ok(links.filter(
+               l => l.entryReferences.some(
+                   r => entryIdOf(r.name) === entryIdOf(entry)))),
+         });
+
+         const result =
+             await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 6,
+           linked: 1,
+           unchangedLinks: 2,
+         });
+         expect(writes).toEqual(BRACKETED(`updateLink:${STAR_SEMANTIC_LINK}`));
+       });
+
+  // Actions live in custom types in the destination project, here a
+  // domain-scoped one. The model entry also carries an overview sidecar.
+  test('an unchanged model with actions and an overview sidecar gets no write',
+       async () => {
+         const opts = {
+           ...OPTS,
+           project: 'google.com:dest',
+           overviews: new Map([['commerce', {content: '# Commerce'}]]),
+         };
+         const held = storedCopy(emitted(ACTIONS_DOCS, opts));
+         const {lookup, writes} = holding(held);
+
+         const result = await deployKnowledgeCatalog(
+             models(ACTIONS_DOCS), CTX, opts);
+
+         expect(result).toMatchObject(
+             {success: true, updated: 0, unchangedEntries: held.size});
+         expect(writes).toEqual([]);
+         expect(lookup.mock.calls.flatMap(c => c[3]?.aspects ?? []))
+             .toContain(
+                 'projects/google.com:dest/locations/global/aspectTypes/' +
+                 'semantic-action');
+       });
+
   // An entity whose fields carry `aiContext`, one entry per field, and a
   // lookup that answers as Dataplex does: at most 100 aspects per read, of
   // the types and at the paths the read names.
@@ -812,6 +891,23 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
     return ok(
         {...structuredClone(entry), aspects: Object.fromEntries(aspects)});
   };
+
+  test('a wide entity whose instances spread across types is read whole and ' +
+           'gets no write',
+       async () => {
+         const docs = wideDocs(60, '{instructions: Doc., examples: [Ex.]}');
+         const held = storedCopy(emitted(docs));
+         const {lookup, writes} = holding(held);
+         lookup.mockImplementation(capped(held) as any);
+
+         const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
+
+         expect(result)
+             .toMatchObject({success: true, updated: 0, unchangedEntries: 2});
+         expect(writes).toEqual([]);
+         // The entity's first read came back full, so it was read by type.
+         expect(lookup.mock.calls.length).toBeGreaterThan(2);
+       });
 
   // A type read that comes back full is read again only at the paths the
   // stored schema lists, so an instance at another path can be missed.
