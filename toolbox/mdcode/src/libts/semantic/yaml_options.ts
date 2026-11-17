@@ -75,14 +75,17 @@ export function documentValue(
 export function yamlErrorMessage(err: any, text: string, above = ''): string {
   const message =
       placedMessage(err, text, above) ?? String(err?.message ?? err);
-  const at = err?.pos?.[0];
-  if (err?.code !== 'BAD_ALIAS' || typeof at !== 'number' || text[at] !== '*' ||
+  // The hint reads the line in the file, as the position does.
+  const file = above + text;
+  const pos = err?.pos?.[0];
+  const at = typeof pos === 'number' ? above.length + pos : -1;
+  if (err?.code !== 'BAD_ALIAS' || file[at] !== '*' ||
       !/^Alias cannot be an empty string/.test(message)) {
     return message;
   }
-  const start = text.lastIndexOf('\n', at - 1) + 1;
-  const end = text.indexOf('\n', at);
-  const line = text.slice(start, end < 0 ? undefined : end).replace(/\r$/, '');
+  const start = file.lastIndexOf('\n', at - 1) + 1;
+  const end = file.indexOf('\n', at);
+  const line = file.slice(start, end < 0 ? undefined : end).replace(/\r$/, '');
   const quoted = `${line.slice(0, at - start)}"*"${line.slice(at - start + 1)}`;
   try {
     yaml.parse(quoted.trim(), YAML_OPTIONS);
