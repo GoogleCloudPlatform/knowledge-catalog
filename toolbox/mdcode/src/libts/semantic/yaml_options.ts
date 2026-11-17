@@ -99,13 +99,13 @@ export function yamlErrorMessage(err: any, text: string, above = ''): string {
 // `err` is a YAML error in `text`. placedMessage returns its message in YAML's
 // words with a new position text. The position text gives the line, column
 // and snippet in `above` followed by `text`. The error may report a quote, `]`
-// or `}` missing from a key or a value. openStart then finds where that key or
-// value starts. The position text points there instead of where YAML stops
-// reading. The position text keeps YAML's position for any other error, and
-// when openStart finds no token. placedMessage returns undefined when the
-// position text keeps YAML's position and `above` is empty. It also returns
-// undefined when `err` has no position or a position below 0, or when the
-// message of `err` does not end in the position text YAML adds.
+// or `}` missing from a key or a value. openStart then looks for where that
+// key or value starts. The position text points there instead of where YAML
+// stops reading. The position text keeps YAML's position for any other
+// error, and when openStart finds no token. placedMessage returns undefined
+// when the position text keeps YAML's position and `above` is empty. It also
+// returns undefined when `err` has no position or a position below 0, or when
+// the message of `err` does not end in the position text YAML adds.
 function placedMessage(
     err: any, text: string, above: string): string|undefined {
   const pos: unknown = err?.pos;
@@ -150,22 +150,24 @@ function missingClose(err: any): string|undefined {
           .exec(message)?.[1];
 }
 
-// The start offset of the token that YAML's error at `at` reports as missing
-// `close`. `tokens` is the CST of `text`. That token is the innermost
-// candidate. A candidate is a key or value token that closes with `close` and
-// ends at `at`. A double-quoted or single-quoted key or value closes with its
-// quote. Such a key or value is a candidate whether or not its closing quote
-// is there. A flow collection closes with the `]` or `}` that matches its `[`
-// or `{`. It is a candidate only when the first token of its CST's `end` list
-// is not that bracket. That list also holds the spaces, comment and line break
-// after the bracket. A token ends at `at` when `at` follows its last character
-// other than a space, tab or line break, with only such characters in between.
-// The innermost candidate is the one that starts last. openStart returns
-// undefined when no token is a candidate.
+// openStart looks for the token that YAML's error at `at` reports as missing
+// `close`. `tokens` is the CST of `text`. A token ends at `at` when `at` comes
+// after its last character other than a space, tab or line break, and not
+// past the end of its text as written. A candidate is a key or value token
+// that closes with `close` and ends at `at`. A double-quoted or single-quoted
+// key or value closes with its quote. Such a key or value is a candidate
+// whether or not its closing quote is there. A flow collection closes with the
+// `]` or `}` that matches its `[` or `{`. It is a candidate only when the first
+// token of its `end` list is not that bracket. That list also holds the
+// spaces, comment and line break after the bracket. The innermost candidate is
+// the one that starts last. openStart returns its start offset, or undefined
+// when no token is a candidate. For the first error YAML reports, the
+// innermost candidate, when there is one, is the token the error refers to. A
+// flow collection closed by a bracket of the wrong kind is not a candidate.
 function openStart(
     tokens: yaml.CST.Token[], text: string, close: string,
     at: number): number|undefined {
-  const blank = (i: number) => ' \t\r\n'.includes(text[i] ?? 'x');
+  const blank = (i: number) => ' \t\r\n'.includes(text[i]);
   let start: number|undefined;
   for (const token of tokens) {
     if (token.type !== 'document') continue;
@@ -175,19 +177,18 @@ function openStart(
         if (t.type === 'flow-collection' && t.end[0]?.source === close) {
           continue;
         }
-        let last = t.offset + yaml.CST.stringify(t).length;
-        let after = last;
+        const stop = t.offset + yaml.CST.stringify(t).length;
+        let last = stop;
         while (last > t.offset + 1 && blank(last - 1)) last--;
-        while (blank(after)) after++;
-        if (last <= at && at <= after) start = Math.max(start ?? 0, t.offset);
+        if (last <= at && at <= stop) start = Math.max(start ?? 0, t.offset);
       }
     });
   }
   return start;
 }
 
-// The character that closes `token`: the quote of a quoted value, or the `]`
-// or `}` of a flow collection. Undefined for any other kind.
+// The character that closes `token`: the quote of a quoted key or value, or
+// the `]` or `}` of a flow collection. Undefined for any other kind.
 function closer(token: yaml.CST.Token): string|undefined {
   if (token.type === 'flow-collection') {
     return token.start.source === '{' ? '}' : ']';
