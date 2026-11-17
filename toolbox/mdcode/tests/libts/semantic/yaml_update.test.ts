@@ -106,6 +106,19 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.a = 5, v.b = [1], v.c = 'v', v.d = 8), 'a:\n  5\nb:\n  - 1\nc: v\nd: 8\n'
   ],
   [
+    'anchored or tagged empty collections that gain entries beside a removed flow list item',
+    'w: [a, &m []]\nx: [a, &n {}]\nu: [a, !!seq []]\nsynonyms: [old, &s []]\nz: [&o [], a]\n',
+    v => {
+      // Each kept collection is the object the input gave, so it keeps its node.
+      for (const [k, i] of [['w', 1], ['u', 1], ['synonyms', 1], ['z', 0]] as const) {
+        v[k] = [v[k][i]];
+        v[k][0].push('c');
+      }
+      v.x = [Object.assign(v.x[1], {k: 1})];
+    },
+    'w: [[c]]\nx: [{k: 1}]\nu: [[c]]\nsynonyms: [[c]]\nz: [[c]]\n'
+  ],
+  [
     'scalars after a custom tag set to a string and to a number it reads as a string',
     'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
   ],
