@@ -615,11 +615,9 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value) &&
           !spansLines(u.text, node)) {
-    u.edits.push(...cuts);
-    u.edits.push([
-      start, to,
-      (start < from ? '' : lead) + scalarText(u, value, slot.col, true),
-    ]);
+    // The text of a block value ends with its line break, which stays.
+    const s = (start < from ? '' : lead) + scalarText(u, value, slot.col, true);
+    u.edits.push(...cuts, [start, to, t[to - 1] === '\n' ? s + u.nl : s]);
     return;
   }
   // A block collection's range can run over the comments after it and into

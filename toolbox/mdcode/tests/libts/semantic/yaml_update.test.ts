@@ -568,13 +568,17 @@ test('a key renamed in the document keeps its tag and its value\'s', () => {
 });
 
 // A root set to a value of another kind loses its tag. The `---` or byte
-// order mark before it stays.
+// order mark before it stays, and so do its final line break and the lines
+// after it.
 test.each<[string, unknown, string]>([
   ['!!seq [1]\n', {a: 1}, '{a: 1}\n'],
   ['!!str\n', {a: 1}, '{a: 1}\n'],
   ['--- !!seq\n[1]\n', {a: 1}, '---\n{a: 1}\n'],
   ['--- !!seq  \n[1]\n', {a: 1}, '---\n{a: 1}\n'],
   ['\uFEFF!!seq\n[1]\n', {a: 1}, '\uFEFF{a: 1}\n'],
+  ['!!map\na: 1\n# trailing\n', [1], '[1]\n# trailing\n'],
+  ['!!map\na: 1\n...\n', [1], '[1]\n...\n'],
+  ['!!str |\n  hello\n# trailing\n', [1], '[1]\n# trailing\n'],
 ])('the root of %j set to another kind', (input, value, expected) => {
   const {document, text} = parseForUpdate(input);
 
