@@ -239,15 +239,17 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // Its text stays while its value stays null.
   if (node === null && value === null) return;
   const edits = u.edits.length;
+  const items = isFull(value) && yaml.isCollection(node) &&
+      Array.isArray(value) === yaml.isSeq(node);
   // A flow collection over several lines that changes is written again in
-  // block style.
+  // block style, and so is one whose value stays when its items would
+  // change, as when a linked item moves.
   if (yaml.isCollection(node) && node.flow && spansLines(u.text, node) &&
-      canonical(node.toJS(u.doc)) !== canonical(value)) {
+      (canonical(node.toJS(u.doc)) !== canonical(value) ||
+       items && itemsChange(u, value as object, node, slot))) {
     replace(u, value, node, slot);
-  } else if (
-      isFull(value) && yaml.isCollection(node) &&
-      Array.isArray(value) === yaml.isSeq(node)) {
-    patchItems(u, value, node, slot);
+  } else if (items) {
+    patchItems(u, value as object, node as yaml.YAMLMap|yaml.YAMLSeq, slot);
   } else if (yaml.isScalar(node) && !isObject(value)) {
     if (node.value !== value) setScalar(u, node, value, slot);
   } else if (
@@ -261,6 +263,25 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
     replace(u, value, node, slot);
   }
   if (u.edits.length > edits) u.dirty.add(node);
+}
+
+/**
+ * Whether patching the items of `node` to hold `value` would edit the text.
+ * The trial patch works on copies of the parts of `u` a patch changes.
+ */
+function itemsChange(
+    u: Update, value: object, node: yaml.YAMLMap|yaml.YAMLSeq,
+    slot: Slot): boolean {
+  const trial: Update = {
+    ...u,
+    edits: [],
+    dirty: new Set(u.dirty),
+    used: new Set(u.used),
+    held: new Map(u.held),
+    aliases: [],
+  };
+  patchItems(trial, value, node, slot);
+  return trial.edits.length > 0;
 }
 
 /** Where an item of a collection sits in the text. */

@@ -126,6 +126,20 @@ test.each<[string, string, (value: any) => void, string?]>([
     'w: [&k null]\nx: [&j null]\nu: [&i .inf]\ns: [&h null]\nr: [&g null]\nq: [&f null]\n'
   ],
   [
+    'flow lists over several lines whose value stays while a linked item moves, beside one that stays',
+    'w: [[c], &m\n  []]\nx: [[c], &n  # c\n  []]\nu: [[c],\n  &o\n  []]\ns: [[c],\n  &p  # note\n  []]\n' +
+        'r: [[c], &q\n  []]\nt: [a,  # c\n  b]\n',
+    v => {
+      for (const k of ['w', 'x', 'u', 's']) {
+        v[k][1].push('c');
+        v[k] = [v[k][1], []];
+      }
+      v.t = ['a', 'b'];
+    },
+    'w:\n  -\n    - c\n  - []\nx:\n  -\n    - c\n  - []\nu:\n  -\n    - c\n  - []\n' +
+        's:\n  -\n    - c\n  - []\nr: [[c], &q\n  []]\nt: [a,  # c\n  b]\n'
+  ],
+  [
     'scalars after a custom tag set to a string and to a number it reads as a string',
     'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
   ],
