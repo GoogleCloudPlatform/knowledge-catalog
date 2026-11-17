@@ -337,9 +337,9 @@ The summary counts those entries and links in parentheses, so a push that
 changes nothing prints
 `Wrote 0 new and 0 updated Knowledge Catalog entries (6 unchanged); wrote 0 entry links (3 unchanged).`
 An unchanged model entry still gets the `kcmd-push-state` label writes when
-anything else in Knowledge Catalog changes, or when its label does not already
-say `finished`. An aspect edited in the console no longer matches, so the next
-push writes that entry again.
+anything else in the model changes, or when its label does not already say
+`finished`. An aspect edited in the console no longer matches, so the next push
+writes that entry again.
 
 ## Pull
 
@@ -396,11 +396,11 @@ catalog's model under another file name, pull says so. Renaming the file to
 `<model>.yaml`, and each of its profile files to `<model>.profile.<name>.yaml`,
 keeps them with their comments. Pull never touches the data store.
 
-Every push that changes the catalog sets the `kcmd-push-state` label of the
+Every push that changes the model sets the `kcmd-push-state` label of the
 model entry to `writing` before it writes the model's other entries, and to
 `finished` with its last write, after it deletes what the model no longer has.
 A push that finds the whole model unchanged and the label `finished` writes
-nothing. Pull
+nothing to the model. Pull
 refuses a model entry still labeled `writing`: it writes and deletes nothing and
 asks you to push again. A model with no such label, such as one an older `kcmd`
 pushed, counts as finished.

@@ -711,6 +711,80 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
             '\'sales\' to writing failed: Service unavailable. Push again ' +
             'before you pull.');
   });
+
+  // The catalog's copy of `resources`: each entry as emitted, with the model
+  // entry labeled finished.
+  function storedCopy(resources: {entries: any[]}): Map<string, any> {
+    return new Map(resources.entries.map((e, i) => {
+      const entry = structuredClone(e);
+      if (!i) entry.entrySource = {...entry.entrySource, labels: FINISHED};
+      return [entryIdOf(entry.name), entry];
+    }));
+  }
+
+  // A stub catalog that holds `held` and lists `others` beside it. `writes`
+  // records each write in order: an entry update as
+  // `update:<id>:<push state it sets>`, and each create, delete and link
+  // write by its id.
+  function holding(
+      held: Map<string, any>, more: Parameters<typeof stubClient>[0] = {},
+      others: {id: string, type?: string}[] = []) {
+    const stub = stubClient({
+      create: EXISTS,
+      existing: [
+        ...[...held.values()].map(
+            e => ({id: entryIdOf(e.name), type: e.entryType})),
+        ...others,
+      ],
+      lookup: id => held.has(id) ? ok(held.get(id)) : err(404, 'not found'),
+      ...more,
+    });
+    const writes: string[] = [];
+    const record = (spy: any, name: (...args: any[]) => string) => {
+      const answer = spy.getMockImplementation();
+      spy.mockImplementation(async (...args: any[]) => {
+        writes.push(name(...args));
+        return answer(...args);
+      });
+    };
+    record(stub.update, e => `update:${entryIdOf(e.name)}:${
+                            e.entrySource?.labels?.['kcmd-push-state'] ?? ''}`);
+    record(stub.create, (_p, _l, _eg, id) => `create:${id}`);
+    record(stub.del, (_p, _l, _eg, id) => `delete:${id}`);
+    record(stub.createLink, (_p, _l, _eg, id) => `createLink:${id}`);
+    record(stub.updateLink, link => `updateLink:${entryIdOf(link.name)}`);
+    record(stub.delLink, (_p, _l, _eg, id) => `deleteLink:${id}`);
+    return {...stub, writes};
+  }
+
+  const emitted = (docs: typeof DOCS, opts: Record<string, any> = OPTS) =>
+      generateCatalogResources(models(docs)[0].model, opts as any);
+
+  test('deleting another model under --force-remove writes no label on an ' +
+           'unchanged model',
+       async () => {
+         const {update, writes} = holding(
+             storedCopy(emitted(DOCS)), {}, [{id: 'other', type: MODEL_TYPE}]);
+         // A label write that failed would leave the model at writing.
+         let updates = 0;
+         const answer = update.getMockImplementation()!;
+         update.mockImplementation(
+             async (...args: any[]) => ++updates === 2 ?
+                 err(503, 'Service unavailable.') :
+                 (answer as any)(...args));
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result).toMatchObject({
+           success: true,
+           created: 0,
+           updated: 0,
+           unchangedEntries: 3,
+           deleted: 1,
+         });
+         expect(writes).toEqual(['delete:other']);
+       });
 });
 
 

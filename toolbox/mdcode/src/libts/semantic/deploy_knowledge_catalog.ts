@@ -44,9 +44,9 @@
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
 //   * The push's first write labels the anchor `kcmd-push-state: writing`, and
-//     its last write, after the deletions, relabels it `finished`. A push with
-//     nothing to create, update or delete, over an anchor labeled `finished`,
-//     writes nothing.
+//     its last write, after the deletions, relabels it `finished`. A model
+//     with nothing to create, update or delete, whose anchor is labeled
+//     `finished`, gets no write.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -252,11 +252,9 @@ export async function applyKnowledgeCatalog(
     writePlans.push(planned);
   }
 
-  let removedForeign = false;
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
     if (foreignAnchorIds.length) {
-      removedForeign = true;
       // A thrown error is reported like a failed delete.
       const removed =
           await removeForeignModels(
@@ -278,7 +276,7 @@ export async function applyKnowledgeCatalog(
   // leave out what the step that threw had already written.
   const written =
       await writeEmittedModels(
-          cat, opts, emitted, writePlans, counts, removedForeign)
+          cat, opts, emitted, writePlans, counts)
           .catch((err: any): WriteModelsOutcome =>
                      ({error: String(err?.message || err).trim()}));
   if (written.error) return result(false, written.error);
@@ -792,7 +790,7 @@ async function planModelWrites(
 /**
  * Returns true when the push of `resources` that `plan` describes has nothing
  * to write or delete and the model entry is labeled finished, so the push
- * sends no request at all.
+ * sends no write for the model.
  */
 function isNothingToWrite(
     resources: kcEmit.KcResources, plan: WritePlan): boolean {
@@ -827,12 +825,11 @@ async function readStored(
 
 /**
  * Writes every model's entries and relationship links and deletes orphaned
- * resources in model order, as `writePlans` lays out. `removedForeign` tells
- * whether this push deleted another model.
+ * resources in model order, as `writePlans` lays out.
  *
  * For each model, the method performs the following actions:
- *   1. Writes nothing more for a model with nothing to write or delete whose
- *      anchor is labeled finished, unless `removedForeign` is set.
+ *   1. Writes nothing for a model with nothing to write or delete whose anchor
+ *      is labeled finished.
  *   2. Labels the anchor writing, and creates or updates the model's new and
  *      changed entries.
  *   3. Deletes the orphaned and stale relationship links.
@@ -847,12 +844,11 @@ async function readStored(
  */
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    writePlans: WritePlan[], counts: Counts,
-    removedForeign: boolean): Promise<WriteModelsOutcome> {
+    writePlans: WritePlan[], counts: Counts): Promise<WriteModelsOutcome> {
   for (const [i, {model, resources}] of emitted.entries()) {
     const plan = writePlans[i];
     counts.unchangedEntries += plan.unchanged;
-    if (!removedForeign && isNothingToWrite(resources, plan)) {
+    if (isNothingToWrite(resources, plan)) {
       counts.unchangedLinks += resources.entryLinks.length;
       continue;
     }
