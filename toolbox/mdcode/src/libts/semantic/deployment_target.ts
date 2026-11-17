@@ -500,7 +500,7 @@ export function tablesOutsideTarget(
     const sourceOf = profileSources(p);
     return entities.every(e => sourceOf(e)?.trim()) &&
         !entitiesOutside(model, database, sourceOf).length;
-  }).map(p => p.name).sort();
+  }).map(p => p.name).sort((a, b) => a.localeCompare(b));
   let advice: string;
   if (named) {
     advice = `Bind ${each} to ${inside[0]} in profile '${deployment.profile}'.`;

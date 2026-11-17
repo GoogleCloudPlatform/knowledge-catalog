@@ -1102,9 +1102,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   publishes such a model to Knowledge Catalog. Every push checks every
   deployment this way, whether or not `--deployment` names it, and under
   `--no-deployment` too. It reads each entity's `source` from the profile the
-  deployment names, or from the model file when it names none. Each
-  deployment gets one error that lists the entities bound outside its
-  database. When the deployment names no profile and a profile binds them to
+  deployment names, or from the model file when it names none. A deployment
+  whose tables are outside its database gets one error that lists those
+  entities. When the deployment names no profile and a profile binds them to
   tables in the deployment's database, the error names each such profile, so
   you can set the deployment's profile. *(static)*
 * **Every source names a table Knowledge Catalog knows about.** Every push

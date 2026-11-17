@@ -33,7 +33,7 @@ const onModelFile = (advice: string) =>
     "but the model file binds entities 'Customer' and 'Orders' to tables " +
     `outside that database. ${advice}`;
 const TWO_FIT = onModelFile(
-    "Profiles 'ops' and 'replica' bind these entities to tables in that " +
+    "Profiles 'ops' and 'Replica' bind these entities to tables in that " +
     "database. Set the deployment's profile to one of them.");
 
 const fails = (name: string, scope: Scope, error: string,
@@ -94,7 +94,7 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
           deployments: [{name: 'sp', target: spannerGraph('g')}],
           entities: [CUSTOMER, ORDERS],
           profiles: {
-            ops: both(SPANNER), replica: both(SPANNER),
+            ops: both(SPANNER), Replica: both(SPANNER),
             bq: both('bigquery.googleapis.com/projects/test-project/datasets/other'),
           },
         },
