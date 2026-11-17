@@ -58,7 +58,7 @@ scenarios('kcmd profiles reports what push rejects', [
      {actions: UNKNOWN_ACTION}, ["action 'nothing' is not in the logical model"]],
     ['its tables',
      {deployments: [{name: 'g', target: spannerGraph('commerce'), profile: 'prod'}]},
-     {}, ["entity 'customer' to", "entity 'purchase' to"]],
+     {}, ["entities 'customer' and 'purchase' to"]],
     ["its action's statement",
      {deployments: [graph('prod', 'prod')], actions: [{name: 'refund'}]},
      {actions: [{name: 'refund', executor: {sql: {statements:

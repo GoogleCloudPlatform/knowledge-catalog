@@ -475,9 +475,8 @@ semantic_model:
          }
        });
 
-  // Push's errors reach skills-generate one to a line, each naming the
-  // model file once.
-  test('gives push\'s error for each table outside the database the deployment targets', async () => {
+  // Push's error reaches skills-generate, naming the model file once.
+  test('gives push\'s error for the tables outside the database the deployment targets', async () => {
     writeModel('orders.yaml', modelText('commerce', 'IssueCredit')
         .replace('databases/commerce/tables/Orders', 'databases/other/tables/Orders')
         .replace('    actions:', `      - name: Customer
@@ -487,12 +486,13 @@ semantic_model:
           - { name: key, expression: CustomerId }
     actions:`));
     expect(await skillsGenerate({out: 'skills'})).toBe(1);
-    expect(logs.filter(l => l.startsWith('Error:')))
-        .toEqual([['Order', 'Orders'], ['Customer', 'Customers']].map(
-            ([entity, table]) => "Error: [orders] deployment 'prod' targets " +
-                "Spanner database 'acme-ops/prod/commerce', but the model " +
-                `file binds entity '${entity}' to '${SPANNER}/databases/other/` +
-                `tables/${table}', which is not a table in that database.`));
+    expect(logs.filter(l => l.startsWith('Error:'))).toEqual([
+      "Error: [orders] deployment 'prod' targets Spanner database " +
+      "'acme-ops/prod/commerce', but the model file binds entities 'Order' " +
+      "and 'Customer' to tables outside that database. Bind each entity to " +
+      "a table in that database in the model file, or set the deployment's " +
+      'profile to a profile that does.',
+    ]);
   });
 
   // A profile that leaves an entity out keeps the model file's table, which

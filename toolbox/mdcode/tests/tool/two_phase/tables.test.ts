@@ -13,8 +13,28 @@ const OTHER_ALLOYDB = 'alloydb.googleapis.com/projects/test-project/' +
     'locations/us-central1/clusters/c/databases/other/schemas/public/tables/' +
     'customer';
 const UNSELECTED = "[commerce] deployment 'sp' targets Spanner database " +
-    "'test-project/i/db', but profile 'x' binds entity 'Customer' to " +
-    `'${SPANNER}2/tables/Customer', which is not a table in that database.`;
+    "'test-project/i/db', but profile 'x' binds entity 'Customer' to a " +
+    'table outside that database. Bind the entity to a table in that ' +
+    "database in profile 'x'.";
+
+const ORDERS = {
+  name: 'Orders', source: bqTable('orders'), primary_key: ['id'],
+  fields: [{name: 'id', expression: 'o_id'}],
+};
+// A profile that binds Customer and Orders to their tables in `database`.
+const both = (database: string) => ({entities: {
+  Customer: {...CUSTOMER, source: `${database}/tables/Customer`},
+  Orders: {...ORDERS, source: `${database}/tables/Orders`},
+}});
+// Push's refusal of Spanner deployment 'sp', whose model file binds Customer
+// and Orders to BigQuery tables, followed by `advice`.
+const onModelFile = (advice: string) =>
+    "[commerce] deployment 'sp' targets Spanner database 'test-project/i/db', " +
+    "but the model file binds entities 'Customer' and 'Orders' to tables " +
+    `outside that database. ${advice}`;
+const TWO_FIT = onModelFile(
+    "Profiles 'ops' and 'Replica' bind these entities to tables in that " +
+    "database. Set the deployment's profile to one of them.");
 
 const fails = (name: string, scope: Scope, error: string,
                flags: PushOptions = {}): Case => ({
@@ -44,8 +64,8 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
       },
       "[commerce] deployment 'd1' targets AlloyDB database " +
           "'test-project/us-central1/c/db', but profile 'x' binds entity " +
-          `'Customer' to '${OTHER_ALLOYDB}', which is not a table in that ` +
-          'database.'),
+          "'Customer' to a table outside that database. Bind the entity to " +
+          "a table in that database in profile 'x'."),
   fails(
       'a deployment that uses the model file\'s bindings on BigQuery and Spanner gets only the model file\'s one-database error',
       {entities: [CUSTOMER, {
@@ -67,6 +87,49 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
             nothingWritten: true}],
     report: {code: 1, rejects: {x: [pushed()]}},
   },
+  {
+    ...fails(
+        'a deployment on the model file\'s bindings names each profile that binds its entities in its database, also under --print-store',
+        {
+          deployments: [{name: 'sp', target: spannerGraph('g')}],
+          entities: [CUSTOMER, ORDERS],
+          profiles: {
+            ops: both(SPANNER), Replica: both(SPANNER),
+            bq: both('bigquery.googleapis.com/projects/test-project/datasets/other'),
+          },
+        },
+        TWO_FIT),
+    then: [{
+      profiles: {ops: both(SPANNER)}, code: 1, nothingWritten: true,
+      errors: [err(onModelFile(
+          "Profile 'ops' binds these entities to tables in that database. " +
+          "Set the deployment's profile to 'ops'."))],
+    }],
+    report: {flags: {printStore: true}, code: 1,
+             check: (_, errors) => expect(errors).toEqual([err(TWO_FIT)])},
+  },
+  fails(
+      'a model bound only through the profile its deployment names gets one error naming each entity', {
+        deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],
+        entities: [CUSTOMER, ORDERS].map(({source: _, ...e}) => e),
+        profiles: {x: both(`${SPANNER}2`)},
+      },
+      "[commerce] deployment 'sp' targets Spanner database " +
+          "'test-project/i/db', but profile 'x' binds entities 'Customer' " +
+          "and 'Orders' to tables outside that database. Bind each entity " +
+          "to a table in that database in profile 'x'."),
+  fails(
+      'a vanilla model\'s error calls an entity a dataset and names the GOOGLE block profile that fits', {
+        google: {
+          deployments: [{name: 'sp', target: spannerGraph('g')}],
+          profiles: [{name: 'ops', entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}]}],
+        },
+      },
+      "[commerce] deployment 'sp' targets Spanner database " +
+          "'test-project/i/db', but the model file binds dataset 'Customer' " +
+          "to a table outside that database. Profile 'ops' binds this " +
+          "dataset to a table in that database. Set the deployment's " +
+          "profile to 'ops'."),
   {
     name: 'a profile source in no accepted form gets the profile check\'s error first',
     deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],

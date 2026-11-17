@@ -31,9 +31,9 @@
 // matches neither destination type is collected as `malformed` (rejected by the
 // validator and named in errors) rather than silently skipped.
 
-import {DeploymentSpec, Entity, SemanticModel} from './ir';
-import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, resourceUriFix} from './loader';
-import {DEFAULT_PROFILE} from './resolve_profiles';
+import {DeploymentSpec, Entity, ProfileSpec, SemanticModel} from './ir';
+import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, entityWord, listed, resourceUriFix} from './loader';
+import {DEFAULT_PROFILE, profileSources} from './resolve_profiles';
 
 
 // A BigQuery Graph deployment target.
@@ -437,38 +437,87 @@ export function alloyDbTargets(model: SemanticModel):
 
 
 // The database the tables of a deployment target must be in, as databaseOf
-// gives it, and how an error names the target and a table outside it.
+// gives it, and how an error names the target, the place outside it, and one
+// table or several tables in it.
 function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
   if (engine === 'bigquery') {
-    return {database: 'bigquery', target: 'a BigQuery graph',
-            outside: 'which is not a BigQuery or BigLake table'};
+    return {
+      database: 'bigquery', target: 'a BigQuery graph',
+      outside: 'outside BigQuery and BigLake',
+      inside: ['a BigQuery or BigLake table', 'BigQuery or BigLake tables'],
+    };
   }
   const [system, name] = engine === 'spanner' ?
       ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
       ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
   return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
-          outside: 'which is not a table in that database'};
+          outside: 'outside that database',
+          inside: ['a table in that database', 'tables in that database']};
 }
 
 
-// Push's error for each entity of `model`, in `document`, whose source as
-// `sourceOf` gives it is a table outside the database `deployment` deploys
-// to. The deployment's profile, or the model file for `default`, binds the
-// sources.
+// The entities of `model` whose source, as `sourceOf` gives it, is a table
+// outside `database`. An entity with no source is left out.
+function entitiesOutside(
+    model: SemanticModel, database: string,
+    sourceOf: (e: Entity) => string | undefined): Entity[] {
+  return (model.entities ?? []).filter(e => {
+    const source = sourceOf(e)?.trim();
+    return source && databaseOf(source) !== database;
+  });
+}
+
+
+// Push's error for `deployment` of `model`, in `document`, when it binds
+// entities to tables outside the database it deploys to, or none. The
+// deployment's profile in `profiles` gives the sources, or `modelSource` gives
+// the model file's for `default`. Push reads a named profile's own sources, so
+// an entity the profile gives no source is unbound under it. A named profile
+// not in `profiles` is in a profile file that does not load, which push
+// reports instead. For a deployment on the model file's bindings, the error
+// names each profile that binds every entity it lists and with which the
+// deployment would pass this check. Push's other checks may still refuse such
+// a profile.
 export function tablesOutsideTarget(
     document: string, model: SemanticModel, deployment: ResolvedDeployment,
-    sourceOf: (e: Entity) => string | undefined): string[] {
-  const bindings = deployment.profile === DEFAULT_PROFILE ?
-      'the model file' :
-      `profile '${deployment.profile}'`;
-  const {database, target, outside} = targetDatabase(deployment);
-  const errors: string[] = [];
-  for (const e of model.entities ?? []) {
-    const source = sourceOf(e)?.trim();
-    if (!source || databaseOf(source) === database) continue;
-    errors.push(
-        `[${document}] deployment '${deployment.name}' targets ${target}, ` +
-        `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
+    modelSource: (e: Entity) => string | undefined,
+    profiles: readonly ProfileSpec[]): string[] {
+  const {database, target, outside, inside} = targetDatabase(deployment);
+  const named = deployment.profile !== DEFAULT_PROFILE;
+  const profile =
+      named ? profiles.find(p => p.name === deployment.profile) : undefined;
+  if (named && !profile) return [];
+  const entities = entitiesOutside(
+      model, database, profile ? profileSources(profile) : modelSource);
+  if (!entities.length) return [];
+  // A vanilla model calls an entity a dataset.
+  const one = entityWord(model.version);
+  const many = entities.length > 1;
+  const kind = !many ? one : one === 'entity' ? 'entities' : 'datasets';
+  const each = `${many ? 'each' : 'the'} ${one}`;
+  const these = `${many ? 'these' : 'this'} ${kind} to ${inside[many ? 1 : 0]}`;
+  const fits = named ? [] : profiles.filter(p => {
+    const sourceOf = profileSources(p);
+    return entities.every(e => sourceOf(e)?.trim()) &&
+        !entitiesOutside(model, database, sourceOf).length;
+  }).map(p => p.name).sort((a, b) => a.localeCompare(b));
+  let advice: string;
+  if (named) {
+    advice = `Bind ${each} to ${inside[0]} in profile '${deployment.profile}'.`;
+  } else if (fits.length === 1) {
+    advice = `Profile '${fits[0]}' binds ${these}. Set the deployment's ` +
+        `profile to '${fits[0]}'.`;
+  } else if (fits.length) {
+    advice = `Profiles ${listed(fits.map(p => `'${p}'`))} bind ${these}. ` +
+        `Set the deployment's profile to one of them.`;
+  } else {
+    advice = `Bind ${each} to ${inside[0]} in the model file, or set the ` +
+        `deployment's profile to a profile that does.`;
   }
-  return errors;
+  return [
+    `[${document}] deployment '${deployment.name}' targets ${target}, but ${
+        named ? `profile '${deployment.profile}'` : 'the model file'} binds ${
+        kind} ${listed(entities.map(e => `'${e.name}'`))} to ${
+        many ? 'tables' : 'a table'} ${outside}. ${advice}`,
+  ];
 }

@@ -25,7 +25,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {ProfileSpec, SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, profileSources, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -320,16 +320,14 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
-    // inheritance does not change. Push reads a named profile's own sources,
-    // so an entity the profile leaves out is not reported as one it binds.
-    const declared =
-        (profilesByDoc.get(document) ?? []).find(p => p.name === profile);
-    const spec = profile === DEFAULT_PROFILE || !declared ? undefined :
-        'spec' in declared ? declared.spec :
-        specsByDoc.get(document)!.get(profile);
-    const chosen = spec ?
-        resolveStore(authored, profile, document, profileSources(spec)) :
-        resolveStore(authored, profile, document);
+    // inheritance does not change. Push's error for a table outside a
+    // deployment's database reads the profiles the model declares.
+    const specs = (profilesByDoc.get(document) ?? []).flatMap(p => {
+      const spec =
+          'spec' in p ? p.spec : specsByDoc.get(document)!.get(p.name);
+      return spec ? [spec] : [];
+    });
+    const chosen = resolveStore(authored, specs, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

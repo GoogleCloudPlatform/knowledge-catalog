@@ -26,7 +26,7 @@ import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, list
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, profileSources, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
@@ -2008,21 +2008,15 @@ function missingExecutorFields(ex: Executor): string[] {
 }
 
 
-// One error for each entity that `deployment` binds to a table outside the
-// database it deploys to. Sources come from the deployment's profile in
-// `model.profiles`, or from the model file for `default`.
+// The error for `deployment` when it binds entities to tables outside the
+// database it deploys to, or none. Sources come from the deployment's profile
+// in `model.profiles`, or from the model file for `default`.
 export function deploymentTableErrors(
     document: string, model: SemanticModel,
     deployment: ResolvedDeployment): string[] {
-  let sourceOf = (e: Entity): string|undefined => e.authoredSource;
-  if (deployment.profile !== DEFAULT_PROFILE) {
-    const profile = model.profiles?.find(p => p.name === deployment.profile);
-    // `model.profiles` lacks a profile file that does not load, which push
-    // reports instead.
-    if (!profile) return [];
-    sourceOf = profileSources(profile);
-  }
-  return tablesOutsideTarget(document, model, deployment, sourceOf);
+  return tablesOutsideTarget(
+      document, model, deployment, e => e.authoredSource,
+      model.profiles ?? []);
 }
 
 // The error for a Spanner `deployment` on the model file's own bindings when

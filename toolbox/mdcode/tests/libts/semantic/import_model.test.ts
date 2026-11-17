@@ -1154,9 +1154,13 @@ describe('profile checks', () => {
      "model 'retail' (sales) deployment 's' targets Spanner, which has no measures, and profile 'pg' " +
      `leaves metric(s) 'total' available; name them in its 'metrics_exclude', or set it to "*".`],
     ['a BigQuery graph whose profile binds a Spanner table', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
-     onSpanner({metrics_exclude: '*'}),
-     `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
-     `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
+     // A GOOGLE block is in a vanilla model, which calls an entity a dataset.
+     onSpanner({metrics_exclude: '*'}), label => {
+       const word = label === 'sales.yaml' ? 'dataset' : 'entity';
+       return [`[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds ${word} 'orders' ` +
+               `to a table outside BigQuery and BigLake. Bind the ${word} to a BigQuery or BigLake table ` +
+               "in profile 'pg'."];
+     }],
     ["a profile with a bad source alone, before a Spanner graph on the model file's own bindings",
      [{name: 'g', target: BQ_GRAPH, profile: 'pg'}, {name: 's', target: SPANNER_GRAPH}],
      orders({source: 'orders'})[0], label => [badSource(label)]],
