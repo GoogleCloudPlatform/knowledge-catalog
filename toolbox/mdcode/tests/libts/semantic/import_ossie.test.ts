@@ -300,6 +300,12 @@ semantic_model:
          .replace('name: shop\ndatasets:\n', '?   name\n: shop\n?     datasets\n:\n'),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      '    ?  metrics  # model metrics\n    :\n      # The sum.\n      - name: m  # in cents\n'],
+    ['a sql in a flow mapping after a key list whose item has an anchor',
+     ossieFile().replace('[order_id]\n    fields:\n      - name: order_id\n        expression:\n          sql: o_id\n',
+                         '[ &k order_id ]\n    fields:\n      - name: order_id\n        expression: {sql: order_id}\n'),
+     {}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
+     '        primary_key: [ &k order_id ]\n        fields:\n          - name: order_id\n' +
+         '            expression: {dialects: [ {dialect: OSSIE_SQL_2026, expression: order_id} ]}\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',

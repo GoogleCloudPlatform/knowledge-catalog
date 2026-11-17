@@ -36,6 +36,37 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm:\n  ? a\n  : 1\n  b: 2\n? s\n:\n- x\nf: { &k c: 1, d: { e: 1 } }\nc:\n  t: |  # h\n    x\nz:\n- 1\n'
   ],
   [
+    'a new flow list beside one whose first item has an anchor',
+    'a: [  &k x ]\nm: {b: 1}\n', v => v.m.c = [1], 'a: [  &k x ]\nm: {b: 1, c: [  1  ]}\n'
+  ],
+  [
+    'flow list items beside an anchor or a tag: one removed, one added before it and one after',
+    'f: [&a p, &b q]\ng: *b\nk: [&c r]\nl: *c\nh: [0, !!str 1]\n',
+    v => (v.f.shift(), v.k.unshift('w'), v.h.push(2)),
+    'f: [&b q]\ng: *b\nk: [w, &c r]\nl: *c\nh: [0, !!str 1, 2]\n'
+  ],
+  [
+    'a new flow mapping beside a pair written as a flow list item after an anchor',
+    'l: [ &k a: 1 ]\nm: { b: 1 }\n', v => v.m.c = {d: [1]},
+    'l: [ &k a: 1 ]\nm: { b: 1, c: { d: [ 1 ] } }\n'
+  ],
+  [
+    'block lists after an anchor or a tag on their key line, set to a scalar and a block scalar',
+    'a: &x  # c\n  - 1\nb: *x\nd: !!seq\n  - 2\n', v => (v.a = 'v', v.d = 'p\nq\n'),
+    'a: v  # c\nb:\n  - 1\nd: |\n  p\n  q\n'
+  ],
+  [
+    'values under their key after an anchor or a tag, set to values of another kind',
+    'a:\n  &x [1,\n  2]\nb: *x\nd: !!str  # c\n  x\ne:\n  !!seq [1,\n  2]\n',
+    v => (v.a = [1, 3], v.d = ['w'], v.e = 'x'),
+    'a:\n  - 1\n  - 3\nb:\n  - 1\n  - 2\nd:  # c\n  - w\ne:\n  x\n'
+  ],
+  [
+    'flow values after an anchor or a tag, set to values of another kind',
+    'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
+    'g: [1]\nm: {a: [1], b: [2]}\n'
+  ],
+  [
     'the last key of a mapping removed through the final newline, beside a key added after the mapping',
     'a:\n  k: 1\n  e:\n', v => (delete v.a.e, v.z = 1), 'a:\n  k: 1\nz: 1\n'
   ],

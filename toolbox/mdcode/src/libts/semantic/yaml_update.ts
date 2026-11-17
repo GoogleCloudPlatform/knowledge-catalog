@@ -192,6 +192,11 @@ interface Slot {
   after?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
+  /**
+   * The anchor and tag tokens of the node, after the `:` or `-` or between
+   * flow list items, and the `?` of a pair written as a flow list item.
+   */
+  props?: yaml.CST.SourceToken[];
 }
 
 /**
@@ -270,6 +275,7 @@ function patchItems(
   const col = g[0].start - lineStart(t, g[0].start);
   // The text between two items.
   const sep = g.length > 1 ? t.slice(g[0].end, g[1].start) : ', ';
+  const marks = marksOf(node);
   const slotOf = (i: number): Slot => {
     const item = items[i];
     const sep = yaml.isPair(item) ?
@@ -280,7 +286,10 @@ function patchItems(
     // after it.
     const after = sep !== undefined ? sep + 1 :
         ((item as yaml.Pair).key as yaml.Node).range![1];
-    return {col, prefix, after, flow};
+    const v = (yaml.isPair(item) ? item.value : item) as yaml.Node|null;
+    const props = sep === undefined || !v?.range ? [] :
+        marks.filter(s => s.offset >= sep && s.offset < v.range![0]);
+    return {col, prefix, after, flow, props};
   };
   // Removes each run of items no entry keeps.
   for (let a = 0; a < items.length; a++) {
@@ -400,14 +409,12 @@ function geometry(
     u: Pick<Update, 'text'|'doc'>, node: yaml.YAMLMap|yaml.YAMLSeq,
     flow: boolean): Item[] {
   const t = u.text;
-  const dash = flow ? [] : dashes(node);
+  const starts = itemStarts(node);
   let prevEnd = 0;
   return (node.items as unknown[]).map((item, i) => {
     const last =
         (yaml.isPair(item) ? item.value ?? item.key : item) as yaml.Node;
-    const start = yaml.isPair(item) ? pairStart(item) :
-        flow                        ? (item as yaml.Node).range![0] :
-                                      dash[i];
+    const start = starts[i];
     const ls = lineStart(t, start);
     const inline = !flow && t.slice(ls, start).trim() !== '';
     const end = flow ? last.range![1] :
@@ -502,8 +509,8 @@ function setScalar(
 }
 
 /**
- * Writes `value` in place of `node`. The comment on the line where `node`
- * starts stays on that line.
+ * Writes `value` in place of `node`, its anchor and its tag. The comment on
+ * the line where `node` starts stays on that line.
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
@@ -520,14 +527,28 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const [from, to, lead] = yaml.isNode(node) && node.range ?
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
+  // An anchor or tag on the line of the key or `-` goes with the text after
+  // the `:` or `-`, and the others go with the text of `node`. An alias of
+  // the anchor is written out (see updateText).
+  const props = slot.props ?? [];
+  const keyLine = slot.flow || slot.after === undefined ?
+      -1 :
+      lineEnd(t, slot.after);
+  const last = props.filter(s => s.offset < keyLine).at(-1);
+  const cut: [number, number, string]|undefined =
+      last && [slot.after!, last.offset + last.source.length, ''];
+  const start = props.find(s => s.offset > keyLine)?.offset ?? from;
   // A flow collection on one line stays flow.
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value) &&
           !spansLines(u.text, node)) {
-    u.edits.push([from, to, lead + scalarText(u, value, slot.col, true)]);
+    if (cut) u.edits.push(cut);
+    u.edits.push([
+      start, to,
+      (start < from ? '' : lead) + scalarText(u, value, slot.col, true),
+    ]);
     return;
   }
-  const keyLine = lineEnd(t, slot.after);
   // A block collection's range can run over the comments after it and into
   // the next line's indentation. The comments at its key's column or less
   // stay.
@@ -536,7 +557,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // A scalar, alias or flow collection on the line under its key is replaced
   // there, so the comments above it and after it stay.
   const under = from > keyLine && (!yaml.isCollection(node) || node.flow);
-  const col = under && isFull(value) ? from - lineStart(t, from) : slot.col;
+  const col = under && isFull(value) ? start - lineStart(t, start) : slot.col;
   // A scalar under a key the document renames moves its text into the value
   // written in its place, when that value holds it.
   const pair = u.byValue.get(node)?.[0]?.[0];
@@ -556,20 +577,21 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
                                        '';
+  if (under && cut) u.edits.push(cut);
   if (under && !isFull(value)) {
     // As a block scalar, text of several lines would take the text after it.
     const type = typeof value === 'string' && value.includes('\n') ?
         'QUOTE_DOUBLE' :
         undefined;
     u.edits.push(
-        [from, end, scalarText(u, value, slot.col, false, type) + after]);
+        [start, end, scalarText(u, value, slot.col, false, type) + after]);
     return;
   }
   if (under) {
-    u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
+    u.edits.push([start, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
-  const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
+  const tail = from > keyLine ? t.slice(cut?.[1] ?? slot.after, keyLine) : after;
   const head = first.slice(col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
 }
@@ -1005,11 +1027,10 @@ function indents(doc: yaml.Document, text: string):
   let itemAlone: boolean|undefined;
   yaml.visit(doc, {
     Collection: (_, v) => {
-      const first = v.items[0];
-      const at = yaml.isPair(first) ? pairStart(first) :
-          (first as yaml.Node|undefined)?.range?.[0];
-      const gap = v.flow && v.range && at !== undefined ?
-          text.slice(v.range[0] + 1, at) :
+      // A pair written as a flow list item, as `a: 1` in `[a: 1]`, has no
+      // bracket.
+      const gap = v.srcToken?.type === 'flow-collection' && v.items.length ?
+          text.slice(v.range![0] + 1, itemStarts(v)[0]) :
           '\n';
       if (!gap.includes('\n')) pad[yaml.isMap(v) ? 'map' : 'seq'] ??= gap;
     },
@@ -1020,7 +1041,7 @@ function indents(doc: yaml.Document, text: string):
         return;
       }
       const first = v.items[0];
-      const at = yaml.isPair(first) ? pairStart(first) : dashes(v)[0];
+      const at = itemStarts(v)[0];
       found[yaml.isMap(v) ? 'step' : 'seqIndent'] ??=
           col(at) - col(pairStart(pair));
       if (yaml.isMap(first) && !first.flow && first.items[0]) {
@@ -1043,14 +1064,47 @@ function dashes(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
       .map(s => s.offset);
 }
 
+// The tokens that can come before a node's own text and start its text: a
+// `?`, an anchor and a tag.
+const MARKS = ['explicit-key-ind', 'anchor', 'tag'];
+
 /**
  * The offset where `pair` starts: its `?`, or else its key's anchor or tag,
  * or else its key.
  */
 function pairStart(pair: yaml.Pair): number {
-  const mark = pair.srcToken?.start.find(
-      s => ['explicit-key-ind', 'anchor', 'tag'].includes(s.type));
+  const mark = pair.srcToken?.start.find(s => MARKS.includes(s.type));
   return mark?.offset ?? (pair.key as yaml.Node).range![0];
+}
+
+/**
+ * The offset where each item of `node` starts: a pair where pairStart says, a
+ * block list item at its `-`, and a flow list item at its first `?`, anchor
+ * or tag, or else at its own text.
+ */
+function itemStarts(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
+  if (yaml.isMap(node)) return node.items.map(p => pairStart(p));
+  if (!node.flow) return dashes(node);
+  // A flow list item's marks come after the item before it, or the bracket.
+  const marks = marksOf(node);
+  let from = node.range![0];
+  return (node.items as yaml.Node[]).map(item => {
+    const [at, end] = item.range!;
+    const mark = marks.find(s => s.offset >= from && s.offset < at);
+    from = end;
+    return mark?.offset ?? at;
+  });
+}
+
+/** The `?`, anchor and tag tokens of the items of `node`, in text order. */
+function marksOf(node: yaml.YAMLMap|yaml.YAMLSeq): yaml.CST.SourceToken[] {
+  // A pair written as a flow list item has no token of its own, so the
+  // tokens of its pair are read.
+  const items =
+      (node.srcToken as {items?: yaml.CST.CollectionItem[]}|undefined)?.items ??
+      (node.items as yaml.Pair[]).map(p => p.srcToken);
+  return items.flatMap(it => [...it?.start ?? [], ...it?.sep ?? []])
+      .filter(s => MARKS.includes(s.type));
 }
 
 /**

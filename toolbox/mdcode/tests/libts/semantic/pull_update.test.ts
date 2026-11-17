@@ -121,6 +121,13 @@ metrics:
         .toBe(local.replace('Old', 'New'));
   });
 
+  test('writes a changed list in the space inside its brackets, without its ' +
+           'item\'s anchor',
+       () => {
+         expect(updatedText('x: [ &k a ]\n', 'x: [a]\n', 'x: [b]\n'))
+             .toBe('x: [ b ]\n');
+       });
+
   // A list item with no `name` is matched by the key that names an item of
   // its list, so a changed value keeps the item's comment.
   for (const [what, local, base, pulled, want] of [
