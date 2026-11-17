@@ -11,14 +11,13 @@
 import * as glob from 'glob';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
 import {listed, ModelDocument, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
-import {documentValue, YAML_OPTIONS, yamlErrorMessage} from '../semantic/yaml_options';
+import {documentValue, yamlErrorMessage} from '../semantic/yaml_options';
 
 import {frontmatterText, joinFrontmatter, splitFrontmatter} from './documents';
 
@@ -775,17 +774,12 @@ export function parseOverviewSidecar(
   try {
     split = splitFrontmatter(unmarked);
   } catch (err: any) {
-    // The frontmatter is parsed again below its opening `---` line, as in the
-    // file. When that parse gives an error of the same code, the message gives
-    // the file's line and snippet. Otherwise it keeps the error the
-    // frontmatter alone gives.
+    // The frontmatter is the file's lines after its opening `---` line, so
+    // placed after that line, the error gives the file's line, column and
+    // snippet.
     const front = frontmatterText(unmarked) ?? '';
-    const inFile = `---\n${front}`;
-    const [again] = yaml.parseDocument(inFile, YAML_OPTIONS).errors;
     throw fail(`its frontmatter does not parse: ${
-        again && again.code === err?.code ?
-            yamlErrorMessage(again, inFile) :
-            yamlErrorMessage(err, front)}`);
+        yamlErrorMessage(err, front, {text: `---\n${front}`, offset: 4})}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

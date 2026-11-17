@@ -315,16 +315,16 @@ describe('conversion, strict mode, and translation', () => {
      'Missing closing "quote at line 6, column 22:\n\n        description: ' +
          '"Sales\n                     ^\n'],
     // With no final newline, YAML takes the escaped quote for the closing one
-    // and reports the open `[`. The message points at the quote.
+    // and reports the open `[`, so the message points at the `[`.
     ['a double quote that ends in an escaped quote',
      `${ORDERS}        tags: ["C:\\temp\\"`,
      'Flow sequence in block collection must be sufficiently indented and ' +
-         'end with a ] at line 6, column 16:\n\n        tags: ["C:\\temp\\"\n' +
-         '               ^\n'],
+         'end with a ] at line 6, column 15:\n\n        tags: ["C:\\temp\\"\n' +
+         '              ^\n'],
     ["a single quote that ends in ''", `${ORDERS}        tags: ['Sales ''Q1''`,
      'Flow sequence in block collection must be sufficiently indented and ' +
-         "end with a ] at line 6, column 16:\n\n        tags: ['Sales ''Q1''\n" +
-         '               ^\n'],
+         "end with a ] at line 6, column 15:\n\n        tags: ['Sales ''Q1''\n" +
+         '              ^\n'],
     ['a flow sequence closed by }', `${ORDERS}        tags: [a, b}\n`,
      'Flow sequence in block collection must be sufficiently indented and ' +
          'end with a ] at line 6, column 20:\n\n        tags: [a, b}\n' +
