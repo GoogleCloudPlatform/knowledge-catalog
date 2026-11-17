@@ -65,13 +65,12 @@ export function documentValue(
 }
 
 // The message of `err`, a YAML error in `text`. YAML reports a quote, `[` or
-// `{` left open to the end of `text` at that end, so the message gives the
-// line and column where the innermost one opens instead. YAML reads an
-// unquoted `*` as an alias, so a value such as `metrics_exclude: *` does not
-// parse, and the message then shows its line with the `*` quoted, when that
-// line parses.
+// `{` left open where it stops reading it, so the message gives the line and
+// column where the innermost one opens instead. YAML reads an unquoted `*` as
+// an alias, so a value such as `metrics_exclude: *` does not parse, and the
+// message then shows its line with the `*` quoted, when that line parses.
 export function yamlErrorMessage(err: any, text: string): string {
-  const message = openAtEndMessage(err, text) ?? String(err?.message ?? err);
+  const message = openTokenMessage(err, text) ?? String(err?.message ?? err);
   const at = err?.pos?.[0];
   if (err?.code !== 'BAD_ALIAS' || typeof at !== 'number' || text[at] !== '*' ||
       !/^Alias cannot be an empty string/.test(message)) {
@@ -91,41 +90,46 @@ export function yamlErrorMessage(err: any, text: string): string {
 }
 
 // The message of `err` at the start of the innermost quoted value, flow
-// sequence or flow mapping that runs open to the end of `text`, when `err` is
-// at that end. Undefined otherwise.
-function openAtEndMessage(err: any, text: string): string|undefined {
-  if (err?.pos?.[0] !== text.length) return undefined;
+// sequence or flow mapping left open that ends where `err` is, or undefined
+// when none does.
+function openTokenMessage(err: any, text: string): string|undefined {
+  const at = err?.pos?.[0];
+  if (typeof at !== 'number') return undefined;
   const lines = new yaml.LineCounter();
   let start: number|undefined;
   for (const token of new yaml.Parser(lines.addNewLine).parse(text)) {
     if (token.type !== 'document') continue;
     yaml.CST.visit(token, ({key, value}) => {
       for (const t of [key, value]) {
-        if (t && isOpen(t) &&
-            t.offset + yaml.CST.stringify(t).length === text.length) {
-          start = Math.max(start ?? 0, t.offset);
-        }
+        if (t && openEnd(t) === at) start = Math.max(start ?? 0, t.offset);
       }
     });
   }
   if (start === undefined) return undefined;
   const bare =
       yaml.parseDocument(text, {...YAML_OPTIONS, prettyErrors: false})
-          .errors.find(e => e.code === err.code && e.pos[0] === err.pos[0]);
+          .errors.find(e => e.code === err.code && e.pos[0] === at);
   return bare && bare.message + positionText(text, lines, start);
 }
 
-// Whether `token` is a quoted value or flow collection without its closing
-// character, as the yaml package reads it.
-function isOpen(token: yaml.CST.Token): boolean {
+// Where YAML reports `token` left open: the end of a quoted value or flow
+// collection that lacks its closing character, as the yaml package reads it.
+// Undefined for any other token.
+function openEnd(token: yaml.CST.Token): number|undefined {
   if (token.type === 'flow-collection') {
-    return token.end[0]?.source !== (token.start.source === '{' ? '}' : ']');
+    const close = token.start.source === '{' ? '}' : ']';
+    return token.end[0]?.source === close ?
+        undefined :
+        token.offset + yaml.CST.stringify(token).length;
   }
   if (token.type !== 'double-quoted-scalar' &&
       token.type !== 'single-quoted-scalar') {
-    return false;
+    return undefined;
   }
-  return token.source.length === 1 || !token.source.endsWith(token.source[0]);
+  const {source} = token;
+  return source.length > 1 && source.endsWith(source[0]) ?
+      undefined :
+      token.offset + source.length;
 }
 
 // Where `offset` is in `text`, in the yaml package's own error snippet layout.

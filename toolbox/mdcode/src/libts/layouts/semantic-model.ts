@@ -11,6 +11,7 @@
 import * as glob from 'glob';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
@@ -699,11 +700,11 @@ export class SemanticModelLayout implements CatalogLayout {
     }
   }
 
-  // The absolute path a model document with this handle maps to:
-  // `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path separators in the
-  // model name are replaced so a name still yields a single flat file. Requires
-  // the layout to be scoped to an entry group (the semantic-model source always
-  // is).
+  // The path a model document with this handle maps to, under the catalog
+  // path as given: `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path
+  // separators in the model name are replaced so a name still yields a single
+  // flat file. Requires the layout to be scoped to an entry group (the
+  // semantic-model source always is).
   modelPath(name: string): string {
     if (!this._entryGroup) {
       throw new Error(
@@ -774,8 +775,12 @@ export function parseOverviewSidecar(
   try {
     split = splitFrontmatter(unmarked);
   } catch (err: any) {
+    // The frontmatter below its opening `---` line, as in the file, so a YAML
+    // error gives the file's line and snippet.
+    const inFile = `---\n${frontmatterText(unmarked)}`;
+    const [error] = yaml.parseDocument(inFile).errors;
     throw fail(`its frontmatter does not parse: ${
-        yamlErrorMessage(err, frontmatterText(unmarked) ?? '')}`);
+        yamlErrorMessage(error ?? err, inFile)}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

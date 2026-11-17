@@ -2723,7 +2723,7 @@ ${model}`;
       }
       expect(() => googleBlockProfiles(cases[0][0])).toThrow(new Error(
         'Semantic model load error: could not parse input: Missing closing "quote at line 2, ' +
-        'column 10:\n\n.dev0": "\n         ^\n'));
+        'column 9:\n\n.dev0": "\n        ^\n'));
     });
 
     // A key written with no value sets it to null, as in text that parses.

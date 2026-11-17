@@ -533,13 +533,14 @@ describe('SemanticModelLayout overview sidecars', () => {
                  "contentType is MARKDOWN or HTML, not 'TEXT'."],
                 ['---\nlinks:\n  - title: Guide\n---\n',
                  'links is a list of entries, each a url and an optional title.'],
-                ['---\ncontentType: "x\n---\n',
+                ['---\ncontentType: MARKDOWN\nlinks:\n' +
+                     '  - url: "https://example.com\n---\nOverview text.\n',
                  'its frontmatter does not parse: Missing closing "quote at ' +
-                     'line 1, column 14:\n\ncontentType: "x\n' +
-                     '             ^\n'],
+                     'line 4, column 10:\n\n  - url: "https://example.com\n' +
+                     '         ^\n'],
                 ['---\ncontentType: *\n---\n',
                  'its frontmatter does not parse: Alias cannot be an empty ' +
-                     'string at line 1, column 14:\n\ncontentType: *\n' +
+                     'string at line 2, column 14:\n\ncontentType: *\n' +
                      "             ^\nYAML reads an unquoted '*' as an alias; " +
                      'write it in quotes, as in contentType: "*".'],
               ]) {

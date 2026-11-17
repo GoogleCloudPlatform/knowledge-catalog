@@ -276,16 +276,19 @@ describe('conversion, strict mode, and translation', () => {
     expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
   });
 
-  // A quote, `[` or `{` left open to the end of the file is reported where
-  // the innermost one opens. Any other YAML error keeps the place YAML gives.
+  // A quote, `[` or `{` left open is reported where the innermost one opens,
+  // whether the file or a less-indented line ends it. Any other YAML error
+  // keeps the place YAML gives.
   const HEAD = 'version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: retail\n';
+  const ORDERS = `${HEAD}    entities:\n      - name: orders\n`;
   test.each([
-    ['a double quote',
-     `${HEAD}    description: "Sales by store, region and day, for the ` +
-         'quarterly review of every finance lead\n    entities: []\n',
-     'Missing closing "quote at line 4, column 18:\n\n    description: ' +
-         '"Sales by store, region and day, for the quarterly review of e…\n' +
-         '                 ^\n'],
+    ['a double quote past column 60',
+     `${HEAD}    sales_by_store_region_and_day_for_the_quarterly_finance_review: ` +
+         '"Sales by store, region and day, for the quarterly review of every ' +
+         'finance lead\n',
+     'Missing closing "quote at line 4, column 69:\n\n…_day_for_the_' +
+         'quarterly_finance_review: "Sales by store, region and day, for th…\n' +
+         '                                        ^\n'],
     ['a single quote',
      `${HEAD}    description: 'Sales by store\n    entities: []\n`,
      "Missing closing 'quote at line 4, column 18:\n\n    description: " +
@@ -302,10 +305,26 @@ describe('conversion, strict mode, and translation', () => {
      `${HEAD}    entities: [orders, "customers\n`,
      'Missing closing "quote at line 4, column 24:\n\n    entities: ' +
          '[orders, "customers\n                       ^\n'],
+    ['a flow sequence a less-indented line ends',
+     `${ORDERS}        primary_key: [id\n        fields: []\n`,
+     'Flow sequence in block collection must be sufficiently indented and ' +
+         'end with a ] at line 6, column 22:\n\n        primary_key: [id\n' +
+         '                     ^\n'],
+    ['a double quote its line ends',
+     `${ORDERS}        description: "Sales\n        label: "Orders"\n`,
+     'Missing closing "quote at line 6, column 22:\n\n        description: ' +
+         '"Sales\n                     ^\n'],
+    ['a flow sequence closed by }', `${ORDERS}        tags: [a, b}\n`,
+     'Flow sequence in block collection must be sufficiently indented and ' +
+         'end with a ] at line 6, column 20:\n\n        tags: [a, b}\n' +
+         '                   ^\n'],
     ['no open quote or bracket',
      `${HEAD}    entities: []\n      relationships: []\n`,
      'All mapping items must start at the same column at line 5, column ' +
          '1:\n\n    entities: []\n      relationships: []\n^\n'],
+    ['only a directive', '%YAML 1.2\n',
+     'Missing directives-end indicator line at line 2, column 1:\n\n' +
+         '%YAML 1.2\n\n^\n'],
   ])('reports YAML with %s', async (_, input, problem) => {
     expect((await importSemanticModelYaml(input, {})).errors).toEqual(
         [`Semantic model load error: could not parse input: ${problem}`]);
