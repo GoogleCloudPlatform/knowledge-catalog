@@ -448,6 +448,24 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
+    'an alias that a moved anchor would take, written out as an object whose old text holds an anchor',
+    'a: &m p\nlist1:\n  - {name: mover, w: {x: &n z}}\n  - {name: stay, w: &n {k: q}}\nlist2: [ {name: first} ]\n' +
+        'c: *n\nd: *m\ntail: {name: t, obj: {k: &m q}}\n',
+    v => {
+      v.list2.push(v.list1.shift());
+      v.c = v.tail.obj;
+      delete v.tail.obj;
+    },
+    'a: &m p\nlist1:\n  - {name: stay, w: &n {k: q}}\nlist2: [ {name: first}, {name: mover, w: {x: &n z}} ]\n' +
+        'c:\n  k: q\nd: *m\ntail: {name: t}\n'
+  ],
+  [
+    'an alias in a flow list over several lines that a moved anchor would take',
+    'list1:\n  - {name: mover, w: {x: &n z}}\n  - {name: stay}\nb: &n q\nlist2:\n  - {name: first}\nc: [x,\n  *n]\n',
+    v => v.list2.push(v.list1.shift()),
+    'list1:\n  - {name: stay}\nb: &n q\nlist2:\n  - {name: first}\n  - name: mover\n    w: {x: &n z}\nc: [x,\n  q]\n'
+  ],
+  [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
     v => {
       const a = [...v.a, 2];

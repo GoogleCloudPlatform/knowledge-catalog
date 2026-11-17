@@ -128,8 +128,9 @@ export function updateText(
     }
   }
   // An alias that the new text reads as another value is written out too, as
-  // when moved text defines its anchor's name again between the two. A value
-  // written fresh holds no anchor, so it changes what no other alias names.
+  // when moved text defines its anchor's name again between the alias and its
+  // anchor. A value written fresh holds no anchor, so every other alias still
+  // names the same value.
   let [made, out] = composed(u);
   const misread = misreadAliases(u, made, out);
   if (misread.length) {
@@ -838,9 +839,9 @@ function release(u: Update, value: object): void {
  * node in place. A scalar under `key` moves from a
  * pair with the same key and value whose text the new value does not keep,
  * or from the scalar `replacing` names, when it has that value.
- * Undefined when nothing moved, or when the text would not read back as
- * `value` at its new place, as when it holds an alias of an anchor outside it,
- * and while `fresh` is set.
+ * Undefined while `fresh` is set, when nothing moved, or when the text would
+ * not read back as `value` at its new place, as when it holds an alias of an
+ * anchor outside it.
  * A value that is or holds a block scalar that keeps its final line breaks,
  * as `|+` does, is written fresh, since its text would take the blank lines
  * after its new place.

@@ -358,8 +358,9 @@ semantic_model:
     expect(res.files[0].content).toContain(written);
   });
 
-  test("writes out an alias when a moved metric defines its anchor's name again above it", async () => {
-    const res = await importSemanticModelYaml(`version: "0.3.0.dev0"
+  // An Ossie file where a dataset's metric defines `&note` as `moved`, a later
+  // dataset defines it again as `later`, and a relationship names it.
+  const notes = (moved: string, later: string) => `version: "0.3.0.dev0"
 name: shop
 datasets:
   - name: orders
@@ -372,7 +373,7 @@ datasets:
       - name: order_count
         expression: {sql: COUNT(orders.id)}
         ai_context:
-          note: &note Counts orders.
+          note: &note ${moved}
   - name: customers
     source: ${TABLES}/customers
     primary_key: [id]
@@ -380,7 +381,7 @@ datasets:
       - name: id
         expression: {sql: id}
     ai_context:
-      note: &note Counts customers.
+      note: &note ${later}
 metrics:
   - name: customer_count
     expression: {sql: COUNT(customers.id)}
@@ -392,7 +393,10 @@ relationships:
     to_columns: [id]
     ai_context:
       note: *note
-`, {flavor: 'ossie'});
+`;
+
+  test("writes out an alias when a moved metric defines its anchor's name again above it", async () => {
+    const res = await importSemanticModelYaml(notes('Counts orders.', 'Counts customers.'), {flavor: 'ossie'});
     expect(res.files[0].content).toBe(`version: "0.2.0.dev0"
 semantic_model:
   - name: shop
@@ -433,6 +437,14 @@ semantic_model:
         ai_context:
           note: Counts customers.
 `);
+  });
+
+  test.each([
+    ['.nan', 'null', 'null'],
+    ['-0', '0', '0'],
+  ])('writes out such an alias when the moved anchor holds %s and its own anchor %s', async (moved, later, written) => {
+    const res = await importSemanticModelYaml(notes(moved, later), {flavor: 'ossie'});
+    expect(res.files[0].content).toEndWith(`to_columns: [id]\n        ai_context:\n          note: ${written}\n`);
   });
 
   // The load error of a written file whose dataset orders keeps its `metrics`.
