@@ -148,12 +148,13 @@ function missingClose(err: any): string|undefined {
 }
 
 // Where the innermost token in the CST `tokens` of `text` starts that closes
-// with `close` and ends at `at`, or undefined when none does. A token closes
-// with its quote, or with the `]` or `}` its `[` or `{` takes, and a flow
-// collection counts only when the text never closes it. Spaces, tabs and line
-// breaks at the end of a token count as part of it, so a token ends at `at`
-// when only those lie between `at` and its last other character, or between
-// its end and `at`.
+// with `close`, is left open and ends at `at`, or undefined when none does. A
+// token closes with its quote, or with the `]` or `}` its `[` or `{` takes. A
+// flow collection is left open when its CST does not end in that bracket and
+// it stays open once read at the root of a document of its own. Spaces, tabs
+// and line breaks at the end of a token count as part of it, so a token ends
+// at `at` when only those lie between `at` and its last other character, or
+// between its end and `at`.
 function openStart(
     tokens: yaml.CST.Token[], text: string, close: string,
     at: number): number|undefined {
@@ -164,7 +165,8 @@ function openStart(
     yaml.CST.visit(token, ({key, value}) => {
       for (const t of [key, value]) {
         if (!t || closer(t) !== close) continue;
-        if (t.type === 'flow-collection' && closedAfter(text, t.offset)) {
+        if (t.type === 'flow-collection' &&
+            (t.end[0]?.source === close || closedAtRoot(text, t.offset))) {
           continue;
         }
         let last = t.offset + yaml.CST.stringify(t).length;
@@ -189,48 +191,15 @@ function closer(token: yaml.CST.Token): string|undefined {
                                                  undefined;
 }
 
-// Whether a bracket of its kind closes the `[` or `{` at `start` in `text`.
-// The scan skips quoted text and comments, and a bracket closes only an open
-// bracket of its own kind.
-function closedAfter(text: string, start: number): boolean {
-  const open: string[] = [];
-  for (let i = start; i < text.length; i++) {
-    const c = text[i];
-    // A quote opens quoted text, and `#` a comment, only where a value or a
-    // comment can start.
-    const before = i === 0 ? '\n' : text[i - 1];
-    if ((c === '"' || c === "'") && ' \t\r\n[{,:'.includes(before)) {
-      i = quoteEnd(text, i);
-    } else if (c === '#' && ' \t\r\n'.includes(before)) {
-      const line = text.indexOf('\n', i);
-      i = line < 0 ? text.length : line;
-    } else if (c === '[' || c === '{') {
-      open.push(c === '[' ? ']' : '}');
-    } else if (c === open.at(-1)) {
-      open.pop();
-      if (!open.length) return true;
-    }
-  }
-  return false;
-}
-
-// Where the quoted text that opens at `start` in `text` ends: at its closing
-// quote, or at the end of `text`. In double quotes a backslash escapes the
-// character after it, and in single quotes `''` is one quote.
-function quoteEnd(text: string, start: number): number {
-  const quote = text[start];
-  for (let i = start + 1; i < text.length; i++) {
-    if (quote === '"' && text[i] === '\\') {
-      i++;
-    } else if (text[i] === quote) {
-      if (quote === "'" && text[i + 1] === "'") {
-        i++;
-      } else {
-        return i;
-      }
-    }
-  }
-  return text.length;
+// Whether yaml closes the `[` or `{` at `offset` in `text` when it reads the
+// rest of `text` from there as a document of its own. At the root of a
+// document no indent ends a flow collection, so a closing bracket that is
+// present but indented too little counts.
+function closedAtRoot(text: string, offset: number): boolean {
+  const [doc] = new yaml.Parser().parse(text.slice(offset));
+  const root = doc?.type === 'document' ? doc.value : undefined;
+  return root?.type === 'flow-collection' &&
+      root.end[0]?.source === closer(root);
 }
 
 // Where `range` is in `text`, whose lines are `lines`, in the yaml package's

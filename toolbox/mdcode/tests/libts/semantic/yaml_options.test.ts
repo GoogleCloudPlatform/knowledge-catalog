@@ -20,8 +20,9 @@ test('places a YAML error after text above it that ends inside a line', () => {
 // An error that reports a `[` or `{` left open points at it, though YAML
 // places the error before the spaces and line breaks that end it. Any other
 // error keeps YAML's place, even where a value left open ends. So does an
-// error about a `{` that a later `}` closes, and a `}` inside quoted text or
-// a comment closes nothing.
+// error about a `{` that a later `}` closes once yaml reads it with no indent
+// limit. Read that way, a `}` in a block scalar or a plain value closes it
+// too, so such an error keeps YAML's place, as it did before.
 const FLOW_MAP = 'Flow map in block collection must be sufficiently ' +
     'indented and end with a }';
 const FLOW_SEQ = 'Flow sequence in block collection must be sufficiently ' +
@@ -47,6 +48,25 @@ test.each([
   ['a flow map with a line indented less than its key',
    'a:\n  b: {\n    k1: v1,\n  k2: v2\n    }\n',
    `${FLOW_MAP} at line 4, column 3:\n\n    k1: v1,\n  k2: v2\n  ^\n`],
+  ['a flow map whose } follows a line with a quote in a plain value',
+   "a:\n  b: {\n    k1: the '90s,\n  k2: v2\n    }\n",
+   `${FLOW_MAP} at line 4, column 3:\n\n    k1: the '90s,\n  k2: v2\n  ^\n`],
+  ['a flow map left open before a quote in a plain value and a } in quotes',
+   "a: {k: v\nb: the '90s\nc: '}'\n",
+   `${FLOW_MAP} at line 1, column 4:\n\na: {k: v\n   ^\n`],
+  ['a flow map left open before a } in a block scalar',
+   'a: {k: v\nb: |\n  }\n',
+   `${FLOW_MAP} at line 2, column 1:\n\na: {k: v\nb: |\n^\n`],
+  ['a flow map left open before a } in a plain value', 'a: {k: v\nb: foo}\n',
+   `${FLOW_MAP} at line 2, column 1:\n\na: {k: v\nb: foo}\n^\n`],
+  ['a flow map left open before a document end and a }',
+   'a: {k: v\n...\n}\n', `${FLOW_MAP} at line 1, column 4:\n\na: {k: v\n   ^\n`],
+  ['a flow map left open around a flow map closed under its key',
+   "a: {\n  b: {\n    k: the '90s\n  }\n",
+   `${FLOW_MAP} at line 1, column 4:\n\na: {\n   ^\n`],
+  ['a flow sequence left open inside a flow map a later } ends',
+   'a: {\n  k: [1, 2\n}\n',
+   `${FLOW_SEQ} at line 2, column 6:\n\n  k: [1, 2\n     ^\n`],
   ['a flow map left open before a } in quotes and a comment',
    'a: {k: v\nb: "}" # }\n',
    `${FLOW_MAP} at line 1, column 4:\n\na: {k: v\n   ^\n`],
