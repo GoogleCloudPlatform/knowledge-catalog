@@ -65,13 +65,13 @@ export function documentValue(
 }
 
 // The message of `err`, a YAML error in `text`. YAML reports a quote, `[` or
-// `{` left open where it stops reading it, so the message gives the line and
-// column where the innermost one opens instead. `above` is the text of the
-// file before `text`, such as the `---` line above an overview sidecar's
-// frontmatter, and the line, column and snippet are those in the file. YAML
-// reads an unquoted `*` as an alias, so a value such as `metrics_exclude: *`
-// does not parse, and the message then shows its line with the `*` quoted,
-// when that line parses.
+// `{` left open where it stops reading it. The message instead points where
+// that quote, `[` or `{` opens. A `[` or `{` closed by a bracket of the wrong
+// kind keeps YAML's position. `above` is the text of the file before `text`,
+// such as the `---` line above an overview sidecar's frontmatter, and the
+// line, column and snippet are those in the file. YAML reads an unquoted `*`
+// as an alias, so a value such as `metrics_exclude: *` does not parse, and
+// the message then shows its line with the `*` quoted, when that line parses.
 export function yamlErrorMessage(err: any, text: string, above = ''): string {
   const message =
       placedMessage(err, text, above) ?? String(err?.message ?? err);
