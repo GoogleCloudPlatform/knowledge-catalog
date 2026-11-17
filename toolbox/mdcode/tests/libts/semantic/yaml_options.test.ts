@@ -66,3 +66,25 @@ test.each([
   const [err] = yaml.parseDocument(text, YAML_OPTIONS).errors;
   expect(yamlErrorMessage(err, text)).toBe(message);
 });
+
+// kcmd's own parsing produces none of these errors. An error with no position
+// text keeps its message. So does an error at position -1, even when its
+// message ends in the position text YAML would add there. YAML adds no snippet
+// for an error on a first line of only spaces. The message then gives the
+// error's line and snippet in the file.
+test.each([
+  ['an error parsed without pretty errors',
+   yaml.parseDocument('a: "x\n', {...YAML_OPTIONS, prettyErrors: false})
+       .errors[0],
+   'a: "x\n', '', 'Missing closing "quote'],
+  ['an error at position -1',
+   new yaml.YAMLParseError(
+       [-1, -1], 'MISSING_CHAR', 'Missing closing "quote at line 0, column -1'),
+   'a: "x\n', '---\n', 'Missing closing "quote at line 0, column -1'],
+  ['an error on a first line of only spaces',
+   new yaml.YAMLParseError(
+       [1, 2], 'BAD_INDENT', 'Bad indent at line 1, column 2'),
+   '   \n', '---\n', 'Bad indent at line 2, column 2:\n\n---\n   \n ^\n'],
+])('reports %s', (_, err, text, above, message) => {
+  expect(yamlErrorMessage(err, text, above)).toBe(message);
+});

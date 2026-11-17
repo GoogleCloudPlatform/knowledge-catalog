@@ -96,13 +96,13 @@ export function yamlErrorMessage(err: any, text: string, above = ''): string {
       `alias; write it in quotes, as in ${quoted.trim()}.`;
 }
 
-// The message of `err`, a YAML error in `text`, in YAML's own words. When the
-// error reports a quote, `]` or `}` missing, it points at the start of the
-// innermost value left open that lacks it and ends where the error is. Its
-// line, column and snippet are those in `above` followed by `text`. It is
-// undefined when it moves nothing and `above` is empty. It is also undefined
-// when `err` has no position, or when its message does not end in the
-// position text YAML adds.
+// The message of `err`, a YAML error in `text`, in YAML's own words. The error
+// may report a quote, `]` or `}` missing from a value. openStart finds where
+// that value starts. The message points there instead of where YAML stops
+// reading. Its line, column and snippet are those in `above` followed by
+// `text`. It is undefined when it moves nothing and `above` is empty. It is
+// also undefined when `err` has no position, or when its message does not end
+// in the position text YAML adds.
 function placedMessage(
     err: any, text: string, above: string): string|undefined {
   const pos: unknown = err?.pos;
@@ -147,13 +147,15 @@ function missingClose(err: any): string|undefined {
           .exec(message)?.[1];
 }
 
-// Where the innermost token in the CST `tokens` of `text` starts that closes
-// with `close`, is left open and ends at `at`, or undefined when none does. A
-// token closes with its quote, or with the `]` or `}` its `[` or `{` takes. A
-// flow collection is left open when its CST does not end in that bracket.
-// Spaces, tabs and line breaks at the end of a token count as part of it, so a
-// token ends at `at` when only those lie between `at` and its last other
-// character, or between its end and `at`.
+// The offset where the innermost candidate token starts, or undefined when no
+// token is a candidate. `tokens` is the CST of `text`. A candidate is a key or
+// value token that closes with `close` and ends at `at`. A double-quoted or
+// single-quoted value closes with its quote. Such a value is a candidate
+// whether or not its closing quote is there. A flow collection closes with the
+// `]` or `}` that matches its `[` or `{`. It is a candidate only when its CST
+// does not end in that bracket. A token ends at `at` when `at` follows its last
+// character other than a space, tab or line break, with only such characters
+// in between. The innermost candidate is the one that starts last.
 function openStart(
     tokens: yaml.CST.Token[], text: string, close: string,
     at: number): number|undefined {
