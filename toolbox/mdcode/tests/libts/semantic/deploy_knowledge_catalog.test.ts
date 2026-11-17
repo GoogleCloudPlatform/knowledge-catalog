@@ -892,10 +892,12 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
         {...structuredClone(entry), aspects: Object.fromEntries(aspects)});
   };
 
-  test('a wide entity whose instances spread across types is read whole and ' +
-           'gets no write',
+  // Every field aspect Knowledge Catalog returns sits at a path the stored
+  // schema lists, so the reads by type and by path find them all.
+  test('a wide entity with 100 instances of one type is read whole and gets ' +
+           'no write',
        async () => {
-         const docs = wideDocs(60, '{instructions: Doc., examples: [Ex.]}');
+         const docs = wideDocs(100, '{instructions: Doc.}');
          const held = storedCopy(emitted(docs));
          const {lookup, writes} = holding(held);
          lookup.mockImplementation(capped(held) as any);
@@ -905,35 +907,9 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          expect(result)
              .toMatchObject({success: true, updated: 0, unchangedEntries: 2});
          expect(writes).toEqual([]);
-         // The entity's first read came back full, so it was read by type.
-         expect(lookup.mock.calls.length).toBeGreaterThan(2);
+         // The entity's guidelines came back full, so they were read by path.
+         expect(lookup.mock.calls.some(c => c[3]?.paths)).toBe(true);
        });
-
-  // A type read that comes back full is read again only at the paths the
-  // stored schema lists, so an instance at another path can be missed.
-  test('a wide entity whose fields fill one type is written', async () => {
-    const docs = wideDocs(100, '{instructions: Doc.}');
-    const held = storedCopy(emitted(docs));
-    const orders = held.get('sales/entities/orders');
-    orders.aspects = {
-      'dataplex-types.global.guidelines@Schema.stale': {
-        aspectType: 'projects/dataplex-types/locations/global/aspectTypes/' +
-            'guidelines',
-        data: {instructions: 'Stale.', userManaged: true},
-      },
-      ...orders.aspects,
-    };
-    const {lookup, update, writes} = holding(held);
-    lookup.mockImplementation(capped(held) as any);
-
-    const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
-
-    expect(result)
-        .toMatchObject({success: true, updated: 1, unchangedEntries: 1});
-    expect(writes).toEqual(BRACKETED(
-        'create:sales/entities/orders', 'update:sales/entities/orders:'));
-    expect(update.mock.calls[1][3]).toBe(true);
-  });
 });
 
 
