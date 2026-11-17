@@ -322,13 +322,13 @@ semantic_model:
                          '      - name: order_id\n        expression: {sql: &k o_id}\n' +
                              '        ai_context: {*k : the order id,\n          synonyms: [order]}\n'),
      {flavor: 'ossie'}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
-     '            ai_context: {o_id : the order id,\n              synonyms: [order]}\n'],
+     '            ai_context: {o_id: the order id,\n              synonyms: [order]}\n'],
     ['an alias key in a field\'s ai_context over several lines that repeats another key',
      ossieFile().replace('      - name: order_id\n        expression:\n          sql: o_id\n',
                          '      - name: order_id\n        expression: {sql: &k o_id}\n' +
                              '        ai_context: {*k : the order id,\n          o_id: again}\n'),
      {flavor: 'ossie'}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
-     '            ai_context:\n              o_id: again\n'],
+     '            ai_context: {o_id: again}\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',

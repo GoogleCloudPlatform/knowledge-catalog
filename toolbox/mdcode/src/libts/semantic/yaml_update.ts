@@ -244,17 +244,17 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // Its text stays while its value stays null.
   if (node === null && value === null) return;
   const edits = u.edits.length;
-  // A flow collection over several lines keeps its text when its value
-  // stays, even when a linked item in it moved, since the text reads as the
-  // value, and when its keys stay apart once an alias key reads as its
-  // anchor's value. It is written again in block style otherwise.
-  if (yaml.isCollection(node) && node.flow && spansLines(u.text, node)) {
-    if (canonical(node.toJS(u.doc)) === canonical(value) &&
-        uniqueKeys(u, node)) {
-      keep(u, value, node);
-    } else {
-      replace(u, value, node, slot);
-    }
+  // A flow collection over several lines is written again in block style
+  // when its value changes. It keeps its text when its value stays, even when
+  // a linked item in it moved, since the text reads as the value. One with a
+  // key that is not a scalar, such as an alias, is patched item by item
+  // instead.
+  const lines = yaml.isCollection(node) && node.flow && spansLines(u.text, node);
+  const stays = lines && canonical(node.toJS(u.doc)) === canonical(value);
+  if (lines && !stays) {
+    replace(u, value, node, slot);
+  } else if (stays && scalarKeys(node as yaml.Node)) {
+    keep(u, value, node as yaml.YAMLMap|yaml.YAMLSeq);
   } else if (
       isFull(value) && yaml.isCollection(node) &&
       Array.isArray(value) === yaml.isSeq(node)) {
@@ -287,47 +287,23 @@ function keep(
         pair.key.source !== pair.key.value) {
       setScalar(u, pair.key, pair.key.value, {col: 0, prefix: ':', flow: true});
     }
-    if (pair) {
-      // An alias key reads as the value its anchor names.
-      const key = yaml.isAlias(pair.key) ? pair.key.resolve(u.doc) : pair.key;
-      if (!yaml.isScalar(pair.key)) {
-        record(u, pair.key, yaml.isNode(key) ? key.toJS(u.doc) : key);
-      }
-      record(u, pair.value, (value as Record<string, unknown>)[keyName(key)]);
-    } else {
-      record(u, item, (value as unknown[])[i]);
+    const n = pair ? pair.value : item;
+    const v = pair ? (value as Record<string, unknown>)[keyOf(pair)] :
+                     (value as unknown[])[i];
+    if (yaml.isAlias(n)) {
+      u.aliases.push(
+          [n, v, {col: 0, prefix: '', after: n.range![0], flow: true}]);
+    } else if (yaml.isCollection(n)) {
+      keep(u, v, n);
     }
   });
 }
 
-/**
- * Whether the keys of each mapping in `node` differ once each alias key is
- * read as the value its anchor names. The parser checks them as written, so
- * a key written out for an alias can repeat another.
- */
-function uniqueKeys(u: Update, node: yaml.Node): boolean {
-  let unique = true;
-  yaml.visit(node, {
-    Map: (_, m) => {
-      const keys = m.items.map(
-          p => keyName(yaml.isAlias(p.key) ? p.key.resolve(u.doc) : p.key));
-      unique &&= new Set(keys).size === keys.length;
-    },
-  });
-  return unique;
-}
-
-/**
- * Records `node`, an alias or a collection in a collection whose text stays,
- * as keep does, with `value`, the value it reads as.
- */
-function record(u: Update, node: unknown, value: unknown): void {
-  if (yaml.isAlias(node)) {
-    u.aliases.push(
-        [node, value, {col: 0, prefix: '', after: node.range![0], flow: true}]);
-  } else if (yaml.isCollection(node)) {
-    keep(u, value, node);
-  }
+/** Whether each key of each mapping in `node` is a scalar. */
+function scalarKeys(node: yaml.Node): boolean {
+  let scalar = true;
+  yaml.visit(node, {Pair: (_, p) => void (scalar &&= yaml.isScalar(p.key))});
+  return scalar;
 }
 
 /** Where an item of a collection sits in the text. */
@@ -1381,13 +1357,8 @@ function scalarKey(key: string, value: unknown): string {
 }
 
 function keyOf(pair: yaml.Pair): string {
-  return keyName(pair.key);
-}
-
-/** The key of a mapping's value object that `key`, a key node, gives. */
-function keyName(key: unknown): string {
-  const k = yaml.isScalar(key) ? key.value : key;
-  return k === null ? '' : String(k);
+  const key = yaml.isScalar(pair.key) ? pair.key.value : pair.key;
+  return key === null ? '' : String(key);
 }
 
 /** Whether `node` is the `data` of a GOOGLE block. */

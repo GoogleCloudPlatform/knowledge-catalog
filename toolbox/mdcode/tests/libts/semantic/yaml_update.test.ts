@@ -171,22 +171,27 @@ test.each<[string, string, (value: any) => void, string?]>([
     'l: [ {a: 1, b: 2} ]\nm: [{a: 1, b: 2}]\n'
   ],
   [
-    'alias keys in flow mappings over several lines whose value stays, written out when their anchor changes',
+    'flow mappings over several lines with alias keys whose anchor changes or goes, patched item by item',
     'a: &k p\nc: {*k : 1,\n  q: b}\nd: &j r\ne: {*j : 1,\n  q: b}\n', v => {
       v.a = 'z';
       delete v.d;
     },
-    'a: &k z\nc: {p : 1,\n  q: b}\ne: {r : 1,\n  q: b}\n'
+    'a: &k z\nc: {p: 1,\n  q: b}\ne: {r: 1,\n  q: b}\n'
   ],
   [
     'flow mappings over several lines whose keys repeat through an alias key whose anchor goes',
     'a: &k p\nm: {\n  *k : 1,\n  *k : 2\n}\no: {\n  p: 1,\n  *k : 2\n}\n', v => delete v.a,
-    'm:\n  p: 2\no:\n  p: 2\n'
+    'm:\n  p: 2\no: {\n  p: 2\n}\n'
   ],
   [
-    'flow mappings over several lines with alias keys whose value stays, beside a changed key',
+    'flow mappings over several lines with alias keys, beside a changed key, patched item by item',
     'k: &k key\nv: &v val\nx: 1\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n',
-    v => v.x = 2, 'k: &k key\nv: &v val\nx: 2\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n'
+    v => v.x = 2, 'k: &k key\nv: &v val\nx: 2\nm:\n  key: val\no:\n  key:\n    - val\n'
+  ],
+  [
+    'flow mappings over several lines with comments, with an alias key that repeats a key or names a list',
+    'x: 1\nm: {  # open\n  &k p: 1,\n  *k : 2\n}  # close\nl: &j [1]\nr: {\n  *j : v,\n  q: b\n}\n',
+    v => v.x = 2, 'x: 2\nm: {  # open\n  &k p: 2\n}  # close\nl: &j [1]\nr: {\n  *j : v,\n  q: b\n}\n'
   ],
   [
     'flow collections over several lines whose value changes exactly, written in block style',
