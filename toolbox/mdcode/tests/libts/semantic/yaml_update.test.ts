@@ -72,6 +72,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'f: [a]\ng: null\nm: {a: 1}\nh: null\n'
   ],
   [
+    'scalars after a tag set to values of the same and of another type',
+    'a: !!str x\nb: &k !!str y\nc: !!int 5\nd: !!str\n  z\ne: !!str\n',
+    v => (v.a = 5, v.b = 6, v.c = 6, v.d = 7, v.e = 8), 'a: 5\nb: &k 6\nc: !!int 6\nd:\n  7\ne: 8\n'
+  ],
+  [
     'flow values after an anchor or a tag, set to values of another kind',
     'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
     'g: [1]\nm: {a: [1], b: [2]}\n'
@@ -395,6 +400,20 @@ test.each<[string, string, (value: any) => void, string?]>([
   expect(output.endsWith('\n'))
       .toBe(text.endsWith('\n') || endsInKeptBlock(output));
   if (expected) expect(output).toBe(expected);
+});
+
+// A root set to a value of another kind loses its tag. The `---` before it
+// stays.
+test.each([
+  ['!!seq [1]\n', '{a: 1}\n'],
+  ['--- !!seq\n[1]\n', '---\n{a: 1}\n'],
+])('the root of %j set to a mapping', (input, expected) => {
+  const {document, text} = parseForUpdate(input);
+
+  const output = updateText(text, document, {a: 1}, new Map());
+
+  expect(yaml.parse(output)).toEqual({a: 1});
+  expect(output).toBe(expected);
 });
 
 // Whether a block scalar that keeps its final line breaks, as `|+` does, ends
