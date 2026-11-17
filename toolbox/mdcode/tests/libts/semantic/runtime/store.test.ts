@@ -118,12 +118,38 @@ describe('a binding that disagrees with the target', () => {
               ]) {
            expect(resolveStore(bound(`${DB}/graphs/g`, table))).toEqual({
              error: "[m] deployment 'default' targets Spanner database " +
-                 "'p/i/d', but the model file binds entity 'Customer' to " +
-                 `'${table}', which is not a table in that database.`,
+                 "'p/i/d', but the model file binds entity 'Customer' to a " +
+                 'table outside that database. Bind the entity to a table ' +
+                 "in that database in the model file, or set 'profile:' on " +
+                 'the deployment to a profile that does.',
              named: true,
            });
          }
        });
+
+  // Under a named profile, an entity it gives no source is unbound, so a
+  // profile that leaves out an entity the error lists is not named.
+  test('the error names only a profile that binds every entity it lists', () => {
+    const m = model(
+        `    deployments:\n      - {name: default, target: "${DB}/graphs/g"}\n` +
+        `    entities:\n` +
+        ['Customer', 'Orders'].map(e => `      - name: ${e}\n` +
+            `        source: ${DATASET}/tables/${e}\n`).join(''));
+    const profile = (name: string, ...entities: string[]) => ({
+      name, relationships: [],
+      entities: entities.map(e => ({name: e, source: `${DB}/tables/${e}`})),
+    });
+    expect(resolveStore(m, 'default', 'm', [
+      profile('partial', 'Customer'), profile('full', 'Customer', 'Orders'),
+    ])).toEqual({
+      error: "[m] deployment 'default' targets Spanner database 'p/i/d', " +
+          "but the model file binds entities 'Customer' and 'Orders' to " +
+          "tables outside that database. Profile 'full' binds these " +
+          "entities to tables in that database. Set 'profile: full' on the " +
+          'deployment.',
+      named: true,
+    });
+  });
 
   test('an entity this profile binds to nothing is not a mis-binding', () => {
     // Declared and unbound is a model that has not been given a table yet.
@@ -529,7 +555,7 @@ describe('an AlloyDB source', () => {
         `${CLUSTER}/databases/d`,
         `${CLUSTER}/databases/other/schemas/public/tables/customer`));
     expect('error' in store && store.error)
-        .toContain(`'Customer' to '${CLUSTER}/databases/other`);
+        .toContain("entity 'Customer' to a table outside that database");
   });
 });
 

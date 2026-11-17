@@ -140,8 +140,9 @@ scenarios('the two-phase push path', [
     }, {
       entities: [CUSTOMER, {...CUSTOMER, name: 'Orders'}],
       code: 1,
-      errors: ['Customer', 'Orders'].map(
-          e => has(`but the model file binds entity '${e}'`)),
+      errors: [
+        has("but the model file binds entities 'Customer' and 'Orders'"),
+      ],
     }, {
       metrics: undefined,
       code: 0,

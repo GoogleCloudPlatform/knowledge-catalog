@@ -29,12 +29,16 @@ const MISSING = err(
 const BQ = 'a BigQuery graph';
 const SPANNER = "Spanner database 'test-project/i/db'";
 const ALLOYDB_DB = "AlloyDB database 'test-project/us-central1/c/db'";
-// Why `target` cannot read Customer's table.
-const outside = (target: string) => `'${ENTRY}', which is not ${
-    target === BQ ? 'a BigQuery or BigLake table' : 'a table in that database'}.`;
 // Push's refusal of deployment 'd', which targets `target`.
-const refused = (target: string) => `[commerce] deployment 'd' targets ${
-    target}, but the model file binds entity 'Customer' to ${outside(target)}`;
+const refused = (target: string) => {
+  const [outside, inside] = target === BQ ?
+      ['outside BigQuery and BigLake', 'a BigQuery or BigLake table'] :
+      ['outside that database', 'a table in that database'];
+  return `[commerce] deployment 'd' targets ${target}, but the model file ` +
+      `binds entity 'Customer' to a table ${outside}. Bind the entity to ${
+             inside} in the model file, or set 'profile:' on the deployment ` +
+      'to a profile that does.';
+};
 const BIGQUERY = refused(BQ);
 const ORDER = {
   name: 'Order', source: bqTable('order'), primary_key: ['id'],

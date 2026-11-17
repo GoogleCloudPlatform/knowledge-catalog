@@ -1156,7 +1156,7 @@ describe('profile checks', () => {
     ['a BigQuery graph whose profile binds a Spanner table', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
      onSpanner({metrics_exclude: '*'}),
      `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
-     `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
+     "a table outside BigQuery and BigLake. Bind the entity to a BigQuery or BigLake table in profile 'pg'."],
     ["a profile with a bad source alone, before a Spanner graph on the model file's own bindings",
      [{name: 'g', target: BQ_GRAPH, profile: 'pg'}, {name: 's', target: SPANNER_GRAPH}],
      orders({source: 'orders'})[0], label => [badSource(label)]],

@@ -2802,9 +2802,9 @@ describe('kcmd profiles --print-store', () => {
   }
 
   // Push refuses a deployment whose database holds no table an entity is
-  // bound to, so --print-store gives push's errors, one to a line, naming the
-  // model file. A GOOGLE block profile has no file of its own.
-  test('gives push\'s error for each table outside the database the deployment targets', async () => {
+  // bound to, so --print-store gives push's error, naming the model file. A
+  // GOOGLE block profile has no file of its own.
+  test('gives push\'s error for the tables outside the database the deployment targets', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
@@ -2833,10 +2833,12 @@ semantic_model:
     datasets:
 ${dataset('Customer')}${dataset('Order')}`);
     expect(await profiles({printStore: true, profile: 'p'})).toBe(1);
-    expect(errs).toEqual(tables.map(([entity, table]) =>
-        "Error: [orders] deployment 'prod' targets Spanner database " +
-        `'acme-ops/prod/commerce', but profile 'p' binds entity '${entity}' ` +
-        `to '${other}/${table}', which is not a table in that database.`));
+    expect(errs).toEqual([
+      "Error: [orders] deployment 'prod' targets Spanner database " +
+      "'acme-ops/prod/commerce', but profile 'p' binds entities 'Customer' " +
+      "and 'Order' to tables outside that database. Bind each entity to a " +
+      "table in that database in profile 'p'.",
+    ]);
   });
 
   test('a profile file has no store when no deployment names it', async () => {
