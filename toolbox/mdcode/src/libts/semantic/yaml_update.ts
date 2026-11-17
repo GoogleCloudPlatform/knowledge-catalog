@@ -127,10 +127,10 @@ export function updateText(
       replace(u, v, alias, slot);
     }
   }
-  // An alias that the new text reads as another value is written out too, as
-  // when moved text defines its anchor's name again between the alias and its
-  // anchor. A value written fresh holds no anchor, so every other alias still
-  // names the same value.
+  // An alias that names another node in the new text, or none, is written
+  // out too, as when moved text defines its anchor's name again between the
+  // alias and its anchor. A value written fresh holds no anchor, so every
+  // other alias still names the same node.
   let [made, out] = composed(u);
   const misread = misreadAliases(u, made, out);
   if (misread.length) {
@@ -185,8 +185,8 @@ function composed(u: Update): [Array<[number, number, string]>, string] {
 }
 
 /**
- * The aliases of `u.aliases` whose text stays and that `out` reads as another
- * value than theirs, or as none. The edits `made` give `out`. An alias names
+ * The aliases of `u.aliases` whose text stays and that name another node in
+ * `out` than in `u.text`, or none. The edits `made` give `out`. An alias names
  * the last node above it with its anchor.
  */
 function misreadAliases(
@@ -207,17 +207,16 @@ function misreadAliases(
       else if (n.anchor) anchors.set(n.anchor, n);
     },
   });
-  return kept.filter(([alias, v]) => {
-    const at = alias.range![0];
-    const shift = made.reduce(
-        (s, [p, q, t]) => q <= at ? s + t.length - (q - p) : s, 0);
-    const node = named.get(at + shift);
-    try {
-      return !node || canonical(node.toJS(doc)) !== canonical(v);
-    } catch {
-      // A value that holds an alias with no anchor above it.
-      return true;
-    }
+  // The offset in `out` of an offset of `u.text` inside no edit.
+  const moved = (at: number) =>
+      made.reduce((s, [p, q, t]) => q <= at ? s + t.length - (q - p) : s, at);
+  // An alias whose anchor changed or went is already written out. So the node
+  // each kept alias names keeps its text, and starts where its start in
+  // `u.text` moves to.
+  return kept.filter(([alias]) => {
+    const node = alias.resolve(u.doc) as yaml.Node;
+    return named.get(moved(alias.range![0]))?.range![0] !==
+        moved(node.range![0]);
   });
 }
 

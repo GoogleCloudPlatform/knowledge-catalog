@@ -466,6 +466,22 @@ test.each<[string, string, (value: any) => void, string?]>([
     'list1:\n  - {name: stay}\nb: &n q\nlist2:\n  - {name: first}\n  - name: mover\n    w: {x: &n z}\nc: [x,\n  q]\n'
   ],
   [
+    'an alias that a moved anchor with an equal value would take',
+    'list1:\n  - {name: mover, w: {x: &n z}}\n  - {name: stay}\nb: &n z\nlist2:\n  - {name: first}\nc: *n\n',
+    v => v.list2.push(v.list1.shift()),
+    'list1:\n  - {name: stay}\nb: &n z\nlist2:\n  - {name: first}\n  - name: mover\n    w: {x: &n z}\nc: z\n'
+  ],
+  [
+    'an alias of an anchor whose own aliases a moved anchor would take',
+    'list1:\n  - name: mover\n    w:\n      a: &q 1\n      x: &b [*q, *q, *q, *q, *q, *q, *q, *q, *q, *q, *q]\n' +
+        '  - name: stay\nk0: &b [1]\nlist2:\n  - name: first\np: &n [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]\nx: *n\n',
+    v => v.list2.push(v.list1.shift()),
+    'list1:\n  - name: stay\nk0: &b [1]\nlist2:\n  - name: first\n  - name: mover\n    w:\n      a: &q 1\n' +
+        '      x: &b [*q, *q, *q, *q, *q, *q, *q, *q, *q, *q, *q]\np: &n [[1], [1], [1], [1], [1], [1], [1], [1], [1], [1]]\n' +
+        'x: *n\n'
+  ],
+  ['an alias after a removed flow list item', 'a: &a 1\nl: [9, *a]\n', v => v.l.shift(), 'a: &a 1\nl: [*a]\n'],
+  [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
     v => {
       const a = [...v.a, 2];
