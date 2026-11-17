@@ -14,7 +14,7 @@ import * as path from 'node:path';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
-import {listed, modelDocumentVersion} from '../semantic/loader';
+import {listed, ModelDocument, modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {PROFILE_FILE_KEYS} from '../semantic/resolve_profiles';
 import {documentValue, yamlErrorMessage} from '../semantic/yaml_options';
@@ -296,7 +296,8 @@ export class SemanticModelLayout implements CatalogLayout {
   // What the layout reads its files with.
   readonly files: LayoutFiles;
 
-  // Maps a model handle (the document's file basename) to its absolute path.
+  // Maps a model handle (the document's file basename) to its path, under the
+  // catalog path as given.
   private readonly _index = new Map<string, string>();
 
   constructor(catalogPath: string, entryGroup?: string, files = diskFiles) {
@@ -322,7 +323,7 @@ export class SemanticModelLayout implements CatalogLayout {
         `EntryGroups/${this._entryGroup}/*.yaml` :
         'EntryGroups/*/*.yaml';
     const matches = this.files.glob(this._catalogPath, [pattern])
-                        .map(f => path.resolve(this._catalogPath, f));
+                        .map(f => path.join(this._catalogPath, f));
 
     // glob returns files in directory order, which differs between
     // filesystems. Sorted, push and `kcmd profiles` visit models in the same
@@ -357,13 +358,17 @@ export class SemanticModelLayout implements CatalogLayout {
     return [];
   }
 
-  // Reads the raw Ossie document text for each discovered model. This is the
-  // seam the push path consumes; the Ossie text is parsed to the semantic IR by
-  // the loader, not mapped to a Knowledge Catalog entry here.
-  modelDocuments(): {name: string; text: string}[] {
-    const docs: {name: string; text: string}[] = [];
+  // Reads the raw Ossie document text for each discovered model, with the
+  // path of its model file. The loader parses the text to the semantic IR, and
+  // its errors name the file by that path.
+  modelDocuments(): ModelDocument[] {
+    const docs: ModelDocument[] = [];
     for (const [name, localPath] of this._index) {
-      docs.push({name, text: this.files.read(localPath).toString('utf8')});
+      docs.push({
+        name,
+        text: this.files.read(localPath).toString('utf8'),
+        path: localPath,
+      });
     }
     return docs;
   }
@@ -694,11 +699,11 @@ export class SemanticModelLayout implements CatalogLayout {
     }
   }
 
-  // The absolute path a model document with this handle maps to:
-  // `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path separators in the
-  // model name are replaced so a name still yields a single flat file. Requires
-  // the layout to be scoped to an entry group (the semantic-model source always
-  // is).
+  // The path a model document with this handle maps to, under the catalog
+  // path as given: `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path
+  // separators in the model name are replaced so a name still yields a single
+  // flat file. Requires the layout to be scoped to an entry group (the
+  // semantic-model source always is).
   modelPath(name: string): string {
     if (!this._entryGroup) {
       throw new Error(
@@ -769,8 +774,9 @@ export function parseOverviewSidecar(
   try {
     split = splitFrontmatter(unmarked);
   } catch (err: any) {
+    // The frontmatter is the file's lines below its opening `---` line.
     throw fail(`its frontmatter does not parse: ${
-        yamlErrorMessage(err, frontmatterText(unmarked) ?? '')}`);
+        yamlErrorMessage(err, frontmatterText(unmarked) ?? '', '---\n')}`);
   }
   const metadata = split.metadata ?? {};
   const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?

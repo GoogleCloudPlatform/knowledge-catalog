@@ -196,7 +196,8 @@ relationships:
     expect(out).toContain(
         "relationship 'placed_by': from_columns and to_columns must be given " +
         'together');
-    expect(out.split("Model document 'commerce'").length - 1).toBe(1);
+    const file = path.join('catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    expect(out.split(`Model document '${file}'`).length - 1).toBe(1);
   });
 
   // Applying a profile file warns as push does, under the profile's heading.
@@ -262,10 +263,11 @@ relationships:
     expect('error' in runtimes && runtimes.error).toContain(
         "relationship 'placed_by': from_columns and to_columns must be given " +
         'together');
-    // The loader's error names the model document itself, and says why the
-    // profile does not complete it.
-    expect('error' in runtimes && runtimes.error)
-        .toStartWith("Model document 'commerce'");
+    // The loader's error names the model file, and says why the profile does
+    // not complete it.
+    expect('error' in runtimes && runtimes.error).toStartWith(
+        `Model document '${path.join(
+            dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml')}'`);
     expect('error' in runtimes && runtimes.error).toContain(
         "(under profile 'prod', the model file must load on its own before " +
         'the profile applies)');

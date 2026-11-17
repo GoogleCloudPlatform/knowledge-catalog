@@ -29,7 +29,7 @@
 
 import {queryProblem, selfReferences} from './expression_checks';
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, COMMA_ADVICE, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, COMMA_ADVICE, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, listed, LoadOptions, loadSemanticModels, ModelDocument, modelDocumentError, modelFileKeysAt, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, holdsSubquery, isColumnName, selfReferenceMessage} from './sql_expr_utils';
@@ -611,14 +611,13 @@ function applyProfileFileToDocument(
 // Loads `doc` on its own and calls `apply` on its model, without the model's
 // actions when `skipActions` is set.
 function applyToDocument(
-    doc: {name: string; text: string},
+    doc: ModelDocument,
     apply: (base: SemanticModel,
             from: {document: string; warnings: string[]}) =>
         {model: SemanticModel; warnings: string[]}|{error: string},
     load: DialectLoad, skipActions: boolean):
     AppliedProfile|{error: string; stage: 'load'|'apply'} {
-  const loaded = loadSemanticModels(
-      [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
+  const loaded = loadSemanticModels([doc], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
   const {model} = loaded.models[0];
   const res = apply(
@@ -655,15 +654,14 @@ export type ProfileFiles =
  * profiles a load rejects.
  */
 export function declaredProfiles(
-    doc: {name: string; text: string},
+    doc: ModelDocument,
     files: Array<{name: string; text: string}>): DeclaredProfile[] {
   let blockProfiles: ProfileSpec[];
   try {
     blockProfiles = googleBlockProfiles(doc.text);
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
-    throw new SemanticModelError(
-        `Model document '${doc.name}': ${err.message}`);
+    throw new SemanticModelError(modelDocumentError(doc, err.message));
   }
   return [
     ...files,

@@ -4203,6 +4203,21 @@ export function bareNameParts(name: string, bigQuery: boolean):
 }
 
 
+// A model document a command loads: its handle, its text and, when it was
+// read from a model file, that file's path.
+export interface ModelDocument {
+  name: string;
+  text: string;
+  path?: string;
+}
+
+// `message`, a load error in the model document `doc`, naming the document by
+// its path when it has one, and else by its handle.
+export function modelDocumentError(
+    doc: ModelDocument, message: string): string {
+  return `Model document '${doc.path ?? doc.name}': ${message}`;
+}
+
 // A single model parsed from one authored model file, tagged with that file's
 // name so a consumer (a deploy leg) can attribute warnings and errors back to
 // the file the author wrote.
@@ -4220,8 +4235,9 @@ export interface LoadedModels {
   // Loader warnings across all documents, each prefixed with its document name.
   warnings: string[];
   // Set when a document failed to parse or violated the schema, naming the
-  // document. `models` then holds whatever parsed before the failure; callers
-  // should treat a set `error` as fatal and not deploy.
+  // document as modelDocumentError does. `models` then holds whatever parsed
+  // before the failure; callers should treat a set `error` as fatal and not
+  // deploy.
   error?: string;
 }
 
@@ -4238,7 +4254,7 @@ export interface LoadedModels {
  * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function loadSemanticModels(
-    docs: {name: string; text: string}[],
+    docs: ModelDocument[],
     opts: LoadOptions = {}): LoadedModels {
   const models: LoadedModel[] = [];
   const warnings: string[] = [];
@@ -4251,7 +4267,7 @@ export function loadSemanticModels(
       return {
         models,
         warnings,
-        error: `Model document '${doc.name}': ${err.message}`,
+        error: modelDocumentError(doc, err.message),
       };
     }
     for (const w of loaded.warnings) warnings.push(`[${doc.name}] ${w}`);

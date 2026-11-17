@@ -441,8 +441,9 @@ semantic_model:
 
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0]))).toEqual([
-      "Error: Model document 'commerce': Semantic model load error: entity " +
-          "'Customer': source 'not a table' looks like a SQL query; a " +
+      `Error: Model document '${shown('commerce.yaml')}': Semantic model ` +
+          "load error: entity 'Customer': source 'not a table' looks like a " +
+          'SQL query; a ' +
           'query-valued source is not supported yet. Bind \'source\' to a ' +
           'physical table using its GCP resource name (e.g. ' +
           "'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>').",
@@ -467,6 +468,33 @@ entities:
             "[commerce.profile.prod.yaml] profile 'prod': entity 'Customer': " +
             "bare table name 'prod.customer' is not a valid source");
   });
+});
+
+// A model file that does not parse is named by its path, and a profile file
+// by its name. A quote left open to the end of the file is reported where it
+// opens.
+describe('a file that does not parse', () => {
+  for (const [what, file, text, error] of [
+    ['model file', 'commerce.yaml',
+     MODEL_YAML.replace('primary_key', 'description: "Buyers\n        $&'),
+     `Model document '${shown('commerce.yaml')}': Semantic model load ` +
+         'error: could not parse input: Missing closing "quote at line 6, ' +
+         'column 22:\n\n        description: "Buyers\n                     ^\n'],
+    ['profile file', 'commerce.profile.prod.yaml',
+     "name: prod\nentities:\n  - name: Customer\n    description: 'Buyers\n",
+     "Profile file 'commerce.profile.prod.yaml' does not parse: Missing " +
+         "closing 'quote at line 4, column 18:\n\n    description: 'Buyers\n" +
+         '                 ^\n'],
+  ]) {
+    test(`push names a ${what} with a quote left open`, async () => {
+      writeWorkspace();
+      fs.writeFileSync(shown(file), text);
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await push({validateOnly: true})).toBe(1);
+      expect(messages(errorSpy)).toBe(`Error: ${error}`);
+    });
+  }
 });
 
 
@@ -1771,7 +1799,8 @@ semantic_model:
   // under --dry-run.
   const NO_LOAD = `Warning: local model file ${
       shown('commerce.yaml')} does not load, so pull writes it from the ` +
-      "catalog: Model document 'commerce': Semantic model load error: ";
+      `catalog: Model document '${shown('commerce.yaml')}': Semantic model ` +
+      'load error: ';
   for (const [what, text, error, advice] of [
     ['Ossie model file',
      'version: "0.3.0.dev0"\nname: commerce\ndatasets: []\n',
@@ -2438,7 +2467,7 @@ describe('a pull', () => {
          fs.writeFileSync(local('commerce.profile.dev.yaml'), 'name: [\n');
          expect(await pullModel()).toBe(0);
          expect(messages(console.warn)).toMatch(
-             /as pull leaves it: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n\^\.$/);
+             /as pull leaves it: Profile file 'commerce\.profile\.dev\.yaml' does not parse: [^]*\n *\^\.$/);
        });
 
   // Under --dry-run --force-remove, that import leaves out the files the pull
@@ -4115,7 +4144,8 @@ semantic_model:
     test(`a model whose GOOGLE block ${what} stops push and kcmd profiles with exit 1`, async () => {
       write();
       const error =
-          `Error: Model document 'commerce': Semantic model load error: ${problem}`;
+          `Error: Model document '${shown('commerce.yaml')}': Semantic model ` +
+          `load error: ${problem}`;
       const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
       const logSpy = spyOn(console, 'log').mockImplementation(() => {});
 
@@ -4149,14 +4179,16 @@ semantic_model:
         "'custom_extensions' is 123; it takes a string";
     expect(await push({validateOnly: true})).toBe(1);
     expect(messages(errorSpy)).toBe(
-        `Error: Model document 'commerce': Semantic model load error: ${loadError}`);
+        `Error: Model document '${shown('commerce.yaml')}': Semantic model ` +
+        `load error: ${loadError}`);
     errorSpy.mockClear();
 
     expect(await profiles({printStore: true})).toBe(1);
-    expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
+    const named = `Error: Model document '${shown('commerce.yaml')}': ${error}`;
+    expect(messages(errorSpy)).toBe(named);
     errorSpy.mockClear();
     expect(await skillsGenerate({out: 'skills'})).toBe(1);
-    expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
+    expect(messages(errorSpy)).toBe(named);
   });
 
   // The runtime reads every model's profiles before it applies one, as push
@@ -4215,8 +4247,8 @@ semantic_model:
       expect(await profiles({profile: 'prod'})).toBe(1);
       expect(messages(logSpy)).toContain("  profile 'prod'");
       expect(messages(errorSpy)).toStartWith(
-          "push rejects:\n  Model document 'commerce': Semantic model load " +
-          'error: ');
+          `push rejects:\n  Model document '${shown('commerce.yaml')}': ` +
+          'Semantic model load error: ');
       errorSpy.mockClear();
       expect(await profiles({printStore: true, profile: 'prod'})).toBe(1);
       expect(messages(errorSpy)).toContain(alone);
@@ -4254,8 +4286,8 @@ semantic_model:
       // Push loads the model file first, whatever profile it holds.
       expect(await push({validateOnly: true})).toBe(1);
       expect(messages(errorSpy)).toStartWith(
-          "Error: Model document 'commerce': Semantic model load error: " +
-          'could not parse input: ');
+          `Error: Model document '${shown('commerce.yaml')}': Semantic model ` +
+          'load error: could not parse input: ');
       expect(messages(errorSpy)).toContain(problem);
       errorSpy.mockClear();
       // The runtime finds the profile past a key set twice or an alias whose

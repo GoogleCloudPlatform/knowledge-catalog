@@ -19,7 +19,7 @@ import * as yaml from 'yaml';
 import {SemanticModel} from './ir';
 import {modelsFromCatalogResources} from './kc_converter';
 import {generateCatalogResources} from './knowledge_catalog';
-import {isGoogleVendor, isRecord, loadSemanticModels, SemanticModelError} from './loader';
+import {isGoogleVendor, isRecord, loadSemanticModels, ModelDocument, SemanticModelError} from './loader';
 import {loadProfileFile, plainCopy, ProfileFiles, profileProblems} from './resolve_profiles';
 import {cutStatements, withProfileFiles} from './validate';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
@@ -44,7 +44,7 @@ export interface CatalogScope {
  * `loadSqlEngine()` first.
  */
 export function catalogForm(
-    doc: {name: string; text: string}, profileDocs: ProfileFiles,
+    doc: ModelDocument, profileDocs: ProfileFiles,
     scope: CatalogScope): {model: SemanticModel}|{error: string} {
   const loaded = loadSemanticModels([doc], {bindingOptional: true});
   if (loaded.error) return {error: loaded.error};

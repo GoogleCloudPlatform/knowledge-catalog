@@ -461,7 +461,9 @@ semantic_model:
                 ],
                 [
                   '{not-json',
-                  "Error: Model document 'commerce': Semantic model load " +
+                  `Error: Model document '${
+                      path.join('catalog', 'EntryGroups', 'commerce_eg',
+                                'commerce.yaml')}': Semantic model load ` +
                       "error: model 'commerce': the " +
                       "'data' of a GOOGLE custom_extensions block must be a " +
                       'JSON object.',
