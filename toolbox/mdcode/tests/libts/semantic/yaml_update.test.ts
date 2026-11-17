@@ -63,7 +63,7 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   [
     'values under an anchor or a tag on a line of its own, set to lists, two before a comment',
-    'a:\n  &x  # c\n  {k: 1}\nb:\n  !!str  # d\n  x\ne:\n  &z !!map\n  {k: 1}\n',
+    'a:\n  &x  # c\n  {k: 1}\nb:\n  !!str # d\n  x\ne:\n  &z !!map\n  {k: 1}\n',
     v => (v.a = [1], v.b = [1], v.e = [1]), 'a:\n  # c\n  [1]\nb:\n  # d\n  - 1\ne:\n  [1]\n'
   ],
   [
@@ -117,6 +117,13 @@ test.each<[string, string, (value: any) => void, string?]>([
       v.x = [Object.assign(v.x[1], {k: 1})];
     },
     'w: [[c]]\nx: [{k: 1}]\nu: [[c]]\nsynonyms: [[c]]\nz: [[c]]\n'
+  ],
+  [
+    'flow list items after a tag and an anchor in either order set to another type, some beside a removed item',
+    'w: [old, !!float &k .inf]\nx: [old, !!float &j .nan]\nu: [old, !!null &i ~]\n' +
+        's: [!!float &h .inf]\nr: [old, &g !!float .inf]\nq: [&f !!float .inf]\n',
+    v => Object.assign(v, {w: [null], x: [null], u: [Infinity], s: [null], r: [null], q: [null]}),
+    'w: [&k null]\nx: [&j null]\nu: [&i .inf]\ns: [&h null]\nr: [&g null]\nq: [&f null]\n'
   ],
   [
     'scalars after a custom tag set to a string and to a number it reads as a string',

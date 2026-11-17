@@ -624,14 +624,16 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
 /**
  * The edits that take the anchor and tag tokens `tokens` out of the text of
  * the value at `from` in `slot`, and where the value's own edit starts. Each
- * line's tokens go together. When the value follows them on their line, its
- * edit starts where they do, as for an empty value right after them, so the
- * text before them, such as the separator before a flow list item, stays
- * with whatever edits it. On a line before the value, those with text before
- * them go with the spaces between, and with the spaces after them that end
- * the line. Those that start their line go with the spaces after them, and
- * with the line when nothing else is on it. `keyEnd` is where the tokens on
- * the line of the key or `-` end, or that line's end when only spaces follow
+ * line's tokens go together, with the spaces after them up to the next token
+ * or the value. When the value follows them, its edit starts where they do,
+ * as for an empty value right after them. When the end of the line or a
+ * comment follows them, the value is on a later line. Then they go with the
+ * spaces before them instead, and with spaces that end the line, so a comment
+ * stays where it was. Tokens that start their line leave a comment after them
+ * in their place, and take a line with nothing else on it. Otherwise a cut
+ * never takes the text before its tokens, such as the separator before a flow
+ * list item, which another edit may take. `keyEnd` is where the tokens on the
+ * line of the key or `-` end, or that line's end when only spaces follow
  * them, or the slot's `after` when none are there.
  */
 function propsOut(
@@ -658,10 +660,16 @@ function propsOut(
     let [pre, b] = [a, end];
     while (/[ \t]/.test(t[pre - 1] ?? '')) pre--;
     while (/[ \t]/.test(t[b] ?? '')) b++;
-    if (end <= from && from <= b) start = a;
-    else if (pre > ls) cuts.push([pre, b === lineEnd(t, b) ? b : end, '']);
-    else if (b === lineEnd(t, b)) cuts.push([ls, nextLine(t, a), '']);
-    else cuts.push([a, b, '']);
+    const eol = b === lineEnd(t, b);
+    if (end <= from && from <= b) {
+      start = a;
+    } else if (pre > ls && (eol || t[b] === '#')) {
+      cuts.push([pre, eol ? b : end, '']);
+    } else if (eol) {
+      cuts.push([ls, nextLine(t, a), '']);
+    } else {
+      cuts.push([a, b, '']);
+    }
   }
   return {start, keyEnd, cuts};
 }
