@@ -239,19 +239,21 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // Its text stays while its value stays null.
   if (node === null && value === null) return;
   const edits = u.edits.length;
-  const items = isFull(value) && yaml.isCollection(node) &&
-      Array.isArray(value) === yaml.isSeq(node);
-  // A flow collection over several lines that changes is written again in
-  // block style, and so is one whose value stays when its items would
-  // change, as when a linked item moves.
-  if (yaml.isCollection(node) && node.flow && spansLines(u.text, node) &&
-      (canonical(node.toJS(u.doc)) !== canonical(value) ||
-       items && itemsChange(u, value as object, node, slot))) {
-    replace(u, value, node, slot);
-  } else if (items) {
-    patchItems(u, value as object, node as yaml.YAMLMap|yaml.YAMLSeq, slot);
+  // A flow collection over several lines keeps its text when its value
+  // stays, even when a linked item in it moved, since the text reads as the
+  // value. It is written again in block style when its value changes.
+  if (yaml.isCollection(node) && node.flow && spansLines(u.text, node)) {
+    if (canonical(node.toJS(u.doc)) === canonical(value)) {
+      keep(u, value, node);
+    } else {
+      replace(u, value, node, slot);
+    }
+  } else if (
+      isFull(value) && yaml.isCollection(node) &&
+      Array.isArray(value) === yaml.isSeq(node)) {
+    patchItems(u, value, node, slot);
   } else if (yaml.isScalar(node) && !isObject(value)) {
-    if (node.value !== value) setScalar(u, node, value, slot);
+    if (!Object.is(node.value, value)) setScalar(u, node, value, slot);
   } else if (
       isObject(value) && !isFull(value) && yaml.isCollection(node) &&
       node.items.length === 0 && Array.isArray(value) === yaml.isSeq(node)) {
@@ -266,22 +268,28 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
 }
 
 /**
- * Whether patching the items of `node` to hold `value` would edit the text.
- * The trial patch works on copies of the parts of `u` a patch changes.
+ * Keeps the text of `node`, which reads as `value`. A key in it that the
+ * document renames is written again, and each alias in it is recorded with
+ * its value, so that the alias is written out when its anchor changes.
  */
-function itemsChange(
-    u: Update, value: object, node: yaml.YAMLMap|yaml.YAMLSeq,
-    slot: Slot): boolean {
-  const trial: Update = {
-    ...u,
-    edits: [],
-    dirty: new Set(u.dirty),
-    used: new Set(u.used),
-    held: new Map(u.held),
-    aliases: [],
-  };
-  patchItems(trial, value, node, slot);
-  return trial.edits.length > 0;
+function keep(
+    u: Update, value: unknown, node: yaml.YAMLMap|yaml.YAMLSeq): void {
+  (node.items as unknown[]).forEach((item, i) => {
+    const pair = yaml.isPair(item) ? item : undefined;
+    if (pair && yaml.isScalar(pair.key) && typeof pair.key.value === 'string' &&
+        pair.key.source !== pair.key.value) {
+      setScalar(u, pair.key, pair.key.value, {col: 0, prefix: ':', flow: true});
+    }
+    const n = pair ? pair.value : item;
+    const v = pair ? (value as Record<string, unknown>)[keyOf(pair)] :
+                     (value as unknown[])[i];
+    if (yaml.isAlias(n)) {
+      u.aliases.push(
+          [n, v, {col: 0, prefix: '', after: n.range![0], flow: true}]);
+    } else if (yaml.isCollection(n)) {
+      keep(u, v, n);
+    }
+  });
 }
 
 /** Where an item of a collection sits in the text. */
@@ -1392,12 +1400,20 @@ export function itemKeys(items: unknown[], repeated = new Set<string>()):
           k);
 }
 
-/** `value` as JSON text with each mapping's keys sorted. */
+/**
+ * `value` as JSON text with each mapping's keys sorted. Two values give one
+ * text only when they are equal. JSON writes NaN and the infinities as `null`
+ * and -0 as `0`, so these are written as strings that start with a NUL
+ * instead. A string that starts with a NUL gets another one.
+ */
 function canonical(value: unknown): string {
-  const sorted = (_: string, v: unknown) => isRecord(v) ?
+  const exact = (_: string, v: unknown) => isRecord(v) ?
       Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : 1)) :
+      typeof v === 'number' && (!Number.isFinite(v) || Object.is(v, -0)) ?
+      `\0${Object.is(v, -0) ? '-0' : v}` :
+      typeof v === 'string' && v.startsWith('\0') ? `\0${v}` :
       v;
-  return JSON.stringify(value, sorted) ?? 'undefined';
+  return JSON.stringify(value, exact) ?? 'undefined';
 }
 
 function isObject(value: unknown): value is object {

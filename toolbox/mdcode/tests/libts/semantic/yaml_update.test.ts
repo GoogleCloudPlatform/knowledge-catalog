@@ -119,25 +119,52 @@ test.each<[string, string, (value: any) => void, string?]>([
     'w: [[c]]\nx: [{k: 1}]\nu: [[c]]\nsynonyms: [[c]]\nz: [[c]]\n'
   ],
   [
-    'flow list items after a tag and an anchor in either order set to another type, some beside a removed item',
-    'w: [old, !!float &k .inf]\nx: [old, !!float &j .nan]\nu: [old, !!null &i ~]\n' +
-        's: [!!float &h .inf]\nr: [old, &g !!float .inf]\nq: [&f !!float .inf]\n',
-    v => Object.assign(v, {w: [null], x: [null], u: [Infinity], s: [null], r: [null], q: [null]}),
-    'w: [&k null]\nx: [&j null]\nu: [&i .inf]\ns: [&h null]\nr: [&g null]\nq: [&f null]\n'
+    'values after a tag and an anchor in either order set to another type, beside a removed entry',
+    'm: {a: 1, b: !!float &k .inf}\np: {a: 1, b: &j !!float .nan}\nw: [old, !!float &i .inf]\n' +
+        'u: [old, !!null &h ~]\ng: {"a":!!str &l x}\n',
+    v => Object.assign(v, {m: {b: null}, p: {b: null}, w: [null], u: [Infinity], g: {a: 5}}),
+    'm: {b: &k null}\np: {b: &j null}\nw: [null]\nu: [.inf]\ng: {"a":&l 5}\n'
   ],
   [
-    'flow lists over several lines whose value stays while a linked item moves, beside one that stays',
+    'flow collections over several lines whose value stays exactly, as a linked item moves, keep their text',
     'w: [[c], &m\n  []]\nx: [[c], &n  # c\n  []]\nu: [[c],\n  &o\n  []]\ns: [[c],\n  &p  # note\n  []]\n' +
-        'r: [[c], &q\n  []]\nt: [a,  # c\n  b]\n',
+        'r: &a [[c], &q\n  []]\nt: [.nan,  # c\n  b]\nm: {\n  w: [[c], &e\n    []]\n}\n' +
+        'k: [&f [x],\n  &g [x]]\nj: *f\nl: [&h [x],\n  &i [x]]\nh: *h\nq: .NaN\n',
     v => {
       for (const k of ['w', 'x', 'u', 's']) {
         v[k][1].push('c');
         v[k] = [v[k][1], []];
       }
-      v.t = ['a', 'b'];
+      v.r[1].push('c');
+      v.r.shift();
+      v.r.push([]);
+      v.t = [NaN, 'b'];
+      v.m.w = [v.m.w[1], []];
+      v.m.w[0].push('c');
+      v.k.reverse();
+      v.l = [v.l[1], v.l[0]];
     },
-    'w:\n  -\n    - c\n  - []\nx:\n  -\n    - c\n  - []\nu:\n  -\n    - c\n  - []\n' +
-        's:\n  -\n    - c\n  - []\nr: [[c], &q\n  []]\nt: [a,  # c\n  b]\n'
+    'w: [[c], &m\n  []]\nx: [[c], &n  # c\n  []]\nu: [[c],\n  &o\n  []]\ns: [[c],\n  &p  # note\n  []]\n' +
+        'r: &a [[c], &q\n  []]\nt: [.nan,  # c\n  b]\nm: {\n  w: [[c], &e\n    []]\n}\n' +
+        'k: [&f [x],\n  &g [x]]\nj: *f\nl: [&h [x],\n  &i [x]]\nh: *h\nq: .NaN\n'
+  ],
+  [
+    'an alias in a flow list over several lines whose value stays, written out when its anchor changes',
+    'a: &a\n  - c\nw: [\n  *a,\n  [*a]\n]\n', v => v.a.push('d'),
+    'a: &a\n  - c\n  - d\nw: [\n  [c],\n  [[c]]\n]\n'
+  ],
+  [
+    'flow collections over several lines whose value changes exactly, written in block style',
+    'u: [null,\n  1]\nm: {a: null,\n  b: 1}\nw: [old,\n  .inf]  # c\nz: [0,\n  1]\ne: [.nan,\n  1]\n',
+    v => {
+      v.u[0] = Infinity;
+      v.m.a = -Infinity;
+      v.w[1] = null;
+      v.z[0] = -0;
+      v.e[0] = '\0NaN';
+    },
+    'u:\n  - .inf\n  - 1\nm:\n  a: -.inf\n  b: 1\nw:  # c\n  - old\n  - null\nz:\n  - -0\n  - 1\n' +
+        'e:\n  - "\\0NaN"\n  - 1\n'
   ],
   [
     'scalars after a custom tag set to a string and to a number it reads as a string',
@@ -483,6 +510,27 @@ test.each([
   value.a = a;
 
   expect(updateText(text, document, value, links)).toBe(expected);
+});
+
+test('a key renamed in a flow mapping over several lines is written again in place', () => {
+  const {document, text} = parseForUpdate('m: {datasets: [a],  # c\n  x: 1}\n');
+  const m = (document.contents as yaml.YAMLMap).items[0].value as yaml.YAMLMap;
+  (m.items[0].key as yaml.Scalar).value = 'entities';
+  const value = {m: {entities: ['a'], x: 1}};
+
+  expect(updateText(text, document, value, linkNodes(value, document.contents)))
+      .toBe('m: {entities: [a],  # c\n  x: 1}\n');
+});
+
+test('a flow list nested 20 deep over several lines stays as written', () => {
+  let list = '1';
+  for (let i = 0; i < 20; i++) list = `[${list},\n ${i}]`;
+  const {document, text} = parseForUpdate(`x: ${list}\ny: 1\n`);
+  const value = plainCopy(document.toJS());
+  const links = linkNodes(value, document.contents);
+  value.y = 2;
+
+  expect(updateText(text, document, value, links)).toBe(`x: ${list}\ny: 2\n`);
 });
 
 test('a key renamed in the document keeps its tag and its value\'s', () => {
