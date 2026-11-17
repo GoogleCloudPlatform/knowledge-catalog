@@ -329,6 +329,14 @@ semantic_model:
                              '        ai_context: {*k : the order id,\n          o_id: again}\n'),
      {flavor: 'ossie'}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
      '            ai_context: {o_id: again}\n'],
+    ["a moved metric with an anchor whose name a later dataset defines again for a later alias",
+     ossieFile({orders: '    metrics:\n      - name: m\n        expression:\n          sql: SUM(amount)\n' +
+                    '        ai_context: {synonyms: [&n total]}\n',
+                rest: '    ai_context: {synonyms: [&n buyers]}\nmetrics: [{name: c, expression: {sql: COUNT(customers.id)}}]\n' +
+                    'relationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
+                    'to_columns: [id], ai_context: {synonyms: [*n]}}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     'to_columns: [id], ai_context: {synonyms: [buyers]}}]\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',
@@ -348,6 +356,83 @@ semantic_model:
     const res = await importSemanticModelYaml(input, {flavor: 'google', ...opts});
     expect(res.warnings).toContain(line);
     expect(res.files[0].content).toContain(written);
+  });
+
+  test("writes out an alias when a moved metric defines its anchor's name again above it", async () => {
+    const res = await importSemanticModelYaml(`version: "0.3.0.dev0"
+name: shop
+datasets:
+  - name: orders
+    source: ${TABLES}/orders
+    primary_key: [id]
+    fields:
+      - name: id
+        expression: {sql: id}
+    metrics:
+      - name: order_count
+        expression: {sql: COUNT(orders.id)}
+        ai_context:
+          note: &note Counts orders.
+  - name: customers
+    source: ${TABLES}/customers
+    primary_key: [id]
+    fields:
+      - name: id
+        expression: {sql: id}
+    ai_context:
+      note: &note Counts customers.
+metrics:
+  - name: customer_count
+    expression: {sql: COUNT(customers.id)}
+relationships:
+  - name: orders_customers
+    from: orders
+    to: customers
+    from_columns: [id]
+    to_columns: [id]
+    ai_context:
+      note: *note
+`, {flavor: 'ossie'});
+    expect(res.files[0].content).toBe(`version: "0.2.0.dev0"
+semantic_model:
+  - name: shop
+    datasets:
+      - name: orders
+        source: ${TABLES}/orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: id}]}
+      - name: customers
+        source: ${TABLES}/customers
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: id}]}
+        ai_context:
+          note: &note Counts customers.
+    metrics:
+      - name: customer_count
+        expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: COUNT(customers.id)}]}
+      - name: order_count
+        expression:
+          dialects:
+            - dialect: OSSIE_SQL_2026
+              expression: COUNT(orders.id)
+        ai_context:
+          note: &note Counts orders.
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity":"orders"}'
+    relationships:
+      - name: orders_customers
+        from: orders
+        to: customers
+        from_columns: [id]
+        to_columns: [id]
+        ai_context:
+          note: Counts customers.
+`);
   });
 
   // The load error of a written file whose dataset orders keeps its `metrics`.

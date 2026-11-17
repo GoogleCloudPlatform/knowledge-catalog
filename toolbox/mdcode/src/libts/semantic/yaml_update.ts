@@ -127,11 +127,31 @@ export function updateText(
       replace(u, v, alias, slot);
     }
   }
+  // An alias that the new text reads as another value is written out too, as
+  // when moved text defines its anchor's name again between the two. A value
+  // written fresh holds no anchor, so it changes what no other alias names.
+  let [made, out] = composed(u);
+  const misread = misreadAliases(u, made, out);
+  if (misread.length) {
+    u.fresh = true;
+    for (const [alias, v, slot] of misread) replace(u, v, alias, slot);
+    [made, out] = composed(u);
+  }
+  edits.push(...made);
+  return out;
+}
+
+/**
+ * The edits `u.edits` gives, in offset order, and the text they make of
+ * `u.text`.
+ */
+function composed(u: Update): [Array<[number, number, string]>, string] {
+  const text = u.text;
   // The empty lines after a block scalar that keeps its final line breaks, as
   // `|+` does, are its text. An edit that removes the text right after one
   // whose text stays also removes the blank lines it would leave there.
   const ends = new Set<number>();
-  yaml.visit(doc, {
+  yaml.visit(u.doc, {
     Scalar: (_, n) => {
       const [a, b] = n.range!;
       if (keepsBreaks(text, n) && !u.edits.some(([p, q]) => p < b && q > a)) {
@@ -153,13 +173,51 @@ export function updateText(
     made[i][1] = skipBlank(text, to, made[i + 1]?.[0] ?? text.length);
     ends.add(made[i][1]);
   });
-  edits.push(...made);
   const out = spliced(text, made);
   // A text with no final newline keeps none, unless the text of a block scalar
   // that keeps its final line breaks reaches its end.
-  return text.endsWith('\n') || ends.has(text.length) ?
-      out :
-      out.replace(/\r?\n$/, '');
+  return [
+    made,
+    text.endsWith('\n') || ends.has(text.length) ? out :
+                                                   out.replace(/\r?\n$/, ''),
+  ];
+}
+
+/**
+ * The aliases of `u.aliases` whose text stays and that `out` reads as another
+ * value than theirs, or as none. The edits `made` give `out`. An alias names
+ * the last node above it with its anchor.
+ */
+function misreadAliases(
+    u: Update, made: ReadonlyArray<[number, number, string]>,
+    out: string): Update['aliases'] {
+  const kept = u.aliases.filter(([alias]) => {
+    const [a, b] = alias.range!;
+    return !u.edits.some(([p, q]) => p < b && q > a);
+  });
+  if (!kept.length) return [];
+  const doc = yaml.parseDocument(out, YAML_OPTIONS);
+  // The node each alias of `doc` names, by the offset of the alias.
+  const named = new Map<number, yaml.Node|undefined>();
+  const anchors = new Map<string, yaml.Node>();
+  yaml.visit(doc, {
+    Node: (_, n) => {
+      if (yaml.isAlias(n)) named.set(n.range![0], anchors.get(n.source));
+      else if (n.anchor) anchors.set(n.anchor, n);
+    },
+  });
+  return kept.filter(([alias, v]) => {
+    const at = alias.range![0];
+    const shift = made.reduce(
+        (s, [p, q, t]) => q <= at ? s + t.length - (q - p) : s, 0);
+    const node = named.get(at + shift);
+    try {
+      return !node || canonical(node.toJS(doc)) !== canonical(v);
+    } catch {
+      // A value that holds an alias with no anchor above it.
+      return true;
+    }
+  });
 }
 
 interface Update {
@@ -182,6 +240,8 @@ interface Update {
   used: Set<yaml.Pair>;
   /** A scalar whose text may move into the value written in its place. */
   replacing?: unknown;
+  /** Whether a value written now takes no text from the input. */
+  fresh?: boolean;
   /** The reverse of `links`. */
   copies: ReadonlyMap<unknown, object>;
   /** Each edit replaces the text from one offset to another. */
@@ -779,7 +839,8 @@ function release(u: Update, value: object): void {
  * pair with the same key and value whose text the new value does not keep,
  * or from the scalar `replacing` names, when it has that value.
  * Undefined when nothing moved, or when the text would not read back as
- * `value` at its new place, as when it holds an alias of an anchor outside it.
+ * `value` at its new place, as when it holds an alias of an anchor outside it,
+ * and while `fresh` is set.
  * A value that is or holds a block scalar that keeps its final line breaks,
  * as `|+` does, is written fresh, since its text would take the blank lines
  * after its new place.
@@ -787,6 +848,7 @@ function release(u: Update, value: object): void {
 function movedText(
     u: Update, key: string|undefined, value: unknown,
     col?: number): string[]|undefined {
+  if (u.fresh) return undefined;
   const node = isObject(value) ? u.links.get(value) : undefined;
   const candidates = node ? u.byValue.get(node) : [
     ...(u.byValue.get(u.replacing) ?? []),
