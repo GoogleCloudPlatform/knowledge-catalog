@@ -18,6 +18,11 @@ import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
 import {AlloyDbDatabase, resolveStore, storeLine, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
+// The store `model` runs against under `profile`, read with no declared
+// profile.
+const storeOf = (model: SemanticModel, profile?: string) =>
+    resolveStore(model, [], {}, profile);
+
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = 'bigquery.googleapis.com/projects/p/datasets/s';
 const PG =
@@ -46,7 +51,7 @@ function bound(target: string, source: string): SemanticModel {
 describe('where a model says it lives', () => {
   test('the deployment target is the store, split into its parts', () => {
     const store =
-        resolveStore(bound(`${DB}/graphs/g`, `${DB}/tables/Customer`));
+        storeOf(bound(`${DB}/graphs/g`, `${DB}/tables/Customer`));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('spanner');
     if (store.kind !== 'spanner') return;
@@ -57,7 +62,7 @@ describe('where a model says it lives', () => {
   });
 
   test('a BigQuery target is a store like any other', () => {
-    const store = resolveStore(
+    const store = storeOf(
         bound(`${DATASET}/propertyGraphs/g`, `${DATASET}/tables/Customer`));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('bigquery');
@@ -68,7 +73,7 @@ describe('where a model says it lives', () => {
   });
 
   test('an AlloyDB target is a store, down to the database', () => {
-    const store = resolveStore(bound(PG, PG_TABLE));
+    const store = storeOf(bound(PG, PG_TABLE));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
     if (store.kind !== 'alloydb') return;
@@ -85,7 +90,7 @@ describe('where a model says it lives', () => {
   // nothing that could be created, so it is not quietly accepted.
   test('an AlloyDB target with a graph segment is not a target at all', () => {
     const store =
-        resolveStore(bound(`${PG}/propertyGraphs/g`, PG_TABLE));
+        storeOf(bound(`${PG}/propertyGraphs/g`, PG_TABLE));
     expect('error' in store).toBe(true);
     if (!('error' in store)) return;
     expect(store.error).toContain(
@@ -94,7 +99,7 @@ describe('where a model says it lives', () => {
   });
 
   test('a model with no deployment target has no store', () => {
-    const store = resolveStore(model(
+    const store = storeOf(model(
         `    entities:\n` +
         `      - name: Customer\n` +
         `        primary_key: [id]\n` +
@@ -116,12 +121,12 @@ describe('a binding that disagrees with the target', () => {
                 'spanner.googleapis.com/projects/p/instances/i/databases/other/tables/Customer',
                 `${DATASET}/tables/Customer`,
               ]) {
-           expect(resolveStore(bound(`${DB}/graphs/g`, table))).toEqual({
+           expect(storeOf(bound(`${DB}/graphs/g`, table))).toEqual({
              error: "[m] deployment 'default' targets Spanner database " +
                  "'p/i/d', but the model file binds entity 'Customer' to a " +
                  'table outside that database. Bind the entity to a table ' +
-                 "in that database in the model file, or set 'profile:' on " +
-                 'the deployment to a profile that does.',
+                 "in that database in the model file, or set the " +
+                 "deployment's profile to a profile that does.",
              named: true,
            });
          }
@@ -139,14 +144,14 @@ describe('a binding that disagrees with the target', () => {
       name, relationships: [],
       entities: entities.map(e => ({name: e, source: `${DB}/tables/${e}`})),
     });
-    expect(resolveStore(m, 'default', 'm', [
+    expect(resolveStore(m, [
       profile('partial', 'Customer'), profile('full', 'Customer', 'Orders'),
-    ])).toEqual({
+    ], {})).toEqual({
       error: "[m] deployment 'default' targets Spanner database 'p/i/d', " +
           "but the model file binds entities 'Customer' and 'Orders' to " +
           "tables outside that database. Profile 'full' binds these " +
-          "entities to tables in that database. Set 'profile: full' on the " +
-          'deployment.',
+          "entities to tables in that database. Set the deployment's " +
+          "profile to 'full'.",
       named: true,
     });
   });
@@ -155,7 +160,7 @@ describe('a binding that disagrees with the target', () => {
     // Declared and unbound is a model that has not been given a table yet.
     // The statements report that themselves, naming the table they could not
     // find; refusing here would refuse a logical model for being logical.
-    const store = resolveStore(model(
+    const store = storeOf(model(
         `    deployments:\n      - {name: default, target: "${DB}/graphs/g"}\n` +
         `    entities:\n` +
         `      - name: Customer\n` +
@@ -172,10 +177,10 @@ describe('a binding that disagrees with the target', () => {
        () => {
          const raw = 'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer';
          const m = bound(`${DATASET}/propertyGraphs/g`, raw);
-         const store = resolveStore(m);
+         const store = storeOf(m);
          expect('error' in store ? store.error : store.name)
              .toBe('projects/p/datasets/s');
-         expect(resolveStore({...m, actions: [{name: 'refund'}]} as SemanticModel))
+         expect(storeOf({...m, actions: [{name: 'refund'}]} as SemanticModel))
              .toEqual({error: expect.stringContaining(`binds 'Customer' to ${raw}`)});
        });
 });
@@ -199,7 +204,7 @@ describe('a model that declares more than one deployment target', () => {
   }
 
   test('Spanner alongside BigQuery resolves to the Spanner store', () => {
-    const store = resolveStore(targets(
+    const store = storeOf(targets(
         [`${DB}/graphs/g`, `${DATASET}/propertyGraphs/g`],
         `${DB}/tables/Customer`));
     if ('error' in store) throw new Error(store.error);
@@ -209,7 +214,7 @@ describe('a model that declares more than one deployment target', () => {
 
   test('two Spanner targets is ambiguous, and the message says which backend',
        () => {
-         const store = resolveStore(targets(
+         const store = storeOf(targets(
              [`${DB}/graphs/g`, `spanner.googleapis.com/projects/p/instances/i/databases/d2/graphs/g`],
              `${DB}/tables/Customer`));
          expect('error' in store).toBe(true);
@@ -225,7 +230,7 @@ describe('a model that declares more than one deployment target', () => {
   // take the write -- so it is as undecidable as two of either, and the message
   // has to name both rather than reporting "2 Spanner" or picking a winner.
   test('Spanner alongside AlloyDB is ambiguous, and both are named', () => {
-    const store = resolveStore(
+    const store = storeOf(
         targets([`${DB}/graphs/g`, PG], `${DB}/tables/Customer`));
     expect('error' in store).toBe(true);
     if (!('error' in store)) return;
@@ -236,7 +241,7 @@ describe('a model that declares more than one deployment target', () => {
   });
 
   test('AlloyDB alongside BigQuery resolves to the AlloyDB store', () => {
-    const store = resolveStore(
+    const store = storeOf(
         targets([PG, `${DATASET}/propertyGraphs/g`], PG_TABLE));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
@@ -250,13 +255,13 @@ describe('a model that declares more than one deployment target', () => {
       [[`${DB}/graphs/g`, `${DB}/graphs/g2`], `${DB}/tables/Customer`,
        'projects/p/instances/i/databases/d'],
     ] as const) {
-      const store = resolveStore(targets([...uris], source));
+      const store = storeOf(targets([...uris], source));
       expect('error' in store ? store.error : store.name).toBe(name);
     }
   });
 
   test('two BigQuery targets is ambiguous in the same way', () => {
-    const store = resolveStore(targets(
+    const store = storeOf(targets(
         [`${DATASET}/propertyGraphs/g`, `bigquery.googleapis.com/projects/p/datasets/s2/propertyGraphs/g`],
         `${DATASET}/tables/Customer`));
     expect('error' in store).toBe(true);
@@ -267,7 +272,7 @@ describe('a model that declares more than one deployment target', () => {
   // A vanilla model with no target is told how to list a deployment in a
   // GOOGLE block.
   test('a vanilla model with no target is told about deployments', () => {
-    expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
+    expect(storeOf(targets([], `${DB}/tables/Customer`))).toEqual({
       error: "Model 'm' declares no deployment target in 'deployments', so " +
           'there is no store to run against. In a GOOGLE custom_extensions ' +
           "block on the model, declare a deployment in 'deployments' whose " +
@@ -291,12 +296,12 @@ describe('a model that declares more than one deployment target', () => {
            named: true,
            rejected: true,
          });
-         expect(resolveStore(targets(
+         expect(storeOf(targets(
                     [`${DB}/graphs/g`, typo], `${DB}/tables/Customer`)))
              .toEqual(notAccepted('d_2'));
-         expect(resolveStore(targets([typo], `${DB}/tables/Customer`)))
+         expect(storeOf(targets([typo], `${DB}/tables/Customer`)))
              .toEqual(notAccepted('d_1'));
-         expect(resolveStore(targets(
+         expect(storeOf(targets(
                     ['spanner:graph:p.regional-us.i.d.g'],
                     `${DB}/tables/Customer`)))
              .toEqual({
@@ -336,16 +341,16 @@ describe('the store a profile uses', () => {
       `      - {name: alloy_prod, target: "${CLUSTER_DB}"}\n`);
 
   test('each profile takes the deployment that names it', () => {
-    const operational = resolveStore(threeProfiles, 'operational');
+    const operational = storeOf(threeProfiles, 'operational');
     if ('error' in operational) throw new Error(operational.error);
     expect(operational.name).toBe('projects/p/instances/i/databases/d');
-    const analytical = resolveStore(threeProfiles, 'analytical');
+    const analytical = storeOf(threeProfiles, 'analytical');
     if ('error' in analytical) throw new Error(analytical.error);
     expect(analytical.name).toBe('projects/p/datasets/s');
   });
 
   test('default takes the deployment that names no profile', () => {
-    const store = resolveStore(threeProfiles, 'default');
+    const store = storeOf(threeProfiles, 'default');
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
     if (store.kind !== 'alloydb') return;
@@ -355,7 +360,7 @@ describe('the store a profile uses', () => {
   });
 
   test('a profile no deployment uses has no store', () => {
-    const store = resolveStore(threeProfiles, 'staging');
+    const store = storeOf(threeProfiles, 'staging');
     expect('error' in store && store.error)
         .toBe(
             "binding profile 'staging' is a named profile, which names no " +
@@ -364,7 +369,7 @@ describe('the store a profile uses', () => {
   });
 
   test('default has no store when every deployment names a profile', () => {
-    const store = resolveStore(
+    const store = storeOf(
         deployed(
             `      - {name: bq_prod, target: "${BQ_GRAPH}", profile: analytical}\n`),
         'default');
@@ -375,7 +380,7 @@ describe('the store a profile uses', () => {
   });
 
   test('of several, the single operational store is taken', () => {
-    const store = resolveStore(
+    const store = storeOf(
         deployed(
             `      - {name: bq_prod, target: "${BQ_GRAPH}"}\n` +
                 `      - {name: spanner_prod, target: "${SPANNER_GRAPH}"}\n`,
@@ -386,7 +391,7 @@ describe('the store a profile uses', () => {
   });
 
   test('several with no single operational store fail, naming them', () => {
-    const store = resolveStore(
+    const store = storeOf(
         deployed(
             `      - {name: spanner_a, target: "${SPANNER_GRAPH}", profile: operational}\n` +
             `      - {name: spanner_b, target: "${DB}2/graphs/g", profile: operational}\n` +
@@ -425,7 +430,7 @@ describe('the store a profile uses', () => {
         {name: 'spanner_b', target: `${DB}2/graphs/g`},
       ],
     });
-    const store = resolveStore(vanilla, 'default');
+    const store = storeOf(vanilla, 'default');
     expect('error' in store && store.error)
         .toContain(
             "declares 2 Spanner deployment targets in its GOOGLE block's " +
@@ -443,7 +448,7 @@ describe('the store a profile uses', () => {
       deployments: profiles.map(
           (profile, i) => ({name: `spanner_${i}`, target: `${DB}${i}/graphs/g`, profile})),
     });
-    const store = resolveStore(vanilla, 'default');
+    const store = storeOf(vanilla, 'default');
     expect('error' in store && store.error)
         .toBe(
             "Model 'm' declares no deployment without a 'profile' in its " +
@@ -457,7 +462,7 @@ describe('the store a profile uses', () => {
       profiles: [{name: 'operational'}, {name: 'staging'}],
       deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
     });
-    const store = resolveStore(vanilla, 'staging');
+    const store = storeOf(vanilla, 'staging');
     expect('error' in store && store.error)
         .toBe(
             "binding profile 'staging' is a named profile, which names no " +
@@ -469,7 +474,7 @@ describe('the store a profile uses', () => {
        () => {
          const typo =
              'spanner.googleapis.com/projects/p/instance/i/databases/d/graphs/g';
-         const store = resolveStore(
+         const store = storeOf(
              deployed(
                  `      - {name: good, target: "${SPANNER_GRAPH}"}\n` +
                      `      - {name: bad, target: "${typo}"}\n`,
@@ -483,7 +488,7 @@ describe('the store a profile uses', () => {
 
   test('a lone deployment in no accepted form is reported the same way', () => {
     const target = 'bigquery:graph:p.s.g';
-    const store = resolveStore(
+    const store = storeOf(
         deployed(`      - {name: prod, target: "${target}"}\n`), 'default');
     expect(store).toEqual({
       error: `Model 'm': deployment 'prod' targets '${target}', which is a ` +
@@ -501,14 +506,14 @@ describe('the store a profile uses', () => {
       ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
       version: '0.2.0.dev0',
     };
-    expect(resolveStore(vanilla, 'prod'))
+    expect(storeOf(vanilla, 'prod'))
         .toEqual({
           error: "binding profile 'prod' is a named profile, which names no " +
               "deployment target, and no deployment in its GOOGLE block's " +
               "'deployments' uses it, so there is no database to run it " +
               'against',
         });
-    const store = resolveStore(vanilla, 'default');
+    const store = storeOf(vanilla, 'default');
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('spanner');
   });
@@ -516,7 +521,7 @@ describe('the store a profile uses', () => {
   // An empty list names no deployment, the same as no list.
   test('an empty deployments list gives no store to a named profile', () => {
     const emptyDeployments: SemanticModel = {...threeProfiles, deployments: []};
-    expect(resolveStore(emptyDeployments, 'prod'))
+    expect(storeOf(emptyDeployments, 'prod'))
         .toEqual({
           error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
@@ -543,7 +548,7 @@ describe('an AlloyDB source', () => {
 
   test('written as a table resource name, matches a target with the same cluster and database',
        () => {
-         const store = resolveStore(alloyModel(
+         const store = storeOf(alloyModel(
              `${CLUSTER}/databases/d`,
              `${CLUSTER}/databases/d/schemas/public/tables/customer`));
          if ('error' in store) throw new Error(store.error);
@@ -551,7 +556,7 @@ describe('an AlloyDB source', () => {
        });
 
   test('in another database of the cluster is refused', () => {
-    const store = resolveStore(alloyModel(
+    const store = storeOf(alloyModel(
         `${CLUSTER}/databases/d`,
         `${CLUSTER}/databases/other/schemas/public/tables/customer`));
     expect('error' in store && store.error)

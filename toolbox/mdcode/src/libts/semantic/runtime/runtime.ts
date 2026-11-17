@@ -327,7 +327,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
           'spec' in p ? p.spec : specsByDoc.get(document)!.get(p.name);
       return spec ? [spec] : [];
     });
-    const chosen = resolveStore(authored, profile, document, specs);
+    const chosen = resolveStore(authored, specs, load, profile, document);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

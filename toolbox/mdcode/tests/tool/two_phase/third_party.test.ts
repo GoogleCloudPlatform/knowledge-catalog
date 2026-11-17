@@ -36,8 +36,8 @@ const refused = (target: string) => {
       ['outside that database', 'a table in that database'];
   return `[commerce] deployment 'd' targets ${target}, but the model file ` +
       `binds entity 'Customer' to a table ${outside}. Bind the entity to ${
-             inside} in the model file, or set 'profile:' on the deployment ` +
-      'to a profile that does.';
+             inside} in the model file, or set the deployment's profile to a ` +
+      'profile that does.';
 };
 const BIGQUERY = refused(BQ);
 const ORDER = {

@@ -34,7 +34,7 @@ const onModelFile = (advice: string) =>
     `outside that database. ${advice}`;
 const TWO_FIT = onModelFile(
     "Profiles 'ops' and 'replica' bind these entities to tables in that " +
-    "database. Set 'profile:' on the deployment to one of them.");
+    "database. Set the deployment's profile to one of them.");
 
 const fails = (name: string, scope: Scope, error: string,
                flags: PushOptions = {}): Case => ({
@@ -103,7 +103,7 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
       profiles: {ops: both(SPANNER)}, code: 1, nothingWritten: true,
       errors: [err(onModelFile(
           "Profile 'ops' binds these entities to tables in that database. " +
-          "Set 'profile: ops' on the deployment."))],
+          "Set the deployment's profile to 'ops'."))],
     }],
     report: {flags: {printStore: true}, code: 1,
              check: (_, errors) => expect(errors).toEqual([err(TWO_FIT)])},
@@ -118,6 +118,18 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
           "'test-project/i/db', but profile 'x' binds entities 'Customer' " +
           "and 'Orders' to tables outside that database. Bind each entity " +
           "to a table in that database in profile 'x'."),
+  fails(
+      'a vanilla model\'s error calls an entity a dataset and names the GOOGLE block profile that fits', {
+        google: {
+          deployments: [{name: 'sp', target: spannerGraph('g')}],
+          profiles: [{name: 'ops', entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}]}],
+        },
+      },
+      "[commerce] deployment 'sp' targets Spanner database " +
+          "'test-project/i/db', but the model file binds dataset 'Customer' " +
+          "to a table outside that database. Profile 'ops' binds this " +
+          "dataset to a table in that database. Set the deployment's " +
+          "profile to 'ops'."),
   {
     name: 'a profile source in no accepted form gets the profile check\'s error first',
     deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],

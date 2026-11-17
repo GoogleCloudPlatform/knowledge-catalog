@@ -197,8 +197,8 @@ semantic_model:
           "pull writes it: [sales] deployment 'sp_prod' targets Spanner " +
           "database 'p/i/db', but the model file binds entity 'bq_uri' to a " +
           'table outside that database. Bind the entity to a table in that ' +
-          "database in the model file, or set 'profile:' on the deployment " +
-          'to a profile that does.',
+          "database in the model file, or set the deployment's profile to a " +
+          'profile that does.',
     ]);
 
     // The rebuilt file loads and keeps the deployments as declared, the field's

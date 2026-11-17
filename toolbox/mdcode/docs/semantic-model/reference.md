@@ -1103,10 +1103,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deployment this way, whether or not `--deployment` names it, and under
   `--no-deployment` too. It reads each entity's `source` from the profile the
   deployment names, or from the model file when it names none. The error
-  names every entity bound outside the deployment's database, once per
-  deployment. When the deployment names no profile and a profile binds those
-  entities to tables in its database, the error names that profile, so you can
-  set `profile:` on the deployment. *(static)*
+  lists the entities bound outside the deployment's database, once for each
+  deployment. When the deployment names no profile and a profile binds them to
+  tables in the deployment's database, the error names each such profile, so
+  you can set the deployment's profile. *(static)*
 * **Every source names a table Knowledge Catalog knows about.** Every push
   runs this source check before it writes anything, under `--no-deployment`
   and `--validate-only` too. It looks up the Knowledge Catalog entry of each

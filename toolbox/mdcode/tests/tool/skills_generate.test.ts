@@ -490,9 +490,44 @@ semantic_model:
       "Error: [orders] deployment 'prod' targets Spanner database " +
       "'acme-ops/prod/commerce', but the model file binds entities 'Order' " +
       "and 'Customer' to tables outside that database. Bind each entity to " +
-      "a table in that database in the model file, or set 'profile:' on " +
-      'the deployment to a profile that does.',
+      "a table in that database in the model file, or set the deployment's " +
+      'profile to a profile that does.',
     ]);
+  });
+
+  // A profile push refuses is never named, though its tables are in the target
+  // database: one that gives an entity no source, and one whose source push
+  // does not accept as written.
+  test('names no profile push refuses in push\'s error', async () => {
+    const orders = `${SPANNER}/databases/commerce/tables/Orders`;
+    const model = modelText('commerce', 'IssueCredit').replace(
+        orders, 'bigquery.googleapis.com/projects/acme-analytics/datasets/raw/tables/orders');
+    const unbound = model.replace('    actions:', `      - name: Customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: CustomerId }
+    actions:`);
+    for (const [text, source] of [[unbound, orders], [model, `//${orders}`]]) {
+      logs = [];
+      writeModel('commerce.yaml', text);
+      writeModel('commerce.profile.ops.yaml', `name: ops
+entities:
+  - name: Order
+    source: ${source}
+    primary_key: [key]
+    fields:
+      - { name: key, expression: OrderId }
+      - { name: total, expression: Total }
+`);
+      expect(await skillsGenerate({out: 'skills'})).toBe(1);
+      expect(logs.filter(l => l.startsWith('Error:'))).toEqual([
+        "Error: [commerce] deployment 'prod' targets Spanner database " +
+        "'acme-ops/prod/commerce', but the model file binds entity 'Order' " +
+        'to a table outside that database. Bind the entity to a table in ' +
+        "that database in the model file, or set the deployment's profile " +
+        'to a profile that does.',
+      ]);
+    }
   });
 
   // A profile that leaves an entity out keeps the model file's table, which

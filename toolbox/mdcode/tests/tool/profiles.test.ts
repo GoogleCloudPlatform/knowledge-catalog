@@ -2835,8 +2835,8 @@ ${dataset('Customer')}${dataset('Order')}`);
     expect(await profiles({printStore: true, profile: 'p'})).toBe(1);
     expect(errs).toEqual([
       "Error: [orders] deployment 'prod' targets Spanner database " +
-      "'acme-ops/prod/commerce', but profile 'p' binds entities 'Customer' " +
-      "and 'Order' to tables outside that database. Bind each entity to a " +
+      "'acme-ops/prod/commerce', but profile 'p' binds datasets 'Customer' " +
+      "and 'Order' to tables outside that database. Bind each dataset to a " +
       "table in that database in profile 'p'.",
     ]);
   });

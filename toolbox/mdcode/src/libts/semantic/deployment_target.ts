@@ -32,8 +32,8 @@
 // validator and named in errors) rather than silently skipped.
 
 import {DeploymentSpec, Entity, ProfileSpec, SemanticModel} from './ir';
-import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, listed, resourceUriFix} from './loader';
-import {DEFAULT_PROFILE, profileSources} from './resolve_profiles';
+import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, entityWord, listed, resourceUriFix} from './loader';
+import {acceptedProfiles, DEFAULT_PROFILE, DialectLoad, profileSources} from './resolve_profiles';
 
 
 // A BigQuery Graph deployment target.
@@ -475,12 +475,13 @@ function entitiesOutside(
 // an entity the profile gives no source is unbound under it. A named profile
 // not in `profiles` is in a profile file that does not load, which push
 // reports instead. For a deployment on the model file's bindings, the error
-// names each profile that binds every entity it lists and that would let the
-// deployment pass this check.
+// names each profile the deployment could name instead. Push accepts such a
+// profile against `model`, read with the dialects in `load`, so it binds every
+// entity. The deployment passes this check with it.
 export function tablesOutsideTarget(
     document: string, model: SemanticModel, deployment: ResolvedDeployment,
     modelSource: (e: Entity) => string | undefined,
-    profiles: readonly ProfileSpec[]): string[] {
+    profiles: readonly ProfileSpec[], load: DialectLoad): string[] {
   const {database, target, outside, inside} = targetDatabase(deployment);
   const named = deployment.profile !== DEFAULT_PROFILE;
   const profile =
@@ -489,33 +490,35 @@ export function tablesOutsideTarget(
   const entities = entitiesOutside(
       model, database, profile ? profileSources(profile) : modelSource);
   if (!entities.length) return [];
+  // A vanilla model calls an entity a dataset.
+  const one = entityWord(model.version);
   const many = entities.length > 1;
-  const each = many ? 'each entity' : 'the entity';
-  const fits = named ? [] : profiles.filter(p => {
-    const sourceOf = profileSources(p);
-    return entities.every(e => sourceOf(e)?.trim()) &&
-        !entitiesOutside(model, database, sourceOf).length;
-  }).map(p => p.name).sort();
-  const these =
-      `${many ? 'these entities' : 'this entity'} to ${inside[many ? 1 : 0]}`;
+  const kind = !many ? one : one === 'entity' ? 'entities' : 'datasets';
+  const each = `${many ? 'each' : 'the'} ${one}`;
+  const these = `${many ? 'these' : 'this'} ${kind} to ${inside[many ? 1 : 0]}`;
+  const fits = named ? [] :
+      acceptedProfiles(model, profiles, load, document)
+          .filter(
+              p => !entitiesOutside(model, database, profileSources(p)).length)
+          .map(p => p.name)
+          .sort();
   let advice: string;
   if (named) {
     advice = `Bind ${each} to ${inside[0]} in profile '${deployment.profile}'.`;
   } else if (fits.length === 1) {
-    advice = `Profile '${fits[0]}' binds ${these}. Set 'profile: ${
-        fits[0]}' on the deployment.`;
+    advice = `Profile '${fits[0]}' binds ${these}. Set the deployment's ` +
+        `profile to '${fits[0]}'.`;
   } else if (fits.length) {
     advice = `Profiles ${listed(fits.map(p => `'${p}'`))} bind ${these}. ` +
-        `Set 'profile:' on the deployment to one of them.`;
+        `Set the deployment's profile to one of them.`;
   } else {
-    advice = `Bind ${each} to ${inside[0]} in the model file, or set ` +
-        `'profile:' on the deployment to a profile that does.`;
+    advice = `Bind ${each} to ${inside[0]} in the model file, or set the ` +
+        `deployment's profile to a profile that does.`;
   }
   return [
     `[${document}] deployment '${deployment.name}' targets ${target}, but ${
         named ? `profile '${deployment.profile}'` : 'the model file'} binds ${
-        many ? 'entities' : 'entity'} ${
-        listed(entities.map(e => `'${e.name}'`))} to ${
+        kind} ${listed(entities.map(e => `'${e.name}'`))} to ${
         many ? 'tables' : 'a table'} ${outside}. ${advice}`,
   ];
 }

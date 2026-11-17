@@ -2200,6 +2200,40 @@ export interface LocalCheckError {
   profile?: string;
 }
 
+// Push's errors for the named profile `spec` checked on its own against
+// `base`, the model file loaded on its own, with the dialects in `load`.
+// `document` names the model file. The warnings go to `warnings`. Actions are
+// out of scope for the preview, and push checks a profile's actions only when
+// it applies the profile, so this check leaves them out.
+export function profileCheckErrors(
+    base: SemanticModel, spec: ProfileSpec, load: DialectLoad,
+    document: string, warnings: string[] = []): string[] {
+  const {actions: _, ...bindings} = spec;
+  // Push warns about the SQL it cannot read in the model file, so this check
+  // leaves out a warning about model file SQL that push reads in the same
+  // dialect. Push stops reading what the SQL reads when the model's hierarchy
+  // does not resolve, and this check then gives every warning.
+  const ownSqlOnly =
+      !inheritanceErrorOf(base) ? {dialect: sourcesDialect(base)} : undefined;
+  return validateProfileCompleteness(
+      {...base, actions: []}, bindings, warnings,
+      {ownSqlOnly, document, ...load});
+}
+
+// The named profiles in `specs` that push accepts against `base`, the model
+// file loaded on its own: profileCheckErrors finds no error in each, and the
+// check of the keys and join columns of them all names none of them.
+export function acceptedProfiles(
+    base: SemanticModel, specs: readonly ProfileSpec[], load: DialectLoad,
+    document: string): ProfileSpec[] {
+  const refused = new Set(
+      validateProfileConsistency(base, [...specs], DEFAULT_PROFILE)
+          .flatMap(p => p.profile ?? []));
+  return specs.filter(
+      p => !refused.has(p.name) &&
+          !profileCheckErrors(base, p, load, document).length);
+}
+
 // The errors the named profiles of each model in `docs` give: each profile
 // file, and each profile a vanilla model carries in its GOOGLE block, checked
 // on its own for completeness. An error about a profile file names that file,
@@ -2248,17 +2282,6 @@ export function namedProfileErrors(
     // against.
     const base = baseByDoc.get(d.name);
     if (!base) continue;
-    // Actions are out of scope for the preview. Push checks a profile's
-    // actions only when it applies the profile, so these checks leave them
-    // out.
-    const logical = {...base, actions: []};
-    // Push warns about the SQL it cannot read in the model file, so these
-    // checks leave out a warning about model file SQL that push reads in the
-    // same dialect. Push stops reading what the SQL reads when the model's
-    // hierarchy does not resolve, and these checks then give every warning.
-    const ownSqlOnly = !inheritanceErrorOf(base) ?
-        {dialect: sourcesDialect(base)} :
-        undefined;
     const specs: ProfileSpec[] = [];
     for (const p of named) {
       const at = (m: string) => `[${p.label}] ${m}`;
@@ -2275,16 +2298,13 @@ export function namedProfileErrors(
       specs.push(spec);
       const profileWarnings: string[] = [];
       errors.push(
-          ...validateProfileCompleteness(logical, spec, profileWarnings, {
-            ownSqlOnly,
-            document: d.name,
-            ...load,
-          }).map(tag));
+          ...profileCheckErrors(base, spec, load, d.name, profileWarnings)
+              .map(tag));
       warnings.push(...profileWarnings.map(at));
     }
     // A named profile's error names its file and belongs to it, as its other
     // errors do.
-    errors.push(...validateProfileConsistency(logical, specs, DEFAULT_PROFILE)
+    errors.push(...validateProfileConsistency(base, specs, DEFAULT_PROFILE)
                     .map(({problem, profile}) => ({
                            error: `[${
                                named.find(p => p.name === profile)?.label ??

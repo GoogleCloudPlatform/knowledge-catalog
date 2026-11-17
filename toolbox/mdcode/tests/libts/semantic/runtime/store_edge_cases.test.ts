@@ -12,6 +12,11 @@ import {loadModels} from '../../../../src/libts/semantic/loader';
 import {undeclaredProfileError} from '../../../../src/libts/semantic/resolve_profiles';
 import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
+// The store `model` runs against under `profile`, read with no declared
+// profile.
+const storeOf = (model: SemanticModel, profile?: string) =>
+    resolveStore(model, [], {}, profile);
+
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const SPANNER_GRAPH = `${DB}/graphs/g`;
 const CLUSTER =
@@ -44,7 +49,7 @@ describe('deployments and the profiles they name', () => {
   test('a deployment naming default is the model file\'s', () => {
     const m = deployed(
         `      - {name: prod, target: "${SPANNER_GRAPH}", profile: default}\n`);
-    expect('error' in resolveStore(m, 'default')).toBe(false);
+    expect('error' in storeOf(m, 'default')).toBe(false);
   });
 
   // A deployment whose profile no profile file declares would be used by no
@@ -64,7 +69,7 @@ describe('deployments and the profiles they name', () => {
     const m = deployed(
         `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
         `      - {name: b, target: "${DB}2/graphs/g"}\n`);
-    const store = resolveStore(m, 'default');
+    const store = storeOf(m, 'default');
     expect('error' in store && store.error)
         .toContain("in 'deployments' for profile 'default' (a, b)");
   });
@@ -80,7 +85,7 @@ describe('targets', () => {
          const m = deployed(
              `      - {name: dev, target: "${SPANNER_GRAPH}"}\n` +
              `      - {name: prod, target: "${typo}", profile: prod}\n`);
-         expect(resolveStore(m, 'default')).toEqual({
+         expect(storeOf(m, 'default')).toEqual({
            error: expect.stringContaining(`deployment 'prod' targets '${typo}'`),
            named: true,
            rejected: true,
@@ -96,7 +101,7 @@ describe('targets', () => {
              `${CLUSTER}/databases/d/schemas/public/tables/customer`);
          const resolved = resolveModelDeployments(m);
          if (!('error' in resolved)) throw new Error('expected an error');
-         expect(resolveStore(m))
+         expect(storeOf(m))
              .toEqual({error: resolved.error, named: true, rejected: true});
        });
 
@@ -106,7 +111,7 @@ describe('targets', () => {
       ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
       deployments: [],
     };
-    const store = resolveStore(m);
+    const store = storeOf(m);
     expect('error' in store && store.error)
         .toContain('declares no deployment target');
   });
