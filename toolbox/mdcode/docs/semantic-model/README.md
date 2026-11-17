@@ -330,13 +330,15 @@ A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
 BigQuery line.
 
 Push reads each entry the catalog already holds and sends no write for one
-whose display name, description, labels and push-owned aspects already match
-what push would write. It sends no write either for an entry link the catalog
-holds with the same two entries and the same aspect data. The summary counts
-those entries and links in parentheses, so a push that changes nothing prints
+whose display name, description, labels, other source fields and push-owned
+aspects already match what push would write. It sends no write either for an
+entry link the catalog holds with the same two entries and the same aspect data.
+The summary counts those entries and links in parentheses, so a push that
+changes nothing prints
 `Wrote 0 new and 0 updated Knowledge Catalog entries (6 unchanged); wrote 0 entry links (3 unchanged).`
-An aspect edited in the console no longer matches, so the next push writes that
-entry again.
+An unchanged model entry still gets the `kcmd-push-state` label writes when
+anything else in the push changes. An aspect edited in the console no longer
+matches, so the next push writes that entry again.
 
 ## Pull
 

@@ -18,6 +18,7 @@ import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {entryIdOf, semanticLinkId} from '../../../src/libts/semantic/kc_ids';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -605,9 +606,11 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          const opts = {...OPTS, systemTypeProject: types};
          const held = await pushed(opts);
          const byNumber = (s: string) => s.replace(types, number);
+         const asked: string[] = [];
          spyOn(CatalogClient.prototype, '_get')
              .mockImplementation((async (name: string, params: any) => {
                if (!name.endsWith(':lookupEntry')) return err(404, 'not found');
+               asked.push(...params.aspectTypes);
                const entry = held.get(entryIdOf(params.entry));
                return ok({
                  ...structuredClone(entry),
@@ -620,7 +623,7 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
                          ])),
                });
              }) as any);
-         const {create, update} = stubClient({
+         const {create, update, getProject} = stubClient({
            existing: [...held.keys()],
            project: p => p === number ?
                ok({name: `projects/${number}`, projectId: types}) :
@@ -628,6 +631,7 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          });
          // stubClient replaces lookupEntry; the real one reads through `_get`.
          (CatalogClient.prototype.lookupEntry as any).mockRestore();
+         const read = spyOn(CatalogClient.prototype, 'lookupEntry');
 
          const result = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
 
@@ -635,30 +639,58 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
              {success: true, created: 0, updated: 0, unchangedEntries: 3});
          expect(create).not.toHaveBeenCalled();
          expect(update).not.toHaveBeenCalled();
+         // The read names each type with the project ID, and comes back with
+         // the number turned into that ID.
+         expect(asked).toContain(
+             `projects/${types}/locations/global/aspectTypes/semantic-model`);
+         expect(getProject).toHaveBeenCalledWith(number);
+         const model =
+             (await (read.mock.results[0].value as Promise<any>)).result;
+         expect(Object.keys(model.aspects))
+             .toContain(`${types}.global.semantic-model`);
        });
 
-  // An aspect key that names no aspect type stops the read before it is sent.
-  // The push then writes every entry as it would with no read.
+  // An aspect key that names no aspect type stops the read of its entry
+  // before the read is sent. Push then writes that entry as it would with no
+  // read, and reads the others.
   test('an entry whose aspect key names no aspect type is written unread',
        async () => {
+         const held = await pushed();
+         const resources =
+             generateCatalogResources(models(DOCS)[0].model, OPTS);
+         resources.entries.find(e => entryIdOf(e.name) === ENTITY)!
+             .aspects!['bad'] = {aspectType: 'bad', data: {}};
          const {lookup, create, update} = stubClient({
            create: EXISTS,
-           existing: ['sales', ENTITY, 'sales/metrics/total_revenue'],
+           existing: [...held.keys()],
+           lookup: id => ok(held.get(id)),
          });
 
-         const result = await deployKnowledgeCatalog(
-             models(DOCS), CTX, {...OPTS, systemTypeProject: ''});
+         const result = await deployEmittedModels(
+             [{model: 'sales', resources}], [], CTX, OPTS);
 
-         expect(result)
-             .toMatchObject({success: true, updated: 3, unchangedEntries: 0});
-         expect(lookup).not.toHaveBeenCalled();
-         expect(create).toHaveBeenCalledTimes(3);
-         expect(update.mock.calls.map(([e, mask]) => [entryIdOf(e.name), mask]))
+         expect(result).toMatchObject(
+             {success: true, created: 0, updated: 1, unchangedEntries: 2});
+         expect(lookup.mock.calls.map(c => entryIdOf(c[2])).sort())
+             .toEqual(['sales', 'sales/metrics/total_revenue']);
+         expect(create.mock.calls.map(c => c[3])).toEqual([ENTITY]);
+         const T = 'dataplex-types.global';
+         expect(update.mock.calls.map(
+                    ([e, mask, keys, deleteMissing]) =>
+                        [entryIdOf(e.name), mask, keys?.sort(), deleteMissing]))
              .toEqual([
-               ['sales', ['entry_source', 'aspects']],
-               [ENTITY, ['entry_source', 'aspects']],
-               ['sales/metrics/total_revenue', ['entry_source', 'aspects']],
-               ['sales', ['entry_source']],
+               ['sales', ['entry_source'], undefined, undefined],
+               [
+                 ENTITY, ['entry_source', 'aspects'],
+                 [
+                   'bad', `${T}.guidelines`, `${T}.guidelines@*`,
+                   `${T}.overview`, `${T}.overview@*`, `${T}.schema`,
+                   `${T}.semantic-entity`, `${T}.semantic-extensions`,
+                   `${T}.semantic-extensions@*`, `${T}.sql-expressions`
+                 ],
+                 true
+               ],
+               ['sales', ['entry_source'], undefined, undefined],
              ]);
        });
 

@@ -118,8 +118,8 @@ export interface KcDeployResult {
   // Existing entries updated in place because what they hold differs from
   // what the push writes (0 for validateOnly).
   updated: number;
-  // Existing entries that already hold what the push writes, so push sent no
-  // request for them (0 for validateOnly).
+  // Existing entries that already hold what the push writes, so push read them
+  // and sent no write (0 for validateOnly).
   unchangedEntries: number;
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
