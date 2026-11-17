@@ -121,6 +121,14 @@ metrics:
         .toBe(local.replace('Old', 'New'));
   });
 
+  test('keeps the tag of a nested block scalar that comes to need an ' +
+           'indentation indicator',
+       () => {
+         expect(updatedText('x:\n  d: !!str |\n    old\n',
+                            'x:\n  d: "old\\n"\n', 'x:\n  d: " new\\n"\n'))
+             .toBe('x:\n  d: !!str |2\n     new\n');
+       });
+
   test('writes a value whose anchor stood alone before a comment', () => {
     expect(updatedText('x:\n  &a  # later\ny: *a\n', 'x: null\ny: null\n',
                        'x: {k: 1}\ny: null\n'))

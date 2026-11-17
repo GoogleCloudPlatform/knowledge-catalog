@@ -519,15 +519,17 @@ function setScalar(
   const tail = headerTail(u.text, from) ?? '';
   s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
   // A tag stays when the new text reads back as the value under it. The
-  // read-back takes the file's directives, since a `%TAG` shorthand needs
-  // them. A tag of YAML's core schema must read it back with no warning. The
+  // read-back puts the text at the column of its key or `-`, which a block
+  // scalar's indentation indicator counts from, and takes the file's
+  // directives, since a `%TAG` shorthand needs them. A tag of YAML's core schema must read it back with no warning. The
   // parser warns about any other tag, whose meaning kcmd cannot check, so
   // that warning is ignored.
   const tag = (slot.props ?? []).filter(t => t.type === 'tag');
   const directives = u.doc.directives?.toString(u.doc);
   const typed = tag.length > 0 &&
       readsInBlock(
-          `${directives ? `${directives}\n---\n` : ''}_: ${tag[0].source} ${s}`,
+          (directives ? `${directives}\n---\n` : '') +
+              `${' '.repeat(slot.col)}_: ${tag[0].source} ${s}`,
           value, CORE_TAGS.has(node.tag ?? ''));
   const {start, cuts} =
       propsOut(u.text, tag.length && !typed ? tag : [], from, slot);

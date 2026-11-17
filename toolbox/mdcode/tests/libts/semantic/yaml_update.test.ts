@@ -96,6 +96,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: !!int 1\nb: !!null ~\n', v => (v.a = 'hello', v.b = 'x'), 'a: hello\nb: x\n'
   ],
   [
+    'nested block scalars after a tag set to text that needs an indentation indicator',
+    'm:\n  a: !!str |\n    x\n  b: !foo |\n    x\n', v => (v.m.a = ' y\n', v.m.b = ' y\n'),
+    'm:\n  a: !!str |2\n     y\n  b: !foo |2\n     y\n'
+  ],
+  [
     'scalars after a custom tag set to a string and to a number it reads as a string',
     'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
   ],
