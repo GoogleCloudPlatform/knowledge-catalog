@@ -96,12 +96,13 @@ export function yamlErrorMessage(err: any, text: string, above = ''): string {
       `alias; write it in quotes, as in ${quoted.trim()}.`;
 }
 
-// The message of `err`, a YAML error in `text`, in YAML's own words. It
-// points at the start of the innermost quoted value, flow sequence or flow
-// mapping left open that ends where `err` is. Its line, column and snippet are
-// those in `above` followed by `text`. It is undefined when no value is left
-// open there and `above` is empty. It is also undefined when `err` has no
-// position, or when its message does not end in the position text YAML adds.
+// The message of `err`, a YAML error in `text`, in YAML's own words. When the
+// error reports a quote, `]` or `}` missing, it points at the start of the
+// innermost value left open that lacks it and ends where the error is. Its
+// line, column and snippet are those in `above` followed by `text`. It is
+// undefined when it moves nothing and `above` is empty. It is also undefined
+// when `err` has no position, or when its message does not end in the
+// position text YAML adds.
 function placedMessage(
     err: any, text: string, above: string): string|undefined {
   const pos: unknown = err?.pos;
@@ -109,7 +110,10 @@ function placedMessage(
   // The lines YAML counts as it parses, which its positions use.
   const lines = new yaml.LineCounter();
   const tokens = [...new yaml.Parser(lines.addNewLine).parse(text)];
-  const start = openStart(tokens, pos[0]);
+  const close = missingClose(err);
+  const start = close === undefined ?
+      undefined :
+      openStart(tokens, text, close, pos[0]);
   if (start === undefined && !above) return undefined;
   const added = positionText(text, lines, pos);
   const message = String(err.message);
@@ -128,40 +132,62 @@ function placedMessage(
       positionText(above + text, fileLines, range.map(p => p + above.length));
 }
 
-// Where the innermost quoted value, flow sequence or flow mapping left open
-// that ends at `at` starts, in the CST `tokens`, or undefined when none ends
-// there.
-function openStart(tokens: yaml.CST.Token[], at: number): number|undefined {
+// The closing character YAML's error `err` reports missing: the quote of
+// "Missing closing quote", or the `]` or `}` a flow sequence or flow map
+// "must end with". Undefined for any other error. These errors have the code
+// MISSING_CHAR or BAD_INDENT, which other errors share, so the message tells
+// them apart.
+function missingClose(err: any): string|undefined {
+  if (err?.code !== 'MISSING_CHAR' && err?.code !== 'BAD_INDENT') {
+    return undefined;
+  }
+  const message = String(err.message);
+  return /^Missing closing (["'])quote/.exec(message)?.[1] ??
+      /^Flow (?:map|sequence) (?:in block collection must be sufficiently indented and )?(?:must )?end with a ([\]}])/
+          .exec(message)?.[1];
+}
+
+// Where the innermost token in the CST `tokens` of `text` starts that lacks
+// the closing character `close` and ends at `at`, or undefined when none does.
+// Spaces, tabs and line breaks at the end of a token count as part of it, so
+// a token ends at `at` when only those lie between `at` and its last other
+// character, or between its end and `at`.
+function openStart(
+    tokens: yaml.CST.Token[], text: string, close: string,
+    at: number): number|undefined {
+  const blank = (i: number) => ' \t\r\n'.includes(text[i] ?? 'x');
   let start: number|undefined;
   for (const token of tokens) {
     if (token.type !== 'document') continue;
     yaml.CST.visit(token, ({key, value}) => {
       for (const t of [key, value]) {
-        if (t && openEnd(t) === at) start = Math.max(start ?? 0, t.offset);
+        if (!t || lacks(t) !== close) continue;
+        let last = t.offset + yaml.CST.stringify(t).length;
+        let after = last;
+        while (last > t.offset + 1 && blank(last - 1)) last--;
+        while (blank(after)) after++;
+        if (last <= at && at <= after) start = Math.max(start ?? 0, t.offset);
       }
     });
   }
   return start;
 }
 
-// Where YAML reports `token` left open: the end of a quoted value or flow
-// collection that lacks its closing character, as the yaml package reads it.
-// Undefined for any other token.
-function openEnd(token: yaml.CST.Token): number|undefined {
+// The closing character `token` lacks, as the yaml package reads it: the quote
+// of a quoted value, or the `]` or `}` of a flow collection. Undefined for a
+// closed token and for any other kind.
+function lacks(token: yaml.CST.Token): string|undefined {
   if (token.type === 'flow-collection') {
     const close = token.start.source === '{' ? '}' : ']';
-    return token.end[0]?.source === close ?
-        undefined :
-        token.offset + yaml.CST.stringify(token).length;
+    return token.end[0]?.source === close ? undefined : close;
   }
   if (token.type !== 'double-quoted-scalar' &&
       token.type !== 'single-quoted-scalar') {
     return undefined;
   }
   const {source} = token;
-  return source.length > 1 && source.endsWith(source[0]) ?
-      undefined :
-      token.offset + source.length;
+  return source.length > 1 && source.endsWith(source[0]) ? undefined :
+                                                           source[0];
 }
 
 // Where `range` is in `text`, whose lines are `lines`, in the yaml package's
