@@ -16,6 +16,7 @@ import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
+import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
 
 
@@ -3038,7 +3039,7 @@ semantic_model:
         async (_p, _l, name) => (name.endsWith('/instances/ms') ? {status: 200, result: {
           entryType: 'projects/dataplex-types/locations/global/entryTypes/cloudsql-sqlserver-instance',
           aspects: {'dataplex-types.global.cloudsql-instance': {data: {dataplexEnabled: false}}},
-        }} : {status: 403, message: 'Permission denied.'}) as any);
+        }} : entryDenied(name)) as any);
     expect(await push({validateOnly: true})).toBe(1);
     expect(errs.join('\n')).toContain(
         "names no table Knowledge Catalog knows about. Dataplex integration is off for instance " +

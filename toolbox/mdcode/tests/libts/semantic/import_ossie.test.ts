@@ -471,7 +471,7 @@ semantic_model:
     const res = await importSemanticModelYaml(ossieFile(), {
       flavor: 'google',
       profileFiles: [{fileName: 'shop.profile.dev.yaml', content: `name: dev\nentities:\n  - name: orders\n    source: ${table}\n`}],
-      readDialects: files => sourceDialects(files, {lookupEntry: async (_p, _l, name) => {
+      readDialects: texts => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => {
         looked.push(name);
         return entryDenied(name);
       }}),

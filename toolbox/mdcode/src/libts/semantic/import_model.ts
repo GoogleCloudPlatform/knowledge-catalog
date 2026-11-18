@@ -14,7 +14,7 @@ import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
 import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
-import {LabeledText, SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
+import {dialectErrors, SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {OssieNode, ossieNodes, ossieReferences, ossieTree} from './ossie_parser';
 import {columnReferences, columnsForSource, entitiesReached, isColumnName, requalified, withoutQualifier} from './sql_expr_utils';
 import {loadSqlEngine, soleColumn} from './sql_parser';
@@ -43,10 +43,10 @@ export interface ImportSemanticModelOptions {
   listEntries?: EntryLister;
   /**
    * Reads the dialect of each Cloud SQL, Spanner and third-party table the
-   * files `files` name, as `sourceDialects` does for push. Without it, the
+   * files `texts` name, as `sourceDialects` does for push. Without it, the
    * dialect of each such table is unknown.
    */
-  readDialects?: (files: LabeledText[]) => Promise<SourceDialects>;
+  readDialects?: (texts: string[]) => Promise<SourceDialects>;
   /**
    * When true, push's checks read an ANSI_SQL text on a table whose dialect
    * no lookup read as DialectLoad.readWithoutDialect says. Pull sets it for
@@ -197,6 +197,12 @@ interface ImportDocument {
   hyphenation?: string;
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
+  /**
+   * Push's error for the first profile file import reads beside the input
+   * that breaks a profile file rule, or undefined (see profileFileRuleError).
+   * Set once the input is parsed.
+   */
+  profileFileError?: string;
   /** True when any mutations have been applied to `root`. */
   modified: boolean;
   /** Collected non-fatal warnings. */
@@ -1396,6 +1402,7 @@ function parseImportDocument(
   if (rootVersion !== undefined && !errors.length) {
     convertRootModel(doc, rootVersion, movedMetrics, emptied);
   }
+  doc.profileFileError = profileFileRuleError(doc, opts);
   return doc;
 }
 
@@ -2165,41 +2172,25 @@ function filterMetrics(
  * and the dialect of the tables it reads stays unknown. A lookup that cannot
  * start is one warning for the run, and every such table's dialect stays
  * unknown. An entry that was read and gives no dialect is reported as push's
- * other refusals are.
+ * other refusals are. Each message names the files that write its source as
+ * push's messages about them do.
  */
 async function readSourceDialects(
     doc: ImportDocument,
     opts: ImportSemanticModelOptions): Promise<DialectLoad> {
-  // The repaired sources are in `doc.root`, and JSON is YAML. Each file is
-  // labeled as push's messages about it are (see validateOutputDocument).
-  // Strict mode writes nothing on an error, so its messages name the input
-  // files. Otherwise they name the files the import writes. An import that
-  // keeps the Google flavor writes each profile file under the model's name.
-  // Outside strict mode, every import that reads profile files keeps the
-  // Google flavor.
-  const renames = !doc.strict && doc.inputVersion === GOOGLE_VERSION &&
-      doc.targetVersion === GOOGLE_VERSION;
-  const label = (fileName: string) =>
-      renames ? writtenProfileFileName(doc, fileName) : fileName;
-  const read = profileFilesRead(doc, opts);
-  const broken = profileFileRuleError(
-      read.map(f => ({
-        fileName: f.fileName,
-        name: parseProfileName(f.fileName),
-        text: f.content,
-      })),
-      opts.fileName ?? `${doc.model.name}.yaml`);
-  const profileFiles = broken === undefined ? read : [];
+  // The repaired sources are in `doc.root`, and JSON is YAML.
+  const profileFiles =
+      doc.profileFileError === undefined ? profileFilesRead(doc, opts) : [];
   const files = [
     {label: importDocumentName(doc, opts), text: JSON.stringify(doc.root)},
-    ...profileFiles.map(f => ({label: label(f.fileName), text: f.content})),
+    ...profileFiles.map(
+        f => ({label: importProfileFileName(doc, f.fileName), text: f.content})),
   ];
-  if (!opts.readDialects || !sourcesToLookUp(files.map(f => f.text)).length) {
-    return {};
-  }
+  const texts = files.map(f => f.text);
+  if (!opts.readDialects || !sourcesToLookUp(texts).length) return {};
   let got: SourceDialects;
   try {
-    got = await opts.readDialects(files);
+    got = await opts.readDialects(texts);
   } catch (err: any) {
     // The lookup could not start, for example with no credentials. gcloud
     // prints the details, so the warning keeps the first line.
@@ -2210,8 +2201,9 @@ async function readSourceDialects(
     return {};
   }
   const skipped = 'Import skipped the checks that need its dialect.';
-  for (const e of got.errors) {
-    if (got.unread.includes(e)) doc.warnings.push(`${sentence(e)} ${skipped}`);
+  const {errors, unread} = dialectErrors(files, got);
+  for (const e of errors) {
+    if (unread.includes(e)) doc.warnings.push(`${sentence(e)} ${skipped}`);
     else doc.warnOrError(e);
   }
   return {sourceDialects: got.dialects, sourceDatabases: got.databases};
@@ -2695,18 +2687,21 @@ function profileFilesRead(
 }
 
 /**
- * Push's error for the first of the profile files `files` beside `modelFile`
- * that breaks a profile file rule (see checkProfileFileName), or undefined.
- * Each file's `fileName` is the name a message gives it, and `name` its
- * profile's name.
+ * Push's error for the first of the profile files import reads beside the
+ * input `doc` (see profileFilesRead) that breaks a profile file rule (see
+ * checkProfileFileName), or undefined. It names each file as push's messages
+ * name it after the import (see importProfileFileName and
+ * importModelFileName).
  */
 function profileFileRuleError(
-    files: Array<{fileName: string; name: string; text: string}>,
-    modelFile: string): string|undefined {
+    doc: ImportDocument, opts: ImportSemanticModelOptions): string|undefined {
   const seen = new Map<string, string>();
   try {
-    for (const f of files) {
-      checkProfileFileName(modelFile, f.fileName, f.name, f.text, seen);
+    for (const f of profileFilesRead(doc, opts)) {
+      checkProfileFileName(
+          importModelFileName(doc, opts),
+          importProfileFileName(doc, f.fileName), parseProfileName(f.fileName),
+          f.content, seen);
     }
   } catch (err) {
     if (!(err instanceof ProfileFileError)) throw err;
@@ -2742,28 +2737,22 @@ function checkVanillaProfileFiles(
  * Loads each sibling `<model>.profile.<name>.yaml` entry in `profileFiles` via
  * `loadProfileFile` and attaches the resulting `ProfileSpec` list to
  * `model.profiles`. Records in `doc.errors` push's error for the first file
- * that breaks a file rule beside `modelFile`, or each profile's load error
- * labeled with its file.
+ * that breaks a file rule (see ImportDocument.profileFileError), or each
+ * profile's load error labeled with its file.
  */
 function attachProfileFiles(
-    model: SemanticModel, profileFiles: SerializedFile[], doc: ImportDocument,
-    modelFile: string): void {
-  const files = profileFiles.map(pf => ({
-    fileName: pf.fileName,
-    name: parseProfileName(pf.fileName),
-    text: pf.content,
-  }));
+    model: SemanticModel, profileFiles: SerializedFile[],
+    doc: ImportDocument): void {
   // Push checks every file's name before it loads any profile, and stops at
   // the first file that breaks a file rule.
-  const ruleError = profileFileRuleError(files, modelFile);
-  if (ruleError) {
-    doc.errors.push(ruleError);
+  if (doc.profileFileError) {
+    doc.errors.push(doc.profileFileError);
     return;
   }
   const profiles: ProfileSpec[] = [];
-  for (const pf of files) {
+  for (const pf of profileFiles) {
     try {
-      profiles.push(loadProfileFile(pf.text, pf.name));
+      profiles.push(loadProfileFile(pf.content, parseProfileName(pf.fileName)));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       doc.errors.push(`[${pf.fileName}] ${err.message}`);
@@ -2862,8 +2851,7 @@ async function generateConvertedFiles(
   if (!model) return [];
   const profileFiles = profileFilesRead(doc, opts);
   if (doc.targetVersion === OSSIE_VERSION) {
-    attachProfileFiles(
-        model, profileFiles, doc, opts.fileName ?? `${model.name}.yaml`);
+    attachProfileFiles(model, profileFiles, doc);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
   }
@@ -2883,14 +2871,32 @@ function writtenProfileFileName(doc: ImportDocument, fileName: string): string {
 }
 
 /**
- * The document name push's messages give the model file: the input file's
- * name in strict mode, since strict mode writes nothing on an error, and the
- * name of the file the import writes otherwise, without `.yaml`.
+ * The file name push's messages give the model file: the input file's name in
+ * strict mode, since strict mode writes nothing on an error, and the name of
+ * the file the import writes otherwise.
+ */
+function importModelFileName(
+    doc: ImportDocument, opts: ImportSemanticModelOptions): string {
+  return (doc.strict ? opts.fileName : undefined) ?? `${doc.model.name}.yaml`;
+}
+
+/**
+ * The document name push's messages give the model file: its file name (see
+ * importModelFileName) without `.yaml`.
  */
 function importDocumentName(
     doc: ImportDocument, opts: ImportSemanticModelOptions): string {
-  const input = doc.strict ? opts.fileName : undefined;
-  return (input ?? `${doc.model.name}.yaml`).replace(/\.ya?ml$/, '');
+  return importModelFileName(doc, opts).replace(/\.ya?ml$/, '');
+}
+
+/**
+ * The file name push's messages give the profile file `fileName` that import
+ * reads beside the input: its own name in strict mode, since strict mode
+ * writes nothing on an error, and the name the import writes it under
+ * otherwise.
+ */
+function importProfileFileName(doc: ImportDocument, fileName: string): string {
+  return doc.strict ? fileName : writtenProfileFileName(doc, fileName);
 }
 
 /**
@@ -3004,7 +3010,7 @@ function transpilesFile(
 async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
     opts: ImportSemanticModelOptions, load: DialectLoad): Promise<void> {
-  const [{fileName, content}, ...profileFiles] = files;
+  const [{content}, ...profileFiles] = files;
   // Push's messages name the model document after the input file in strict
   // mode, since strict mode writes nothing on an error, and after the file
   // the import writes otherwise.
@@ -3087,9 +3093,8 @@ async function validateOutputDocument(
       const name = parseProfileName(f.fileName);
       return {name, text: f.content, fileName: where(name, f.fileName)};
     });
-    const ruleError = profileFileRuleError(read, input ?? fileName);
-    if (ruleError) doc.warnOrError(ruleError);
-    const profiles = ruleError ? undefined : read;
+    if (doc.profileFileError) doc.warnOrError(doc.profileFileError);
+    const profiles = doc.profileFileError ? undefined : read;
     const base = {document: model.name, model: loaded.models[0]};
     const withFiles = profiles && withProfileFiles(base, () => profiles);
     // Push then refuses an action statement YAML reads differently from how

@@ -63,6 +63,5 @@ export function lookupSystemEntry(
       resourceName}`;
   return read(
       what,
-      () => aspects ? catalog.lookupEntry(project, location, name, {aspects}) :
-                      catalog.lookupEntry(project, location, name));
+      () => catalog.lookupEntry(project, location, name, aspects && {aspects}));
 }

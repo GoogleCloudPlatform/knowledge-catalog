@@ -26,7 +26,7 @@ import {ProfileSpec, SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, ModelDocument, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
-import {labeledFiles, sourceDialects} from '../source_dialect';
+import {dialectErrors, labeledFiles, sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store, withPrimaryInstance} from './store';
@@ -177,14 +177,16 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // profile does not load. It also refuses it when a model declares a profile
   // named `default` in any letter case.
   const profilesByDoc = new Map<string, DeclaredProfile[]>();
-  // Each model's profile files alone, which an error applying one names.
+  // Each model's profile files alone, which an error applying one names, each
+  // with the file name push gives it.
   const filesByDoc =
-      new Map<string, Array<{name: string; text: string; path: string}>>();
+      new Map<string, Array<{name: string; text: string; fileName: string}>>();
   for (const doc of docs) {
-    let files: Array<{name: string; text: string; path: string}>;
+    let files: Array<{name: string; text: string; fileName: string}>;
     let available: DeclaredProfile[];
     try {
-      files = layout.profileDocuments(doc.name);
+      files = layout.profileDocuments(doc.name).map(
+          p => ({...p, fileName: fileNameOf(layout, doc.name, p.path)}));
       available = declaredProfiles(doc, files);
     } catch (err: any) {
       return {error: err?.message ?? String(err)};
@@ -200,10 +202,11 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // loads. A table whose entry cannot be read stops the scope, as push does.
   // A third-party table is not looked up, since no runtime reads one, and a
   // Spanner table is SPANNER, the dialect the runtime's Spanner store speaks.
+  const files = labeledFiles(docs, model => filesByDoc.get(model) ?? []);
   const lookup = await sourceDialects(
-      labeledFiles(layout, docs, model => filesByDoc.get(model) ?? []),
-      new CatalogClient(ctx), {thirdParty: false});
-  if (lookup.errors.length) return {error: lookup.errors.join('\n')};
+      files.map(f => f.text), new CatalogClient(ctx), {thirdParty: false});
+  const {errors} = dialectErrors(files, lookup);
+  if (errors.length) return {error: errors.join('\n')};
   const load = {
     sourceDialects: lookup.dialects,
     transpileOutcomes: options.transpileOutcomes,
@@ -227,9 +230,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       return {error: unknownProfileMessage(profile, doc.name, res.declared)};
     }
     if (res.kind === 'error') {
-      const files = (filesByDoc.get(doc.name) ?? []).map(
-          p => ({...p, fileName: fileNameOf(layout, doc.name, p.path)}));
-      return {error: profileErrorMessage(doc.name, res, profile, files)};
+      return {
+        error: profileErrorMessage(
+            doc.name, res, profile, filesByDoc.get(doc.name) ?? []),
+      };
     }
     fileWarnings.set(doc.name, res.warnings);
     appliedByDoc.set(doc.name, res.model);
@@ -271,8 +275,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
         specs.set(p.name, loadProfileFile(p.text, p.name, {skipActions: true}));
       } catch (err) {
         if (!(err instanceof SemanticModelError)) throw err;
-        const file = fileNameOf(layout, doc.name, p.path);
-        return {error: `[${file}] ${err.message}`};
+        return {error: `[${p.fileName}] ${err.message}`};
       }
     }
   }

@@ -111,9 +111,8 @@ integration turned on (`gcloud sql instances patch <i>
 table. When the entry cannot be read, the command stops.
 `kcmd profiles --print-store` stops too. `kcmd import` reads it too, and when
 it cannot, it warns and skips the checks that need the dialect. The message
-names each file that writes the source. It also says why the entry cannot be
-read. `kcmd` looks up the entries of the table's instance, database and schema,
-and reports the first of these that holds:
+says why the entry cannot be read. `kcmd` looks up the entries of the table's
+instance, database and schema, and reports the first of these that holds:
 
 1. The instance's entry cannot be read. The project ID, the region or the
    instance name may be wrong, or the caller may not be allowed to read the
@@ -142,6 +141,13 @@ the command stops and says so. `kcmd profiles --print-store` reads it too, and
 when it cannot, it skips the checks that need the dialect. `kcmd import` reads
 it too, and when it cannot, it warns and skips the checks that need the
 dialect.
+
+A message about a Cloud SQL, Spanner or third-party table whose dialect cannot
+be read starts with the files that write the table, in brackets, as push's
+other messages do. A model file is named by its document name, such as
+`[shop]`, and a profile file by its file name, such as `[shop.profile.pg.yaml]`.
+A Spanner database gets one message, which lists every file that writes one of
+its tables.
 
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL

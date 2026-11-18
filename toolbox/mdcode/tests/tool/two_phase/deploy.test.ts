@@ -43,8 +43,8 @@ const spannerAnswers = (
       getDatabase: () => !error || reads++ ? {status, message} : undefined,
     },
     errors: [err(error ? `${at('sp')}: database test-project/i/db ${error}` :
-        `source '${SPANNER_CUSTOMER}': kcmd reads its Spanner database's ` +
-        `SQL dialect, and could not read database test-project/i/db: ${message}`)],
+        `[commerce.profile.ops.yaml] source '${SPANNER_CUSTOMER}': kcmd reads its Spanner ` +
+        `database's SQL dialect, and could not read database test-project/i/db: ${message}`)],
     called: {spannerDml: 0},
   };
 };

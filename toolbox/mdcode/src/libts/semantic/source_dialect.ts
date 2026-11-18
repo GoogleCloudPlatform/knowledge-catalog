@@ -28,9 +28,8 @@
 import * as yaml from 'yaml';
 
 import type {SpannerClient} from '../gcp/spanner';
-import {fileNameOf, SemanticModelLayout} from '../layouts/semantic-model';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, EntryRead, lookupSystemEntry, Read, read} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
@@ -55,18 +54,20 @@ export interface SourceDialects {
   // Each third-party table whose entry has a fullyQualifiedName, keyed by
   // entry name, and the database that name gives (see databaseOfFqn).
   databases: Map<string, string>;
-  // One message per source whose dialect could not be read.
-  errors: string[];
-  // The messages of `errors` for a read that failed: a 403 or 404, another
-  // failed status, or no answer. The others are for an entry that was read
-  // and gives no dialect.
-  unread: string[];
+  // Each source whose dialect could not be read, keyed as `dialects` is, and
+  // why, in a message that starts with `source '<name>'`. `unread` marks a
+  // read that failed: a 403 or 404, another failed status, or no answer.
+  // Without it, the entry was read and gives no dialect. dialectErrors labels
+  // each message with the files that write its source.
+  failures: Map<string, Failure>;
 }
 
+// Why kcmd cannot tell a table's dialect, with `unread` when the read failed.
+type Failure = {error: string; unread?: true};
+
 // A table's dialect and, for a third-party table, its database, or why kcmd
-// cannot tell the dialect, with `unread` when the read failed.
-type Dialect = {dialect: string; database?: string}|
-    {error: string; unread?: true};
+// cannot tell the dialect.
+type Dialect = {dialect: string; database?: string}|Failure;
 
 // A model or profile file: the label a message gives it, and its text. As in
 // push's other messages, a model file's label is its document name, such as
@@ -77,26 +78,46 @@ export interface LabeledText {
 }
 
 // Each model file of `docs`, then its profile files, which `profileFiles`
-// gives, labeled as LabeledText says. A model's profile files that
-// `profileFiles` throws on are left out, since the command reports them where
-// it reads them.
+// gives with the file name push gives each, labeled as LabeledText says.
 export function labeledFiles(
-    layout: SemanticModelLayout, docs: Array<{name: string; text: string}>,
-    profileFiles: (model: string) => Array<{path: string; text: string}>):
+    docs: Array<{name: string; text: string}>,
+    profileFiles: (model: string) => Array<{fileName: string; text: string}>):
     LabeledText[] {
-  return docs.flatMap(doc => {
-    let files: Array<{path: string; text: string}> = [];
-    try {
-      files = profileFiles(doc.name);
-    } catch {
-      // Reported where it is read.
+  return docs.flatMap(doc => [
+    {label: doc.name, text: doc.text},
+    ...profileFiles(doc.name).map(f => ({label: f.fileName, text: f.text})),
+  ]);
+}
+
+// The messages of the failures in `read` whose sources the files `files`
+// write, sorted. Each message starts with the label of every file that writes
+// its source, in file order. For a Spanner table, those are the files that
+// write a table of its database. `unread` holds the messages for a read that
+// failed.
+export function dialectErrors(
+    files: Iterable<LabeledText>,
+    read: SourceDialects): {errors: string[]; unread: string[]} {
+  // A file is read again only when a message needs its label.
+  if (!read.failures.size) return {errors: [], unread: []};
+  const labelsOf = new Map<string, string[]>();
+  for (const {label, text} of files) {
+    // Each source sourcesToLookUp gives has a lookup key.
+    for (const key of sourcesToLookUp([text]).map(s => dialectLookupKey(s)!)) {
+      const labels = labelsOf.get(key) ?? [];
+      if (!labels.includes(label)) labels.push(label);
+      labelsOf.set(key, labels);
     }
-    return [
-      {label: doc.name, text: doc.text},
-      ...files.map(
-          f => ({label: fileNameOf(layout, doc.name, f.path), text: f.text})),
-    ];
-  });
+  }
+  const errors: string[] = [];
+  const unread: string[] = [];
+  for (const [key, labels] of labelsOf) {
+    const failure = read.failures.get(key);
+    if (!failure) continue;
+    const error = `[${labels.join(', ')}] ${failure.error}`;
+    errors.push(error);
+    if (failure.unread) unread.push(error);
+  }
+  return {errors: errors.sort(), unread: unread.sort()};
 }
 
 // The aspect type of a Cloud SQL instance's entry whose `dataplexEnabled` says
@@ -112,14 +133,13 @@ const ENGINE_OF_INSTANCE_TYPE: Record<string, string> = {
 };
 
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
-// third-party table the files `files` write (see sourcesToLookUp), and of
-// every Spanner database they name. Without `spanner`, a Spanner database
-// gives SPANNER, the dialect kcmd's Spanner store speaks, with no call.
+// third-party table the files `texts` write (see sourcesToLookUp), and of every
+// Spanner database they name. Without `spanner`, a Spanner database gives
+// SPANNER, the dialect kcmd's Spanner store speaks, with no call.
 // `thirdParty: false` skips third-party tables. Never throws: a failed lookup
-// goes to `errors`. A message about a Cloud SQL table starts with the label of
-// each file that writes it.
+// goes to `failures`.
 export async function sourceDialects(
-    files: Iterable<LabeledText>, catalog: EntryLookup,
+    texts: Iterable<string>, catalog: EntryLookup,
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
@@ -127,9 +147,6 @@ export async function sourceDialects(
   // tables of one Spanner database, are one lookup. A database's lookup names
   // the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
-  // The labels of the files that write each Cloud SQL table, keyed by its
-  // resource name.
-  const labelsOf = new Map<string, string[]>();
   // Each lookup of a Cloud SQL instance, database or schema entry, keyed by
   // its entry id, so tables that share one look it up once.
   const parts = new Map<string, Promise<Read<EntryRead>>>();
@@ -144,46 +161,35 @@ export async function sourceDialects(
         }
         return parts.get(id)!;
       };
-  for (const {label, text} of files) {
-    for (const source of sourcesToLookUp([text])) {
-      const table = cloudSqlTableOf(source);
-      if (table) {
-        const labels = labelsOf.get(table.resourceName) ?? [];
-        if (!labels.includes(label)) labels.push(label);
-        labelsOf.set(table.resourceName, labels);
-        lookups.set(
-            table.resourceName,
-            () => cloudSqlDialect(
-                catalog, table, labels,
-                (id, what, aspects) => lookUpPart(table, id, what, aspects)));
-      }
-      const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
-      if (entry) {
-        lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
-      }
-      const database = spannerDatabaseOf(source);
-      if (database && !lookups.has(database)) {
-        lookups.set(
-            database,
-            spanner ? () => spannerDialect(spanner, database, source) :
-                      async () => ({dialect: 'SPANNER'}));
-      }
+  for (const source of sourcesToLookUp(texts)) {
+    const table = cloudSqlTableOf(source);
+    if (table) {
+      lookups.set(
+          table.resourceName,
+          () => cloudSqlDialect(
+              catalog, table,
+              (id, what, aspects) => lookUpPart(table, id, what, aspects)));
+    }
+    const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
+    if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
+    const database = spannerDatabaseOf(source);
+    if (database && !lookups.has(database)) {
+      lookups.set(
+          database,
+          spanner ? () => spannerDialect(spanner, database, source) :
+                    async () => ({dialect: 'SPANNER'}));
     }
   }
   const dialects = new Map<string, string>();
   const databases = new Map<string, string>();
-  const errors: string[] = [];
-  const unread: string[] = [];
+  const failures = new Map<string, Failure>();
   await Promise.all([...lookups].map(async ([key, lookUp]) => {
     const got = await lookUp();
-    if ('error' in got) errors.push(got.error);
+    if ('error' in got) failures.set(key, got);
     else dialects.set(key, got.dialect);
-    if ('unread' in got) unread.push(got.error);
     if ('database' in got && got.database) databases.set(key, got.database);
   }));
-  errors.sort();
-  unread.sort();
-  return {dialects, databases, errors, unread};
+  return {dialects, databases, failures};
 }
 
 // Looks up the entry of a part of a Cloud SQL table, by its entry id, with the
@@ -191,13 +197,12 @@ export async function sourceDialects(
 type PartLookup = (id: string, what: string, aspects?: string[]) =>
     Promise<Read<EntryRead>>;
 
-// The dialect of a Cloud SQL table, by its entry's type. `labels` labels the
-// files that write the table, and `lookUpPart` looks up the entries of its
-// instance, database and schema.
+// The dialect of a Cloud SQL table, by its entry's type. `lookUpPart` looks up
+// the entries of its instance, database and schema.
 async function cloudSqlDialect(
-    catalog: EntryLookup, table: CloudSqlTable, labels: string[],
+    catalog: EntryLookup, table: CloudSqlTable,
     lookUpPart: PartLookup): Promise<Dialect> {
-  const at = `[${labels.join(', ')}] source '${table.resourceName}'`;
+  const at = `source '${table.resourceName}'`;
   const res = await lookupSystemEntry(
       catalog, 'cloudsql', table.project, table.location, table.resourceName);
   if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};

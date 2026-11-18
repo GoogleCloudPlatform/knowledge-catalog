@@ -7,7 +7,7 @@ import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
-import {LabeledText, sourceDialects} from '../../../src/libts/semantic/source_dialect';
+import {sourceDialects} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
@@ -914,7 +914,7 @@ describe('profile checks', () => {
      [], [expect.stringContaining(
          `[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/customers' names no table`)],
      // The entry of orders names PostgreSQL, and the entry of customers answers 403.
-     (files: LabeledText[]) => sourceDialects(files, {
+     (texts: string[]) => sourceDialects(texts, {
        lookupEntry: async (_p, _l, name) => name.endsWith('/customers') ? entryDenied(name) :
            {status: 200, result: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}},
      })],
@@ -923,7 +923,7 @@ describe('profile checks', () => {
      ["[sales.profile.pg.yaml] profile 'pg' binds entities in more than one database " +
       "('customers', 'orders'); a profile reads from one system a single query can reach"],
      [expect.stringContaining(`[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/orders' names no`)],
-     (files: LabeledText[]) => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
+     (texts: string[]) => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
   ] as Array<[string, string, Array<{fileName: string; content: string}>, string[], string[], any?]>)(
       '%s', async (_, input, profileFiles, errors, warnings, ...[readDialects]) => {
         const res = await importSemanticModelYaml(
@@ -956,7 +956,7 @@ describe('profile checks', () => {
         const looked: string[] = [];
         const res = await importSemanticModelYaml(input, {
           flavor: 'google', fileName: 'raw.yaml', profileFiles, ...opts,
-          readDialects: files => sourceDialects(files, {lookupEntry: async (_p, _l, name) => {
+          readDialects: texts => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => {
             looked.push(name);
             return entryDenied(name);
           }}),
@@ -986,7 +986,7 @@ describe('profile checks', () => {
   // each Spanner database's dialect as `spanner`. Without them, each read gets
   // a 403.
   const lookup = ({entry, spanner}: {entry?: object; spanner?: string}) =>
-      (files: LabeledText[]) => sourceDialects(files, {
+      (texts: string[]) => sourceDialects(texts, {
         lookupEntry: async (_p, _l, name) => entry ? {status: 200, result: entry} : entryDenied(name),
       }, {spanner: {getDatabase: async () => spanner ?
           {status: 200, result: {databaseDialect: spanner}} : {status: 403, message: 'Permission denied.'}}});
@@ -1003,45 +1003,47 @@ describe('profile checks', () => {
       '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n';
   // [label, source, the dialect of amount's one text, the lookup, push's
   // refusal, other warnings, the entities after orders]. The refusal is an
-  // error under --input first-party and a warning otherwise.
+  // error under --input first-party and a warning otherwise. Each message
+  // names the model file `doc`.
   test.each([
     ['refuses a POSTGRES field on a GoogleSQL Spanner database',
-     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'GOOGLE_STANDARD_SQL'}), NO_TEXT('SPANNER'), []],
+     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'GOOGLE_STANDARD_SQL'}), NO_TEXT('SPANNER'), () => []],
     ['accepts a POSTGRES field on a PostgreSQL-dialect Spanner database',
-     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'POSTGRESQL'}), undefined, []],
+     SPANNER_TABLE, 'POSTGRES', lookup({spanner: 'POSTGRESQL'}), undefined, () => []],
     ['refuses a POSTGRES field on a Cloud SQL for SQL Server table',
-     `${CLOUDSQL_PREFIX}/tables/orders`, 'POSTGRES', SQLSERVER, NO_TEXT('SQLSERVER'), []],
+     `${CLOUDSQL_PREFIX}/tables/orders`, 'POSTGRES', SQLSERVER, NO_TEXT('SQLSERVER'), () => []],
     ['refuses a POSTGRES field on a Snowflake table',
      SNOWFLAKE_ENTRY, 'POSTGRES', lookup({entry: {fullyQualifiedName: 'snowflake:acme.retail.public.orders'}}),
-     NO_TEXT('SNOWFLAKE'), []],
+     NO_TEXT('SNOWFLAKE'), () => []],
     ['refuses an entry that gives no dialect, as push does',
      SNOWFLAKE_ENTRY, 'SNOWFLAKE', lookup({entry: {}}),
-     () => `source '${SNOWFLAKE_ENTRY}': kcmd cannot tell the table's SQL dialect from its ` +
-         'Knowledge Catalog entry, which has neither a fullyQualifiedName nor an ' +
-         "entrySource.system. kcmd reads the prefix of the entry's fullyQualifiedName " +
+     (doc: string) => `[${doc}] source '${SNOWFLAKE_ENTRY}': kcmd cannot tell the table's SQL ` +
+         'dialect from its Knowledge Catalog entry, which has neither a fullyQualifiedName nor ' +
+         "an entrySource.system. kcmd reads the prefix of the entry's fullyQualifiedName " +
          '(snowflake:, databricks:, mysql:, postgresql: or sqlserver:), or entrySource.system ' +
-         'when there is no fullyQualifiedName.', []],
+         'when there is no fullyQualifiedName.', () => []],
     ['warns about a Spanner database it cannot read, and skips the checks that need its dialect',
      SPANNER_TABLE, 'SNOWFLAKE', lookup({}), undefined,
-     [`source '${SPANNER_TABLE}': kcmd reads its Spanner database's SQL dialect, and could not ` +
-      `read database acme/i/db: Permission denied. ${SKIPPED}`,
-      "field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the Spanner " +
-      "table of entity 'orders' cannot run it"]],
+     (doc: string) => [
+       `[${doc}] source '${SPANNER_TABLE}': kcmd reads its Spanner database's SQL dialect, and ` +
+       `could not read database acme/i/db: Permission denied. ${SKIPPED}`,
+       "field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the Spanner " +
+       "table of entity 'orders' cannot run it"]],
     ['warns once when the lookup cannot start',
      SPANNER_TABLE, 'POSTGRES', () => { throw new Error('no credentials'); }, undefined,
-     ['kcmd could not look up table dialects: no credentials. Import skipped the checks that ' +
-      "need a table's dialect."]],
-  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, string[]]>)(
+     () => ['kcmd could not look up table dialects: no credentials. Import skipped the checks ' +
+            "that need a table's dialect."]],
+  ] as Array<[string, string, string, any, ((doc: string) => string)|undefined, (doc: string) => string[]]>)(
       '%s', async (_, source, dialect, readDialects, refusal, warnings) => {
         const input = model(
             AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`), source);
         const firstParty = await importSemanticModelYaml(
             input, {...strict, flavor: 'google', readDialects});
         expect([firstParty.errors, firstParty.warnings])
-            .toEqual([refusal ? [refusal('sales')] : [], warnings]);
+            .toEqual([refusal ? [refusal('sales')] : [], warnings('sales')]);
         const thirdParty = await importSemanticModelYaml(input, {flavor: 'google', readDialects});
         expect([thirdParty.errors, thirdParty.warnings])
-            .toEqual([[], [...refusal ? [refusal('retail')] : [], ...warnings]]);
+            .toEqual([[], [...refusal ? [refusal('retail')] : [], ...warnings('retail')]]);
       });
 
   test('refuses a Spanner deployment on a PostgreSQL-dialect database', async () => {
