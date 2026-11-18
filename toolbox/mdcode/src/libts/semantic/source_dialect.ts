@@ -55,15 +55,16 @@ export interface SourceDialects {
   // entry name, and the database that name gives (see databaseOfFqn).
   databases: Map<string, string>;
   // Each source whose dialect could not be read, keyed as `dialects` is, and
-  // why, in a message that starts with `source '<name>'`. `unread` marks a
-  // read that failed: a 403 or 404, another failed status, or no answer.
-  // Without it, the entry was read and gives no dialect. dialectErrors labels
-  // each message with the files that write its source.
+  // why. dialectErrors gives the message, which names the source and the
+  // files that write it.
   failures: Map<string, Failure>;
 }
 
-// Why kcmd cannot tell a table's dialect, with `unread` when the read failed.
-type Failure = {error: string; unread?: true};
+// Why kcmd cannot tell a table's dialect. `reason` is the message after
+// `source '<name>'`, from its colon or from the space before its verb.
+// `unread` marks a read that failed: a 403 or 404, another failed status, or
+// no answer. Without it, the entry was read and gives no dialect.
+type Failure = {reason: string; unread?: true};
 
 // A table's dialect and, for a third-party table, its database, or why kcmd
 // cannot tell the dialect.
@@ -77,8 +78,9 @@ export interface LabeledText {
   text: string;
 }
 
-// Each model file of `docs`, then its profile files, which `profileFiles`
-// gives with the file name push gives each, labeled as LabeledText says.
+// Each model file of `docs`, then its profile files, labeled as LabeledText
+// says. `profileFiles` gives a model's profile files. Each comes with the
+// file name push gives it.
 export function labeledFiles(
     docs: Array<{name: string; text: string}>,
     profileFiles: (model: string) => Array<{fileName: string; text: string}>):
@@ -91,29 +93,32 @@ export function labeledFiles(
 
 // The messages of the failures in `read` whose sources the files `files`
 // write, sorted. Each message starts with the label of every file that writes
-// its source, in file order. For a Spanner table, those are the files that
-// write a table of its database. `unread` holds the messages for a read that
-// failed.
+// its source, in file order, then names the first such source. For a Spanner
+// table, those are the files and the first source that write a table of its
+// database. A Cloud SQL table is named by its resource name. `unread` holds
+// the messages for a read that failed.
 export function dialectErrors(
     files: Iterable<LabeledText>,
     read: SourceDialects): {errors: string[]; unread: string[]} {
-  // A file is read again only when a message needs its label.
+  // The files are read again only when a lookup failed.
   if (!read.failures.size) return {errors: [], unread: []};
-  const labelsOf = new Map<string, string[]>();
+  const written = new Map<string, {source: string; labels: string[]}>();
   for (const {label, text} of files) {
-    // Each source sourcesToLookUp gives has a lookup key.
-    for (const key of sourcesToLookUp([text]).map(s => dialectLookupKey(s)!)) {
-      const labels = labelsOf.get(key) ?? [];
-      if (!labels.includes(label)) labels.push(label);
-      labelsOf.set(key, labels);
+    for (const source of sourcesToLookUp([text])) {
+      // Each source sourcesToLookUp gives has a lookup key.
+      const key = dialectLookupKey(source)!;
+      const first = written.get(key) ?? {source, labels: []};
+      if (!first.labels.includes(label)) first.labels.push(label);
+      written.set(key, first);
     }
   }
   const errors: string[] = [];
   const unread: string[] = [];
-  for (const [key, labels] of labelsOf) {
+  for (const [key, {source, labels}] of written) {
     const failure = read.failures.get(key);
     if (!failure) continue;
-    const error = `[${labels.join(', ')}] ${failure.error}`;
+    const name = cloudSqlTableOf(source)?.resourceName ?? source;
+    const error = `[${labels.join(', ')}] source '${name}'${failure.reason}`;
     errors.push(error);
     if (failure.unread) unread.push(error);
   }
@@ -144,8 +149,7 @@ export async function sourceDialects(
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
   // Keyed as dialectLookupKey gives, so both spellings of one table, and the
-  // tables of one Spanner database, are one lookup. A database's lookup names
-  // the first of its tables.
+  // tables of one Spanner database, are one lookup.
   const lookups = new Map<string, () => Promise<Dialect>>();
   // Each lookup of a Cloud SQL instance, database or schema entry, keyed by
   // its entry id, so tables that share one look it up once.
@@ -162,21 +166,24 @@ export async function sourceDialects(
         return parts.get(id)!;
       };
   for (const source of sourcesToLookUp(texts)) {
+    // Each source sourcesToLookUp gives has a lookup key.
+    const key = dialectLookupKey(source)!;
+    if (lookups.has(key)) continue;
     const table = cloudSqlTableOf(source);
+    const entry = thirdPartyEntryOf(source);
     if (table) {
       lookups.set(
-          table.resourceName,
+          key,
           () => cloudSqlDialect(
               catalog, table,
               (id, what, aspects) => lookUpPart(table, id, what, aspects)));
-    }
-    const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
-    if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
-    const database = spannerDatabaseOf(source);
-    if (database && !lookups.has(database)) {
+    } else if (entry) {
+      if (thirdParty) lookups.set(key, () => thirdPartyDialect(catalog, entry));
+    } else {
+      // A Spanner table's key is its database's resource name.
       lookups.set(
-          database,
-          spanner ? () => spannerDialect(spanner, database, source) :
+          key,
+          spanner ? () => spannerDialect(spanner, key) :
                     async () => ({dialect: 'SPANNER'}));
     }
   }
@@ -185,7 +192,7 @@ export async function sourceDialects(
   const failures = new Map<string, Failure>();
   await Promise.all([...lookups].map(async ([key, lookUp]) => {
     const got = await lookUp();
-    if ('error' in got) failures.set(key, got);
+    if ('reason' in got) failures.set(key, got);
     else dialects.set(key, got.dialect);
     if ('database' in got && got.database) databases.set(key, got.database);
   }));
@@ -202,14 +209,13 @@ type PartLookup = (id: string, what: string, aspects?: string[]) =>
 async function cloudSqlDialect(
     catalog: EntryLookup, table: CloudSqlTable,
     lookUpPart: PartLookup): Promise<Dialect> {
-  const at = `source '${table.resourceName}'`;
   const res = await lookupSystemEntry(
       catalog, 'cloudsql', table.project, table.location, table.resourceName);
-  if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
+  if ('error' in res) return {reason: `: ${res.error}`, unread: true};
   if ('unreadable' in res) {
     return {
       unread: true,
-      error: `${at} names no table Knowledge Catalog knows about. ${
+      reason: ` names no table Knowledge Catalog knows about. ${
           await missingCloudSqlPart(table, lookUpPart)}`,
     };
   }
@@ -217,7 +223,7 @@ async function cloudSqlDialect(
   const type = (res.result.entryType ?? '').split('/').pop() ?? '';
   const dialect = DIALECT_OF_ENTRY_TYPE[type];
   return dialect ? {dialect} : {
-    error: `${at}: its Knowledge Catalog entry has type '${type}', which is ` +
+    reason: `: its Knowledge Catalog entry has type '${type}', which is ` +
         `not a Cloud SQL table or view type kcmd knows (${
                Object.keys(DIALECT_OF_ENTRY_TYPE).join(', ')}).`,
   };
@@ -304,17 +310,15 @@ async function missingCloudSqlPart(
       `create the table.`;
 }
 
-// The dialect of the Spanner database `database`, which `source` names a
-// table of, by its databaseDialect.
+// The dialect of the Spanner database `database`, by its databaseDialect.
 async function spannerDialect(
-    spanner: Pick<SpannerClient, 'getDatabase'>, database: string,
-    source: string): Promise<Dialect> {
+    spanner: Pick<SpannerClient, 'getDatabase'>,
+    database: string): Promise<Dialect> {
   const [, , project, , instance, , name] = database.split('/');
   const failed = (why: string): Dialect => ({
     unread: true,
-    error: `source '${source}': kcmd reads its Spanner database's SQL ` +
-        `dialect, and could not read database ${project}/${instance}/${
-               name}: ${why}`,
+    reason: `: kcmd reads its Spanner database's SQL dialect, and could not ` +
+        `read database ${project}/${instance}/${name}: ${why}`,
   });
   try {
     const res = await spanner.getDatabase(project, instance, name);
@@ -334,15 +338,14 @@ async function spannerDialect(
 async function thirdPartyDialect(
     catalog: EntryLookup,
     {project, location, name}: ThirdPartyEntry): Promise<Dialect> {
-  const at = `source '${name}'`;
   const res = await read(
       'looking up its Knowledge Catalog entry',
       () => catalog.lookupEntry(project, location, name));
-  if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
+  if ('error' in res) return {reason: `: ${res.error}`, unread: true};
   if ('unreadable' in res) {
     return {
       unread: true,
-      error: `${at} names no table Knowledge Catalog knows about. The entry ` +
+      reason: ` names no table Knowledge Catalog knows about. The entry ` +
           `may not exist, or you may not be allowed to read it. kcmd reads a ` +
           `third-party table's dialect from its entry, so add the table to ` +
           `Knowledge Catalog, or fix the source.`,
@@ -358,7 +361,7 @@ async function thirdPartyDialect(
     if (database) return {dialect, database};
     const parts = TABLE_FQN_PARTS.get(prefix)!.map(p => `<${p}>`).join('.');
     return {
-      error: `${at}: its Knowledge Catalog entry has fullyQualifiedName ` +
+      reason: `: its Knowledge Catalog entry has fullyQualifiedName ` +
           `'${fqn}', which names no table or view. A table's ` +
           `fullyQualifiedName has the form ${prefix}:${parts}. Write the ` +
           `entry name of the table's own entry.`,
@@ -369,7 +372,7 @@ async function thirdPartyDialect(
       system ? `entrySource.system '${system}' and no fullyQualifiedName` :
                'neither a fullyQualifiedName nor an entrySource.system';
   return {
-    error: `${at}: kcmd cannot tell the table's SQL dialect from its ` +
+    reason: `: kcmd cannot tell the table's SQL dialect from its ` +
         `Knowledge Catalog entry, which has ${has}. kcmd reads the prefix of ` +
         `the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
         `postgresql: or sqlserver:), or entrySource.system when there is no ` +

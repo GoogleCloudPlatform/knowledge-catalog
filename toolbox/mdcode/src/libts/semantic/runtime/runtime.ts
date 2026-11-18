@@ -202,10 +202,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // loads. A table whose entry cannot be read stops the scope, as push does.
   // A third-party table is not looked up, since no runtime reads one, and a
   // Spanner table is SPANNER, the dialect the runtime's Spanner store speaks.
-  const files = labeledFiles(docs, model => filesByDoc.get(model) ?? []);
+  const labeled = labeledFiles(docs, model => filesByDoc.get(model) ?? []);
   const lookup = await sourceDialects(
-      files.map(f => f.text), new CatalogClient(ctx), {thirdParty: false});
-  const {errors} = dialectErrors(files, lookup);
+      labeled.map(f => f.text), new CatalogClient(ctx), {thirdParty: false});
+  const {errors} = dialectErrors(labeled, lookup);
   if (errors.length) return {error: errors.join('\n')};
   const load = {
     sourceDialects: lookup.dialects,
