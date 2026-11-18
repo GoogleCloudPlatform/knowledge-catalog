@@ -114,6 +114,9 @@ function stubClient(opts: {
                 labels?: Record<string, string>;
                 source?: Record<string, string>
               })[],
+  // The message listEntries throws with, as the client does for a page that
+  // fails. Default: none, the listing succeeds.
+  listError?: string,
   // How listEntries spells the project in the names it yields. Defaults to the
   // scope's own project; set to a number to reproduce the server's inconsistent
   // id/number spelling.
@@ -165,6 +168,10 @@ function stubClient(opts: {
   });
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
+                     if (opts.listError) {
+                       throw new Error(
+                           `Failed to list entries: ${opts.listError}`);
+                     }
                      yield* listed;
                    });
   const lookup =
@@ -1340,7 +1347,10 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
 
 
 // Dataplex's answer to a read of an entry group the caller may not read.
-const GROUP_DENIED = 'Permission \'dataplex.entryGroups.get\' denied on resource (or it may not exist).';
+const GROUP_DENIED = 'Permission \'dataplex.entryGroups.get\' denied on resource (or it may not exist)';
+// A refused listing worded like the error of a new group whose entries are
+// not visible yet.
+const LIST_DENIED = 'Permission \'dataplex.entries.list\' denied on resource (or it may not exist)';
 
 describe('deployKnowledgeCatalog: validateOnly', () => {
   test('reads the entry group, writes nothing and returns a plan', async () => {
@@ -1362,8 +1372,10 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
   test.each([
     ['a missing entry group', {getGroup: err(404, 'not found')},
      "entry group 'eg' does not exist"],
-    ['an entry group it may not read', {getGroup: err(403, GROUP_DENIED)},
-     `reading entry group 'eg': ${GROUP_DENIED}`],
+    ['an entry group it may neither read nor list',
+     {getGroup: err(403, GROUP_DENIED), listError: LIST_DENIED},
+     `listing entries in entry group 'eg': Failed to list entries: ${
+         LIST_DENIED}`],
     ['another model without --force-remove',
      {existing: [{id: 'old', type: MODEL_TYPE}]},
      'already contains model(s) this push does not include: old'],
@@ -1405,14 +1417,26 @@ describe('deployKnowledgeCatalog: failures', () => {
          expect(create).not.toHaveBeenCalled();
        });
 
-  test('a refused read of the entry group stops the push before any write',
+  test('a refused read of the entry group lets the push go on', async () => {
+    stubClient({getGroup: err(403, GROUP_DENIED)});
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+  });
+
+  test('after a refused read of the entry group, a failed listing stops the ' +
+           'push before any write',
        async () => {
-         const {list, create} = stubClient({getGroup: err(403, GROUP_DENIED)});
+         const {create} = stubClient(
+             {getGroup: err(403, GROUP_DENIED), listError: LIST_DENIED});
 
          const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-         expect(result.details).toBe(`reading entry group 'eg': ${GROUP_DENIED}`);
-         expect(list).not.toHaveBeenCalled();
+         expect(result.details)
+             .toBe(
+                 "listing entries in entry group 'eg': Failed to list " +
+                 `entries: ${LIST_DENIED}`);
          expect(create).not.toHaveBeenCalled();
        });
 

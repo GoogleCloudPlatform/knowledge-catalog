@@ -1329,9 +1329,9 @@ project:
 
 The entry group is required. A push to an entry group that does not exist
 stops before writing anything and asks you to run `kcmd init --semantic-model`.
-A push that may not read the entry group stops there too, with Dataplex's
-message.
 A pull of such an entry group says the same.
+A push that may not list the entry group's entries also stops before writing
+anything, with Dataplex's message.
 When the scope in catalog.yaml names the wrong location or group, correct the
 scope instead. When the entry group or a type already exists, init goes on even
 if you may not create or update it, and reports a refusal to update a type as a
