@@ -398,8 +398,7 @@ async function preflightEmittedModels(
   if (isNotFoundStatus(group)) {
     return {result: result(false, missingEntryGroupMessage(opts))};
   }
-  // Any other answer, such as a refusal, lets the push go on to the listing.
-  const listing = await listEntryGroup(cat, opts, isOkStatus(group));
+  const listing = await listEntryGroup(cat, opts);
   if (listing.error) return {result: result(false, listing.error)};
   const existing = listing.entries;
 
@@ -1203,16 +1202,14 @@ async function deleteEntries(
 /**
  * Snapshots the destination entry group's entries once, before any write.
  *
- * A brand-new entry group can briefly fail to list its entries, in the same
- * window that `createEntry` retries. A read of the group finds it as soon as
- * it is created. So the not-yet-visible error reads as an empty group only
- * when `groupFound` says that read succeeded. Any other listing failure is
- * returned as the error, such as a backend error or a refusal. After a read
- * of the group that failed, every listing failure is returned.
+ * A brand-new entry group can briefly fail to list its entries collection (the
+ * same propagation window `createEntry` rides out); treat only that
+ * not-yet-visible error as empty so any other listing failure (such as a
+ * backend error or permission problem) is surfaced rather than masked.
  */
 async function listEntryGroup(
-    cat: CatalogClient, opts: KcDeployOptions,
-    groupFound: boolean): Promise<{entries: Entry[]; error?: string}> {
+    cat: CatalogClient,
+    opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
   const entries: Entry[] = [];
   try {
     // Push writes listed source fields back, so it keeps each `resource` as
@@ -1224,7 +1221,7 @@ async function listEntryGroup(
     }
   } catch (err: any) {
     const msg = err.message || String(err);
-    if (groupFound && isPropagationError({message: msg})) {
+    if (isPropagationError({message: msg})) {
       return {entries: []};
     }
     return {

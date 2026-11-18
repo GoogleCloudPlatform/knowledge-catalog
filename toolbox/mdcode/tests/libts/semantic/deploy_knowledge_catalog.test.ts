@@ -1348,9 +1348,8 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
 
 // Dataplex's answer to a read of an entry group the caller may not read.
 const GROUP_DENIED = 'Permission \'dataplex.entryGroups.get\' denied on resource (or it may not exist)';
-// A refused listing worded like the error of a new group whose entries are
-// not visible yet.
-const LIST_DENIED = 'Permission \'dataplex.entries.list\' denied on resource (or it may not exist)';
+// Dataplex's answer to a listing of the entries of that entry group.
+const LIST_DENIED = 'Permission \'dataplex.entries.list\' denied on \'projects/dest/locations/us/entryGroups/eg\'';
 
 describe('deployKnowledgeCatalog: validateOnly', () => {
   test('reads the entry group, writes nothing and returns a plan', async () => {
