@@ -3751,7 +3751,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                n} characters long; ${
                /^(field|metric) /.test(what) ?
                    "a property's extension value" :
-                   'an extension value of a label or property'} ` +
+                   "a label's extension value"} ` +
            'holds at most 1024.');
     const ELEMENTS = [
       "entity 'customer'", "field 'purchase.amount'",

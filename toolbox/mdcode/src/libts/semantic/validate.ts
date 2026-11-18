@@ -665,7 +665,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
         // relationship is a label.
         const holder = kind === 'field' || kind === 'metric' ?
             "a property's extension value" :
-            'an extension value of a label or property';
+            "a label's extension value";
         for (const [key, value] of extensions) {
           if (value.length <= MAX_BIGQUERY_EXTENSION_VALUE) continue;
           problems.push(
