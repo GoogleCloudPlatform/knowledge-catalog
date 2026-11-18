@@ -193,7 +193,7 @@ export interface StoreError {
  * one the operational targets, Spanner or AlloyDB, name, or else the one the
  * BigQuery targets name. Two graphs in one BigQuery dataset or one Spanner
  * database are one store. `document` names the model file in push's errors.
- * Push's error for a table outside a deployment's database reads `profiles`,
+ * Push's check for a table outside a deployment's database reads `profiles`,
  * the profiles the model declares.
  *
  * Fails six ways:
@@ -204,9 +204,9 @@ export interface StoreError {
  * 3. The targets name several stores and no single operational one, so which
  *    store is meant is ambiguous.
  * 4. There is no target, so there is nothing to run against.
- * 5. A deployment of the profile whose target is the store binds an entity
- *    to a table outside the database it targets, which push refuses. The
- *    error is push's, and named.
+ * 5. A deployment of the profile binds an entity to a table outside the
+ *    database it targets, which push refuses. A deployment is checked only
+ *    when its target names the store. The error is push's, and named.
  * 6. The model declares actions and binds a table outside the store. For a
  *    Spanner or AlloyDB store, a write would land in the wrong place, and the
  *    error is named. A BigQuery graph may read tables in any dataset, so for a
@@ -288,9 +288,10 @@ export function resolveStore(
   const store = storeFor(spanner[0], alloyDb[0], bigQuery[0]);
 
   // Push refuses a deployment that binds an entity to a table outside the
-  // database it targets. Each deployment of the profile whose target is the
-  // store gets push's error, which reads a named profile's sources from
-  // `profiles` and the model file's from `model`.
+  // database it targets. A deployment of the profile is checked only when its
+  // target names the store. tablesOutsideTarget gives push's error. It reads
+  // a named profile's sources from `profiles` and the model file's from
+  // `model`.
   const resolved = resolveModelDeployments(scoped);
   const outside = 'error' in resolved ? [] : resolved.deployments
       .filter(d => targetStore(d).name === store.name)
