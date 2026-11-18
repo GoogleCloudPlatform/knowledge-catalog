@@ -1182,9 +1182,12 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
+  // Each plan's deployment and generated graph. An AlloyDB plan has no graph.
+  const graphs = plans.flatMap(
+      ({deployment, generated}) => generated ? [{deployment, generated}] : []);
   // Prints each graph's warnings once, and adds them to `printed`.
   const printWarnings = () => {
-    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+    for (const w of new Set(graphs.flatMap(g => g.generated.warnings))) {
       console.warn(`Warning: ${w}`);
       printed.add(w);
     }
@@ -1194,9 +1197,6 @@ async function pushInTwoPhases(
   };
   const engine = (d: ResolvedDeployment): 'BigQuery'|'Spanner' =>
       d.engine === 'bigquery' ? 'BigQuery' : 'Spanner';
-  // Each plan's deployment and generated graph. An AlloyDB plan has no graph.
-  const graphs = plans.flatMap(
-      ({deployment, generated}) => generated ? [{deployment, generated}] : []);
   // Prints each graph's warnings and, under --print, its DDL. A header prints
   // only above what prints under it.
   const printGraphs = () => {
@@ -1425,14 +1425,15 @@ async function liveErrors(
 
 // The line of `ddl` that BigQuery's `message` points to, quoted after a blank
 // line and a sentence that names it. A caret marks the column when the column
-// is in the line. BigQuery ends its message with the position, written as
-// `at [line:column]`. A message can span several lines, so the position can
-// be on a later line than the first. A string literal the message quotes can
-// also contain `at [line:column]`, so the last match is the position. The
-// result is empty when the message gives no position, or when that line of
-// `ddl` is blank or missing. BigQuery starts a new line after each \n, \r\n
-// and \r. It counts columns in characters, and a tab moves to the next
-// multiple of eight columns.
+// is in the line or just past its last character, where BigQuery points at
+// the end of a line. A column further right gets no caret. BigQuery ends its
+// message with the position, written as `at [line:column]`. A message can
+// span several lines, so the position can be on a later line than the first.
+// A string literal the message quotes can also contain `at [line:column]`, so
+// the last match is the position. The result is empty when the message gives
+// no position, or when that line of `ddl` is blank or missing. BigQuery
+// starts a new line after each \n, \r\n and \r. It counts columns in
+// characters, and a tab moves to the next multiple of eight columns.
 function ddlLineAt(message: string, ddl: string): string {
   const found = [...message.matchAll(/\bat \[(\d+):(\d+)\]/g)].at(-1);
   if (!found) return '';

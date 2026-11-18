@@ -98,16 +98,18 @@ const INITIALS = {
   ],
 };
 const QUOTED = quoted(`${syntaxError('9:33')}.`);
-// Each generated BigQuery graph also warns `ddl warning <deployment>`.
-const DDL_WARNINGS = {
+// Each generated BigQuery graph also warns `ddl warning <deployment>`, then
+// each warning in `shared`.
+const ddlWarnings = (...shared: string[]) => ({
   bq: async (...a: any[]) => {
     const r = await REAL.bq(...a);
     return {
       ...r,
-      warnings: [...r.warnings, `ddl warning ${deploymentNames(a[0])}`],
+      warnings:
+          [...r.warnings, `ddl warning ${deploymentNames(a[0])}`, ...shared],
     };
   },
-};
+});
 const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
@@ -204,6 +206,8 @@ scenarios('push writes nothing when a check fails', [
     errors: [err(
         `${at('g')}: the graph's DDL fails a BigQuery dry run: Column ` +
         "'c_key' not found.")],
+    // Without --print, no DDL prints.
+    log: [],
     // The dry run runs in the dataset's project and location.
     check: r => {
       // The source check reads table customer; the dry run, the graph's
@@ -232,10 +236,10 @@ scenarios('push writes nothing when a check fails', [
         deployments: ['g', 'h'],
         entities: [INITIALS],
         flags: {print: true},
-        services: {...rejectedAt('9:33'), ...DDL_WARNINGS},
+        services: {...rejectedAt('9:33'), ...ddlWarnings('shared warning')},
         check: (r: PushRun) => expect(r.output).toEqual([
-          'Warning: ddl warning g', 'Warning: ddl warning h',
-          header('g'), '-- BigQuery Graph --',
+          'Warning: ddl warning g', 'Warning: shared warning',
+          'Warning: ddl warning h', header('g'), '-- BigQuery Graph --',
           has('PROPERTY GRAPH `test-project.d.g`'),
           header('h'), '-- BigQuery Graph --',
           has('PROPERTY GRAPH `test-project.d.h`'),
@@ -263,11 +267,24 @@ scenarios('push writes nothing when a check fails', [
         services: rejectedAt('9:33', 'Unrecognized name: "at [1:5]" at [9:33]'),
         errors: [quoted('Unrecognized name: "at [1:5]" at [9:33].')],
       },
-      // A column past the end of the line gets no caret.
+      // A backslash and an n in BigQuery's message stay as they are.
       {
         entities: [INITIALS],
-        services: rejectedAt('9:99999999999'),
-        errors: [quoted(`${syntaxError('9:99999999999')}.`, '')],
+        services: rejectedAt(
+            '9:33', 'Invalid NUMERIC literal: "a\\nb" at [9:33]'),
+        errors: [quoted('Invalid NUMERIC literal: "a\\nb" at [9:33].')],
+      },
+      // Line 9 is 57 columns wide. A column just past its last character
+      // gets a caret. A column further right gets none.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:58'),
+        errors: [quoted(`${syntaxError('9:58')}.`, `\n${' '.repeat(57)}^`)],
+      },
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:59'),
+        errors: [quoted(`${syntaxError('9:59')}.`, '')],
       },
     ].map(step => ({code: 1, nothingWritten: true, ...step})),
   },
@@ -280,10 +297,11 @@ scenarios('push writes nothing when a check fails', [
     then: [
       {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
       {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
-      // Under --print, the DDL prints before the error.
+      // Under --print, the DDL prints before the error, with no header for
+      // a single deployment.
       {
         flags: {validateOnly: true, print: true},
-        check: (r: PushRun) => expect(r.output.slice(-3)).toEqual([
+        check: (r: PushRun) => expect(r.output).toEqual([
           '-- Spanner Graph --', has('PROPERTY GRAPH g'), STANDARD_REFUSED,
         ]),
       },
@@ -580,7 +598,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
   {
     name: 'prints each deployment\'s DDL warnings once, and its DDL only under --print, and one completion line',
     flags: {validateOnly: true},
-    services: DDL_WARNINGS,
+    services: ddlWarnings(),
     warnings: ['Warning: ddl warning g1', 'Warning: ddl warning g2'],
     log: [header('g1'), header('g2'), msg.VALIDATED],
     events: ['preflight'],
