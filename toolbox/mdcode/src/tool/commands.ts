@@ -1223,9 +1223,9 @@ async function pushInTwoPhases(
   }
   if (options.validateOnly) {
     printGraphs();
-    // A dry run makes the reads push makes before its first write, to list
-    // what push would remove too. A preflight with no model to plan gives
-    // its result instead.
+    // A dry run looks up what the entry group holds, as push does before its
+    // first write, to list what push would remove too. A preflight with no
+    // model to plan gives its result instead.
     return reportCatalogResult(
         preflight.prepared ?
             await kc.planKnowledgeCatalog(preflight.prepared, ctx, kcOptions) :

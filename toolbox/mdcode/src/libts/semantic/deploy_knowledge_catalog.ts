@@ -49,8 +49,9 @@
 //     relabels the anchor `finished`. A model with nothing to create, update
 //     or delete, whose anchor is labeled `finished`, gets no write.
 //   * A dry run runs the preflight and then `planKnowledgeCatalog`, which
-//     makes apply's reads and works out what apply would write and remove,
-//     and writes nothing.
+//     makes apply's entry link lookups, works out what apply would write and
+//     remove, and writes nothing. It skips apply's reads of stored entries,
+//     which decide only which entries apply writes.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -591,23 +592,28 @@ async function checkCustomTypes(
     cat: CatalogClient, dest: {project: string},
     typeIds: readonly string[]): Promise<string|undefined> {
   const home = customTypeHome(dest);
+  // A read that throws, such as on a network failure, gives its message.
+  const thrown = (err: any) => String(err?.message || err).trim();
   for (const typeId of typeIds) {
     const [entryTypeRes, aspectTypeRes] = await Promise.all([
-      cat.getEntryType(home.project, home.location, typeId),
-      cat.getAspectType(home.project, home.location, typeId),
+      cat.getEntryType(home.project, home.location, typeId).catch(thrown),
+      cat.getAspectType(home.project, home.location, typeId).catch(thrown),
     ]);
-    if (isNotFoundStatus(entryTypeRes) || isNotFoundStatus(aspectTypeRes)) {
+    if ([entryTypeRes, aspectTypeRes].some(
+            res => typeof res !== 'string' && isNotFoundStatus(res))) {
       return `Custom type '${typeId}' not found in project ` +
           `'${dest.project}'; run 'kcmd init --semantic-model' first.`;
     }
-    if (!isOkStatus(entryTypeRes)) {
-      return `checking entry type '${typeId}' ` +
-          `(HTTP ${entryTypeRes.status}): ${errText(entryTypeRes)}`;
-    }
-    if (!isOkStatus(aspectTypeRes)) {
-      return `checking aspect type '${typeId}' ` +
-          `(HTTP ${aspectTypeRes.status}): ${errText(aspectTypeRes)}`;
-    }
+    // The error for a read of the `kind` type that threw or failed.
+    const failure = (kind: string, res: ApiResult<unknown>|string) => {
+      const what = `checking ${kind} type '${typeId}'`;
+      if (typeof res === 'string') return `${what}: ${res}`;
+      return isOkStatus(res) ? undefined :
+                               `${what} (HTTP ${res.status}): ${errText(res)}`;
+    };
+    const error =
+        failure('entry', entryTypeRes) ?? failure('aspect', aspectTypeRes);
+    if (error) return error;
   }
   return undefined;
 }
@@ -845,7 +851,8 @@ function removalPlan(
  *   1. Reads each emitted entry the pre-write listing `existing` holds, with
  *      the aspect types its update names, at most READ_CONCURRENCY at a time,
  *      and sorts out the entries the update would leave as stored. A read
- *      that fails counts as a difference.
+ *      that fails counts as a difference. A dry run makes none of these
+ *      reads, since they decide only which entries a push writes.
  *   2. Looks up the model's existing relationship links when `existing`
  *      contains entities owned by the model, and finds the orphaned links (no
  *      longer emitted) and stale links (changed endpoints) owned by the model.
@@ -860,8 +867,10 @@ async function planModelWrites(
     isScopeProject: ProjectMatcher): Promise<WritePlan|{error: string}> {
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
   const listed = resources.entries.filter(e => sources.has(entryId(e)));
-  const stored = await mapConcurrent(
-      listed, READ_CONCURRENCY, e => readStored(cat, opts, e));
+  const stored = opts.validateOnly ?
+      [] :
+      await mapConcurrent(
+          listed, READ_CONCURRENCY, e => readStored(cat, opts, e));
   const unchanged = new Set<Entry>();
   listed.forEach((entry, i) => {
     const held = stored[i];
@@ -1263,9 +1272,9 @@ interface LinkLookupOutcome {
  * project. A link whose project number push cannot resolve is kept only when
  * every reference spells the same project as the link's name. Dataplex spells
  * a looked-up link's name and references alike, and one reference is the
- * looked-up entry, so such a link is in the destination project. A thrown
- * error, such as a network failure, is returned like a failed response, so
- * the caller can name the entry.
+ * looked-up entry, so such a link is in the destination project. An error
+ * the lookup request throws, such as a network failure, is returned like a
+ * failed response, so the caller can name the entry.
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
@@ -1274,17 +1283,17 @@ async function lookupEntryLinks(
       opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`);
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
-    const id = entryIdOf(entityName);
+    const entityId = entryIdOf(entityName);
     let res: ApiResult<EntryLink[]>;
     try {
       res = await cat.lookupEntryLinks(
           opts.project, opts.location, {entry: entityName});
     } catch (err: any) {
       const message = String(err?.message || err).trim();
-      return {links, error: {entryId: id, message}};
+      return {links, error: {entryId: entityId, message}};
     }
     if (!isOkStatus(res)) {
-      return {links, error: {entryId: id, message: errText(res)}};
+      return {links, error: {entryId: entityId, message: errText(res)}};
     }
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];

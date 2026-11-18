@@ -1356,7 +1356,9 @@ const LIST_DENIED = 'Permission \'dataplex.entries.list\' denied on \'projects/d
 
 describe('deployKnowledgeCatalog: validateOnly', () => {
   test('reads the entry group, writes nothing and returns a plan', async () => {
-    const {getGroup, list, create} = stubClient();
+    // A dry run skips push's read of each listed entry it would write.
+    const {getGroup, list, lookup, create} =
+        stubClient({existing: [{id: 'sales', type: MODEL_TYPE}]});
 
     const result = await deployKnowledgeCatalog(
         models(DOCS), CTX, {...OPTS, validateOnly: true});
@@ -1365,6 +1367,7 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
     expect(result.created).toBe(0);
     expect(getGroup).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
+    expect(lookup).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
     expect(result.toRemove).toBeUndefined();
     expect(result.plan.join('\n')).toContain('Knowledge Catalog plan');
@@ -2610,6 +2613,22 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
             .toBe(
                 'checking aspect type \'semantic-action\' (HTTP 500): ' +
                 'internal error');
+      });
+
+  test.each([['entry', 'entryType'], ['aspect', 'aspectType']])(
+      'fails preflight naming the %s type when its read throws',
+      async (kind, read) => {
+        stubClient({
+          [read]: () => {
+            throw new TypeError('fetch failed');
+          },
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+
+        expect(pre.result?.details)
+            .toBe(`checking ${kind} type 'semantic-action': fetch failed`);
       });
 
   test(

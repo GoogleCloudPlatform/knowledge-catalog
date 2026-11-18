@@ -1302,13 +1302,15 @@ and each aspect type attached, so a push needs, on the destination entry group:
   constraints — those types are custom rather than built-in, so they are
   authorized on the type resource instead of through an entry-group
   use-permission
+* `dataplex.entryTypes.get` and `dataplex.aspectTypes.get` on the
+  `semantic-action` entry type and aspect type in the destination project,
+  when the model declares actions, and on the `semantic-constraint` ones when
+  it declares constraints. Push reads them before its first write to check
+  that they exist.
 
-`--validate-only` writes nothing, but it reads the entry group, its entries
-and their entry links as push does, so it needs read access to them. When the
-model declares actions, it also reads the `semantic-action` entry type and
-aspect type in the destination project. When the model declares constraints,
-it reads the `semantic-constraint` ones. It needs read access to those types
-too.
+`--validate-only` writes nothing, so of this list it needs only
+`dataplex.entries.list`, read access to the entry links, and the reads of the
+custom types above.
 
 > The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
 > [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).
