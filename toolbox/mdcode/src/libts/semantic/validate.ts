@@ -31,6 +31,7 @@ import {generateSpannerPropertyGraph} from './spanner';
 import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
+import {movedOffset} from './yaml_update';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -1142,9 +1143,7 @@ export function cutStatements(
           .flatMap(({statement}) => {
             const [a, b] = statement.range!;
             if (edits.some(([p, q]) => p < b && q > a)) return [];
-            const shift = edits.filter(([, q]) => q <= a).reduce(
-                (d, [p, q, s]) => d + s.length - (q - p), 0);
-            return [a + shift];
+            return [movedOffset(edits, a)];
           }));
   return [...new Set(
       writtenStatements(text)

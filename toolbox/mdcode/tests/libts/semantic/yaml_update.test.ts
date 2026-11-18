@@ -1,10 +1,10 @@
 // Tests for changing the text of a YAML document (yaml_update.ts).
 
-import {expect, test} from 'bun:test';
+import {expect, spyOn, test} from 'bun:test';
 import * as yaml from 'yaml';
 
 import {plainCopy} from '../../../src/libts/semantic/resolve_profiles';
-import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic/yaml_update';
+import {linkNodes, movedOffset, parseForUpdate, updateText} from '../../../src/libts/semantic/yaml_update';
 
 // Each row changes a plain copy of `input`. The nodes kept from the input keep
 // their quoting and flow style, and the text must still read back as the new
@@ -480,6 +480,15 @@ test.each<[string, string, (value: any) => void, string?]>([
         '      x: &b [*q, *q, *q, *q, *q, *q, *q, *q, *q, *q, *q]\np: &n [[1], [1], [1], [1], [1], [1], [1], [1], [1], [1]]\n' +
         'x: *n\n'
   ],
+  [
+    'alias keys whose anchor a moved anchor would take or that goes, written out as the text a list key reads as',
+    'list1:\n  - {name: mover, w: {a: &j wrong}}\n  - {name: stay}\nl: &j [1]\nk: &k [2]\nlist2:\n  - {name: first}\n' +
+        'r:\n  *j : v\n  ? *k\n  : w\n  q: b\n',
+    v => (v.list2.push(v.list1.shift()), delete v.k),
+    'list1:\n  - {name: stay}\nl: &j [1]\nlist2:\n  - {name: first}\n  - name: mover\n    w: {a: &j wrong}\n' +
+        'r:\n  "*j" : v\n  ? "*k"\n  : w\n  q: b\n'
+  ],
+  ['an alias key that reads as another key than the new one', 'a: &k x\nm: {*k : 1}\n', v => v.m = {'*k': 1}, 'a: &k x\nm: {"*k" : 1}\n'],
   ['an alias after a removed flow list item', 'a: &a 1\nl: [9, *a]\n', v => v.l.shift(), 'a: &a 1\nl: [*a]\n'],
   [
     'an alias of an empty value that an item added to its flow mapping follows', 'm: {a: &x}\nb: *x\n',
@@ -546,6 +555,12 @@ test.each<[string, string, (value: any) => void, string?]>([
   ['a value given to a flow mapping key that is only `?`', 'm: {?}\n', v => v.m[''] = 5, 'm: {? : 5}\n'],
   ['a value given to a later flow mapping key that is only `?`', 'm: {a: 1, ?}\n', v => v.m[''] = 5, 'm: {a: 1, ? : 5}\n'],
   ['a value given to a pair in a flow list whose key is only `?`', 'm: [?]\n', v => v.m[0][''] = 5, 'm: [? : 5]\n'],
+  [
+    'values given to flow mapping keys that are aliases of a list and of the string `*y`',
+    'l: &x [1]\ns: &y "*y"\nm: {a: 1, *x}\nf: {? *x}\ng: {*y}\nh: [? *x]\n',
+    v => (v.m['*x'] = 5, v.f['*x'] = 5, v.g['*y'] = 5, v.h[0]['*x'] = 5),
+    'l: &x [1]\ns: &y "*y"\nm: {a: 1, *x : 5}\nf: {? *x : 5}\ng: {*y : 5}\nh: [? *x : 5]\n'
+  ],
   [
     'a first key removed above a comment at column 0',
     'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
@@ -639,6 +654,27 @@ test('a key renamed in the document keeps its tag and its value\'s', () => {
 
   expect(updateText(text, document, value, linkNodes(value, document.contents)))
       .toBe('!!str entities: !!seq\n  - a\n');
+});
+
+test('an update that changes nothing gives the text back without parsing it again', () => {
+  const {document, text} = parseForUpdate('a: &x 1\nb: *x\n');
+  const value = plainCopy(document.toJS());
+  const parse = spyOn(yaml, 'parseDocument');
+
+  const output = updateText(text, document, value, linkNodes(value, document.contents));
+  const calls = parse.mock.calls.length;
+  parse.mockRestore();
+
+  expect(output).toBe(text);
+  expect(calls).toBe(0);
+});
+
+// Text inserted at the offset moves it, unless `insertsAfter` is set. An edit
+// that ends at or before the offset moves it, and one after it does not.
+test.each([[false, 8], [true, 6]])('movedOffset with insertsAfter %p', (insertsAfter, expected) => {
+  const edits: Array<[number, number, string]> = [[0, 1, 'abc'], [3, 5, 'x'], [5, 5, 'yy'], [6, 8, '']];
+
+  expect(movedOffset(edits, 5, insertsAfter)).toBe(expected);
 });
 
 // A root set to a value of another kind loses its tag. The `---` or byte

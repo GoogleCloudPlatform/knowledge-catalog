@@ -211,6 +211,8 @@ function misreadAliases(
     u: Update, named: ReadonlyMap<yaml.Alias, yaml.Node|undefined>,
     made: ReadonlyArray<[number, number, string]>,
     out: string): Update['aliases'] {
+  // With no edit, `out` is `u.text`.
+  if (!made.length) return [];
   const kept = u.aliases.filter(([alias]) => {
     const [a, b] = alias.range!;
     return !u.edits.some(([p, q]) => p < b && q > a);
@@ -220,21 +222,31 @@ function misreadAliases(
   const outNamed = new Map(
       [...aliasNodes(yaml.parseDocument(out, YAML_OPTIONS))].map(
           ([alias, node]) => [alias.range![0], node]));
-  // The offset in `out` of an offset of `u.text` inside no edit. Text inserted
-  // at the offset goes before it, unless `empty` is set. An empty node, such
-  // as the value of `a: &x`, has no text, and the writer inserts text at its
-  // offset only after the item it ends.
-  const moved = (at: number, empty = false) => made.reduce(
-      (s, [p, q, t]) =>
-          q < at || q === at && !(empty && p === at) ? s + t.length - (q - p) : s,
-      at);
   // An alias whose anchor changed or went is already written out. So the node
   // each kept alias names keeps its text, and starts where its start in
-  // `u.text` moves to.
+  // `u.text` moves to. An empty node, such as the value of `a: &x`, has no
+  // text. The writer inserts text at its offset only after the item it ends,
+  // so that text goes after it.
   return kept.filter(([alias]) => {
     const [a, b] = (named.get(alias) as yaml.Node).range!;
-    return outNamed.get(moved(alias.range![0]))?.range![0] !== moved(a, a === b);
+    return outNamed.get(movedOffset(made, alias.range![0]))?.range![0] !==
+        movedOffset(made, a, a === b);
   });
+}
+
+/**
+ * Where offset `at` of a text moves to once `edits` are made. Each edit
+ * replaces the text from one offset to another, and `at` is inside none of
+ * them. Text inserted at `at` goes before it, unless `insertsAfter` is set.
+ */
+export function movedOffset(
+    edits: ReadonlyArray<readonly [number, number, string]>, at: number,
+    insertsAfter = false): number {
+  return edits.reduce(
+      (s, [p, q, t]) => q < at || q === at && !(insertsAfter && p === at) ?
+          s + t.length - (q - p) :
+          s,
+      at);
 }
 
 interface Update {
@@ -265,7 +277,10 @@ interface Update {
   edits: Array<[number, number, string]>;
   /** Nodes whose text changed. */
   dirty: Set<unknown>;
-  /** Each alias whose value stays, with that value and where it sits. */
+  /**
+   * Each alias whose value stays, or that is a key that stays, with that value
+   * or key and where it sits.
+   */
   aliases: Array<[yaml.Alias, unknown, Slot]>;
   nl: string;
   /** Columns from a key to its keys under it, and to its list's `-`. */
@@ -284,8 +299,8 @@ interface Slot {
   /** The column of the key or `-` that holds the node. */
   col: number;
   /**
-   * `:` after a key, or `-`. ` :` after a flow key with no `:` and no text of
-   * its own.
+   * `:` after a key, or `-`. ` :` after a flow key with no `:` that is an
+   * alias or has no text of its own.
    */
   prefix: string;
   /**
@@ -371,12 +386,34 @@ function keep(
     const v = pair ? (value as Record<string, unknown>)[keyOf(pair)] :
                      (value as unknown[])[i];
     if (yaml.isAlias(n)) {
-      u.aliases.push(
-          [n, v, {col: 0, prefix: '', after: n.range![0], flow: true}]);
+      u.aliases.push([n, v, inPlace(n)]);
     } else if (yaml.isCollection(n)) {
       keep(u, v, n);
     }
   });
+}
+
+/**
+ * Keeps `alias`, a mapping key that the new value keeps as `key`. It is
+ * recorded, so that it is written out when the node it names changes, as an
+ * alias value is (see updateText). An alias that reads as another key is
+ * written out now. An alias written out is `key` as a scalar, since YAML reads
+ * a key that is a collection, or an alias of one, as text, such as `*x`.
+ */
+function keepKey(u: Update, alias: yaml.Alias, key: string): void {
+  // The key yaml's toJS gives `alias`.
+  const map = new yaml.YAMLMap();
+  map.items.push(new yaml.Pair(alias));
+  if (Object.keys(map.toJS(u.doc))[0] === key) {
+    u.aliases.push([alias, key, inPlace(alias)]);
+  } else {
+    replace(u, key, alias, inPlace(alias));
+  }
+}
+
+/** The slot of a node written out in place, on one line. */
+function inPlace(node: yaml.Node): Slot {
+  return {col: 0, prefix: '', after: node.range![0], flow: true};
 }
 
 /** Whether each key of each mapping in `node` is a scalar. */
@@ -426,12 +463,14 @@ function patchItems(
         item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
         g[i].start;
     // A key written with no `:`, as `b` in `{a: 1, b}`, has its slot right
-    // after it. A key with no text of its own, as in `{&x}` or `{?}`, ends in
-    // an anchor, a tag or `?`, so a space goes before the new `:`, which would
-    // otherwise join them.
+    // after it. A key that is an alias, as in `{*x}`, or that has no text of
+    // its own, as in `{&x}` or `{?}`, ends in an alias name, an anchor, a tag
+    // or `?`. YAML reads a `:` right after any of these as part of it, so a
+    // space goes before the new `:`.
     const key = yaml.isPair(item) ? item.key as yaml.Node : undefined;
     const after = sep !== undefined ? sep + 1 : key!.range![1];
-    const spaced = sep === undefined && flow && key!.range![0] === after &&
+    const spaced = sep === undefined && flow &&
+        (yaml.isAlias(key) || key!.range![0] === after) &&
         /\S/.test(t[after - 1]);
     const prefix = !yaml.isPair(item) ? '-' : spaced ? ' :' : ':';
     return {col, prefix, after, flow, props: props[i]};
@@ -484,6 +523,7 @@ function patchItems(
           key.source !== key.value) {
         setScalar(u, key, key.value, {...slotOf(at[i]), props: undefined});
       }
+      if (yaml.isAlias(key)) keepKey(u, key, String(k));
       patch(u, v, item.value, slotOf(at[i]));
     } else if (at[i] >= 0) {
       patch(u, v, item, slotOf(at[i]));
