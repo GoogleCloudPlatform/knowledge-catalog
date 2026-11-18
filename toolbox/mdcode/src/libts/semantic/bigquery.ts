@@ -20,9 +20,9 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn, PlacedMetrics} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {entityWord, listed} from './loader';
+import {entitiesWord, listed} from './loader';
 import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
@@ -44,8 +44,8 @@ export type {GenerateResult};
  * It also warns when the graph has more than one node table and no edge
  * table. BigQuery creates such a graph, and then GRAPH_EXPAND and
  * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it. GQL queries still read its node
- * properties. When the graph has a measure, the warning adds that its measures
- * cannot be read, because only GRAPH_EXPAND reads measures.
+ * properties. When the graph has measures, the warning adds that none of them
+ * can be read, because only GRAPH_EXPAND reads measures.
  *
  * Throws when the model yields no valid node table -- it declares no entities,
  * every entity is abstract or extended by another, or every leaf lacks a KEY
@@ -54,33 +54,29 @@ export type {GenerateResult};
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
-  const measures: string[] = [];
-  const result = generateGraphDdl(model, bigQueryEngine(opts, measures));
-  const nodes =
-      result.elements.filter(e => e.kind === 'node').map(e => `'${e.name}'`);
+  const result = generateGraphDdl(model, bigQueryEngine(opts));
+  const nodes = result.elements.filter(e => e.kind === 'node');
   if (nodes.length > 1 && !result.elements.some(e => e.kind === 'edge')) {
-    const kind = entityWord(model.version) === 'entity' ? 'entities' :
-                                                          'datasets';
-    const unread = measures.length ? ', and its measures cannot be read ' +
-            'because only GRAPH_EXPAND reads them' :
-                                     '';
+    const unread = nodes.some(e => e.measures.length) ?
+        ', and its measures cannot be read because only GRAPH_EXPAND reads ' +
+            'them' :
+        '';
     result.warnings.push(
-        `no relationship joins ${kind} ${listed(nodes)}, so GRAPH_EXPAND and ` +
+        `no relationship joins ${entitiesWord(model.version)} ${
+            listed(nodes.map(e => `'${e.name}'`))}, so GRAPH_EXPAND and ` +
         `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph${unread}; ` +
         `declare at least one relationship`);
   }
   return result;
 }
 
-// The BigQuery engine for the shared generator. Its measure placement adds
-// each MEASURE it writes to `measures`.
-function bigQueryEngine(opts: GenerateOptions, measures: string[]): GraphEngine {
+// The BigQuery engine for the shared generator.
+function bigQueryEngine(opts: GenerateOptions): GraphEngine {
   return {
     name: 'BigQuery',
     table: qualifyTable,
     graphName: model => qualifyGraph(model, opts),
-    placeMetrics: (metrics, input, warnings) =>
-        placeMetrics(metrics, input, warnings, measures),
+    placeMetrics,
     elementOptions: (description, ai) => optionsClause(
         elementDescription(description), ai?.synonyms, aiExtensions(ai)),
     fieldOptions: field => optionsClause(
@@ -92,12 +88,10 @@ function bigQueryEngine(opts: GenerateOptions, measures: string[]): GraphEngine 
 }
 
 // Places each metric on the single entity its aggregates reference, lowering
-// it to a MEASURE over exposed properties (see placeMetric), and adds each
-// MEASURE to `measures`. A metric is placed only on an entity with a node
-// table, so every MEASURE reaches the graph.
+// it to a MEASURE over exposed properties (see placeMetric).
 function placeMetrics(
-    metrics: Metric[], input: MetricPlacementInput, warnings: string[],
-    measures: string[]): Map<string, string[]> {
+    metrics: Metric[], input: MetricPlacementInput,
+    warnings: string[]): Map<string, PlacedMetrics> {
   const loweringByEntity = new Map<string, MeasureLowering>();
   // Each metric's and field's name in the graph, and each property
   // exposeOperand adds. BigQuery gives a property name one type across the
@@ -108,11 +102,11 @@ function placeMetrics(
   for (const metric of metrics) {
     placeMetric(metric, input, graphNames, loweringByEntity, warnings);
   }
-  // The operand properties come first: the measures aggregate them.
-  const placed = new Map<string, string[]>();
+  const placed = new Map<string, PlacedMetrics>();
   for (const [name, lowering] of loweringByEntity) {
-    placed.set(name, [...lowering.derivedProperties, ...lowering.measures]);
-    measures.push(...lowering.measures);
+    placed.set(
+        name,
+        {operands: lowering.derivedProperties, measures: lowering.measures});
   }
   return placed;
 }

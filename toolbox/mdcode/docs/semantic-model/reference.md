@@ -461,9 +461,9 @@ becomes one part of that graph:
 A graph with more than one node table needs an edge table. BigQuery creates
 the graph without one, and then `GRAPH_EXPAND` and
 `BQ.SHOW_GRAPH_EXPAND_SCHEMA` fail on it. GQL queries still read its node
-properties. Only `GRAPH_EXPAND` reads measures, so the graph's measures cannot
-be read. Push warns when no relationship joins a graph's entities, and still
-deploys the graph.
+properties. Only `GRAPH_EXPAND` reads measures, so none of the graph's measures
+can be read. Push warns when a graph has more than one node table and no edge
+table, and still deploys it.
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to

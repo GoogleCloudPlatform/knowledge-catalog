@@ -162,6 +162,11 @@ export function entityWord(version?: FormatVersion): 'entity'|'dataset' {
   return version === OSSIE_VERSION ? 'dataset' : 'entity';
 }
 
+// The plural of entityWord.
+export function entitiesWord(version?: FormatVersion): 'entities'|'datasets' {
+  return entityWord(version) === 'entity' ? 'entities' : 'datasets';
+}
+
 /**
  * The location of an IR construct in documents of a given format version:
  * - `'native'`: a direct key on the YAML object (`deployments:`, `extends:`)

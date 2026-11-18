@@ -698,6 +698,14 @@ describe('a graph with several node tables and no edge table', () => {
     ['a graph with no measure warns without naming measures on BigQuery',
      subtypes,
      [`no relationship joins entities 'person' and 'org', ${fail}; ${advice}`]],
+    ['a metric that cannot be placed adds no measure to the warning on BigQuery',
+     modelWith(['orders', 'customers'], {
+       metrics: [{name: 'total', expression: 'SUM(orders.id + customers.id)'}],
+     }),
+     [`metric 'total' spans multiple tables (orders, customers); skipped ` +
+          `(cannot be a single MEASURE)`,
+      `no relationship joins entities 'orders' and 'customers', ${fail}; ` +
+          `${advice}`]],
     ['one entity is silent', modelWith(['orders']), []],
   ])('%s, and Spanner is silent', (_, model, warnings) => {
     expect(generatePropertyGraph(model, GEN_OPTS).warnings).toEqual(warnings);

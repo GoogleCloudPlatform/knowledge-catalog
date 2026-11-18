@@ -55,6 +55,10 @@ export interface GraphElement {
   // the text the DDL writes for it, such as `dept AS code`, and the SQL it
   // reads in the table, such as `dept`.
   properties: Array<{name: string; text: string; sql: string}>;
+  // Each measure the node table lists, as the DDL writes it, such as
+  // `MEASURE(SUM(amount)) AS total`. Empty for an edge table, and on an engine
+  // with no measures.
+  measures: string[];
 }
 
 // What the generator knows about the graph when it hands the model's metrics
@@ -80,6 +84,14 @@ export interface MetricPlacementInput {
   localSql(entity: Entity, sql: string): {sql: string}|{reads: string};
 }
 
+// The properties an engine's measure placement adds to one node table after
+// its fields, each as the DDL writes it: the operand properties the measures
+// aggregate, then the measures.
+export interface PlacedMetrics {
+  operands: string[];
+  measures: string[];
+}
+
 // The engine's name, and the four ways the engines differ (see the header).
 // Everything else about the graph is shared.
 export interface GraphEngine {
@@ -94,12 +106,11 @@ export interface GraphEngine {
 
   // 2. Measures. Places the model's metrics on node tables, keyed by entity
   // name, warning for each metric it skips. Each entry is the properties the
-  // entity's node table lists after its fields: the operand properties the
-  // measures aggregate, then the measures. An entity absent from the result
-  // carries no measures.
+  // entity's node table lists after its fields. An entity absent from the
+  // result carries no measures.
   placeMetrics(
       metrics: Metric[], input: MetricPlacementInput,
-      warnings: string[]): Map<string, string[]>;
+      warnings: string[]): Map<string, PlacedMetrics>;
 
   // 3. Element metadata. The trailing metadata clause for a label (from an
   // entity's or relationship's description and AI context) and for a field
@@ -315,7 +326,9 @@ export function generateGraphDdl(
   const elements: GraphElement[] = [];
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
-          entity, measurePropertiesByEntity.get(entity.name) ?? [],
+          entity,
+          measurePropertiesByEntity.get(entity.name) ??
+              {operands: [], measures: []},
           ancestorProperties, engine, warnings, elements));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
@@ -375,7 +388,7 @@ function declaredOrInherited(
 
 // Renders an entity's node table, and adds its record to `elements`.
 function renderNodeTable(
-    entity: Entity, measureProperties: string[],
+    entity: Entity, placed: PlacedMetrics,
     ancestorProperties: Map<string, string[]>, engine: GraphEngine,
     warnings: string[], elements: GraphElement[]): string {
   const table =
@@ -419,7 +432,8 @@ function renderNodeTable(
   // resolveInheritance localized to this table.
   const rendered = new Map(
       boundFields.map(f => [f.name, renderFieldProperty(f, entity, engine)]));
-  const properties = [...rendered.values(), ...measureProperties];
+  const properties =
+      [...rendered.values(), ...placed.operands, ...placed.measures];
 
   const key = physicalColumns(
       nodeKey(entity), engine, warnings, `entity '${entity.name}'`);
@@ -459,6 +473,7 @@ function renderNodeTable(
     key,
     references: [],
     properties: boundFields.map(f => propertyOf(f, entity, engine)),
+    measures: placed.measures,
   });
   return lines.join('\n');
 }
@@ -688,6 +703,7 @@ function renderEdgeTable(
       {entity: rel.destination.entity, from: fkColumns, columns: refColumns},
     ],
     properties: [],
+    measures: [],
   });
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
@@ -807,6 +823,7 @@ function renderAssociationEdge(
       },
     ],
     properties: listed.map(f => propertyOf(f, owner, engine)),
+    measures: [],
   });
 
   return lines.join('\n');
