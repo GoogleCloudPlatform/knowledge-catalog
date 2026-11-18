@@ -653,12 +653,13 @@ design:
   emits them, and Knowledge Catalog still records each `semantic-metric` entry —
   they simply have no home in the Spanner graph.
 - **`OPTIONS` metadata.** Spanner carries no per-element `OPTIONS`, so
-  `description`, `synonyms`, `instructions`, `examples`, and field `label` are not
-  written into the Spanner DDL. They still reach Knowledge Catalog on the same
-  push (the model's / entities' / metrics' descriptions and `instructions` land
-  on their entries and the `guidelines` aspect), so the descriptive layer lives in
-  the catalog rather than in the Spanner graph. This mirrors how BigQuery drops
-  its graph-*statement* `OPTIONS` while keeping per-element ones.
+  `description`, `synonyms`, `instructions`, `examples`, and a field's `label`
+  and time role are not written into the Spanner DDL. They still reach Knowledge
+  Catalog on the same push (the model's / entities' / metrics' descriptions and
+  `instructions` land on their entries and the `guidelines` aspect), so the
+  descriptive layer lives in the catalog rather than in the Spanner graph. This
+  mirrors how BigQuery drops its graph-*statement* `OPTIONS` while keeping
+  per-element ones.
 - **Another engine's SQL.** A field reads its `SPANNER` expression, else its
   `ANSI_SQL` one, and is left out with a warning when it has neither.
 

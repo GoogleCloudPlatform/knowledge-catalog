@@ -172,10 +172,10 @@ metrics, tables and graph. A profile file beside a vanilla `<file>` and a
 `<model>.profiles/` directory beside `<file>` are checked too. The checks also
 make sure Knowledge Catalog can store each aspect push writes. The deployment
 checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
-description and synonym limits. Import reports what these checks reject as an
-error under `--input first-party` and as a warning otherwise, except a written
-file that does not load and a deployment target in no accepted form, which are
-errors either way. It reports
+description, synonym and extension value limits. Import reports what these
+checks reject as an error under `--input first-party` and as a warning
+otherwise, except a written file that does not load and a deployment target in
+no accepted form, which are errors either way. It reports
 their warnings as warnings in either mode. They include push's warnings about
 the Knowledge Catalog entries, about the fields each deployment leaves out and
 about each graph. Import leaves out push's notes. A profile file that does not
