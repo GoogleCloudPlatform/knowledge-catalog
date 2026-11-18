@@ -48,6 +48,9 @@
 //     The model's last write, after its orphaned entries are deleted,
 //     relabels the anchor `finished`. A model with nothing to create, update
 //     or delete, whose anchor is labeled `finished`, gets no write.
+//   * A dry run runs the preflight and then `planKnowledgeCatalog`, which
+//     makes apply's reads and works out what apply would write and remove,
+//     and writes nothing.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -91,7 +94,8 @@ export interface KcDeployOptions {
   // result carries them too. Not called for validateOnly or when the preflight
   // fails.
   onWarnings?: (warnings: readonly string[]) => void;
-  // Compile and report only; never writes to the catalog (a dry run).
+  // A dry run: reads the catalog to work out what a push would write and
+  // remove, and never writes to it.
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
   // a removed or renamed model's entries and links. Without it, an unrecognized
@@ -138,8 +142,10 @@ export interface KcDeployResult {
   // renamed on a still-present model, and from force-removed models (0 for
   // validateOnly).
   unlinked: number;
-  // A human-readable plan of what would be written: the sole output of a
-  // validateOnly run, and also returned (for --print) on a real push.
+  // A human-readable plan of what push writes and removes: the sole output of
+  // a validateOnly run, and also returned (for --print) on a real push. A
+  // result that stops before push reads what the catalog holds lists only
+  // the writes.
   plan: string[];
 }
 
@@ -154,6 +160,19 @@ interface Counts {
   linked: number;
   unchangedLinks: number;
   unlinked: number;
+}
+
+// Counts of a run that has written nothing.
+function noCounts(): Counts {
+  return {
+    created: 0,
+    updated: 0,
+    unchangedEntries: 0,
+    deleted: 0,
+    linked: 0,
+    unchangedLinks: 0,
+    unlinked: 0,
+  };
 }
 
 /** One authored model paired with the catalog resources it emitted. */
@@ -191,8 +210,8 @@ function sleep(ms: number): Promise<void> {
  *
  * The method performs the following actions:
  *   1. Translates the IR models into catalog resources.
- *   2. Verifies that exactly one model is being deployed, builds the dry-run
- *      plan, and returns early when `opts.validateOnly` is set.
+ *   2. Verifies that exactly one model is being deployed, and builds the plan
+ *      of what push writes.
  *   3. Fails when the destination entry group does not exist. Lists it and
  *      fails if an unrecognized model's anchor entry is present without
  *      `--force-remove`.
@@ -210,11 +229,34 @@ export async function preflightKnowledgeCatalog(
 }
 
 /**
+ * Works out what a preflight-checked Knowledge Catalog deployment writes and
+ * removes, as a dry run does, and writes nothing. The result's plan adds the
+ * entries and links push removes, the links it deletes and creates again and,
+ * under `--force-remove`, each other model's entries. A read that fails gives
+ * the error the push would stop with.
+ */
+export async function planKnowledgeCatalog(
+    prepared: KcPreparedDeploy, ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
+  const planned = await planWrites(
+      new CatalogClient(ctx), opts, prepared,
+      scopeProjectMatcher(ctx, opts.project));
+  const failed = 'error' in planned;
+  return {
+    success: !failed,
+    warnings: [...prepared.warnings],
+    ...noCounts(),
+    plan: failed ? prepared.plan : planned.plan,
+    ...(failed ? {details: planned.error} : {}),
+  };
+}
+
+/**
  * Writes a preflight-checked Knowledge Catalog deployment.
  *
  * The method performs the following actions:
  *   1. Works out what each emitted model's push writes and deletes, before
- *      any write (see `planModelWrites`).
+ *      any write (see `planWrites`).
  *   2. Removes foreign models when `--force-remove` is set.
  *   3. Writes each emitted model's new and changed entries and relationship
  *      links and deletes any orphaned links and entries. A model with nothing
@@ -224,17 +266,8 @@ export async function applyKnowledgeCatalog(
     prepared: KcPreparedDeploy, ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [...prepared.warnings];
-  const counts:
-      Counts = {
-        created: 0,
-        updated: 0,
-        unchangedEntries: 0,
-        deleted: 0,
-        linked: 0,
-        unchangedLinks: 0,
-        unlinked: 0,
-      };
-  const plan = prepared.plan;
+  const counts = noCounts();
+  let plan = prepared.plan;
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
@@ -243,17 +276,10 @@ export async function applyKnowledgeCatalog(
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
-  // Read what the catalog holds before the first write. A thrown error, such
-  // as a network failure, is reported like a failed read.
-  const writePlans: WritePlan[] = [];
-  for (const {model, resources} of emitted) {
-    const planned =
-        await planModelWrites(
-            cat, opts, model, resources, existing, isScopeProject)
-            .catch((err: any) => ({error: String(err?.message || err).trim()}));
-    if ('error' in planned) return result(false, planned.error);
-    writePlans.push(planned);
-  }
+  const planned = await planWrites(cat, opts, prepared, isScopeProject);
+  if ('error' in planned) return result(false, planned.error);
+  const {writePlans} = planned;
+  plan = planned.plan;
 
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
@@ -290,16 +316,13 @@ export async function applyKnowledgeCatalog(
 /**
  * Deploys every authored model's Knowledge Catalog resources.
  *
- * Runs `preflightKnowledgeCatalog` followed by `applyKnowledgeCatalog`, and
- * passes the warnings to `opts.onWarnings` between the two.
+ * Emits the models and passes them to `deployEmittedModels`.
  */
 export async function deployKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
-  const pre = await preflightKnowledgeCatalog(models, ctx, opts);
-  if (pre.result) return pre.result;
-  opts.onWarnings?.(pre.prepared!.warnings);
-  return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
+  const emit = emitModels(models, opts);
+  return deployEmittedModels(emit.emitted, emit.warnings, ctx, opts);
 }
 
 /**
@@ -307,12 +330,16 @@ export async function deployKnowledgeCatalog(
  *
  * Origin-agnostic wrapper over `preflightEmittedModels` and
  * `applyKnowledgeCatalog` for callers with their own emitter (such as LookML).
+ * It passes the warnings to `opts.onWarnings` between the two. With
+ * `opts.validateOnly`, it runs `planKnowledgeCatalog` after the preflight
+ * instead, and calls no `onWarnings`.
  */
 export async function deployEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const pre = await preflightEmittedModels(emitted, emitWarnings, ctx, opts);
   if (pre.result) return pre.result;
+  if (opts.validateOnly) return planKnowledgeCatalog(pre.prepared!, ctx, opts);
   opts.onWarnings?.(pre.prepared!.warnings);
   return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
 }
@@ -323,7 +350,7 @@ export async function deployEmittedModels(
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model and that
  *      every aspect size and instance count is within its limit. Builds the
- *      dry-run plan and returns early when `opts.validateOnly` is set.
+ *      plan of what push writes.
  *   2. Validates that the destination entry group exists. Lists it and
  *      validates that it contains no foreign models unless `--force-remove`
  *      is set.
@@ -335,15 +362,7 @@ async function preflightEmittedModels(
     opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const warnings: string[] = [...emitWarnings];
-  const counts: Counts = {
-    created: 0,
-    updated: 0,
-    unchangedEntries: 0,
-    deleted: 0,
-    linked: 0,
-    unchangedLinks: 0,
-    unlinked: 0,
-  };
+  const counts = noCounts();
   let plan: string[] = [];
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -361,7 +380,6 @@ async function preflightEmittedModels(
   const aspectsError = emittedAspectsError(model);
   if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
-  if (opts.validateOnly) return {result: result(true)};
 
   // 2. Snapshot the entry group once, before any write: the same listing feeds
   //    the foreign-model guard, link reconciliation, and deletion
@@ -688,6 +706,73 @@ interface WritePlan {
   foundUnchanged: Set<string>;
   // The entries the model owns but no longer emits.
   orphanedEntries: Entry[];
+}
+
+/**
+ * Works out what the push of `prepared` writes and deletes, before any write,
+ * and returns the error that stops it. Writes nothing. Returns each emitted
+ * model's write plan, and the preflight's plan with the lines of what push
+ * removes added. A thrown error, such as a network failure, is reported like
+ * a failed read.
+ */
+async function planWrites(
+    cat: CatalogClient, opts: KcDeployOptions, prepared: KcPreparedDeploy,
+    isScopeProject: ProjectMatcher):
+    Promise<{writePlans: WritePlan[]; plan: string[]}|{error: string}> {
+  const {emitted, existing} = prepared;
+  const writePlans: WritePlan[] = [];
+  for (const {model, resources} of emitted) {
+    const planned =
+        await planModelWrites(
+            cat, opts, model, resources, existing, isScopeProject)
+            .catch((err: any) => ({error: String(err?.message || err).trim()}));
+    if ('error' in planned) return planned;
+    writePlans.push(planned);
+  }
+  const foreignAnchorIds =
+      opts.forceRemove ? findForeignAnchorIds(emitted[0], existing) : [];
+  return {
+    writePlans,
+    plan: [
+      ...prepared.plan,
+      ...removalPlan(writePlans, foreignAnchorIds, existing),
+    ],
+  };
+}
+
+/**
+ * The plan lines of what push removes: for each model in `writePlans`, the
+ * entries and links it deletes and the links it deletes and creates again with
+ * new endpoints, then the entries in `existing` of each model in
+ * `foreignAnchorIds`. A kind with nothing in it gets no line.
+ */
+function removalPlan(
+    writePlans: readonly WritePlan[], foreignAnchorIds: readonly string[],
+    existing: readonly Entry[]): string[] {
+  // A heading such as "  2 entries to remove:" over one line per item.
+  const listed = (items: string[], one: string, many: string, what: string) => {
+    if (!items.length) return [];
+    const kind = items.length === 1 ? one : many;
+    return [
+      `  ${items.length} ${kind} ${what}:`,
+      ...items.map(item => `    - ${item}`),
+    ];
+  };
+  const entries = (list: readonly Entry[]) =>
+      list.map(e => `${entryId(e)} (${entryTypeId(e)})`);
+  const links = (list: readonly EntryLink[]) =>
+      list.map(l => `${linkId(l)} (${linkTypeId(l)})`);
+  return [
+    ...writePlans.flatMap(p => [
+      ...listed(entries(p.orphanedEntries), 'entry', 'entries', 'to remove'),
+      ...listed(links(p.orphanedLinks), 'link', 'links', 'to remove'),
+      ...listed(links(p.staleLinks.links), 'link', 'links', 'to recreate'),
+    ]),
+    ...foreignAnchorIds.flatMap(
+        id => listed(
+            entries(entriesOfModel(id, existing)), 'entry', 'entries',
+            `of model '${id}' to remove (--force-remove)`)),
+  ];
 }
 
 /**
@@ -1281,6 +1366,16 @@ function isStaleLink(existingLink: EntryLink, link: EntryLink): boolean {
   return !sameLinkReferences(existingLink, link);
 }
 
+// The entries in `existing` of the model whose anchor ID is `anchor`: the
+// anchor, and each entry whose ID starts with the anchor ID and a `.` or `/`.
+function entriesOfModel(anchor: string, existing: readonly Entry[]): Entry[] {
+  const owner: KcAnchor = {
+    anchorId: anchor,
+    ownedPrefixes: [`${anchor}.`, `${anchor}/`],
+  };
+  return collectOwnedEntries(owner, existing);
+}
+
 /**
  * Deletes models already in the entry group that this push does not re-emit
  * (`--force-remove`).
@@ -1311,11 +1406,7 @@ async function removeForeignModels(
     // across both the V1 dotted (`<anchor>.`) and V2/LookML slash (`<anchor>/`)
     // namespaces, then extract the full resource names of its `semantic-entity`
     // entries so we can look up their relationship links.
-    const foreignAnchor: KcAnchor = {
-      anchorId: foreignAnchorId,
-      ownedPrefixes: [`${foreignAnchorId}.`, `${foreignAnchorId}/`],
-    };
-    const foreignEntries = collectOwnedEntries(foreignAnchor, existing);
+    const foreignEntries = entriesOfModel(foreignAnchorId, existing);
     const foreignEntityNames = collectEntityNames(foreignEntries);
 
     // Look the links up while their entity entries still exist.

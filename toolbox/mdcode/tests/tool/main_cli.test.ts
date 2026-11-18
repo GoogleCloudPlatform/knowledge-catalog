@@ -71,13 +71,12 @@ describe('kcmd: --help and --version', () => {
     expect(code).toBe(0);
     expect(usageBlocks(out)).toBe(1);
     expect(out).toContain('kcmd push');
-    // A negated flag shows no default, and --dry-run says what it skips.
+    // A negated flag shows no default, and --dry-run says what it reads.
     expect(out).not.toContain('(default: true)');
     expect(out).toContain(
-        'Run the checks and apply nothing; skips the Knowledge Catalog ' +
-        'checks on the entry group and the custom types, which find a ' +
-        'missing entry group or type, a model the push would refuse, or ' +
-        'one --force-remove would delete');
+        'Run every check and apply nothing; reads the Knowledge Catalog ' +
+        'entry group, and with --print lists what push would write and ' +
+        'remove');
   });
 
   // cac serves `--version` only when nothing matched. With a command matched it

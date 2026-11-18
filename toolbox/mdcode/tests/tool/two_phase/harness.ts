@@ -191,6 +191,10 @@ const SERVICES = {
   getHiveCatalog:
       [BigLakeClient.prototype, 'getHiveCatalog', ok(REGIONAL_CATALOG)],
   lookupEntry: [CatalogClient.prototype, 'lookupEntry', ok({})],
+  // The catalog preflight, which a dry run runs too, finds the entry group,
+  // which lists the entries a case gives, by default none.
+  getEntryGroup: [CatalogClient.prototype, 'getEntryGroup', ok({})],
+  listEntries: [CatalogClient.prototype, 'listEntries', () => []],
   getEntryType: [CatalogClient.prototype, 'getEntryType', ok({})],
   getAspectType: [CatalogClient.prototype, 'getAspectType', ok({})],
   fetch: [globalThis, 'fetch', () => {
@@ -229,11 +233,17 @@ function installFake(services: Services): Fake {
     const answer = (self: unknown, a: Call) =>
         (typeof given === 'function' ? given(...a) : given) ??
         fallback(a, () => REAL[name].apply(self, a));
+    const answered = async function(this: any, ...a: Call) {
+      fake.calls.push(entry(name, a));
+      return answer(this, a);
+    };
+    // A listing yields each entry of its answer.
+    const listed = async function*(this: any, ...a: Call) {
+      yield* await answered.apply(this, a) as unknown[];
+    };
     fake[name] = spyOn(owner as any, method as any)
-                     .mockImplementation(async function(this: any, ...a: Call) {
-                       fake.calls.push(entry(name, a));
-                       return answer(this, a);
-                     });
+                     .mockImplementation(
+                         name === 'listEntries' ? listed : answered);
   }
   return fake;
 }

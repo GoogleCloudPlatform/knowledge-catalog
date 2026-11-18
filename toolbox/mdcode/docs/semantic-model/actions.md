@@ -835,9 +835,8 @@ blast radius naming something it can't resolve.
 
 ## 4. Check it before pushing
 
-`kcmd push --validate-only` runs the checks a push runs, apart from the
-Knowledge Catalog checks on the entry group and the custom types, and deploys
-nothing. It loads your model and checks each action against the ontology that
+`kcmd push --validate-only` runs the checks a push runs and deploys nothing.
+It loads your model and checks each action against the ontology that
 same model declares. Once those checks pass, it asks BigQuery or Spanner to plan
 any DML those actions carry for each deployment the push selects, and prints
 every error it finds. Push sends an AlloyDB deployment's DML nowhere, so no

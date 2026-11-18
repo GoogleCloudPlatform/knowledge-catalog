@@ -639,6 +639,24 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
+    name: 'a dry run under --print lists an entry push would remove, and writes nothing',
+    flags: {validateOnly: true, print: true},
+    services: {
+      listEntries: [{
+        name: 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
+            'entries/commerce/metrics/old',
+        entryType:
+            'projects/dataplex-types/locations/global/entryTypes/semantic-metric',
+      }],
+    },
+    events: ['preflight'],
+    nothingWritten: true,
+    check: r => expect(r.log.slice(-3)).toEqual([
+      '  1 entry to remove:', '    - commerce/metrics/old (semantic-metric)',
+      msg.VALIDATED,
+    ]),
+  },
+  {
     name: 'rejects before any write, also in the report, deployments of the model file\'s own bindings that leave a field of a concrete leaf entity without an expression, and deploys once the field has one or the deployment uses a profile that excludes it',
     entities: [WITH_LTV],
     code: 1,

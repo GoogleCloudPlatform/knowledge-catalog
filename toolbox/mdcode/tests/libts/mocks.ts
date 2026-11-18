@@ -67,6 +67,17 @@ export function passSourceCheck(): void {
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockResolvedValue(ok({}));
 }
 
+// Makes push's Knowledge Catalog preflight, which a dry run runs too, find the
+// destination entry group with no entry in it, and each custom type.
+export function passCatalogPreflight(): void {
+  const ok = (result: object) => ({status: 200, result}) as any;
+  const P = gcp.CatalogClient.prototype;
+  spyOn(P, 'getEntryGroup').mockResolvedValue(ok({}));
+  spyOn(P, 'listEntries').mockImplementation(async function*() {});
+  spyOn(P, 'getEntryType').mockResolvedValue(ok({}));
+  spyOn(P, 'getAspectType').mockResolvedValue(ok({}));
+}
+
 
 export class CatalogClientMock extends gcp.CatalogClient {
   public mockEntries: gcp.Entry[] = [];
