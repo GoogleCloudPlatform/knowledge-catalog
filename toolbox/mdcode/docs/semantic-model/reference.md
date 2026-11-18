@@ -1279,7 +1279,10 @@ and each aspect type attached, so a push needs, on the destination entry group:
   the model's entries. It deletes orphaned entries. It reads each entry the
   model defines that the catalog already holds, to skip the unchanged ones.
   Each read requests every aspect type push writes or removes on that entry.
-  It reads the model entry again before it labels the push finished.
+  It reads the model entry again before it labels the push finished. It also
+  looks up the links of each entity entry the group already holds, including
+  another model's under `--force-remove`. Each lookup needs
+  `dataplex.entries.get` on that entry.
 * `dataplex.entryLinks.create`, `dataplex.entryLinks.get`,
   `dataplex.entryLinks.update`, `dataplex.entryLinks.delete` and
   `dataplex.entries.link` — push creates and reads the `semantic-link` and
@@ -1309,8 +1312,9 @@ and each aspect type attached, so a push needs, on the destination entry group:
   that they exist.
 
 `--validate-only` writes nothing, so of this list it needs only
-`dataplex.entries.list`, read access to the entry links, and the reads of the
-custom types above.
+`dataplex.entries.list`, `dataplex.entries.get` for the link lookups,
+`dataplex.entryLinks.get` for the link reads, and the reads of the custom
+types above.
 
 > The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
 > [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).

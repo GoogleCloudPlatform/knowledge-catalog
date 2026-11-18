@@ -50,8 +50,8 @@
 //     or delete, whose anchor is labeled `finished`, gets no write.
 //   * A dry run runs the preflight and then `planKnowledgeCatalog`, which
 //     makes apply's entry link lookups, works out what apply would write and
-//     remove, and writes nothing. It skips apply's reads of stored entries,
-//     which decide only which entries apply writes.
+//     remove, and writes nothing. It skips apply's reads of stored entries.
+//     Those reads feed only apply's writes, and a dry run makes none.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -852,7 +852,10 @@ function removalPlan(
  *      the aspect types its update names, at most READ_CONCURRENCY at a time,
  *      and sorts out the entries the update would leave as stored. A read
  *      that fails counts as a difference. A dry run makes none of these
- *      reads, since they decide only which entries a push writes.
+ *      reads. They feed only push's writes: which entries push writes, the
+ *      entrySource each update starts from, and the stored model entry whose
+ *      entrySource the push state label update sends back. A dry run writes
+ *      nothing.
  *   2. Looks up the model's existing relationship links when `existing`
  *      contains entities owned by the model, and finds the orphaned links (no
  *      longer emitted) and stale links (changed endpoints) owned by the model.
