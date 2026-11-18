@@ -26,7 +26,7 @@ import {ProfileSpec, SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, ModelDocument, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, TranspileOutcomes, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
-import {sourceDialects} from '../source_dialect';
+import {labeledFiles, sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store, withPrimaryInstance} from './store';
@@ -200,17 +200,9 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // loads. A table whose entry cannot be read stops the scope, as push does.
   // A third-party table is not looked up, since no runtime reads one, and a
   // Spanner table is SPANNER, the dialect the runtime's Spanner store speaks.
-  // Each model file and its profile files, named as push names them.
-  const files = docs.flatMap(d => [
-    {
-      fileName: fileNameOf(layout, d.name, layout.modelPath(d.name)),
-      text: d.text,
-    },
-    ...(filesByDoc.get(d.name) ?? []).map(
-        f => ({fileName: fileNameOf(layout, d.name, f.path), text: f.text})),
-  ]);
-  const lookup =
-      await sourceDialects(files, new CatalogClient(ctx), {thirdParty: false});
+  const lookup = await sourceDialects(
+      labeledFiles(layout, docs, model => filesByDoc.get(model) ?? []),
+      new CatalogClient(ctx), {thirdParty: false});
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
   const load = {
     sourceDialects: lookup.dialects,

@@ -7,7 +7,7 @@ import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
-import {FileText, sourceDialects} from '../../../src/libts/semantic/source_dialect';
+import {LabeledText, sourceDialects} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
@@ -914,7 +914,7 @@ describe('profile checks', () => {
      [], [expect.stringContaining(
          `[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/customers' names no table`)],
      // The entry of orders names PostgreSQL, and the entry of customers answers 403.
-     (files: FileText[]) => sourceDialects(files, {
+     (files: LabeledText[]) => sourceDialects(files, {
        lookupEntry: async (_p, _l, name) => name.endsWith('/customers') ? entryDenied(name) :
            {status: 200, result: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}},
      })],
@@ -923,13 +923,38 @@ describe('profile checks', () => {
      ["[sales.profile.pg.yaml] profile 'pg' binds entities in more than one database " +
       "('customers', 'orders'); a profile reads from one system a single query can reach"],
      [expect.stringContaining(`[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/orders' names no`)],
-     (files: FileText[]) => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
+     (files: LabeledText[]) => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
   ] as Array<[string, string, Array<{fileName: string; content: string}>, string[], string[], any?]>)(
       '%s', async (_, input, profileFiles, errors, warnings, ...[readDialects]) => {
         const res = await importSemanticModelYaml(
             input, {...strict, flavor: 'google', profileFiles, readDialects});
         expect(res.errors).toEqual(errors);
         expect(res.warnings).toEqual(warnings);
+      });
+
+  // [options, the source of orders in the model file, the source of orders in
+  // profile pg, the label of the message about the table import cannot read].
+  // With `vanilla`, the input is a 0.2.0.dev0 document, which import writes
+  // with no profile file.
+  test.each([
+    [{}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[retail.profile.pg.yaml]'],
+    [{strict: true}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[raw.profile.pg.yaml]'],
+    [{vanilla: true}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[raw.profile.pg.yaml]'],
+    [{}, `${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/orders`, '[retail]'],
+    [{strict: true}, `${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/orders`, '[raw]'],
+  ] as Array<[{vanilla?: boolean}, string, string, string]>)(
+      'labels a table it cannot read by the file push would name, with %o',
+      async ({vanilla, ...opts}, inModel, inProfile, label) => {
+        const google = inModel === CUSTOMERS_BQ ? model(CUSTOMERS_BQ) : model('', inModel);
+        const input = vanilla ? google.replace('0.2.0.dev0/google', '0.2.0.dev0') : google;
+        const profileFiles = pgOn(inProfile, `${BQ_PREFIX}/tables/customers`)
+            .map(f => ({...f, fileName: 'raw.profile.pg.yaml'}));
+        const res = await importSemanticModelYaml(input, {
+          flavor: 'google', fileName: 'raw.yaml', profileFiles, ...opts,
+          readDialects: files => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)}),
+        });
+        expect(res.warnings.filter(w => w.includes(' names no table')).map(w => w.split(' source ')[0]))
+            .toEqual([label]);
       });
 
   // --input first-party refuses the datatype this input needs repaired, so
@@ -952,7 +977,7 @@ describe('profile checks', () => {
   // each Spanner database's dialect as `spanner`. Without them, each read gets
   // a 403.
   const lookup = ({entry, spanner}: {entry?: object; spanner?: string}) =>
-      (files: FileText[]) => sourceDialects(files, {
+      (files: LabeledText[]) => sourceDialects(files, {
         lookupEntry: async (_p, _l, name) => entry ? {status: 200, result: entry} : entryDenied(name),
       }, {spanner: {getDatabase: async () => spanner ?
           {status: 200, result: {databaseDialect: spanner}} : {status: 403, message: 'Permission denied.'}}});

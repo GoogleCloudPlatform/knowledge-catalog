@@ -14,7 +14,7 @@ import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
 import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
-import {FileText, SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
+import {LabeledText, SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {OssieNode, ossieNodes, ossieReferences, ossieTree} from './ossie_parser';
 import {columnReferences, columnsForSource, entitiesReached, isColumnName, requalified, withoutQualifier} from './sql_expr_utils';
 import {loadSqlEngine, soleColumn} from './sql_parser';
@@ -46,7 +46,7 @@ export interface ImportSemanticModelOptions {
    * files `files` name, as `sourceDialects` does for push. Without it, the
    * dialect of each such table is unknown.
    */
-  readDialects?: (files: FileText[]) => Promise<SourceDialects>;
+  readDialects?: (files: LabeledText[]) => Promise<SourceDialects>;
   /**
    * When true, push's checks read an ANSI_SQL text on a table whose dialect
    * no lookup read as DialectLoad.readWithoutDialect says. Pull sets it for
@@ -2168,17 +2168,19 @@ function filterMetrics(
 async function readSourceDialects(
     doc: ImportDocument,
     opts: ImportSemanticModelOptions): Promise<DialectLoad> {
-  // The repaired sources are in `doc.root`, and JSON is YAML. A message names
-  // the input file that holds a source.
+  // The repaired sources are in `doc.root`, and JSON is YAML. Each file is
+  // labeled as push's messages about it are (see validateOutputDocument).
+  // Outside strict mode, a Google-flavor import of a Google-flavor model
+  // writes each profile file under a new name. Any other profile file keeps
+  // its input name.
+  const renames = !doc.strict && doc.inputVersion === GOOGLE_VERSION &&
+      doc.targetVersion === GOOGLE_VERSION;
+  const label = (fileName: string) =>
+      renames ? writtenProfileFileName(doc, fileName) : fileName;
   const files = [
-    {
-      fileName: opts.fileName ?? `${doc.model.name}.yaml`,
-      text: JSON.stringify(doc.root),
-    },
-    ...(opts.profileFiles ?? []).map(f => ({
-                                       fileName: f.fileName,
-                                       text: f.content,
-                                     })),
+    {label: importDocumentName(doc, opts), text: JSON.stringify(doc.root)},
+    ...(opts.profileFiles ?? []).map(
+        f => ({label: label(f.fileName), text: f.content})),
   ];
   if (!opts.readDialects || !sourcesToLookUp(files.map(f => f.text)).length) {
     return {};
@@ -2823,6 +2825,29 @@ async function generateConvertedFiles(
 }
 
 /**
+ * The name an import that keeps the flavor writes the profile file
+ * `fileName` under: the model's name, then the profile's. A nameless
+ * `<file>.profile.yaml` stays nameless, so push reports it.
+ */
+function writtenProfileFileName(doc: ImportDocument, fileName: string): string {
+  const name = parseProfileName(fileName);
+  return /\.profile\.ya?ml$/i.test(fileName) && name === '' ?
+      `${doc.model.name}.profile.yaml` :
+      `${doc.model.name}.profile.${name}.yaml`;
+}
+
+/**
+ * The document name push's messages give the model file: the input file's
+ * name in strict mode, since strict mode writes nothing on an error, and the
+ * name of the file the import writes otherwise, without `.yaml`.
+ */
+function importDocumentName(
+    doc: ImportDocument, opts: ImportSemanticModelOptions): string {
+  const input = doc.strict ? opts.fileName : undefined;
+  return (input ?? `${doc.model.name}.yaml`).replace(/\.ya?ml$/, '');
+}
+
+/**
  * Phase 4 (Adapt): Adapts `doc` in place to its target version
  * (`moveConstructs`, then `adaptToGoogleVersion` or `adaptToOssieVersion`),
  * optionally transpiles expressions via `transpileDocument`, and returns the
@@ -2838,10 +2863,7 @@ async function generateAdaptedFiles(
   // nameless `<file>.profile.yaml` stays nameless, so push reports it.
   let profiles = doc.inputVersion === doc.targetVersion ?
       profileFiles.map(pf => ({
-        fileName: /\.profile\.ya?ml$/i.test(pf.fileName) &&
-                parseProfileName(pf.fileName) === '' ?
-            `${doc.model.name}.profile.yaml` :
-            `${doc.model.name}.profile.${parseProfileName(pf.fileName)}.yaml`,
+        fileName: writtenProfileFileName(doc, pf.fileName),
         content: pf.content,
       })) :
       moveConstructs(doc, profileFiles);
@@ -2941,7 +2963,7 @@ async function validateOutputDocument(
   // mode, since strict mode writes nothing on an error, and after the file
   // the import writes otherwise.
   const input = doc.strict ? opts.fileName : undefined;
-  const document = (input ?? fileName).replace(/\.ya?ml$/, '');
+  const document = importDocumentName(doc, opts);
   // 1. Load the serialized output YAML with `loadModels`
   // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
   // validation while turning unaccepted table sources into warnings in

@@ -28,9 +28,10 @@
 import * as yaml from 'yaml';
 
 import type {SpannerClient} from '../gcp/spanner';
+import {fileNameOf, SemanticModelLayout} from '../layouts/semantic-model';
 
 import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
+import {EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
@@ -67,11 +68,35 @@ export interface SourceDialects {
 type Dialect = {dialect: string; database?: string}|
     {error: string; unread?: true};
 
-// A model or profile file: its name, as the command's messages give it, and
-// its text.
-export interface FileText {
-  fileName: string;
+// A model or profile file: the label a message gives it, and its text. As in
+// push's other messages, a model file's label is its document name, such as
+// `commerce`, and a profile file's label is its file name.
+export interface LabeledText {
+  label: string;
   text: string;
+}
+
+// Each model file of `docs`, then its profile files, which `profileFiles`
+// gives, labeled as LabeledText says. A model's profile files that
+// `profileFiles` throws on are left out, since the command reports them where
+// it reads them.
+export function labeledFiles(
+    layout: SemanticModelLayout, docs: Array<{name: string; text: string}>,
+    profileFiles: (model: string) => Array<{path: string; text: string}>):
+    LabeledText[] {
+  return docs.flatMap(doc => {
+    let files: Array<{path: string; text: string}> = [];
+    try {
+      files = profileFiles(doc.name);
+    } catch {
+      // Reported where it is read.
+    }
+    return [
+      {label: doc.name, text: doc.text},
+      ...files.map(
+          f => ({label: fileNameOf(layout, doc.name, f.path), text: f.text})),
+    ];
+  });
 }
 
 // The engine each Cloud SQL instance entry type names.
@@ -86,10 +111,10 @@ const ENGINE_OF_INSTANCE_TYPE: Record<string, string> = {
 // every Spanner database they name. Without `spanner`, a Spanner database
 // gives SPANNER, the dialect kcmd's Spanner store speaks, with no call.
 // `thirdParty: false` skips third-party tables. Never throws: a failed lookup
-// goes to `errors`. A message about a Cloud SQL table names each file that
-// writes it.
+// goes to `errors`. A message about a Cloud SQL table starts with the label of
+// each file that writes it.
 export async function sourceDialects(
-    files: Iterable<FileText>, catalog: EntryLookup,
+    files: Iterable<LabeledText>, catalog: EntryLookup,
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
@@ -97,17 +122,34 @@ export async function sourceDialects(
   // tables of one Spanner database, are one lookup. A database's lookup names
   // the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
-  // The files that write each Cloud SQL table, keyed by its resource name.
-  const filesOf = new Map<string, string[]>();
-  for (const {fileName, text} of files) {
+  // The labels of the files that write each Cloud SQL table, keyed by its
+  // resource name.
+  const labelsOf = new Map<string, string[]>();
+  // Each lookup of a Cloud SQL instance, database or schema entry, keyed by
+  // its entry id, so tables that share one look it up once.
+  const parts = new Map<string, Promise<Read<{entryType?: string}>>>();
+  const lookUpPart = (table: CloudSqlTable, id: string, what: string) => {
+    if (!parts.has(id)) {
+      parts.set(
+          id,
+          lookupSystemEntry(
+              catalog, 'cloudsql', table.project, table.location, id,
+              `looking up the catalog entry of ${what}`));
+    }
+    return parts.get(id)!;
+  };
+  for (const {label, text} of files) {
     for (const source of sourcesToLookUp([text])) {
       const table = cloudSqlTableOf(source);
       if (table) {
-        const names = filesOf.get(table.resourceName) ?? [];
-        if (!names.includes(fileName)) names.push(fileName);
-        filesOf.set(table.resourceName, names);
+        const labels = labelsOf.get(table.resourceName) ?? [];
+        if (!labels.includes(label)) labels.push(label);
+        labelsOf.set(table.resourceName, labels);
         lookups.set(
-            table.resourceName, () => cloudSqlDialect(catalog, table, names));
+            table.resourceName,
+            () => cloudSqlDialect(
+                catalog, table, labels,
+                (id, what) => lookUpPart(table, id, what)));
       }
       const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
       if (entry) {
@@ -138,12 +180,18 @@ export async function sourceDialects(
   return {dialects, databases, errors, unread};
 }
 
-// The dialect of a Cloud SQL table, by its entry's type. `files` names the
-// files that write the table.
+// Looks up the entry of a part of a Cloud SQL table, by its entry id; `what`
+// names the part in a message.
+type PartLookup = (id: string, what: string) =>
+    Promise<Read<{entryType?: string}>>;
+
+// The dialect of a Cloud SQL table, by its entry's type. `labels` labels the
+// files that write the table, and `lookUpPart` looks up the entries of its
+// instance, database and schema.
 async function cloudSqlDialect(
-    catalog: EntryLookup, table: CloudSqlTable,
-    files: string[]): Promise<Dialect> {
-  const at = `[${files.join(', ')}] source '${table.resourceName}'`;
+    catalog: EntryLookup, table: CloudSqlTable, labels: string[],
+    lookUpPart: PartLookup): Promise<Dialect> {
+  const at = `[${labels.join(', ')}] source '${table.resourceName}'`;
   const res = await lookupSystemEntry(
       catalog, 'cloudsql', table.project, table.location, table.resourceName);
   if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
@@ -151,7 +199,7 @@ async function cloudSqlDialect(
     return {
       unread: true,
       error: `${at} names no table Knowledge Catalog knows about. ${
-          await missingCloudSqlPart(catalog, table)}`,
+          await missingCloudSqlPart(table, lookUpPart)}`,
     };
   }
   // The type comes back as a full name; its last part says the engine.
@@ -167,16 +215,14 @@ async function cloudSqlDialect(
 // Why Knowledge Catalog gives no entry for `table` that the caller may read.
 // Dataplex answers 403 both when an entry does not exist and when the caller
 // may not read it, so this looks up the entries of the table's instance, its
-// database and its schema in turn, with `catalog`, and names the first that
+// database and its schema in turn, with `lookUp`, and names the first that
 // cannot be read. Reading the instance's entry also gives its engine, which
-// says whether the table's name needs a schema. When every part is there,
-// the table itself is missing, or too new to be in the catalog yet.
+// says whether the table's name needs a schema. A part that is not there, or
+// the table when every part is, may not exist or may be too new to be in the
+// catalog yet.
 async function missingCloudSqlPart(
-    catalog: EntryLookup, table: CloudSqlTable): Promise<string> {
+    table: CloudSqlTable, lookUp: PartLookup): Promise<string> {
   const {project, location, instance, database, schema} = table;
-  const lookUp = (id: string, what: string) => lookupSystemEntry(
-      catalog, 'cloudsql', project, location, id,
-      `looking up the catalog entry of ${what}`);
   const instanceId = `cloudsql.googleapis.com/projects/${project}/locations/${
       location}/instances/${instance}`;
   const found = await lookUp(instanceId, `instance '${instance}'`);
@@ -207,14 +253,16 @@ async function missingCloudSqlPart(
     id: databaseId,
     what: `database '${database}'`,
     missing: `Instance '${instance}' is in the catalog, but database '${
-        database}' is not. Check the database name.`,
+        database}' is not, so the database may not exist, or it may be too ` +
+        `new to be in the catalog yet. Check the database name.`,
   }];
   if (schema !== undefined) {
     parts.push({
       id: `${databaseId}/schemas/${schema}`,
       what: `schema '${schema}'`,
       missing: `Database '${database}' is in the catalog, but schema '${
-          schema}' is not. Check the schema name.`,
+          schema}' is not, so the schema may not exist, or it may be too new ` +
+          `to be in the catalog yet. Check the schema name.`,
     });
   }
   for (const {id, what, missing} of parts) {

@@ -8,7 +8,8 @@ import {describe, expect, test} from 'bun:test';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {EntryLookup} from '../../../src/libts/semantic/catalog_entry';
-import {sourceDialects, sourcesToLookUp} from '../../../src/libts/semantic/source_dialect';
+import {SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {labeledFiles, sourceDialects, sourcesToLookUp} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const INSTANCE = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances';
@@ -37,8 +38,8 @@ const entryName = (resourceName: string) =>
     `projects/acme/locations/us-central1/entryGroups/@cloudsql/entries/${resourceName}`;
 const typed = (type: string): ApiResult<{entryType?: string}> =>
     ({status: 200, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}});
-// Each text as the text of model file sales.yaml.
-const asFiles = (texts: string[]) => texts.map(text => ({fileName: 'sales.yaml', text}));
+// Each text as the text of model file sales.yaml, which messages label 'sales'.
+const asFiles = (texts: string[]) => texts.map(text => ({label: 'sales', text}));
 
 describe('sourceDialects', () => {
   // Each argument is read as a file's text; a bare resource name is a file
@@ -106,12 +107,14 @@ describe('sourceDialects', () => {
      "--enable-dataplex-integration --project acme' and wait for the table to appear in the " +
      'catalog.'],
     ['no database', SQLSERVER, {[MS]: 'cloudsql-sqlserver-instance'}, [MS, `${MS}/databases/shop`],
-     `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is not. Check the ` +
+     `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is not, so the ` +
+     'database may not exist, or it may be too new to be in the catalog yet. Check the ' +
      'database name.'],
     ['no schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database'},
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
-     `${NO_TABLE} Database 'shop' is in the catalog, but schema 'sales' is not. Check the ` +
+     `${NO_TABLE} Database 'shop' is in the catalog, but schema 'sales' is not, so the ` +
+     'schema may not exist, or it may be too new to be in the catalog yet. Check the ' +
      'schema name.'],
     ['every part of a table in a schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database',
@@ -139,7 +142,7 @@ describe('sourceDialects', () => {
         const {dialects, errors, unread} = await sourceDialects(asFiles([table]), catalog);
         expect(dialects.size).toBe(0);
         expect(unread).toEqual(errors);
-        expect(errors).toEqual([`[sales.yaml] source '${table}' ${says}`]);
+        expect(errors).toEqual([`[sales] source '${table}' ${says}`]);
         // Each part is looked up in turn, in the table's project and location.
         expect(calls).toEqual([table, ...looked].map(
             name => ({project: 'acme', location: 'us-central1', name: entryName(name)})));
@@ -155,22 +158,44 @@ describe('sourceDialects', () => {
       },
     });
     const says = async (part: string) => (await sourceDialects(asFiles([SQLSERVER]), failing(part))).errors;
-    expect(await says('instances/ms')).toEqual([`[sales.yaml] source '${SQLSERVER}' ${NO_TABLE} ` +
+    expect(await says('instances/ms')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
         "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up"]);
-    expect(await says('nothing')).toEqual([`[sales.yaml] source '${SQLSERVER}' ${NO_TABLE} ` +
+    expect(await says('nothing')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
         "kcmd could not tell why: looking up the catalog entry of database 'shop' failed (HTTP 503: " +
         'unavailable).']);
   });
 
-  test('a message about a Cloud SQL table names each file that writes it, once', async () => {
+  test('a message about a Cloud SQL table labels each file that writes it, once', async () => {
     const files = [
-      {fileName: 'sales.yaml', text: `a: ${POSTGRES}\nb: //${POSTGRES}\n`},
-      {fileName: 'sales.profile.pg.yaml', text: `source: //${POSTGRES}\n`},
-      {fileName: 'sales.profile.ms.yaml', text: `source: ${SQLSERVER}\n`},
+      {label: 'sales', text: `a: ${POSTGRES}\nb: //${POSTGRES}\n`},
+      {label: 'sales.profile.pg.yaml', text: `source: //${POSTGRES}\n`},
+      {label: 'sales.profile.ms.yaml', text: `source: ${SQLSERVER}\n`},
     ];
     const {errors} = await sourceDialects(files, fakeCatalog({}).catalog);
     expect(errors.map(e => e.slice(0, e.indexOf(' source ')))).toEqual(
-        ['[sales.profile.ms.yaml]', '[sales.yaml, sales.profile.pg.yaml]']);
+        ['[sales, sales.profile.pg.yaml]', '[sales.profile.ms.yaml]']);
+  });
+
+  test('tables that share an instance, database and schema look each up once', async () => {
+    const {catalog, calls} = fakeCatalog({
+      [entryName(MS)]: typed('cloudsql-sqlserver-instance'),
+      [entryName(`${MS}/databases/shop`)]: typed('cloudsql-sqlserver-database'),
+    });
+    const {errors} = await sourceDialects(asFiles([SQLSERVER, `${SQLSERVER}_2`]), catalog);
+    expect(errors).toHaveLength(2);
+    expect(calls.map(c => c.name).sort()).toEqual([
+      SQLSERVER, `${SQLSERVER}_2`, MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`,
+    ].map(entryName).sort());
+  });
+
+  test('labels each model file by its document name, then its profile files by their file names', () => {
+    const layout = {modelPath: (m: string) => `/eg/${m}.yaml`} as SemanticModelLayout;
+    const profiles = (model: string) => {
+      if (model === 'b') throw new Error('a profile file the layout rejects');
+      return [{path: '/eg/a.profile.p.yaml', text: 'p'}];
+    };
+    expect(labeledFiles(layout, [{name: 'a', text: 'a'}, {name: 'b', text: 'b'}], profiles))
+        .toEqual([{label: 'a', text: 'a'}, {label: 'a.profile.p.yaml', text: 'p'}, {label: 'b', text: 'b'}]);
   });
 
   test('an entry of another type is reported with its type, as an entry that was read', async () => {
@@ -178,7 +203,7 @@ describe('sourceDialects', () => {
     const {errors, unread} = await sourceDialects(asFiles([MYSQL]), catalog);
     expect(unread).toEqual([]);
     expect(errors).toEqual([
-      `[sales.yaml] source '${MYSQL}': its Knowledge Catalog entry has type ` +
+      `[sales] source '${MYSQL}': its Knowledge Catalog entry has type ` +
       `'cloudsql-mysql-database', which is not a Cloud SQL table or view type ` +
       `kcmd knows (cloudsql-mysql-table, cloudsql-mysql-view, ` +
       `cloudsql-postgresql-table, cloudsql-postgresql-view, ` +
@@ -201,8 +226,8 @@ describe('sourceDialects', () => {
     expect(unread).toEqual(errors);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
-      `[sales.yaml] source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
-      `[sales.yaml] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
+      `[sales] source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
+      `[sales] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
       `source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up`,
       `source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
       'dialect, and could not read database acme/ops/x: socket hang up',

@@ -3431,11 +3431,9 @@ export interface CloudSqlTable {
   location: string;
   instance: string;
   database: string;
-  // Unset for a MySQL table.
+  // Unset for a name with no schema, which only a MySQL table has.
   schema?: string;
   resourceName: string;
-  // False for a MySQL table, whose name has no schema.
-  inSchema: boolean;
 }
 
 // The Cloud SQL table `source` names, or undefined when it names none. A name
@@ -3448,7 +3446,7 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
   if (!m) return undefined;
   return {
     project: m[1], location: m[2], instance: m[3], database: m[4],
-    ...!mysql && {schema: m[5]}, resourceName: uri.slice(2), inSchema: !mysql,
+    ...!mysql && {schema: m[5]}, resourceName: uri.slice(2),
   };
 }
 

@@ -108,14 +108,16 @@ matching `-view` entry types give the same dialects. `kcmd push`,
 load the model. The entry exists only when the instance has Dataplex
 integration turned on (`gcloud sql instances patch <i>
 --enable-dataplex-integration`), and the catalog can take a while to list a new
-table. When the entry cannot be read, the command stops and names each file
-that writes the source. To say why, it looks up the entries of the table's
-instance, database and schema in turn, and reports the first one it cannot
-read. It also reports a name with a schema on a MySQL instance, and a name
-with none on a PostgreSQL or SQL Server instance. When every part is there, it
-says that the table may not exist, or may be too new to be in the catalog yet.
+table. When the entry cannot be read, the command stops.
 `kcmd profiles --print-store` stops too. `kcmd import` reads it too, and when
-it cannot, it warns and skips the checks that need the dialect.
+it cannot, it warns and skips the checks that need the dialect. The message
+names each file that writes the source. To say why the entry cannot be read,
+`kcmd` looks up the entries of the table's instance, database and schema in
+turn, and reports the first part it cannot read. That part may not exist, or
+may be too new to be in the catalog yet. When every part is there, the same
+holds for the table. The instance's entry also gives its engine, so `kcmd`
+reports a name with a schema on a MySQL instance, or with none on a PostgreSQL
+or SQL Server instance, before it looks up the database.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner
