@@ -39,12 +39,14 @@ const entryName = (resourceName: string) =>
     `projects/acme/locations/us-central1/entryGroups/@cloudsql/entries/${resourceName}`;
 const typed = (type: string): ApiResult<{entryType?: string}> =>
     ({status: 200, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}});
-// The entry of a SQL Server instance whose cloudsql-instance aspect, keyed by
-// its type's project `project`, says whether Dataplex integration is on.
-const integration = (enabled: boolean, project = 'dataplex-types'): ApiResult<object> => ({
+// The entry of an instance whose cloudsql-instance aspect says whether
+// Dataplex integration is on. The instance runs `engine`, SQL Server by
+// default, and the aspect's key names its type's project `project`.
+const integration = (enabled: boolean, {project = 'dataplex-types', engine = 'sqlserver'} = {}):
+    ApiResult<object> => ({
   status: 200,
   result: {
-    entryType: 'projects/dataplex-types/locations/global/entryTypes/cloudsql-sqlserver-instance',
+    entryType: `projects/dataplex-types/locations/global/entryTypes/cloudsql-${engine}-instance`,
     aspects: {[`${project}.global.cloudsql-instance`]: {data: {dataplexEnabled: enabled}}},
   },
 });
@@ -113,7 +115,7 @@ describe('sourceDialects', () => {
      "project 'acme' and region 'us-central1'. The project ID, the region or the instance " +
      "name may be wrong, or you may not be allowed to read the instance's entry. Check the " +
      'source and your access.'],
-    ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, '655216118709')}, [MS],
+    ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, {project: '655216118709'})}, [MS],
      `${NO_TABLE} Dataplex integration is off for instance 'ms'. Turn it on with 'gcloud sql ` +
      "instances patch ms --enable-dataplex-integration --project acme' and wait for the " +
      'table to appear in the catalog.'],
@@ -152,6 +154,16 @@ describe('sourceDialects', () => {
      `${MS}/databases/shop/tables/orders`, {[MS]: integration(false)}, [MS],
      `${NO_TABLE} Instance 'ms' runs SQL Server, so a table's name includes its schema. ` +
      "Add 'schemas/<schema>/' before 'tables/' in the source."],
+    ['a schema on a MySQL instance with Dataplex integration off', POSTGRES,
+     {[PG]: integration(false, {engine: 'mysql'})}, [PG],
+     `${NO_TABLE} Instance 'pg' runs MySQL, which has no schemas. Remove 'schemas/sales/' ` +
+     'from the source.'],
+    // An instance type kcmd does not know names no engine, so the name is not
+    // checked against one.
+    ['no database on an instance of another type', `${MS}/databases/shop/tables/orders`,
+     {[MS]: 'cloudsql-oracle-instance'}, [MS, `${MS}/databases/shop`],
+     `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is not. The database ` +
+     'may not exist, or it may be too new to be in the catalog yet. Check the database name.'],
   ] as Array<[string, string, Record<string, string|ApiResult<object>>, string[], string]>)(
       'a table the catalog has no entry for, as a read that failed: %s',
       async (_, table, types, looked, says) => {

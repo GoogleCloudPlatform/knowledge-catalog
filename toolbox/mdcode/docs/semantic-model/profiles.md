@@ -129,7 +129,9 @@ and reports the first of these that holds:
    too new to be in the catalog yet.
 
 When every part can be read, the table may not exist, or it may be too new to
-be in the catalog yet.
+be in the catalog yet. When one of these lookups fails in another way, such as
+with another HTTP status or with no answer, the message says `kcmd` could not
+tell why and gives that lookup's error.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner

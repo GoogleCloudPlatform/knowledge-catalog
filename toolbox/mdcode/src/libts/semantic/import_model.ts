@@ -2158,13 +2158,14 @@ function filterMetrics(
 
 /**
  * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
- * third-party table the repaired model and its profile files name, as push
- * reads them. The profile files are left out when import does not read them
- * (see readsProfileFiles). A read that fails is one warning per table, or per
- * database for Spanner, and the dialect of the tables it reads stays unknown.
- * A lookup that cannot start is one warning for the run, and every such
- * table's dialect stays unknown. An entry that was read and gives no dialect
- * is reported as push's other refusals are.
+ * third-party table the repaired model names, as push reads them, and of each
+ * such table in the profile files import reads (see profileFilesRead). As push
+ * does, it leaves out every profile file when one breaks a profile file rule.
+ * A read that fails is one warning per table, or per database for Spanner,
+ * and the dialect of the tables it reads stays unknown. A lookup that cannot
+ * start is one warning for the run, and every such table's dialect stays
+ * unknown. An entry that was read and gives no dialect is reported as push's
+ * other refusals are.
  */
 async function readSourceDialects(
     doc: ImportDocument,
@@ -2178,7 +2179,15 @@ async function readSourceDialects(
       doc.targetVersion === GOOGLE_VERSION;
   const label = (fileName: string) =>
       renames ? writtenProfileFileName(doc, fileName) : fileName;
-  const profileFiles = readsProfileFiles(doc) ? opts.profileFiles ?? [] : [];
+  const read = profileFilesRead(doc, opts);
+  const broken = profileFileRuleError(
+      read.map(f => ({
+        fileName: f.fileName,
+        name: parseProfileName(f.fileName),
+        text: f.content,
+      })),
+      opts.fileName ?? `${doc.model.name}.yaml`);
+  const profileFiles = broken === undefined ? read : [];
   const files = [
     {label: importDocumentName(doc, opts), text: JSON.stringify(doc.root)},
     ...profileFiles.map(f => ({label: label(f.fileName), text: f.content})),
@@ -2671,11 +2680,37 @@ function validateDeploymentTargets(
 }
 
 /**
- * Whether import reads the profile files beside the input `doc`. It reads none
- * beside a file with its model at the document root.
+ * The profile files of `opts.profileFiles` that import reads beside the input
+ * `doc`. Only the Google flavor keeps profiles in files, so import reads every
+ * one beside a Google-flavor input and none beside any other. Each step that
+ * loads, writes or looks up a profile file takes its files from here.
  */
-function readsProfileFiles(doc: ImportDocument): boolean {
-  return doc.rootVersion === undefined;
+function profileFilesRead(
+    doc: ImportDocument, opts: ImportSemanticModelOptions): SerializedFile[] {
+  return FORMAT_VERSION_PLACEMENT[doc.inputVersion].model.profiles === 'file' ?
+      opts.profileFiles ?? [] :
+      [];
+}
+
+/**
+ * Push's error for the first of the profile files `files` beside `modelFile`
+ * that breaks a profile file rule (see checkProfileFileName), or undefined.
+ * Each file's `fileName` is the name a message gives it, and `name` its
+ * profile's name.
+ */
+function profileFileRuleError(
+    files: Array<{fileName: string; name: string; text: string}>,
+    modelFile: string): string|undefined {
+  const seen = new Map<string, string>();
+  try {
+    for (const f of files) {
+      checkProfileFileName(modelFile, f.fileName, f.name, f.text, seen);
+    }
+  } catch (err) {
+    if (!(err instanceof ProfileFileError)) throw err;
+    return err.message;
+  }
+  return undefined;
 }
 
 /**
@@ -2687,7 +2722,9 @@ function readsProfileFiles(doc: ImportDocument): boolean {
 function checkVanillaProfileFiles(
     doc: ImportDocument, profileFiles: SerializedFile[],
     modelFile: string): void {
-  if (doc.inputVersion !== OSSIE_VERSION || !readsProfileFiles(doc) ||
+  // Import ignores the profile files beside a file with its model at the
+  // root, so it reports none of them.
+  if (doc.inputVersion !== OSSIE_VERSION || doc.rootVersion !== undefined ||
       profileFiles.length === 0) {
     return;
   }
@@ -2707,26 +2744,24 @@ function checkVanillaProfileFiles(
  * labeled with its file.
  */
 function attachProfileFiles(
-    model: SemanticModel, profileFiles: SerializedFile[]|undefined,
-    doc: ImportDocument, modelFile: string): void {
-  const files = (profileFiles ?? []).map(
-      pf => ({...pf, name: parseProfileName(pf.fileName)}));
+    model: SemanticModel, profileFiles: SerializedFile[], doc: ImportDocument,
+    modelFile: string): void {
+  const files = profileFiles.map(pf => ({
+    fileName: pf.fileName,
+    name: parseProfileName(pf.fileName),
+    text: pf.content,
+  }));
   // Push checks every file's name before it loads any profile, and stops at
   // the first file that breaks a file rule.
-  const seen = new Map<string, string>();
-  try {
-    for (const pf of files) {
-      checkProfileFileName(modelFile, pf.fileName, pf.name, pf.content, seen);
-    }
-  } catch (err) {
-    if (!(err instanceof ProfileFileError)) throw err;
-    doc.errors.push(err.message);
+  const ruleError = profileFileRuleError(files, modelFile);
+  if (ruleError) {
+    doc.errors.push(ruleError);
     return;
   }
   const profiles: ProfileSpec[] = [];
   for (const pf of files) {
     try {
-      profiles.push(loadProfileFile(pf.content, pf.name));
+      profiles.push(loadProfileFile(pf.text, pf.name));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       doc.errors.push(`[${pf.fileName}] ${err.message}`);
@@ -2823,13 +2858,14 @@ async function generateConvertedFiles(
   if (doc.errors.length > 0) return [];
   const model = loadSemanticModel(doc);
   if (!model) return [];
+  const profileFiles = profileFilesRead(doc, opts);
   if (doc.targetVersion === OSSIE_VERSION) {
     attachProfileFiles(
-        model, opts.profileFiles, doc, opts.fileName ?? `${model.name}.yaml`);
+        model, profileFiles, doc, opts.fileName ?? `${model.name}.yaml`);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
   }
-  return generateAdaptedFiles(doc, !!opts.transpile, opts.profileFiles);
+  return generateAdaptedFiles(doc, !!opts.transpile, profileFiles);
 }
 
 /**
@@ -3036,8 +3072,7 @@ async function validateOutputDocument(
     // Where the input holds profile `name`, which the output writes in
     // `written`: its profile file, or the input file's GOOGLE block. Strict
     // mode writes nothing on an error, so its messages name the input file.
-    const inputFiles =
-        doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
+    const inputFiles = profileFilesRead(doc, opts);
     const where = (name: string, written: string) => !input ? written :
         inputFiles.find(pf => parseProfileName(pf.fileName) === name)
                 ?.fileName ??
@@ -3046,20 +3081,13 @@ async function validateOutputDocument(
     // statement YAML reads differently from how it is written, then at a
     // deployment target in no accepted form. validateDeploymentTargets
     // reports such a target as an error in either mode.
-    let read: ReturnType<ProfileFiles>|undefined;
-    try {
-      const seen = new Map<string, string>();
-      read = profileFiles.map(f => {
-        const name = parseProfileName(f.fileName);
-        const label = where(name, f.fileName);
-        checkProfileFileName(input ?? fileName, label, name, f.content, seen);
-        return {name, text: f.content, fileName: label};
-      });
-    } catch (err) {
-      if (!(err instanceof ProfileFileError)) throw err;
-      doc.warnOrError(err.message);
-    }
-    const profiles = read;
+    const read: ReturnType<ProfileFiles> = profileFiles.map(f => {
+      const name = parseProfileName(f.fileName);
+      return {name, text: f.content, fileName: where(name, f.fileName)};
+    });
+    const ruleError = profileFileRuleError(read, input ?? fileName);
+    if (ruleError) doc.warnOrError(ruleError);
+    const profiles = ruleError ? undefined : read;
     const base = {document: model.name, model: loaded.models[0]};
     const withFiles = profiles && withProfileFiles(base, () => profiles);
     // Push then refuses an action statement YAML reads differently from how
@@ -3186,12 +3214,10 @@ export async function importSemanticModelYaml(
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
   // a Google-flavor import of a Google-flavor model writes them beside it.
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
-  const googleToGoogle = doc.inputVersion === GOOGLE_VERSION &&
-      doc.targetVersion === GOOGLE_VERSION;
+  const profileFiles = profileFilesRead(doc, opts);
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(
-          doc, !!opts.transpile, googleToGoogle ? opts.profileFiles ?? [] : []);
+      await generateAdaptedFiles(doc, !!opts.transpile, profileFiles);
 
   // 4. Check that each profile file the import writes parses, validate the
   // output files, and return the result.
@@ -3199,7 +3225,7 @@ export async function importSemanticModelYaml(
     const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
     if (!problem) continue;
     // A file import passes through unchanged is the input's own file.
-    const input = opts.profileFiles?.[i];
+    const input = profileFiles[i];
     doc.errors.push(
         input?.content === f.content ?
             profileParseError(

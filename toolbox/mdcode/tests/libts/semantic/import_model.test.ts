@@ -934,27 +934,36 @@ describe('profile checks', () => {
 
   // [options, the source of orders in the model file, the source of orders in
   // profile pg, the label of the message about the table import cannot read].
-  // With `vanilla`, the input is a 0.2.0.dev0 document, which import writes
-  // with no profile file.
+  // Profile pg is in file raw.profile.pg.yaml, or in `file`. With `vanilla`,
+  // the input is a 0.2.0.dev0 document, and import reads no profile file
+  // beside it. File raw.profile.dev.yaml breaks a profile file rule, so import
+  // looks up none of its tables, as push does. With no label, import looks up
+  // no table.
   test.each([
     [{}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[retail.profile.pg.yaml]'],
     [{strict: true}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[raw.profile.pg.yaml]'],
-    [{vanilla: true}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, '[raw.profile.pg.yaml]'],
+    [{vanilla: true}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, undefined],
+    [{file: 'raw.profile.dev.yaml'}, CUSTOMERS_BQ, `${CLOUDSQL_PREFIX}/tables/orders`, undefined],
     [{}, `${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/orders`, '[retail]'],
     [{strict: true}, `${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/orders`, '[raw]'],
-  ] as Array<[{vanilla?: boolean}, string, string, string]>)(
+  ] as Array<[{vanilla?: boolean; file?: string}, string, string, string|undefined]>)(
       'labels a table it cannot read by the file push would name, with %o',
-      async ({vanilla, ...opts}, inModel, inProfile, label) => {
+      async ({vanilla, file = 'raw.profile.pg.yaml', ...opts}, inModel, inProfile, label) => {
         const google = inModel === CUSTOMERS_BQ ? model(CUSTOMERS_BQ) : model('', inModel);
         const input = vanilla ? google.replace('0.2.0.dev0/google', '0.2.0.dev0') : google;
         const profileFiles = pgOn(inProfile, `${BQ_PREFIX}/tables/customers`)
-            .map(f => ({...f, fileName: 'raw.profile.pg.yaml'}));
+            .map(f => ({...f, fileName: file}));
+        const looked: string[] = [];
         const res = await importSemanticModelYaml(input, {
           flavor: 'google', fileName: 'raw.yaml', profileFiles, ...opts,
-          readDialects: files => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)}),
+          readDialects: files => sourceDialects(files, {lookupEntry: async (_p, _l, name) => {
+            looked.push(name);
+            return entryDenied(name);
+          }}),
         });
         expect(res.warnings.filter(w => w.includes(' names no table')).map(w => w.split(' source ')[0]))
-            .toEqual([label]);
+            .toEqual(label ? [label] : []);
+        expect(looked.length > 0).toBe(label !== undefined);
       });
 
   // --input first-party refuses the datatype this input needs repaired, so

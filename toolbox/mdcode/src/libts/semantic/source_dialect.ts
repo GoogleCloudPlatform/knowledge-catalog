@@ -232,7 +232,9 @@ async function cloudSqlDialect(
 //   4. The database's entry cannot be read.
 //   5. The schema's entry cannot be read.
 // When every part can be read, the table may not exist, or it may be too new
-// to be in the catalog yet.
+// to be in the catalog yet. When a part's lookup fails in another way, such as
+// with another status or with no answer, it says kcmd could not tell why and
+// gives that lookup's error.
 async function missingCloudSqlPart(
     table: CloudSqlTable, lookUp: PartLookup): Promise<string> {
   const {project, location, instance, database, schema} = table;
