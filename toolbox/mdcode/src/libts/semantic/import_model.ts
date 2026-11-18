@@ -595,27 +595,24 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
 /**
  * Whether each alias of `from` whose name `from` defines more than once names
  * the same node in `to`. Two nodes are the same when `fromLinks` and `toLinks`
- * map one object to them. Their items are the same as each other's: a pair
- * with a scalar key as the pair with that key, another pair as the pair at its
- * place among such pairs, and a list item as the item of `to` that holds its
- * object, such as a metric moved to another list, or else the item at its
- * place.
+ * map one object to them. In two nodes that are the same, a pair with a scalar
+ * key is the same as the next pair with an equal key, `.nan` included. A pair
+ * with another key, such as an alias, is the same as the pair at its place
+ * among such pairs. A list item is the same as the item of `to` that holds its
+ * object, such as a metric moved to another list. Any other list item is the
+ * same as the item at its place. The keys of two pairs that are the same are
+ * the same, and so are their values.
  */
 function sameAliasNodes(
     from: yaml.Document, fromLinks: ReadonlyMap<object, yaml.Node>,
     to: yaml.Document, toLinks: ReadonlyMap<object, yaml.Node>): boolean {
   const same = new Map<unknown, unknown>();
-  const keyOf = (p: unknown) =>
-      yaml.isPair(p) && yaml.isScalar(p.key) ? p.key.value : p;
   const holder = new Map<unknown, unknown>();
   for (const [value, node] of toLinks) {
     if (!Array.isArray(value)) continue;
     value.forEach((v, i) => void (typeof v === 'object' && v !== null &&
                                   holder.set(v, (node as yaml.YAMLSeq).items[i])));
   }
-  const unkeyed = (n: unknown) =>
-      (yaml.isCollection(n) ? n.items as unknown[] : [])
-          .filter(p => yaml.isPair(p) && !yaml.isScalar(p.key));
   // Pairs `node`, whose value is `value` when it has a link, with `other`,
   // and then its items. A linked item pairs through its own link.
   const linked = new Set<unknown>(fromLinks.values());
@@ -623,18 +620,25 @@ function sameAliasNodes(
     same.set(node, other);
     if (!yaml.isCollection(node)) return;
     const items = yaml.isCollection(other) ? other.items as unknown[] : [];
-    const others = unkeyed(other);
+    // The pairs of `other` by scalar key. A Map finds a NaN key, and takes -0
+    // for 0, which one mapping cannot hold both of. The pairs with another key
+    // are under `node` itself.
+    const pairs = new Map<unknown, yaml.Pair[]>();
+    for (const p of items) {
+      if (!yaml.isPair(p)) continue;
+      const k = yaml.isScalar(p.key) ? p.key.value : node;
+      pairs.set(k, [...pairs.get(k) ?? [], p]);
+    }
     (node.items as unknown[]).forEach((item, i) => {
       const v = Array.isArray(value) ? value[i] : undefined;
       if (!yaml.isPair(item)) {
         if (!linked.has(item)) pair(item, holder.get(v) ?? items[i]);
         return;
       }
-      const match = yaml.isScalar(item.key) ?
-          items.find(p => keyOf(p) === keyOf(item)) :
-          others.shift();
-      if (!yaml.isPair(match)) return;
-      same.set(item.key, match.key);
+      const match =
+          pairs.get(yaml.isScalar(item.key) ? item.key.value : node)?.shift();
+      if (!match) return;
+      pair(item.key, match.key);
       if (!linked.has(item.value)) pair(item.value, match.value);
     });
   };
