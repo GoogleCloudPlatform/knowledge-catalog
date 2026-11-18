@@ -397,8 +397,9 @@ function keep(
  * Keeps `alias`, a mapping key that the new value keeps as `key`. It is
  * recorded, so that it is written out when the node it names changes, as an
  * alias value is (see updateText). An alias that reads as another key is
- * written out now. An alias written out is `key` as a scalar, since YAML reads
- * a key that is a collection, or an alias of one, as text, such as `*x`.
+ * written out now. An alias written out is `key` as a scalar. The yaml
+ * package's toJS turns a key that is a collection into a string. For an alias
+ * of a collection, that string is the alias's text, such as `*x`.
  */
 function keepKey(u: Update, alias: yaml.Alias, key: string): void {
   // The key yaml's toJS gives `alias`.
@@ -463,10 +464,11 @@ function patchItems(
         item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
         g[i].start;
     // A key written with no `:`, as `b` in `{a: 1, b}`, has its slot right
-    // after it. A key that is an alias, as in `{*x}`, or that has no text of
-    // its own, as in `{&x}` or `{?}`, ends in an alias name, an anchor, a tag
-    // or `?`. YAML reads a `:` right after any of these as part of it, so a
-    // space goes before the new `:`.
+    // after it. Some keys need a space before the new `:`. YAML reads a `:`
+    // right after an alias, an anchor or a tag as part of it. Such a key is an
+    // alias, as in `{*x}`, or has only an anchor or a tag, as in `{&x}` or
+    // `{!!str}`. After a key that is only `?`, as in `{?}`, YAML reads `?:` as
+    // the key `?`.
     const key = yaml.isPair(item) ? item.key as yaml.Node : undefined;
     const after = sep !== undefined ? sep + 1 : key!.range![1];
     const spaced = sep === undefined && flow &&
