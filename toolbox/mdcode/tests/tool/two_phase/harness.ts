@@ -323,6 +323,8 @@ export async function runPush(services: Services, flags: commands.PushOptions) {
     errors: texts(out, 'error'),
     warnings: texts(out, 'warn'),
     printed: texts(out, 'log', 'warn'),
+    // Every line, in the order push prints it.
+    output: texts(out, 'log', 'warn', 'error'),
     rejects: texts(out, 'error')
                  .filter(l => l.startsWith('Error: '))
                  .map(l => l.slice(7)),

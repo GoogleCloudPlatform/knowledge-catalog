@@ -1182,33 +1182,48 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
-  if (errors.length) {
-    // A warning about a generated graph can explain why a check fails.
-    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+  // Each plan's deployment and generated graph. An AlloyDB plan has no graph.
+  const graphs = plans.flatMap(
+      ({deployment, generated}) => generated ? [{deployment, generated}] : []);
+  // Prints each graph's warnings once, and adds them to `printed`.
+  const printWarnings = () => {
+    for (const w of new Set(graphs.flatMap(g => g.generated.warnings))) {
       console.warn(`Warning: ${w}`);
+      printed.add(w);
     }
-    return fail(...errors);
-  }
+  };
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
-  if (options.validateOnly) {
-    // A header prints only above a graph's warnings or, under --print, its
-    // DDL.
-    for (const {deployment, generated} of plans) {
-      if (!generated) continue;
+  const engine = (d: ResolvedDeployment): 'BigQuery'|'Spanner' =>
+      d.engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+  // Prints each graph's warnings and, under --print, its DDL. A header prints
+  // only above what prints under it.
+  const printGraphs = () => {
+    for (const {deployment, generated} of graphs) {
       if (!options.print && !generated.warnings.length) continue;
       header(deployment);
-      printGraph(
-          deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
-          options);
+      printGraph(engine(deployment), generated, options);
     }
+  };
+  if (errors.length) {
+    // A warning about a generated graph can explain why a check fails, and
+    // so can the DDL a check rejects. Each warning prints once, above the
+    // DDL. The error prints last.
+    printWarnings();
+    if (options.print) {
+      for (const {deployment, generated} of graphs) {
+        header(deployment);
+        printDdl(engine(deployment), generated.ddl);
+      }
+    }
+    return fail(...errors);
+  }
+  if (options.validateOnly) {
+    printGraphs();
     return reportCatalogResult(preflight.result!, options);
   }
-  for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
-    console.warn(`Warning: ${w}`);
-    printed.add(w);
-  }
+  printWarnings();
   console.log('Pushing semantic model (Knowledge Catalog)...');
   const published =
       await kc.applyKnowledgeCatalog(preflight.prepared!, ctx, kcOptions);
@@ -1401,10 +1416,41 @@ async function liveErrors(
     const res = await bq.query(project, ddl, location, true);
     if (res.status !== 200) {
       return [`${at}: the graph's DDL fails a BigQuery dry run: ${
-          storeMessage(res.message, res.status)}`];
+          storeMessage(res.message, res.status, {allLines: true})}${
+          ddlLineAt(res.message ?? '', ddl)}`];
     }
   }
   return validateBigQueryActionStatements([model], bq, defaultProject);
+}
+
+// The line of `ddl` that BigQuery's `message` points to, quoted after a blank
+// line and a sentence that names it. A caret marks the column when the column
+// is in the line or just past its last character, where BigQuery points at
+// the end of a line. A column further right gets no caret. BigQuery ends its
+// message with the position, written as `at [line:column]`. A message can
+// span several lines, so the position can be on a later line than the first.
+// A string literal the message quotes can also contain `at [line:column]`, so
+// the last match is the position. The result is empty when the message gives
+// no position, or when that line of `ddl` is blank or missing. BigQuery
+// starts a new line after each \n, \r\n and \r. It counts columns in
+// characters, and a tab moves to the next multiple of eight columns.
+function ddlLineAt(message: string, ddl: string): string {
+  const found = [...message.matchAll(/\bat \[(\d+):(\d+)\]/g)].at(-1);
+  if (!found) return '';
+  const line = Number(found[1]);
+  const text = ddl.split(/\r\n|\r|\n/)[line - 1];
+  if (!text?.trim()) return '';
+  let shown = '';
+  let width = 0;
+  for (const c of text) {
+    const columns = c === '\t' ? 8 - width % 8 : 1;
+    shown += c === '\t' ? ' '.repeat(columns) : c;
+    width += columns;
+  }
+  const column = Number(found[2]);
+  const caret =
+      column >= 1 && column <= width + 1 ? `\n${' '.repeat(column - 1)}^` : '';
+  return `\n\nLine ${line} of the graph's DDL:\n\n${shown}${caret}`;
 }
 
 
@@ -1815,9 +1861,13 @@ function printGraph(
   for (const w of result.warnings) {
     if (!printed?.has(w)) console.warn(`Warning: ${w}`);
   }
-  if (!options.print) return;
+  if (options.print) printDdl(engine, result.ddl);
+}
+
+// Prints a graph leg's DDL under a line that names its engine.
+function printDdl(engine: 'BigQuery'|'Spanner', ddl: string[]): void {
   console.log(`-- ${engine} Graph --`);
-  for (const block of result.ddl) console.log(`${block}\n`);
+  for (const block of ddl) console.log(`${block}\n`);
 }
 
 

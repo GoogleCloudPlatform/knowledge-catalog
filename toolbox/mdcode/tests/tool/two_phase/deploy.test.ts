@@ -64,6 +64,52 @@ const afterDialectLookup = (answer: object) => {
   let reads = 0;
   return when(() => reads++ > 0, answer);
 };
+// BigQuery's message for a graph DDL it cannot parse at `position`.
+const syntaxError = (position: string) =>
+    `Syntax error: Expected ")" but got keyword FROM at [${position}]`;
+// The answer to the graph's dry run, which rejects the DDL with `message`. The
+// message is the syntax error at `position` unless the caller gives one.
+const rejectedAt = (position: string, message = syntaxError(position)) => ({
+  query: when(
+      (_project, sql) => sql.includes('PROPERTY GRAPH'),
+      {status: 400, message}),
+});
+// BigQuery's message for a call that matches no signature, as a live dry run
+// gave it, with the position on its last line.
+const NO_SIGNATURE = 'No matching signature for function SUBSTR\n' +
+    '  Argument types: INT64, INT64\n' +
+    '  Signature: SUBSTR(STRING, INT64, [INT64])\n' +
+    '    Argument 1: Unable to coerce type INT64 to expected type STRING\n' +
+    '  Signature: SUBSTR(BYTES, INT64, [INT64])\n' +
+    '    Argument 1: Unable to coerce type INT64 to expected type BYTES at ' +
+    '[9:33]';
+// The error push gives for `shown`, quoting line 9, whose caret line is
+// `caret`.
+const quoted = (shown: string, caret = `\n${' '.repeat(32)}^`) => err(
+    `${at('g')}: the graph's DDL fails a BigQuery dry run: ${shown}\n\n` +
+    "Line 9 of the graph's DDL:\n\n" +
+    `      SUBSTRING(full_name       FROM 1 FOR 3) AS initials${caret}`);
+// Customer with a field whose expression has a tab, on line 9 of the DDL.
+const INITIALS = {
+  ...CUSTOMER,
+  fields: [
+    ...CUSTOMER.fields, {name: 'full_name', expression: 'full_name'},
+    {name: 'initials', expression: 'SUBSTRING(full_name\tFROM 1 FOR 3)'},
+  ],
+};
+const QUOTED = quoted(`${syntaxError('9:33')}.`);
+// Each generated BigQuery graph also warns `ddl warning <deployment>`, then
+// each warning in `shared`.
+const ddlWarnings = (...shared: string[]) => ({
+  bq: async (...a: any[]) => {
+    const r = await REAL.bq(...a);
+    return {
+      ...r,
+      warnings:
+          [...r.warnings, `ddl warning ${deploymentNames(a[0])}`, ...shared],
+    };
+  },
+});
 const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
@@ -147,7 +193,7 @@ scenarios('push writes nothing when a check fails', [
       'answers 403 at the second read', 403, DISABLED,
       `could not be read: ${DISABLED}`),
   {
-    name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write',
+    name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write, and an error at a line of the DDL quotes that line, which under --print follows the DDL',
     deployments: [{
       name: 'g',
       target: bqGraph('g').replace('test-project', 'graph-project'),
@@ -160,6 +206,8 @@ scenarios('push writes nothing when a check fails', [
     errors: [err(
         `${at('g')}: the graph's DDL fails a BigQuery dry run: Column ` +
         "'c_key' not found.")],
+    // Without --print, no DDL prints.
+    log: [],
     // The dry run runs in the dataset's project and location.
     check: r => {
       // The source check reads table customer; the dry run, the graph's
@@ -172,13 +220,76 @@ scenarios('push writes nothing when a check fails', [
                  .map(c => [c[0], c[2]]))
           .toEqual([['graph-project', 'US']]);
     },
-    // A dataset whose location cannot be read prints that warning too.
-    then: [{
-      flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
-    }],
+    then: [
+      // A dataset whose location cannot be read prints that warning too.
+      {flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')]},
+      // An error at a line of the DDL quotes that line, with a caret under the
+      // column. A tab moves to the next multiple of eight columns.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33'),
+        errors: [QUOTED],
+      },
+      // Under --print, each warning prints once, then each graph's header
+      // and DDL, and the error last.
+      {
+        deployments: ['g', 'h'],
+        entities: [INITIALS],
+        flags: {print: true},
+        services: {...rejectedAt('9:33'), ...ddlWarnings('shared warning')},
+        check: (r: PushRun) => expect(r.output).toEqual([
+          'Warning: ddl warning g', 'Warning: shared warning',
+          'Warning: ddl warning h', header('g'), '-- BigQuery Graph --',
+          has('PROPERTY GRAPH `test-project.d.g`'),
+          header('h'), '-- BigQuery Graph --',
+          has('PROPERTY GRAPH `test-project.d.h`'),
+          QUOTED,
+        ]),
+      },
+      // A position past the DDL's last line quotes nothing.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('12:1'),
+        errors: [err(`${at('g')}: the graph's DDL fails a BigQuery dry run: ${
+            syntaxError('12:1')}.`)],
+      },
+      // A message of several lines keeps every line. Its position on the
+      // last line still quotes its line.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33', NO_SIGNATURE),
+        errors: [quoted(`${NO_SIGNATURE}.`)],
+      },
+      // A literal the message quotes can hold a position too. BigQuery's own
+      // comes last.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33', 'Unrecognized name: "at [1:5]" at [9:33]'),
+        errors: [quoted('Unrecognized name: "at [1:5]" at [9:33].')],
+      },
+      // A backslash and an n in BigQuery's message stay as they are.
+      {
+        entities: [INITIALS],
+        services: rejectedAt(
+            '9:33', 'Invalid NUMERIC literal: "a\\nb" at [9:33]'),
+        errors: [quoted('Invalid NUMERIC literal: "a\\nb" at [9:33].')],
+      },
+      // Line 9 is 57 columns wide. A column just past its last character
+      // gets a caret. A column further right gets none.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:58'),
+        errors: [quoted(`${syntaxError('9:58')}.`, `\n${' '.repeat(57)}^`)],
+      },
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:59'),
+        errors: [quoted(`${syntaxError('9:59')}.`, '')],
+      },
+    ].map(step => ({code: 1, nothingWritten: true, ...step})),
   },
   {
-    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, and a missing database is reported first',
+    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, prints the DDL before the error under --print, and reports a missing database first',
     ...SPANNER_DEPLOYMENT,
     services: instanceIs({edition: 'STANDARD'}),
     errors: [STANDARD_REFUSED],
@@ -186,6 +297,14 @@ scenarios('push writes nothing when a check fails', [
     then: [
       {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
       {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
+      // Under --print, the DDL prints before the error, with no header for
+      // a single deployment.
+      {
+        flags: {validateOnly: true, print: true},
+        check: (r: PushRun) => expect(r.output).toEqual([
+          '-- Spanner Graph --', has('PROPERTY GRAPH g'), STANDARD_REFUSED,
+        ]),
+      },
       {
         services: {getDatabase: afterDialectLookup({status: 404})},
         errors: [err(`${at('sp')}: database test-project/i/db not found`)],
@@ -479,15 +598,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
   {
     name: 'prints each deployment\'s DDL warnings once, and its DDL only under --print, and one completion line',
     flags: {validateOnly: true},
-    services: {
-      bq: async (...a: any[]) => {
-        const r = await REAL.bq(...a);
-        return {
-          ...r,
-          warnings: [...r.warnings, `ddl warning ${deploymentNames(a[0])}`],
-        };
-      },
-    },
+    services: ddlWarnings(),
     warnings: ['Warning: ddl warning g1', 'Warning: ddl warning g2'],
     log: [header('g1'), header('g2'), msg.VALIDATED],
     events: ['preflight'],

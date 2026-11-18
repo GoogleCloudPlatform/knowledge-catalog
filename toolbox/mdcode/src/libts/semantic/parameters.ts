@@ -49,11 +49,16 @@ function firstLine(message: string): string {
 }
 
 // An API error's message reduced to its first line as a sentence, such as
-// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
+// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]." With
+// `allLines`, it keeps every line, as the store sent it. Push sets it only for
+// BigQuery's answer to the dry run of a graph's DDL, whose later lines can say
+// which argument failed.
 export function storeMessage(
-    message: string|undefined, status: number): string {
+    message: string|undefined, status: number,
+    {allLines = false} = {}): string {
   const text = (message ?? '').trim();
-  return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
+  if (!text) return `HTTP ${status}.`;
+  return sentence(allLines ? text : firstLine(text));
 }
 
 // What Spanner accepts for a DATE and a TIMESTAMP parameter. The zone is
