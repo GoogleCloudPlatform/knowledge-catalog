@@ -660,7 +660,8 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
 describe('a graph with several node tables and no edge table', () => {
   // BigQuery creates the graph, and then GRAPH_EXPAND and
   // BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it: "Graph must have at least one valid
-  // edge if there are multiple node tables". Spanner has no GRAPH_EXPAND.
+  // edge if there are multiple node tables". GQL still reads node properties,
+  // and it cannot reference a measure. Spanner has no GRAPH_EXPAND.
   // Each entity is keyed on `id`, and metric `total` sums the first one's.
   const modelWith = (names: string[], more: Partial<SemanticModel> = {}):
       SemanticModel => ({
@@ -683,15 +684,17 @@ describe('a graph with several node tables and no edge table', () => {
   ];
   const fail = 'so GRAPH_EXPAND and BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the ' +
       'graph';
+  const unread = 'and its measures cannot be read because only GRAPH_EXPAND ' +
+      'reads them';
   const advice = 'declare at least one relationship';
   test.each<[string, SemanticModel, string[]]>([
     ['two entities warn on BigQuery', modelWith(['orders', 'customers']),
-     [`no relationship joins entities 'orders' and 'customers', ${fail} and ` +
-      `no measure can be read; ${advice}`]],
+     [`no relationship joins entities 'orders' and 'customers', ${fail}, ` +
+      `${unread}; ${advice}`]],
     ['three datasets of a vanilla model warn on BigQuery',
      modelWith(['a', 'b', 'c'], {version: '0.2.0.dev0'}),
-     [`no relationship joins datasets 'a', 'b' and 'c', ${fail} and no ` +
-      `measure can be read; ${advice}`]],
+     [`no relationship joins datasets 'a', 'b' and 'c', ${fail}, ${unread}; ` +
+      `${advice}`]],
     ['a graph with no measure warns without naming measures on BigQuery',
      subtypes,
      [`no relationship joins entities 'person' and 'org', ${fail}; ${advice}`]],

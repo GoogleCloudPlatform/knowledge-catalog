@@ -43,8 +43,9 @@ export type {GenerateResult};
  * mapping the IR (e.g. metrics that could not be placed on a single table).
  * It also warns when the graph has more than one node table and no edge
  * table. BigQuery creates such a graph, and then GRAPH_EXPAND and
- * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it. The warning says no measure can be
- * read only when the graph has one.
+ * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it. GQL queries still read its node
+ * properties. When the graph has a measure, the warning adds that its measures
+ * cannot be read, because only GRAPH_EXPAND reads measures.
  *
  * Throws when the model yields no valid node table -- it declares no entities,
  * every entity is abstract or extended by another, or every leaf lacks a KEY
@@ -60,10 +61,12 @@ export function generatePropertyGraph(
   if (nodes.length > 1 && !result.elements.some(e => e.kind === 'edge')) {
     const kind = entityWord(model.version) === 'entity' ? 'entities' :
                                                           'datasets';
+    const unread = measures.length ? ', and its measures cannot be read ' +
+            'because only GRAPH_EXPAND reads them' :
+                                     '';
     result.warnings.push(
         `no relationship joins ${kind} ${listed(nodes)}, so GRAPH_EXPAND and ` +
-        `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph${
-            measures.length ? ' and no measure can be read' : ''}; ` +
+        `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph${unread}; ` +
         `declare at least one relationship`);
   }
   return result;
