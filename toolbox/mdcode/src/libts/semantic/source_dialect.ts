@@ -9,7 +9,7 @@
 // name. Its entry type names the engine. The instance, each database and each
 // schema have entries there too, whose ids are the matching prefixes of the
 // table's resource name. When the table's entry cannot be read, kcmd looks
-// those up to say which part the catalog does not have.
+// those up to say why (see missingCloudSqlPart).
 //
 // A third-party table's entry names its system twice: in the prefix of its
 // fullyQualifiedName, which Dataplex checks, and in entrySource.system, which
@@ -220,14 +220,19 @@ async function cloudSqlDialect(
 
 // Why Knowledge Catalog gives no entry for `table` that the caller may read.
 // Dataplex answers 403 both when an entry does not exist and when the caller
-// may not read it, so this looks up the entries of the table's instance, its
-// database and its schema in turn, with `lookUp`, and names the first that
-// cannot be read. The catalog keeps the instance's entry even with Dataplex
-// integration off, and the entry says whether integration is on. It also
-// gives the instance's engine, which says whether the table's name needs a
-// schema. A part that is not there, or
-// the table when every part is, may not exist or may be too new to be in the
-// catalog yet.
+// may not read it. So this looks up the entries of the table's instance,
+// database and schema with `lookUp`, and reports the first of these that
+// holds:
+//   1. The instance's entry cannot be read.
+//   2. The table's name does not fit the engine the instance's entry gives.
+//      A MySQL table's name has no schema. A PostgreSQL or SQL Server table's
+//      name has one.
+//   3. The instance's entry says Dataplex integration is off. The catalog
+//      keeps an instance's entry whether integration is on or off.
+//   4. The database's entry cannot be read.
+//   5. The schema's entry cannot be read.
+// When every part can be read, the table may not exist, or it may be too new
+// to be in the catalog yet.
 async function missingCloudSqlPart(
     table: CloudSqlTable, lookUp: PartLookup): Promise<string> {
   const {project, location, instance, database, schema} = table;
@@ -243,15 +248,6 @@ async function missingCloudSqlPart(
         `you may not be allowed to read the instance's entry. Check the ` +
         `source and your access.`;
   }
-  // The aspect's key names its type's project by ID or by number.
-  const integration = Object.entries(found.result.aspects ?? {}).find(
-      ([key]) => key.endsWith('.global.cloudsql-instance'))?.[1];
-  if (integration?.data?.dataplexEnabled === false) {
-    return `Dataplex integration is off for instance '${instance}'. Turn it ` +
-        `on with 'gcloud sql instances patch ${instance} ` +
-        `--enable-dataplex-integration --project ${project}' and wait for ` +
-        `the table to appear in the catalog.`;
-  }
   const type = (found.result.entryType ?? '').split('/').pop() ?? '';
   const engine = ENGINE_OF_INSTANCE_TYPE[type];
   if (engine === 'MySQL' && schema !== undefined) {
@@ -263,21 +259,30 @@ async function missingCloudSqlPart(
         `includes its schema. Add 'schemas/<schema>/' before 'tables/' in ` +
         `the source.`;
   }
+  // The aspect's key names its type's project by ID or by number.
+  const integration = Object.entries(found.result.aspects ?? {}).find(
+      ([key]) => key.endsWith('.global.cloudsql-instance'))?.[1];
+  if (integration?.data?.dataplexEnabled === false) {
+    return `Dataplex integration is off for instance '${instance}'. Turn it ` +
+        `on with 'gcloud sql instances patch ${instance} ` +
+        `--enable-dataplex-integration --project ${project}' and wait for ` +
+        `the table to appear in the catalog.`;
+  }
   const databaseId = `${instanceId}/databases/${database}`;
   const parts = [{
     id: databaseId,
     what: `database '${database}'`,
     missing: `Instance '${instance}' is in the catalog, but database '${
-        database}' is not, so the database may not exist, or it may be too ` +
-        `new to be in the catalog yet. Check the database name.`,
+        database}' is not. The database may not exist, or it may be too new ` +
+        `to be in the catalog yet. Check the database name.`,
   }];
   if (schema !== undefined) {
     parts.push({
       id: `${databaseId}/schemas/${schema}`,
       what: `schema '${schema}'`,
       missing: `Database '${database}' is in the catalog, but schema '${
-          schema}' is not, so the schema may not exist, or it may be too new ` +
-          `to be in the catalog yet. Check the schema name.`,
+          schema}' is not. The schema may not exist, or it may be too new to ` +
+          `be in the catalog yet. Check the schema name.`,
     });
   }
   for (const {id, what, missing} of parts) {
@@ -287,7 +292,7 @@ async function missingCloudSqlPart(
   }
   const present = schema === undefined ? 'instance and database' :
                                          'instance, database and schema';
-  return `Its ${present} are in the catalog, so the table may not exist, or it ` +
+  return `Its ${present} are in the catalog. The table may not exist, or it ` +
       `may be too new to be in the catalog yet. Check the table name, or ` +
       `create the table.`;
 }

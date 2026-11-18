@@ -122,31 +122,35 @@ describe('sourceDialects', () => {
         ([label, answer]) => [`no database, ${label}`, SQLSERVER, {[MS]: answer},
                               [MS, `${MS}/databases/shop`],
                               `${NO_TABLE} Instance 'ms' is in the catalog, but database ` +
-                              "'shop' is not, so the database may not exist, or it may be " +
-                              'too new to be in the catalog yet. Check the database name.']),
+                              "'shop' is not. The database may not exist, or it may be too " +
+                              'new to be in the catalog yet. Check the database name.']),
     ['no schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database'},
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
-     `${NO_TABLE} Database 'shop' is in the catalog, but schema 'sales' is not, so the ` +
-     'schema may not exist, or it may be too new to be in the catalog yet. Check the ' +
-     'schema name.'],
+     `${NO_TABLE} Database 'shop' is in the catalog, but schema 'sales' is not. The schema ` +
+     'may not exist, or it may be too new to be in the catalog yet. Check the schema name.'],
     ['every part of a table in a schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database',
       [`${MS}/databases/shop/schemas/sales`]: 'cloudsql-sqlserver-schema'},
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
-     `${NO_TABLE} Its instance, database and schema are in the catalog, so the table may ` +
-     'not exist, or it may be too new to be in the catalog yet. Check the table name, or ' +
-     'create the table.'],
+     `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
+     'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
+     'the table.'],
     ['every part of a MySQL table', MYSQL,
      {[SHOP]: 'cloudsql-mysql-instance', [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
      [SHOP, `${SHOP}/databases/sales`],
-     `${NO_TABLE} Its instance and database are in the catalog, so the table may not exist, ` +
-     'or it may be too new to be in the catalog yet. Check the table name, or create the table.'],
+     `${NO_TABLE} Its instance and database are in the catalog. The table may not exist, or ` +
+     'it may be too new to be in the catalog yet. Check the table name, or create the table.'],
     ['a schema on a MySQL instance', POSTGRES, {[PG]: 'cloudsql-mysql-instance'}, [PG],
      `${NO_TABLE} Instance 'pg' runs MySQL, which has no schemas. Remove 'schemas/sales/' ` +
      'from the source.'],
     ['no schema on a PostgreSQL instance', MYSQL, {[SHOP]: 'cloudsql-postgresql-instance'}, [SHOP],
      `${NO_TABLE} Instance 'shop' runs PostgreSQL, so a table's name includes its schema. ` +
+     "Add 'schemas/<schema>/' before 'tables/' in the source."],
+    // The name is wrong whether or not integration is on, so it is named first.
+    ['no schema on a SQL Server instance with Dataplex integration off',
+     `${MS}/databases/shop/tables/orders`, {[MS]: integration(false)}, [MS],
+     `${NO_TABLE} Instance 'ms' runs SQL Server, so a table's name includes its schema. ` +
      "Add 'schemas/<schema>/' before 'tables/' in the source."],
   ] as Array<[string, string, Record<string, string|ApiResult<object>>, string[], string]>)(
       'a table the catalog has no entry for, as a read that failed: %s',

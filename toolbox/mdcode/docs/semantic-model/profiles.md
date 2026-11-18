@@ -111,15 +111,25 @@ integration turned on (`gcloud sql instances patch <i>
 table. When the entry cannot be read, the command stops.
 `kcmd profiles --print-store` stops too. `kcmd import` reads it too, and when
 it cannot, it warns and skips the checks that need the dialect. The message
-names each file that writes the source. To say why the entry cannot be read,
-`kcmd` looks up the entries of the table's instance, database and schema in
-turn, and reports the first part it cannot read. That part may not exist, or
-may be too new to be in the catalog yet. When every part is there, the same
-holds for the table. When the instance's entry says Dataplex integration is
-off, `kcmd` says so and gives the command that turns it on. The instance's
-entry also gives its engine, so `kcmd` reports a name with a schema on a MySQL
-instance, or with none on a PostgreSQL or SQL Server instance, before it looks
-up the database.
+names each file that writes the source. It also says why the entry cannot be
+read. `kcmd` looks up the entries of the table's instance, database and schema,
+and reports the first of these that holds:
+
+1. The instance's entry cannot be read. The project ID, the region or the
+   instance name may be wrong, or the caller may not be allowed to read the
+   entry.
+2. The table's name does not fit the engine the instance's entry gives. A
+   MySQL table's name has no schema. A PostgreSQL or SQL Server table's name
+   has one.
+3. The instance's entry says Dataplex integration is off. The message gives
+   the command that turns it on.
+4. The database's entry cannot be read. The database may not exist, or it may
+   be too new to be in the catalog yet.
+5. The schema's entry cannot be read. The schema may not exist, or it may be
+   too new to be in the catalog yet.
+
+When every part can be read, the table may not exist, or it may be too new to
+be in the catalog yet.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner

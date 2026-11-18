@@ -2159,11 +2159,12 @@ function filterMetrics(
 /**
  * Reads, with `opts.readDialects`, the dialect of each Cloud SQL, Spanner and
  * third-party table the repaired model and its profile files name, as push
- * reads them. A read that fails is one warning per table, or per database for
- * Spanner, and the dialect of the tables it reads stays unknown. A lookup that
- * cannot start is one warning for the run, and every such table's dialect
- * stays unknown. An entry that was read and gives no dialect is reported as
- * push's other refusals are.
+ * reads them. The profile files are left out when import does not read them
+ * (see readsProfileFiles). A read that fails is one warning per table, or per
+ * database for Spanner, and the dialect of the tables it reads stays unknown.
+ * A lookup that cannot start is one warning for the run, and every such
+ * table's dialect stays unknown. An entry that was read and gives no dialect
+ * is reported as push's other refusals are.
  */
 async function readSourceDialects(
     doc: ImportDocument,
@@ -2177,10 +2178,10 @@ async function readSourceDialects(
       doc.targetVersion === GOOGLE_VERSION;
   const label = (fileName: string) =>
       renames ? writtenProfileFileName(doc, fileName) : fileName;
+  const profileFiles = readsProfileFiles(doc) ? opts.profileFiles ?? [] : [];
   const files = [
     {label: importDocumentName(doc, opts), text: JSON.stringify(doc.root)},
-    ...(opts.profileFiles ?? []).map(
-        f => ({label: label(f.fileName), text: f.content})),
+    ...profileFiles.map(f => ({label: label(f.fileName), text: f.content})),
   ];
   if (!opts.readDialects || !sourcesToLookUp(files.map(f => f.text)).length) {
     return {};
@@ -2670,6 +2671,14 @@ function validateDeploymentTargets(
 }
 
 /**
+ * Whether import reads the profile files beside the input `doc`. It reads none
+ * beside a file with its model at the document root.
+ */
+function readsProfileFiles(doc: ImportDocument): boolean {
+  return doc.rootVersion === undefined;
+}
+
+/**
  * Records push's error for the profile files `profileFiles` beside a vanilla
  * input in `modelFile`, which keeps its profiles in its `GOOGLE` block. Push
  * checks the name of each file first. The message is an error in strict mode
@@ -2678,8 +2687,7 @@ function validateDeploymentTargets(
 function checkVanillaProfileFiles(
     doc: ImportDocument, profileFiles: SerializedFile[],
     modelFile: string): void {
-  // Import reads no profile file beside a file with its model at the root.
-  if (doc.inputVersion !== OSSIE_VERSION || doc.rootVersion !== undefined ||
+  if (doc.inputVersion !== OSSIE_VERSION || !readsProfileFiles(doc) ||
       profileFiles.length === 0) {
     return;
   }
