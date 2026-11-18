@@ -36,7 +36,10 @@ const TWO_FIT = onModelFile(
     "Profiles 'ops' and 'Replica' bind these entities to tables in that " +
     "database. Set the deployment's profile to one of them.");
 // A vanilla model's refusal. It lists the fitting GOOGLE block profiles in
-// name order, whatever order the block gives them.
+// name order, whatever order the block gives them. The block gives 'Replica'
+// first, as code-unit order does. Name order, as localeCompare gives it, puts
+// 'ops' first. So the row catches a dropped sort and a switch to a plain
+// .sort().
 const VANILLA_FIT =
     "[commerce] deployment 'sp' targets Spanner database 'test-project/i/db', " +
     "but the model file binds dataset 'Customer' to a table outside that " +

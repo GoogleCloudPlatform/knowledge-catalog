@@ -289,9 +289,11 @@ export function resolveStore(
 
   // Push refuses a deployment that binds an entity to a table outside the
   // database it targets. A deployment of the profile is checked only when its
-  // target names the store. tablesOutsideTarget gives push's error. It reads
-  // a named profile's sources from `profiles` and the model file's from
-  // `model`.
+  // target names the store. The store is the one the model runs against, and
+  // a deployment that targets another store does not change it. Push and
+  // plain `kcmd profiles` check every deployment. tablesOutsideTarget gives
+  // push's error. It reads a named profile's sources from `profiles` and the
+  // model file's from `model`.
   const resolved = resolveModelDeployments(scoped);
   const outside = 'error' in resolved ? [] : resolved.deployments
       .filter(d => targetStore(d).name === store.name)
