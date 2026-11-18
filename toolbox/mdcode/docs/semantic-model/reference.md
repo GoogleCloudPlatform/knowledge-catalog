@@ -59,7 +59,11 @@ Push runs in two phases:
    tables, a dry run of its BigQuery graph DDL, the Spanner graph check, and
    each action statement, which BigQuery dry-runs and Spanner plans. It also
    prints the warnings of each graph this push deploys, such as a metric the
-   graph leaves out. Knowledge Catalog receives
+   graph leaves out. When one of these checks fails, push prints those
+   warnings, and under `--print` each graph's DDL, before the error. When
+   BigQuery rejects a graph's DDL at a line and column, such as `at [9:27]`,
+   the error quotes that line of the DDL with a caret under the column.
+   Knowledge Catalog receives
    every profile, so this phase prints the load warnings of each profile,
    whether or not a selected deployment applies it, each prefixed with
    `profile '<name>':`. Spanner cannot dry-run a property graph's DDL without

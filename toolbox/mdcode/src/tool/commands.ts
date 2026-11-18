@@ -1182,33 +1182,42 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
-  if (errors.length) {
-    // A warning about a generated graph can explain why a check fails.
+  // Prints each graph's warnings once, and adds them to `printed`.
+  const printWarnings = () => {
     for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
       console.warn(`Warning: ${w}`);
+      printed.add(w);
     }
-    return fail(...errors);
-  }
+  };
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
-  if (options.validateOnly) {
-    // A header prints only above a graph's warnings or, under --print, its
-    // DDL.
+  // Prints each graph's warnings, less those in `shown`, and under --print
+  // its DDL. A header prints only above what prints under it.
+  const printGraphs = (shown?: ReadonlySet<string>) => {
     for (const {deployment, generated} of plans) {
       if (!generated) continue;
-      if (!options.print && !generated.warnings.length) continue;
+      if (!options.print && generated.warnings.every(w => shown?.has(w))) {
+        continue;
+      }
       header(deployment);
       printGraph(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
-          options);
+          options, shown);
     }
+  };
+  if (errors.length) {
+    // A warning about a generated graph can explain why a check fails, and
+    // so can the DDL a check rejects. The error prints last.
+    printWarnings();
+    printGraphs(printed);
+    return fail(...errors);
+  }
+  if (options.validateOnly) {
+    printGraphs();
     return reportCatalogResult(preflight.result!, options);
   }
-  for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
-    console.warn(`Warning: ${w}`);
-    printed.add(w);
-  }
+  printWarnings();
   console.log('Pushing semantic model (Knowledge Catalog)...');
   const published =
       await kc.applyKnowledgeCatalog(preflight.prepared!, ctx, kcOptions);
@@ -1401,10 +1410,38 @@ async function liveErrors(
     const res = await bq.query(project, ddl, location, true);
     if (res.status !== 200) {
       return [`${at}: the graph's DDL fails a BigQuery dry run: ${
-          storeMessage(res.message, res.status)}`];
+          storeMessage(res.message, res.status)}${
+          ddlLineAt(res.message ?? '', ddl)}`];
     }
   }
   return validateBigQueryActionStatements([model], bq, defaultProject);
+}
+
+// The line of `ddl` that BigQuery's `message` gives as `at [line:column]`,
+// after a sentence naming the line, with a caret under the column when the
+// column is in the line. BigQuery ends its message with its position, which
+// can be on a later line than the first, and a string literal the message
+// quotes can hold the same form, so the last one counts. Empty when the
+// message gives no such position, or the line is blank or not in `ddl`.
+// BigQuery starts a line after each \n, \r\n and \r, counts columns in
+// characters, and moves a tab to the next multiple of eight columns.
+function ddlLineAt(message: string, ddl: string): string {
+  const found = [...message.matchAll(/\bat \[(\d+):(\d+)\]/g)].at(-1);
+  if (!found) return '';
+  const line = Number(found[1]);
+  const text = ddl.split(/\r\n|\r|\n/)[line - 1];
+  if (!text?.trim()) return '';
+  let shown = '';
+  let width = 0;
+  for (const c of text) {
+    const columns = c === '\t' ? 8 - width % 8 : 1;
+    shown += c === '\t' ? ' '.repeat(columns) : c;
+    width += columns;
+  }
+  const column = Number(found[2]);
+  const caret =
+      column >= 1 && column <= width + 1 ? `\n${' '.repeat(column - 1)}^` : '';
+  return ` Line ${line} of the graph's DDL:\n\n${shown}${caret}`;
 }
 
 

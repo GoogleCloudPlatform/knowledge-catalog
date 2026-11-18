@@ -64,6 +64,37 @@ const afterDialectLookup = (answer: object) => {
   let reads = 0;
   return when(() => reads++ > 0, answer);
 };
+// BigQuery's message for a graph DDL it cannot parse at `position`, and the
+// answer to the graph's dry run that gives `message`, by default that one.
+const syntaxError = (position: string) =>
+    `Syntax error: Expected ")" but got keyword FROM at [${position}]`;
+const rejectedAt = (position: string, message = syntaxError(position)) => ({
+  query: when(
+      (_project, sql) => sql.includes('PROPERTY GRAPH'),
+      {status: 400, message}),
+});
+// BigQuery's message for a call that matches no signature, shaped as a live
+// dry run gave it, with the position on its last line.
+const NO_SIGNATURE = 'No matching signature for function SUBSTR\n' +
+    '  Argument types: INT64, INT64\n' +
+    '  Signature: SUBSTR(STRING, INT64, [INT64])\n' +
+    '    Argument 1: Unable to coerce type INT64 to expected type STRING at ' +
+    '[9:33]';
+// The error push gives for `shown`, quoting line 9, whose caret line is
+// `caret`.
+const quoted = (shown: string, caret = `\n${' '.repeat(32)}^`) => err(
+    `${at('g')}: the graph's DDL fails a BigQuery dry run: ${shown} Line 9 ` +
+    `of the graph's DDL:\n\n` +
+    `      SUBSTRING(full_name       FROM 1 FOR 3) AS initials${caret}`);
+// Customer with a field whose expression has a tab, on line 9 of the DDL.
+const INITIALS = {
+  ...CUSTOMER,
+  fields: [
+    ...CUSTOMER.fields, {name: 'full_name', expression: 'full_name'},
+    {name: 'initials', expression: 'SUBSTRING(full_name\tFROM 1 FOR 3)'},
+  ],
+};
+const QUOTED = quoted(`${syntaxError('9:33')}.`);
 const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
@@ -147,7 +178,7 @@ scenarios('push writes nothing when a check fails', [
       'answers 403 at the second read', 403, DISABLED,
       `could not be read: ${DISABLED}`),
   {
-    name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write',
+    name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write, and an error at a line of the DDL quotes that line, which under --print follows the DDL',
     deployments: [{
       name: 'g',
       target: bqGraph('g').replace('test-project', 'graph-project'),
@@ -172,13 +203,57 @@ scenarios('push writes nothing when a check fails', [
                  .map(c => [c[0], c[2]]))
           .toEqual([['graph-project', 'US']]);
     },
-    // A dataset whose location cannot be read prints that warning too.
-    then: [{
-      flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
-    }],
+    then: [
+      // A dataset whose location cannot be read prints that warning too.
+      {flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')]},
+      // An error at a line of the DDL quotes that line, with a caret under the
+      // column. A tab moves to the next multiple of eight columns.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33'),
+        errors: [QUOTED],
+      },
+      // Under --print, the DDL prints before the error.
+      {
+        entities: [INITIALS],
+        flags: {validateOnly: true, print: true},
+        services: rejectedAt('9:33'),
+        check: (r: PushRun) => expect(r.output).toEqual([
+          '-- BigQuery Graph --',
+          has('PROPERTY GRAPH `graph-project.d.g`'),
+          QUOTED,
+        ]),
+      },
+      // A position past the DDL's last line quotes nothing.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('12:1'),
+        errors: [err(`${at('g')}: the graph's DDL fails a BigQuery dry run: ${
+            syntaxError('12:1')}.`)],
+      },
+      // The position on the last line of a message still quotes its line.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33', NO_SIGNATURE),
+        errors: [quoted('No matching signature for function SUBSTR.')],
+      },
+      // A literal the message quotes can hold a position too. BigQuery's own
+      // comes last.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:33', 'Unrecognized name: "at [1:5]" at [9:33]'),
+        errors: [quoted('Unrecognized name: "at [1:5]" at [9:33].')],
+      },
+      // A column past the end of the line gets no caret.
+      {
+        entities: [INITIALS],
+        services: rejectedAt('9:99999999999'),
+        errors: [quoted(`${syntaxError('9:99999999999')}.`, '')],
+      },
+    ].map(step => ({code: 1, nothingWritten: true, ...step})),
   },
   {
-    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, and a missing database is reported first',
+    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, prints the DDL before the error under --print, and reports a missing database first',
     ...SPANNER_DEPLOYMENT,
     services: instanceIs({edition: 'STANDARD'}),
     errors: [STANDARD_REFUSED],
@@ -186,6 +261,13 @@ scenarios('push writes nothing when a check fails', [
     then: [
       {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
       {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
+      // Under --print, the DDL prints before the error.
+      {
+        flags: {validateOnly: true, print: true},
+        check: (r: PushRun) => expect(r.output.slice(-3)).toEqual([
+          '-- Spanner Graph --', has('PROPERTY GRAPH g'), STANDARD_REFUSED,
+        ]),
+      },
       {
         services: {getDatabase: afterDialectLookup({status: 404})},
         errors: [err(`${at('sp')}: database test-project/i/db not found`)],
