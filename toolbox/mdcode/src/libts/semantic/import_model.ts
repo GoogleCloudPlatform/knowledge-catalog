@@ -2172,9 +2172,11 @@ async function readSourceDialects(
     opts: ImportSemanticModelOptions): Promise<DialectLoad> {
   // The repaired sources are in `doc.root`, and JSON is YAML. Each file is
   // labeled as push's messages about it are (see validateOutputDocument).
-  // Outside strict mode, a Google-flavor import of a Google-flavor model
-  // writes each profile file under a new name. Any other profile file keeps
-  // its input name.
+  // Strict mode writes nothing on an error, so its messages name the input
+  // files. Otherwise they name the files the import writes. An import that
+  // keeps the Google flavor writes each profile file under the model's name.
+  // Outside strict mode, every import that reads profile files keeps the
+  // Google flavor.
   const renames = !doc.strict && doc.inputVersion === GOOGLE_VERSION &&
       doc.targetVersion === GOOGLE_VERSION;
   const label = (fileName: string) =>

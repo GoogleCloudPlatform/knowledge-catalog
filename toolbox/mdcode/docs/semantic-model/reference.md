@@ -187,14 +187,15 @@ input keeps that flag, since the command then reads the file the import wrote.
 The checks that read a service stay with push, such as whether each source
 names a table Knowledge Catalog knows about. For its checks, import reads only
 each table's dialect, as push does: a Cloud SQL or third-party table's from its
-Knowledge Catalog entry, and a Spanner table's from its database. The tables
-are those of the model file and of the profile files that go in with it. Import
-then judges each table in that dialect.
-When it cannot read a table's dialect, it
-warns with push's reason and skips the checks that need the dialect: whether a
-field has SQL in its table's dialect, what an `ANSI_SQL` text reads when every
-table of the model file or profile is such a table, and whether a profile's or
-the model file's tables are in one database when only that table's entry can
+Knowledge Catalog entry, and a Spanner table's from its database. The tables are
+those of the model file and of the profile files that go in with it. When one of
+those profile files breaks a [profile file rule](profiles.md#file-layout),
+import looks up the tables of none of them, as push does. Import then judges
+each table in its dialect. When it cannot read a table's dialect, it warns with
+push's reason and skips the checks that need the dialect: whether a field has
+SQL in its table's dialect, what an `ANSI_SQL` text reads when every table of
+the model file or profile is such a table, and whether a profile's or the model
+file's tables are in one database when only that table's entry can
 say. Tables of two systems are never in one database, so import still reports a
 profile or model file that binds a BigQuery table beside such a table. Nothing
 is written when the import reports an error. Import rewrites only the values it
