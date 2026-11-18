@@ -64,27 +64,30 @@ const afterDialectLookup = (answer: object) => {
   let reads = 0;
   return when(() => reads++ > 0, answer);
 };
-// BigQuery's message for a graph DDL it cannot parse at `position`, and the
-// answer to the graph's dry run that gives `message`, by default that one.
+// BigQuery's message for a graph DDL it cannot parse at `position`.
 const syntaxError = (position: string) =>
     `Syntax error: Expected ")" but got keyword FROM at [${position}]`;
+// The answer to the graph's dry run, which rejects the DDL with `message`. The
+// message is the syntax error at `position` unless the caller gives one.
 const rejectedAt = (position: string, message = syntaxError(position)) => ({
   query: when(
       (_project, sql) => sql.includes('PROPERTY GRAPH'),
       {status: 400, message}),
 });
-// BigQuery's message for a call that matches no signature, shaped as a live
-// dry run gave it, with the position on its last line.
+// BigQuery's message for a call that matches no signature, as a live dry run
+// gave it, with the position on its last line.
 const NO_SIGNATURE = 'No matching signature for function SUBSTR\n' +
     '  Argument types: INT64, INT64\n' +
     '  Signature: SUBSTR(STRING, INT64, [INT64])\n' +
-    '    Argument 1: Unable to coerce type INT64 to expected type STRING at ' +
+    '    Argument 1: Unable to coerce type INT64 to expected type STRING\n' +
+    '  Signature: SUBSTR(BYTES, INT64, [INT64])\n' +
+    '    Argument 1: Unable to coerce type INT64 to expected type BYTES at ' +
     '[9:33]';
 // The error push gives for `shown`, quoting line 9, whose caret line is
 // `caret`.
 const quoted = (shown: string, caret = `\n${' '.repeat(32)}^`) => err(
-    `${at('g')}: the graph's DDL fails a BigQuery dry run: ${shown} Line 9 ` +
-    `of the graph's DDL:\n\n` +
+    `${at('g')}: the graph's DDL fails a BigQuery dry run: ${shown}\n\n` +
+    "Line 9 of the graph's DDL:\n\n" +
     `      SUBSTRING(full_name       FROM 1 FOR 3) AS initials${caret}`);
 // Customer with a field whose expression has a tab, on line 9 of the DDL.
 const INITIALS = {
@@ -95,6 +98,16 @@ const INITIALS = {
   ],
 };
 const QUOTED = quoted(`${syntaxError('9:33')}.`);
+// Each generated BigQuery graph also warns `ddl warning <deployment>`.
+const DDL_WARNINGS = {
+  bq: async (...a: any[]) => {
+    const r = await REAL.bq(...a);
+    return {
+      ...r,
+      warnings: [...r.warnings, `ddl warning ${deploymentNames(a[0])}`],
+    };
+  },
+};
 const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
@@ -213,14 +226,19 @@ scenarios('push writes nothing when a check fails', [
         services: rejectedAt('9:33'),
         errors: [QUOTED],
       },
-      // Under --print, the DDL prints before the error.
+      // Under --print, each warning prints once, then each graph's header
+      // and DDL, and the error last.
       {
+        deployments: ['g', 'h'],
         entities: [INITIALS],
-        flags: {validateOnly: true, print: true},
-        services: rejectedAt('9:33'),
+        flags: {print: true},
+        services: {...rejectedAt('9:33'), ...DDL_WARNINGS},
         check: (r: PushRun) => expect(r.output).toEqual([
-          '-- BigQuery Graph --',
-          has('PROPERTY GRAPH `graph-project.d.g`'),
+          'Warning: ddl warning g', 'Warning: ddl warning h',
+          header('g'), '-- BigQuery Graph --',
+          has('PROPERTY GRAPH `test-project.d.g`'),
+          header('h'), '-- BigQuery Graph --',
+          has('PROPERTY GRAPH `test-project.d.h`'),
           QUOTED,
         ]),
       },
@@ -231,11 +249,12 @@ scenarios('push writes nothing when a check fails', [
         errors: [err(`${at('g')}: the graph's DDL fails a BigQuery dry run: ${
             syntaxError('12:1')}.`)],
       },
-      // The position on the last line of a message still quotes its line.
+      // A message of several lines keeps every line. Its position on the
+      // last line still quotes its line.
       {
         entities: [INITIALS],
         services: rejectedAt('9:33', NO_SIGNATURE),
-        errors: [quoted('No matching signature for function SUBSTR.')],
+        errors: [quoted(`${NO_SIGNATURE}.`)],
       },
       // A literal the message quotes can hold a position too. BigQuery's own
       // comes last.
@@ -561,15 +580,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
   {
     name: 'prints each deployment\'s DDL warnings once, and its DDL only under --print, and one completion line',
     flags: {validateOnly: true},
-    services: {
-      bq: async (...a: any[]) => {
-        const r = await REAL.bq(...a);
-        return {
-          ...r,
-          warnings: [...r.warnings, `ddl warning ${deploymentNames(a[0])}`],
-        };
-      },
-    },
+    services: DDL_WARNINGS,
     warnings: ['Warning: ddl warning g1', 'Warning: ddl warning g2'],
     log: [header('g1'), header('g2'), msg.VALIDATED],
     events: ['preflight'],
