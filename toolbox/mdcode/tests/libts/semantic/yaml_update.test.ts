@@ -482,6 +482,10 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['an alias after a removed flow list item', 'a: &a 1\nl: [9, *a]\n', v => v.l.shift(), 'a: &a 1\nl: [*a]\n'],
   [
+    'an alias of an empty value that an item added to its flow mapping follows', 'm: {a: &x}\nb: *x\n',
+    v => v.m.c = 2, 'm: {a: &x, c: 2}\nb: *x\n'
+  ],
+  [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
     v => {
       const a = [...v.a, 2];

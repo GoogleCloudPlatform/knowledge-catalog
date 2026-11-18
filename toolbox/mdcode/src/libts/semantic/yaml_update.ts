@@ -220,16 +220,20 @@ function misreadAliases(
   const outNamed = new Map(
       [...aliasNodes(yaml.parseDocument(out, YAML_OPTIONS))].map(
           ([alias, node]) => [alias.range![0], node]));
-  // The offset in `out` of an offset of `u.text` inside no edit.
-  const moved = (at: number) =>
-      made.reduce((s, [p, q, t]) => q <= at ? s + t.length - (q - p) : s, at);
+  // The offset in `out` of an offset of `u.text` inside no edit. Text inserted
+  // at the offset goes before it, unless `empty` is set. An empty node, such
+  // as the value of `a: &x`, has no text, and the writer inserts text at its
+  // offset only after the item it ends.
+  const moved = (at: number, empty = false) => made.reduce(
+      (s, [p, q, t]) =>
+          q < at || q === at && !(empty && p === at) ? s + t.length - (q - p) : s,
+      at);
   // An alias whose anchor changed or went is already written out. So the node
   // each kept alias names keeps its text, and starts where its start in
   // `u.text` moves to.
   return kept.filter(([alias]) => {
-    const node = named.get(alias) as yaml.Node;
-    return outNamed.get(moved(alias.range![0]))?.range![0] !==
-        moved(node.range![0]);
+    const [a, b] = (named.get(alias) as yaml.Node).range!;
+    return outNamed.get(moved(alias.range![0]))?.range![0] !== moved(a, a === b);
   });
 }
 
