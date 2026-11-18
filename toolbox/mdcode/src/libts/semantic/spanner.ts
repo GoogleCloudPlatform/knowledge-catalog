@@ -9,7 +9,7 @@
 //
 
 import {spannerTable} from './binding';
-import {generateGraphDdl, GenerateResult, GraphEngine} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, PlacedMetrics} from './graph_ddl';
 import {expressionForDialect, Field, Metric, SemanticModel} from './ir';
 import {sqlWithoutComments} from './sql_expr_utils';
 import {quoteIdentifier} from './sql_identifiers';
@@ -53,7 +53,7 @@ function spannerEngine(opts: GenerateOptions): GraphEngine {
 
 // Warns that each metric is dropped, since Spanner Graph has no MEASURE.
 function skipMetrics(
-    metrics: Metric[], warnings: string[]): Map<string, string[]> {
+    metrics: Metric[], warnings: string[]): Map<string, PlacedMetrics> {
   for (const metric of metrics) {
     warnings.push(
         `metric '${metric.name}' is not emitted: Spanner Graph has no ` +

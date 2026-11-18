@@ -32,7 +32,7 @@
 // validator and named in errors) rather than silently skipped.
 
 import {DeploymentSpec, Entity, ProfileSpec, SemanticModel} from './ir';
-import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, entityWord, listed, resourceUriFix} from './loader';
+import {AROUND_WHITESPACE, asResourceName, asResourceUri, databaseOf, entitiesWord, entityWord, listed, resourceUriFix} from './loader';
 import {DEFAULT_PROFILE, profileSources} from './resolve_profiles';
 
 
@@ -493,7 +493,7 @@ export function tablesOutsideTarget(
   // A vanilla model calls an entity a dataset.
   const one = entityWord(model.version);
   const many = entities.length > 1;
-  const kind = !many ? one : one === 'entity' ? 'entities' : 'datasets';
+  const kind = many ? entitiesWord(model.version) : one;
   const each = `${many ? 'each' : 'the'} ${one}`;
   const these = `${many ? 'these' : 'this'} ${kind} to ${inside[many ? 1 : 0]}`;
   const fits = named ? [] : profiles.filter(p => {

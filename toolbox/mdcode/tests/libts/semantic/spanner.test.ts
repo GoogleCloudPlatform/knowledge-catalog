@@ -58,6 +58,14 @@ const ENGINES = [
   ['Spanner', generateSpannerPropertyGraph, ''],
 ] as const;
 
+// The warnings `engine` gives for a graph with node tables for entities
+// `listed`, no edge table and no measure. Only BigQuery warns.
+const unjoined = (engine: string, listed: string) => engine === 'BigQuery' ?
+    [`no relationship joins entities ${listed}, so GRAPH_EXPAND and ` +
+     `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph; declare at least one ` +
+     `relationship`] :
+    [];
+
 // The trimmed KEY and REFERENCES lines of `ddl`, without a trailing comma.
 const keyLines = (ddl: string) => ddl.split('\n')
     .filter(l => /KEY\(|REFERENCES/.test(l))
@@ -658,7 +666,9 @@ NODE TABLES (
     )
 );
 `);
-      expect(warnings, engine).toEqual([]);
+      expect(warnings, engine)
+          .toEqual(unjoined(
+              engine, "'retail_customer' and 'wholesale_customer'"));
     }
   });
 
@@ -678,7 +688,8 @@ NODE TABLES (
           .toEqual(['NO PROPERTIES,', 'NO PROPERTIES']);
       expect(ddl, engine).toContain('PROPERTIES(\n      caller_id,\n      phone\n    )');
       expect(ddl, engine).toContain('PROPERTIES(\n      mailer_id,\n      email\n    )');
-      expect(warnings, engine).toEqual([]);
+      expect(warnings, engine)
+          .toEqual(unjoined(engine, "'caller' and 'mailer'"));
     }
   });
 
@@ -724,7 +735,9 @@ NODE TABLES (
           ddl.match(/LABEL customer\n    PROPERTIES\(\n      id,\n      email\n    \)/g),
           engine)
           .toHaveLength(2);
-      expect(warnings, engine).toEqual([]);
+      expect(warnings, engine)
+          .toEqual(unjoined(
+              engine, "'retail_customer' and 'wholesale_customer'"));
     }
   });
 

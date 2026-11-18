@@ -21,7 +21,10 @@ describe('each engine difference comes from the engine', () => {
     table: dataSource => `<table ${dataSource}>`,
     graphName: model => `<graph ${model.name}>`,
     placeMetrics: metrics => new Map([[
-      'orders', ['<derived>', ...metrics.map(m => `<measure ${m.name}>`)]
+      'orders', {
+        operands: ['<derived>'],
+        measures: metrics.map(m => `<measure ${m.name}>`),
+      }
     ]]),
     elementOptions: description =>
         description === undefined ? undefined : `<options ${description}>`,
