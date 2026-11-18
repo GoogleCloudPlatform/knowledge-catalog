@@ -14,7 +14,7 @@ import {SerializedFile} from './osi_converter';
 import {sentence} from './parameters';
 import {updatedData} from './pull_update';
 import {declaredProfiles, DialectLoad, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect, transpilesSomething, TranspileOutcomes} from './resolve_profiles';
-import {SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
+import {FileText, SourceDialects, sourcesToLookUp, tableFqnParts} from './source_dialect';
 import {OssieNode, ossieNodes, ossieReferences, ossieTree} from './ossie_parser';
 import {columnReferences, columnsForSource, entitiesReached, isColumnName, requalified, withoutQualifier} from './sql_expr_utils';
 import {loadSqlEngine, soleColumn} from './sql_parser';
@@ -43,10 +43,10 @@ export interface ImportSemanticModelOptions {
   listEntries?: EntryLister;
   /**
    * Reads the dialect of each Cloud SQL, Spanner and third-party table the
-   * files `texts` name, as `sourceDialects` does for push. Without it, the
+   * files `files` name, as `sourceDialects` does for push. Without it, the
    * dialect of each such table is unknown.
    */
-  readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  readDialects?: (files: FileText[]) => Promise<SourceDialects>;
   /**
    * When true, push's checks read an ANSI_SQL text on a table whose dialect
    * no lookup read as DialectLoad.readWithoutDialect says. Pull sets it for
@@ -2168,15 +2168,24 @@ function filterMetrics(
 async function readSourceDialects(
     doc: ImportDocument,
     opts: ImportSemanticModelOptions): Promise<DialectLoad> {
-  // The repaired sources are in `doc.root`, and JSON is YAML.
-  const texts = [
-    JSON.stringify(doc.root),
-    ...(opts.profileFiles ?? []).map(f => f.content),
+  // The repaired sources are in `doc.root`, and JSON is YAML. A message names
+  // the input file that holds a source.
+  const files = [
+    {
+      fileName: opts.fileName ?? `${doc.model.name}.yaml`,
+      text: JSON.stringify(doc.root),
+    },
+    ...(opts.profileFiles ?? []).map(f => ({
+                                       fileName: f.fileName,
+                                       text: f.content,
+                                     })),
   ];
-  if (!opts.readDialects || !sourcesToLookUp(texts).length) return {};
+  if (!opts.readDialects || !sourcesToLookUp(files.map(f => f.text)).length) {
+    return {};
+  }
   let got: SourceDialects;
   try {
-    got = await opts.readDialects(texts);
+    got = await opts.readDialects(files);
   } catch (err: any) {
     // The lookup could not start, for example with no credentials. gcloud
     // prints the details, so the warning keeps the first line.

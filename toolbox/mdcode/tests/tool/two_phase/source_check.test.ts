@@ -171,10 +171,10 @@ scenarios('push checks every source before it writes', [
     ].sort()),
     then: [
       {services: {lookupEntry: missing(CLOUDSQL)}, code: 1,
-       errors: [has('kcmd reads a Cloud SQL table\'s dialect')],
+       errors: [has(`[commerce.profile.x.yaml] source '${CLOUDSQL}' names no table`)],
        nothingWritten: true},
       {flags: {skipSourceCheck: true}, services: {lookupEntry: missing(CLOUDSQL)},
-       code: 1, errors: [has('kcmd reads a Cloud SQL table\'s dialect')],
+       code: 1, errors: [has(`[commerce.profile.x.yaml] source '${CLOUDSQL}' names no table`)],
        nothingWritten: true},
     ],
   },

@@ -35,7 +35,7 @@ import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, Di
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
-import {SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
+import {FileText, SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
@@ -472,15 +472,8 @@ async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs,
     layout: SemanticModelLayout): Promise<DialectLoad|null> {
-  const texts = docs.map(d => d.text);
-  for (const doc of docs) {
-    try {
-      texts.push(...profileDocs(doc.name).map(p => p.text));
-    } catch {
-      // A profile file the layout rejects is reported where it is read.
-    }
-  }
-  const read = await readDialects(ctx, texts);
+  const read =
+      await readDialects(ctx, modelAndProfileFiles(docs, profileDocs, layout));
   if (read.errors.length) {
     for (const e of read.errors) console.error(`Error: ${e}`);
     return null;
@@ -542,15 +535,8 @@ async function scopeTranspileOutcomes(
   const docs = layout.modelDocuments().filter(
       doc => transpilingModel(doc, profileDocs, {}));
   if (!docs.length) return undefined;
-  const texts = docs.map(d => d.text);
-  for (const doc of docs) {
-    try {
-      texts.push(...profileDocs(doc.name).map(p => p.text));
-    } catch {
-      // A profile file the layout rejects is reported where it is read.
-    }
-  }
-  const read = await readDialects(ctx, texts);
+  const read =
+      await readDialects(ctx, modelAndProfileFiles(docs, profileDocs, layout));
   return transpileOutcomes(
       ctx, docs, profileDocs, layout,
       {sourceDialects: read.dialects, sourceDatabases: read.databases}, read);
@@ -595,11 +581,31 @@ async function transpileOutcomes(
   return outcomes;
 }
 
-// The dialect of each source the files `texts` write, read with the clients
+// The model files `docs` and the profile files of each, named as push names
+// them, for readDialects.
+function modelAndProfileFiles(
+    docs: Array<{name: string; text: string}>, profileDocs: ProfileDocs,
+    layout: SemanticModelLayout): FileText[] {
+  const files: FileText[] = docs.map(d => ({
+    fileName: fileNameOf(layout, d.name, layout.modelPath(d.name)),
+    text: d.text,
+  }));
+  for (const doc of docs) {
+    try {
+      files.push(...profileDocs(doc.name));
+    } catch {
+      // A profile file the layout rejects is reported where it is read.
+    }
+  }
+  return files;
+}
+
+// The dialect of each source the files `files` write, read with the clients
 // push uses. Push, kcmd profiles and kcmd import all read dialects this way.
-function readDialects(ctx: context.ApiContext, texts: string[]) {
+function readDialects(ctx: context.ApiContext, files: FileText[]) {
   return sourceDialects(
-      texts, new dataplex.CatalogClient(ctx), {spanner: new SpannerClient(ctx)});
+      files, new dataplex.CatalogClient(ctx),
+      {spanner: new SpannerClient(ctx)});
 }
 
 // Checks that every source in the inline bindings and named profiles of
@@ -1459,10 +1465,8 @@ async function printStore(
       // can still get the store of a database it has not created yet. An
       // entry that reads but gives no dialect or names no table gets push's
       // error.
-      const read = await readDialects(ctx, [
-        ...docs.map(d => d.text),
-        ...docs.flatMap(d => profileDocs(d.name).map(p => p.text)),
-      ]);
+      const read = await readDialects(
+          ctx, modelAndProfileFiles(docs, profileDocs, layout));
       refused = read.errors.filter(e => !read.unread.includes(e));
       if (refused.length) return false;
       const load = {
@@ -2890,10 +2894,10 @@ interface ImportIo {
   // ImportSemanticModelOptions.readWithoutDialect).
   readWithoutDialect?: boolean;
   api?: () => context.ApiContext;
-  readDialects?: (texts: string[]) => Promise<SourceDialects>;
+  readDialects?: (files: FileText[]) => Promise<SourceDialects>;
   transpileOutcome?:
       (written: ImportSource|undefined, firstParty: boolean,
-       readDialects: (texts: string[]) => Promise<SourceDialects>,
+       readDialects: (files: FileText[]) => Promise<SourceDialects>,
        api: () => context.ApiContext) => Promise<string|null>;
 }
 
@@ -2923,8 +2927,8 @@ async function planImport(
   const once = {
     ...io,
     api,
-    readDialects: (texts: string[]) => dialectsRead ??=
-        (io.readDialects ?? (t => readDialects(api(), t)))(texts),
+    readDialects: (files: FileText[]) => dialectsRead ??=
+        (io.readDialects ?? (f => readDialects(api(), f)))(files),
   };
   // A third-party import that writes its files over its input names import
   // commands that read the files it writes. It writes over its input only

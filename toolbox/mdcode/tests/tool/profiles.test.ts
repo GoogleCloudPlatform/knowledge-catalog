@@ -3018,8 +3018,10 @@ semantic_model:
   test('stops kcmd profiles and push when its entry cannot be read', async () => {
     writeScope();
     stubCloudSqlEntry(403);
-    const dataplex = "Turn on Dataplex integration for instance 'ms' (gcloud sql " +
-        'instances patch ms --enable-dataplex-integration --project acme)';
+    const dataplex = "Error: [commerce.profile.prod.yaml] source 'cloudsql.googleapis.com/" +
+        "projects/acme/locations/us-central1/instances/ms/databases/shop/schemas/sales/" +
+        "tables/orders' names no table Knowledge Catalog knows about. Knowledge Catalog has " +
+        "no entry you may read for its instance 'ms'";
     expect(await profiles({profile: 'prod'})).toBe(1);
     expect(errs.join('\n')).toContain(dataplex);
     errs = [];

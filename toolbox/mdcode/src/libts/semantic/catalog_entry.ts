@@ -45,14 +45,15 @@ export async function read<T>(
   return {result: res.result};
 }
 
-// Looks up the catalog entry of the table whose resource name is
-// `resourceName`, in the entry group `@<system>` at `location`.
+// Looks up the catalog entry of the resource whose name is `resourceName`, in
+// the entry group `@<system>` at `location`. `what` names the lookup in a
+// message.
 export function lookupSystemEntry(
     catalog: EntryLookup, system: string, project: string, location: string,
-    resourceName: string): Promise<Read<{entryType?: string}>> {
+    resourceName: string,
+    what = 'looking up its Knowledge Catalog entry'):
+    Promise<Read<{entryType?: string}>> {
   const name = `${catalogContainer(project, location, `@${system}`)}/entries/${
       resourceName}`;
-  return read(
-      'looking up its Knowledge Catalog entry',
-      () => catalog.lookupEntry(project, location, name));
+  return read(what, () => catalog.lookupEntry(project, location, name));
 }

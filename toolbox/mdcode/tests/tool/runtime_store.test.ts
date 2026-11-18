@@ -261,13 +261,15 @@ semantic_model:
     expect(SpannerClient.prototype.getDatabase).not.toHaveBeenCalled();
   });
 
-  test('stops with the Dataplex message when its entry cannot be read', async () => {
+  test('stops, naming the model file, when its entry cannot be read', async () => {
     writeModel('commerce.yaml', model(DEPLOY, TABLE, false));
     stubCloudSqlEntry(403);
     const rt = await createSemanticRuntimes({ctx: CTX});
-    expect('error' in rt && rt.error).toContain(
-        "Turn on Dataplex integration for instance 'ms' (gcloud sql instances " +
-        'patch ms --enable-dataplex-integration --project acme-ops)');
+    const error = 'error' in rt ? rt.error : '';
+    expect(error).toStartWith('[commerce.yaml] source ');
+    expect(error).toContain(
+        "turn on integration with 'gcloud sql instances patch ms " +
+        "--enable-dataplex-integration --project acme-ops'");
   });
 });
 

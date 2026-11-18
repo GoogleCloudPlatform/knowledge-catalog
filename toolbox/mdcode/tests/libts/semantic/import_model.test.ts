@@ -7,7 +7,7 @@ import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
-import {sourceDialects} from '../../../src/libts/semantic/source_dialect';
+import {FileText, sourceDialects} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
@@ -912,9 +912,9 @@ describe('profile checks', () => {
      model(CUSTOMERS_BQ),
      pgOn(`${CLOUDSQL_PREFIX}/tables/orders`, `${CLOUDSQL_PREFIX}/tables/customers`),
      [], [expect.stringContaining(
-         `source '${CLOUDSQL_PREFIX}/tables/customers': kcmd reads a Cloud SQL table's dialect`)],
+         `[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/customers' names no table`)],
      // The entry of orders names PostgreSQL, and the entry of customers answers 403.
-     (texts: string[]) => sourceDialects(texts, {
+     (files: FileText[]) => sourceDialects(files, {
        lookupEntry: async (_p, _l, name) => name.endsWith('/customers') ? entryDenied(name) :
            {status: 200, result: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}},
      })],
@@ -922,8 +922,8 @@ describe('profile checks', () => {
      model(CUSTOMERS_BQ), pgOn(`${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/customers`),
      ["[sales.profile.pg.yaml] profile 'pg' binds entities in more than one database " +
       "('customers', 'orders'); a profile reads from one system a single query can reach"],
-     [expect.stringContaining(`source '${CLOUDSQL_PREFIX}/tables/orders': kcmd reads`)],
-     (texts: string[]) => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
+     [expect.stringContaining(`[sales.profile.pg.yaml] source '${CLOUDSQL_PREFIX}/tables/orders' names no`)],
+     (files: FileText[]) => sourceDialects(files, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
   ] as Array<[string, string, Array<{fileName: string; content: string}>, string[], string[], any?]>)(
       '%s', async (_, input, profileFiles, errors, warnings, ...[readDialects]) => {
         const res = await importSemanticModelYaml(
@@ -952,7 +952,7 @@ describe('profile checks', () => {
   // each Spanner database's dialect as `spanner`. Without them, each read gets
   // a 403.
   const lookup = ({entry, spanner}: {entry?: object; spanner?: string}) =>
-      (texts: string[]) => sourceDialects(texts, {
+      (files: FileText[]) => sourceDialects(files, {
         lookupEntry: async (_p, _l, name) => entry ? {status: 200, result: entry} : entryDenied(name),
       }, {spanner: {getDatabase: async () => spanner ?
           {status: 200, result: {databaseDialect: spanner}} : {status: 403, message: 'Permission denied.'}}});

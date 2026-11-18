@@ -6,7 +6,10 @@
 // PostgreSQL table and a SQL Server table have the same shape. Dataplex keeps an
 // entry for each table of an instance with Dataplex integration on, in the
 // system entry group `@cloudsql`, and the entry's id is the table's resource
-// name. Its entry type names the engine.
+// name. Its entry type names the engine. The instance, each database and each
+// schema have entries there too, whose ids are the matching prefixes of the
+// table's resource name. When the table's entry cannot be read, kcmd looks
+// those up to say which part the catalog does not have.
 //
 // A third-party table's entry names its system twice: in the prefix of its
 // fullyQualifiedName, which Dataplex checks, and in entrySource.system, which
@@ -64,14 +67,29 @@ export interface SourceDialects {
 type Dialect = {dialect: string; database?: string}|
     {error: string; unread?: true};
 
+// A model or profile file: its name, as the command's messages give it, and
+// its text.
+export interface FileText {
+  fileName: string;
+  text: string;
+}
+
+// The engine each Cloud SQL instance entry type names.
+const ENGINE_OF_INSTANCE_TYPE: Record<string, string> = {
+  'cloudsql-mysql-instance': 'MySQL',
+  'cloudsql-postgresql-instance': 'PostgreSQL',
+  'cloudsql-sqlserver-instance': 'SQL Server',
+};
+
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
-// third-party table the files `texts` write (see sourcesToLookUp), and of every
-// Spanner database they name. Without `spanner`, a Spanner database gives
-// SPANNER, the dialect kcmd's Spanner store speaks, with no call.
+// third-party table the files `files` write (see sourcesToLookUp), and of
+// every Spanner database they name. Without `spanner`, a Spanner database
+// gives SPANNER, the dialect kcmd's Spanner store speaks, with no call.
 // `thirdParty: false` skips third-party tables. Never throws: a failed lookup
-// goes to `errors`.
+// goes to `errors`. A message about a Cloud SQL table names each file that
+// writes it.
 export async function sourceDialects(
-    texts: Iterable<string>, catalog: EntryLookup,
+    files: Iterable<FileText>, catalog: EntryLookup,
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
@@ -79,19 +97,29 @@ export async function sourceDialects(
   // tables of one Spanner database, are one lookup. A database's lookup names
   // the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
-  for (const source of sourcesToLookUp(texts)) {
-    const table = cloudSqlTableOf(source);
-    if (table) {
-      lookups.set(table.resourceName, () => cloudSqlDialect(catalog, table));
-    }
-    const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
-    if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
-    const database = spannerDatabaseOf(source);
-    if (database && !lookups.has(database)) {
-      lookups.set(
-          database,
-          spanner ? () => spannerDialect(spanner, database, source) :
-                    async () => ({dialect: 'SPANNER'}));
+  // The files that write each Cloud SQL table, keyed by its resource name.
+  const filesOf = new Map<string, string[]>();
+  for (const {fileName, text} of files) {
+    for (const source of sourcesToLookUp([text])) {
+      const table = cloudSqlTableOf(source);
+      if (table) {
+        const names = filesOf.get(table.resourceName) ?? [];
+        if (!names.includes(fileName)) names.push(fileName);
+        filesOf.set(table.resourceName, names);
+        lookups.set(
+            table.resourceName, () => cloudSqlDialect(catalog, table, names));
+      }
+      const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
+      if (entry) {
+        lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
+      }
+      const database = spannerDatabaseOf(source);
+      if (database && !lookups.has(database)) {
+        lookups.set(
+            database,
+            spanner ? () => spannerDialect(spanner, database, source) :
+                      async () => ({dialect: 'SPANNER'}));
+      }
     }
   }
   const dialects = new Map<string, string>();
@@ -110,26 +138,20 @@ export async function sourceDialects(
   return {dialects, databases, errors, unread};
 }
 
-// The dialect of a Cloud SQL table, by its entry's type.
+// The dialect of a Cloud SQL table, by its entry's type. `files` names the
+// files that write the table.
 async function cloudSqlDialect(
-    catalog: EntryLookup, table: CloudSqlTable): Promise<Dialect> {
-  const at = `source '${table.resourceName}'`;
+    catalog: EntryLookup, table: CloudSqlTable,
+    files: string[]): Promise<Dialect> {
+  const at = `[${files.join(', ')}] source '${table.resourceName}'`;
   const res = await lookupSystemEntry(
       catalog, 'cloudsql', table.project, table.location, table.resourceName);
   if ('error' in res) return {error: `${at}: ${res.error}`, unread: true};
-  // Dataplex answers 403 both when the entry does not exist and when the
-  // caller may not read it, so the message names both causes.
   if ('unreadable' in res) {
     return {
       unread: true,
-      error: `${at}: kcmd reads a Cloud SQL table's dialect from its ` +
-          `Knowledge Catalog entry, and could not read it. Turn on Dataplex ` +
-          `integration for instance '${table.instance}' (gcloud sql ` +
-          `instances patch ${table.instance} --enable-dataplex-integration ` +
-          `--project ${table.project}) and wait for the table to appear in ` +
-          `the catalog, or check that you can read the table. If integration ` +
-          `is on, check the name: the project ID, the instance's region, and ` +
-          `a schema only for PostgreSQL and SQL Server.`,
+      error: `${at} names no table Knowledge Catalog knows about. ${
+          await missingCloudSqlPart(catalog, table)}`,
     };
   }
   // The type comes back as a full name; its last part says the engine.
@@ -140,6 +162,71 @@ async function cloudSqlDialect(
         `not a Cloud SQL table or view type kcmd knows (${
                Object.keys(DIALECT_OF_ENTRY_TYPE).join(', ')}).`,
   };
+}
+
+// Why Knowledge Catalog gives no entry for `table` that the caller may read.
+// Dataplex answers 403 both when an entry does not exist and when the caller
+// may not read it, so this looks up the entries of the table's instance, its
+// database and its schema in turn, with `catalog`, and names the first that
+// cannot be read. Reading the instance's entry also gives its engine, which
+// says whether the table's name needs a schema. When every part is there,
+// the table itself is missing, or too new to be in the catalog yet.
+async function missingCloudSqlPart(
+    catalog: EntryLookup, table: CloudSqlTable): Promise<string> {
+  const {project, location, instance, database, schema} = table;
+  const lookUp = (id: string, what: string) => lookupSystemEntry(
+      catalog, 'cloudsql', project, location, id,
+      `looking up the catalog entry of ${what}`);
+  const instanceId = `cloudsql.googleapis.com/projects/${project}/locations/${
+      location}/instances/${instance}`;
+  const found = await lookUp(instanceId, `instance '${instance}'`);
+  if ('error' in found) return `kcmd could not tell why: ${found.error}`;
+  if ('unreadable' in found) {
+    return `Knowledge Catalog has no entry you may read for its instance ` +
+        `'${instance}' in project '${project}' and region '${location}'. ` +
+        `The project ID, the region or the instance name may be wrong, you ` +
+        `may not be allowed to read the instance's entry, or Dataplex ` +
+        `integration may be off for the instance. Check the source and your ` +
+        `access. If both are right, turn on integration with 'gcloud sql ` +
+        `instances patch ${instance} --enable-dataplex-integration --project ${
+            project}' and wait for the table to appear in the catalog.`;
+  }
+  const type = (found.result.entryType ?? '').split('/').pop() ?? '';
+  const engine = ENGINE_OF_INSTANCE_TYPE[type];
+  if (engine === 'MySQL' && schema !== undefined) {
+    return `Instance '${instance}' runs MySQL, which has no schemas. Remove ` +
+        `'schemas/${schema}/' from the source.`;
+  }
+  if (engine && engine !== 'MySQL' && schema === undefined) {
+    return `Instance '${instance}' runs ${engine}, so a table's name ` +
+        `includes its schema. Add 'schemas/<schema>/' before 'tables/' in ` +
+        `the source.`;
+  }
+  const databaseId = `${instanceId}/databases/${database}`;
+  const parts = [{
+    id: databaseId,
+    what: `database '${database}'`,
+    missing: `Instance '${instance}' is in the catalog, but database '${
+        database}' is not. Check the database name.`,
+  }];
+  if (schema !== undefined) {
+    parts.push({
+      id: `${databaseId}/schemas/${schema}`,
+      what: `schema '${schema}'`,
+      missing: `Database '${database}' is in the catalog, but schema '${
+          schema}' is not. Check the schema name.`,
+    });
+  }
+  for (const {id, what, missing} of parts) {
+    const res = await lookUp(id, what);
+    if ('error' in res) return `kcmd could not tell why: ${res.error}`;
+    if ('unreadable' in res) return missing;
+  }
+  const present = schema === undefined ? 'instance and database' :
+                                         'instance, database and schema';
+  return `Its ${present} are in the catalog, so the table may not exist, or it ` +
+      `may be too new to be in the catalog yet. Check the table name, or ` +
+      `create the table.`;
 }
 
 // The dialect of the Spanner database `database`, which `source` names a

@@ -200,10 +200,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // loads. A table whose entry cannot be read stops the scope, as push does.
   // A third-party table is not looked up, since no runtime reads one, and a
   // Spanner table is SPANNER, the dialect the runtime's Spanner store speaks.
-  const lookup = await sourceDialects(
-      [...docs.map(d => d.text),
-       ...[...filesByDoc.values()].flat().map(f => f.text)],
-      new CatalogClient(ctx), {thirdParty: false});
+  // Each model file and its profile files, named as push names them.
+  const files = docs.flatMap(d => [
+    {
+      fileName: fileNameOf(layout, d.name, layout.modelPath(d.name)),
+      text: d.text,
+    },
+    ...(filesByDoc.get(d.name) ?? []).map(
+        f => ({fileName: fileNameOf(layout, d.name, f.path), text: f.text})),
+  ]);
+  const lookup =
+      await sourceDialects(files, new CatalogClient(ctx), {thirdParty: false});
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
   const load = {
     sourceDialects: lookup.dialects,
