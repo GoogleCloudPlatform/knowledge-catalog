@@ -61,8 +61,8 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
     elementOptions: (description, ai) => optionsClause(
         elementDescription(description), ai?.synonyms, aiExtensions(ai)),
     fieldOptions: field => optionsClause(
-        fieldDescription(field), field.aiContext?.synonyms,
-        aiExtensions(field.aiContext)),
+        elementDescription(field.description), field.aiContext?.synonyms,
+        fieldExtensions(field)),
     dialect: 'BIGQUERY',
     fieldExpression,
   };
@@ -546,25 +546,14 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 }
 
 
-// Trims a graph element's base description, returning undefined when blank.
-// BigQuery's PropertyGraph{Label,Property}Options carry dedicated `synonyms`
-// and `extensions` options, so `synonyms`, `instructions` and `examples` are
-// emitted there rather than folded into `description` (see optionsClause and
-// aiExtensions).
+// Trims a graph element's description, returning undefined when blank. The
+// `description` option holds only the author's text. BigQuery's
+// PropertyGraph{Label,Property}Options carry dedicated `synonyms` and
+// `extensions` options, so synonyms, instructions, examples, and a field's
+// label and time role go there (see optionsClause, aiExtensions and
+// fieldExtensions).
 export function elementDescription(description?: string): string|undefined {
-  return composeText([description]);
-}
-
-// A field additionally carries a human `label` and a temporal-dimension role,
-// which lead the composed text ahead of its description. Synonyms,
-// instructions and examples are emitted in `synonyms` and `extensions`, as for
-// elementDescription.
-export function fieldDescription(field: Field): string|undefined {
-  return composeText([
-    field.label,
-    isTimeDimension(field) ? 'Time dimension.' : undefined,
-    field.description,
-  ]);
+  return description?.trim() || undefined;
 }
 
 // The `(key, value)` pairs for BigQuery's `extensions` option from an
@@ -584,12 +573,16 @@ export function aiExtensions(ai?: AiContext): Array<[string, string]> {
   return out;
 }
 
-// Joins the non-empty parts into one description, separated by blank lines so
-// each reads as its own paragraph in the emitted metadata.
-function composeText(parts: (string|undefined)[]): string|undefined {
-  const kept = parts.map(p => (p === undefined ? undefined : p.trim()))
-                   .filter((p): p is string => !!p);
-  return kept.length ? kept.join('\n\n') : undefined;
+// The `(key, value)` pairs for BigQuery's `extensions` option on a field: its
+// aiExtensions, then `is_time` as `true` when the field is a time dimension
+// (see isTimeDimension), then its trimmed `label`. A whitespace-only label
+// emits nothing.
+export function fieldExtensions(field: Field): Array<[string, string]> {
+  const out = aiExtensions(field.aiContext);
+  if (isTimeDimension(field)) out.push(['is_time', 'true']);
+  const label = field.label?.trim();
+  if (label) out.push(['label', label]);
+  return out;
 }
 
 // Renders the trailing `OPTIONS(...)` clause for a graph element from its

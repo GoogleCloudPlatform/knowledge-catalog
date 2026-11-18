@@ -29,9 +29,9 @@ agree on every structural row and differ only where a Spanner target has no
 |----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
 | Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
 | Field                                                          | `schema` aspect field           | ✓ (type²)                                      | column on the node table¹                                            | column on the node table¹                                            |
-| Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
+| Field `label`                                                  | `schema` per-field annotation   | ✓                                              | `OPTIONS(extensions=[("label", ...)])`                               | — dropped                                                            |
 | Field expression (canonical SQL)                               | `sql-expressions` aspect³       | ✓³                                             | builds the DDL                                                       | builds the DDL                                                       |
-| Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | noted in `OPTIONS(description)`                                      | — dropped                                                            |
+| Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | `OPTIONS(extensions=[("is_time", "true")])`                          | — dropped                                                            |
 | Primary key                                                    | `semantic-entity.primaryKey`    | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `semantic-entity.uniqueConstraints` | ✓                                              | — dropped                                                            | — dropped                                                            |
 | Metric                                                         | `semantic-metric` entry         | ✓ (type⁵)                                      | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
@@ -248,8 +248,9 @@ carries across structurally as `synonyms=[...]`. `ai_context.instructions` and
 `ai_context.examples` carry across in `extensions=[...]` as
 `("instructions", "...")` and `("examples", "[...]")`, with `examples`
 serialized as a JSON array string. Custom `ai_context` members stay out of the
-DDL. A field's `label` and temporal-dimension marker have no dedicated option,
-so they still combine with the field's `description` in `OPTIONS(description)`.
+DDL. A field's `label` carries across in `extensions=[...]` as
+`("label", "...")`. A field that is a time dimension gets `("is_time", "true")`.
+`OPTIONS(description)` holds only the element's own `description`.
 
 The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are

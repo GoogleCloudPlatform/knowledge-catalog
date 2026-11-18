@@ -14,7 +14,7 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {SpannerClient, SpannerType} from '../gcp/spanner';
 
-import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
+import {aiExtensions, elementDescription, fieldExtensions} from './bigquery';
 import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
@@ -661,13 +661,17 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
                 `BigQuery treats as one; remove one.`);
           }
         }
+        // A field or metric is a property of the graph, and an entity or
+        // relationship is a label.
+        const holder = kind === 'field' || kind === 'metric' ?
+            "a property's extension value" :
+            'an extension value of a label or property';
         for (const [key, value] of extensions) {
           if (value.length <= MAX_BIGQUERY_EXTENSION_VALUE) continue;
           problems.push(
               `the ${key} kcmd writes for ${what}${
                   key === 'examples' ? ', as a JSON array,' : ''} is ${
-                  value.length} characters long; an extension value of a ` +
-              `label or property holds at most ${
+                  value.length} characters long; ${holder} holds at most ${
                   MAX_BIGQUERY_EXTENSION_VALUE}.`);
         }
       };
@@ -685,8 +689,8 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
       check(
-          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
-          aiExtensions(f.aiContext), e.name);
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), e.name);
     }
   }
   for (const r of model.relationships ?? []) {
@@ -697,8 +701,8 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
         continue;
       }
       check(
-          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
-          aiExtensions(f.aiContext), r.name);
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), r.name);
     }
   }
   for (const m of model.metrics ?? []) element('metric', m);

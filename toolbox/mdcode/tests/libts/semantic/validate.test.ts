@@ -3680,26 +3680,25 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const LONG = (what: string, n = 1025) => IN(
         `the description kcmd writes for ${what} is ${n} characters long; ` +
         "a label or property's description holds at most 1024.");
-    const timeField = {dimension: {isTime: true}, description: x(1000)};
     test.each<[string, (m: SemanticModel) => void, string[]]>([
-      ['past 1024 characters, counting what kcmd adds to a field', m => {
+      ['past 1024 characters', m => {
         m.entities[0].description = x(1025);
-        Object.assign(
-            m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
+        m.entities[1].fields[1].description = x(1025);
         m.relationships[0].description = x(1025);
         m.metrics![0].description = x(1025);
       }, [
         "entity 'customer'", "field 'purchase.amount'",
         "relationship 'placed_by'", "metric 'revenue'",
       ].map(what => LONG(what))],
-      ['at 1024 characters alongside instructions and examples', m => {
+      ['at 1024 characters alongside instructions and examples, and a field\'s label and time role', m => {
         Object.assign(m.entities[0], {
           description: x(1024),
           aiContext: {instructions: 'Exclude test accounts.', examples: ['a']},
         });
         Object.assign(m.entities[1].fields[1], {
           label: 'Amount',
-          description: x(1016),
+          dimension: {isTime: true},
+          description: x(1024),
           aiContext: {instructions: 'Net of tax.', examples: ['100.00']},
         });
         Object.assign(m.relationships[0], {
@@ -3710,12 +3709,6 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           description: x(1024),
           aiContext: {instructions: 'Completed only.', examples: ['revenue?']},
         });
-      }, []],
-      ['of a field with a label and a time role', m => {
-        Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});
-      }, [LONG("field 'purchase.amount'")]],
-      ['of a field with a time role and no label', m => {
-        Object.assign(m.entities[1].fields[1], timeField);
       }, []],
       ['of 2001 characters, which Knowledge Catalog rejects too', m => {
         m.entities[0].description = x(2001);
@@ -3751,10 +3744,14 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       ].map(p => IN(p)));
     });
 
-    const LONG_EXT = (key: 'instructions'|'examples', what: string, n = 1025) =>
+    const LONG_EXT =
+        (key: 'instructions'|'examples'|'label', what: string, n = 1025) =>
         IN(`the ${key} kcmd writes for ${what}${
                key === 'examples' ? ', as a JSON array,' : ''} is ${
-               n} characters long; an extension value of a label or property ` +
+               n} characters long; ${
+               /^(field|metric) /.test(what) ?
+                   "a property's extension value" :
+                   'an extension value of a label or property'} ` +
            'holds at most 1024.');
     const ELEMENTS = [
       "entity 'customer'", "field 'purchase.amount'",
@@ -3782,6 +3779,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         expect(errorsAfter(m => setAiOnEveryKind(m, aiContext)))
             .toEqual(errors));
 
+    test("checks a field's label as an extension value after trimming", () => {
+      expect(errorsAfter(m => {
+        m.entities[1].fields[0].label = `  ${x(1024)}\n`;
+        m.entities[1].fields[1].label = x(1025);
+      })).toEqual([LONG_EXT('label', "field 'purchase.amount'")]);
+    });
+
     test("checks the description, synonyms and extensions of a many-to-many edge's fields", () => {
       expect(errorsAfter(m => {
         m.relationships[0].association = {
@@ -3793,8 +3797,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
             {
               name: 'tier',
               expression: 'tier',
-              label: 'Tier',
-              description: x(1019),
+              label: x(1025),
+              description: x(1025),
               aiContext: {
                 synonyms: ['Tier', ...synonyms(8)],
                 instructions: x(1025),
@@ -3819,6 +3823,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
            "treats as the field's own name; remove it."),
         LONG_EXT('instructions', "field 'placed_by.tier'"),
         LONG_EXT('examples', "field 'placed_by.tier'", 1027),
+        LONG_EXT('label', "field 'placed_by.tier'"),
         LONG("field 'placed_by.role'"),
       ]);
     });
