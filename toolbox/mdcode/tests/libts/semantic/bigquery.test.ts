@@ -379,10 +379,15 @@ describe('IR-contract metric cases the loader cannot produce', () => {
 });
 
 describe('the SQL parser reads a metric\'s entity and aggregate', () => {
-  // orders, keyed on its column, with a field bound to another column.
+  // orders, keyed on its column, with a field bound to another column, and
+  // NET, which orders joins.
   const model = (...metrics: SemanticModel['metrics']): SemanticModel => ({
     name: 'm',
-    relationships: [],
+    relationships: [{
+      name: 'routed_by',
+      source: {entity: 'orders', columns: ['net_id']},
+      destination: {entity: 'NET', columns: ['n_id']},
+    }],
     metrics,
     entities: [
       {
@@ -460,10 +465,14 @@ describe('the SQL parser reads a metric\'s entity and aggregate', () => {
 
 describe('a metric that combines aggregates on one entity lowers to one measure', () => {
   // orders, keyed on its column, with a field bound to another column, and
-  // customers.
+  // customers, which orders joins.
   const model = (...metrics: SemanticModel['metrics']): SemanticModel => ({
     name: 'm',
-    relationships: [],
+    relationships: [{
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['customer_id']},
+      destination: {entity: 'customers', columns: ['c_id']},
+    }],
     metrics,
     entities: [
       {
@@ -644,6 +653,39 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
       'metric \'m\' spans multiple tables (orders, customers); skipped ' +
           '(cannot be a single MEASURE)',
     ]);
+  });
+});
+
+
+describe('a graph with several node tables and no edge table', () => {
+  // BigQuery creates the graph, and then GRAPH_EXPAND and
+  // BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it: "Graph must have at least one valid
+  // edge if there are multiple node tables". Spanner has no GRAPH_EXPAND.
+  const modelWith = (names: string[], more: Partial<SemanticModel> = {}):
+      SemanticModel => ({
+        name: 'm',
+        relationships: [],
+        metrics: [],
+        entities: names.map(name => ({
+          name,
+          dataSource: `p.d.${name}`,
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}],
+        })),
+        ...more,
+      });
+  const advice = 'so GRAPH_EXPAND and BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on ' +
+      'the graph and no measure can be read; declare at least one relationship';
+  test.each<[string, SemanticModel, string[]]>([
+    ['two entities warn on BigQuery', modelWith(['orders', 'customers']),
+     [`no relationship joins entities 'orders' and 'customers', ${advice}`]],
+    ['three datasets of a vanilla model warn on BigQuery',
+     modelWith(['a', 'b', 'c'], {version: '0.2.0.dev0'}),
+     [`no relationship joins datasets 'a', 'b' and 'c', ${advice}`]],
+    ['one entity is silent', modelWith(['orders']), []],
+  ])('%s, and Spanner is silent', (_, model, warnings) => {
+    expect(generatePropertyGraph(model, GEN_OPTS).warnings).toEqual(warnings);
+    expect(generateSpannerPropertyGraph(model).warnings).toEqual([]);
   });
 });
 
@@ -2448,7 +2490,11 @@ describe('a metric operand that names a field', () => {
     const {ddl, warnings} = generatePropertyGraph(
         {
           name: 'm',
-          relationships: [],
+          relationships: [{
+            name: 'bought',
+            source: {entity: 'customer', columns: ['product_id']},
+            destination: {entity: 'product', columns: ['id']},
+          }],
           metrics:
               [{name: 'customers', expression: 'COUNT(customer.customer_id)'}],
           entities: [
@@ -2486,6 +2532,11 @@ describe('a metric operand that names a field', () => {
       dataSource: 'p.d.refund',
       keys: ['refund_id'],
       fields: [{name: 'amount', expression: 'amount_usd'}],
+    });
+    model.relationships.push({
+      name: 'refunds',
+      source: {entity: 'refund', columns: ['purchase_id']},
+      destination: {entity: 'purchase', columns: ['purchase_id']},
     });
     const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
     expect(ddl).toContain(

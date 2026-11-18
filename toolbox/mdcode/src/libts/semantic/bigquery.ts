@@ -22,6 +22,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {entityWord, listed} from './loader';
 import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
@@ -40,6 +41,9 @@ export type {GenerateResult};
  * The generated statement references the entities' existing base tables; it
  * does not create them. Returns the DDL plus any warnings collected while
  * mapping the IR (e.g. metrics that could not be placed on a single table).
+ * It also warns when the graph has more than one node table and no edge
+ * table. BigQuery creates such a graph, and then GRAPH_EXPAND and
+ * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it.
  *
  * Throws when the model yields no valid node table -- it declares no entities,
  * every entity is abstract or extended by another, or every leaf lacks a KEY
@@ -48,7 +52,18 @@ export type {GenerateResult};
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
-  return generateGraphDdl(model, bigQueryEngine(opts));
+  const result = generateGraphDdl(model, bigQueryEngine(opts));
+  const nodes =
+      result.elements.filter(e => e.kind === 'node').map(e => `'${e.name}'`);
+  if (nodes.length > 1 && !result.elements.some(e => e.kind === 'edge')) {
+    const kind = entityWord(model.version) === 'entity' ? 'entities' :
+                                                          'datasets';
+    result.warnings.push(
+        `no relationship joins ${kind} ${listed(nodes)}, so GRAPH_EXPAND and ` +
+        `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph and no measure can be ` +
+        `read; declare at least one relationship`);
+  }
+  return result;
 }
 
 // The BigQuery engine for the shared generator.
