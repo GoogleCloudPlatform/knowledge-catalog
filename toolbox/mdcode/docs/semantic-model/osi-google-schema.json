@@ -12,7 +12,7 @@
   "properties": {
     "version": {
       "type": "string",
-      "const": "0.2.0.dev0/google",
+      "const": "0.2.0.dev0/google1",
       "description": "Google-extended OSI schema version identifier."
     },
     "semantic_model": {

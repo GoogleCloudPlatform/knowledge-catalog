@@ -1,11 +1,13 @@
 // Tests that push checks every destination before it writes, then writes the
 // catalog and deploys each deployment in order, with its own target and
 // profile, and tests what push prints for each deployment
-// (src/tool/commands.ts, checkBeforeWrites, liveErrors and pushInTwoPhases).
+// (src/tool/commands.ts, checkBeforeWrites, liveErrors, quotedPosition and
+// pushInTwoPhases).
 
-import {expect} from 'bun:test';
+import {expect, test} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
+import {quotedPosition} from '../../../src/tool/commands';
 import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
 import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
@@ -71,6 +73,20 @@ const STANDARD_REFUSED = err(
     '--edition=ENTERPRISE --project=test-project). To publish the model to ' +
     'Knowledge Catalog without this graph, leave the deployment out with ' +
     '--deployment or --no-deployment, or remove it.');
+// Field code, whose only SQL is ANSI SQL that BigQuery does not parse.
+const ANSI_ONLY = {
+  name: 'code',
+  expression: {
+    dialects: [{dialect: 'ANSI_SQL', expression: 'SUBSTRING(c_name FROM 1 FOR 3)'}],
+  },
+};
+// BigQuery's refusal of the DDL of graph g2, which writes field code on line
+// 8, and push's error, which quotes that line.
+const SYNTAX = 'Syntax error: Expected ")" but got keyword FROM at [8:24]';
+const QUOTED = err(
+    `${at('g2')}: the graph's DDL fails a BigQuery dry run: ${SYNTAX}.\n` +
+    '  8 |       SUBSTRING(c_name FROM 1 FOR 3) AS code\n' +
+    `    | ${' '.repeat(23)}^`);
 
 scenarios('push writes nothing when a check fails', [
   {
@@ -175,6 +191,33 @@ scenarios('push writes nothing when a check fails', [
     // A dataset whose location cannot be read prints that warning too.
     then: [{
       flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
+    }],
+  },
+  {
+    name: 'a graph DDL BigQuery refuses at a position gets the line of the DDL it points into quoted with a caret under the column, and under --print each graph\'s DDL prints first',
+    entities: [{...CUSTOMER, fields: [...CUSTOMER.fields, ANSI_ONLY]}],
+    services: {
+      query: when(
+          (_project, sql) => sql.includes('PROPERTY GRAPH `test-project.d.g2`'),
+          {status: 400, message: SYNTAX}),
+    },
+    errors: [QUOTED],
+    log: [],
+    then: [{
+      flags: {print: true},
+      code: 1,
+      nothingWritten: true,
+      errors: [QUOTED],
+      log: [
+        header('g1'), '-- BigQuery Graph --',
+        has('PROPERTY GRAPH `test-project.d.g1`'),
+        header('g2'), '-- BigQuery Graph --',
+        has('PROPERTY GRAPH `test-project.d.g2`'),
+      ],
+      // The line the error quotes is that line of the DDL --print prints.
+      check: r =>
+          expect(r.log[5].split('\n')[7])
+              .toBe('      SUBSTRING(c_name FROM 1 FOR 3) AS code'),
     }],
   },
   {
@@ -852,3 +895,25 @@ scenarios('a deployment push does not select gets every local check of a selecte
     errors: [has(`${at('g')}: cannot generate a property graph`)],
   },
 ]);
+
+// Each row gives the DDL, BigQuery's message and the lines push adds under its
+// error.
+test.each([
+  // Lines and columns count from 1, and the message's last position is quoted.
+  ['SELECT\n  a FROM\nt', 'at [1:1]: x at [2:5]', '\n  2 |   a FROM\n    |     ^'],
+  // A tab reaches the next multiple of 8, and a character outside the Basic
+  // Multilingual Plane is one column.
+  ['\tx y', 'at [1:11]', `\n  1 | ${' '.repeat(8)}x y\n    | ${' '.repeat(10)}^`],
+  ["'\u00e9\u{1D538}' x", 'at [1:6]', "\n  1 | '\u00e9\u{1D538}' x\n    |      ^"],
+  // A line ends at \r\n too, and a position can be just past its end.
+  ['a\r\nb c', 'at [2:4]', '\n  2 | b c\n    |    ^'],
+  // A line number of two digits widens the gutter.
+  [`${'\n'.repeat(9)}abc`, 'at [10:2]', '\n  10 | abc\n     |  ^'],
+  // No position, or one outside the text, adds nothing.
+  ['ab', "Column 'c_key' not found.", ''],
+  ['ab', 'at [0:1]', ''],
+  ['ab', 'at [2:1]', ''],
+  ['ab', 'at [1:0]', ''],
+  ['ab', 'at [1:4]', ''],
+])('quotedPosition(%p, %p)', (sql, message, quoted) =>
+    expect(quotedPosition(sql, message)).toBe(quoted));

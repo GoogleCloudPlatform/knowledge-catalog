@@ -1182,16 +1182,29 @@ async function pushInTwoPhases(
   // does not print it again.
   const printed = new Set(locationWarnings);
   for (const w of printed) console.warn(`Warning: ${w}`);
-  if (errors.length) {
-    // A warning about a generated graph can explain why a check fails.
-    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
-      console.warn(`Warning: ${w}`);
-    }
-    return fail(...errors);
-  }
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
   };
+  if (errors.length) {
+    // A warning about a generated graph can explain why a check fails, and so
+    // can the graph's DDL, which the position in a dry run's error points
+    // into. So --print prints each graph here too, as it does when the checks
+    // pass.
+    for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+      console.warn(`Warning: ${w}`);
+      printed.add(w);
+    }
+    if (options.print) {
+      for (const {deployment, generated} of plans) {
+        if (!generated) continue;
+        header(deployment);
+        printGraph(
+            deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner',
+            generated, options, printed);
+      }
+    }
+    return fail(...errors);
+  }
   if (options.validateOnly) {
     // A header prints only above a graph's warnings or, under --print, its
     // DDL.
@@ -1400,11 +1413,51 @@ async function liveErrors(
   for (const ddl of plan.generated?.ddl ?? []) {
     const res = await bq.query(project, ddl, location, true);
     if (res.status !== 200) {
-      return [`${at}: the graph's DDL fails a BigQuery dry run: ${
-          storeMessage(res.message, res.status)}`];
+      const message = storeMessage(res.message, res.status);
+      return [`${at}: the graph's DDL fails a BigQuery dry run: ${message}${
+          quotedPosition(ddl, message)}`];
     }
   }
   return validateBigQueryActionStatements([model], bq, defaultProject);
+}
+
+// The line of `sql` that BigQuery's error `message` points at, with a caret
+// under the column. BigQuery gives the position as `at [line:column]`;
+// for `at [8:24]`, the result is:
+//
+//     8 |       SUBSTRING(c_name FROM 1 FOR 3) AS code
+//       |                        ^
+//
+// Each line starts with a newline, so the result goes right after the error.
+// It is '' when the message has no position or the position is outside `sql`.
+// If the message has several positions, the last one is used.
+//
+// Push needs this because storeMessage drops the copy of the statement that a
+// store echoes in its error. That is fine for an action statement, which the
+// author wrote in a profile and can read there. But the DDL that push
+// generates is in no file, so a position alone does not say what to edit.
+//
+// Positions are counted as BigQuery counts them: lines and columns start at 1,
+// a line ends at \r\n, \r or \n, each character is one column (a code point,
+// not a UTF-16 unit), and a tab moves to the next tab stop, every 8 columns.
+export function quotedPosition(sql: string, message: string): string {
+  const position = [...message.matchAll(/\bat \[(\d+):(\d+)\]/g)].at(-1);
+  if (!position) return '';
+  const [row, column] = [Number(position[1]), Number(position[2])];
+  const line = sql.split(/\r\n|\r|\n/)[row - 1];
+  if (line === undefined) return '';
+  let text = '';
+  let width = 0;
+  for (const c of line) {
+    const n = c === '\t' ? 8 - width % 8 : 1;
+    text += c === '\t' ? ' '.repeat(n) : c;
+    width += n;
+  }
+  // A position can be just past the line's last character, as at the end of
+  // the statement.
+  if (column < 1 || column > width + 1) return '';
+  const gutter = ' '.repeat(String(row).length);
+  return `\n  ${row} | ${text}\n  ${gutter} | ${' '.repeat(column - 1)}^`;
 }
 
 
