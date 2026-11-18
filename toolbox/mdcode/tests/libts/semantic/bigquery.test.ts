@@ -661,11 +661,12 @@ describe('a graph with several node tables and no edge table', () => {
   // BigQuery creates the graph, and then GRAPH_EXPAND and
   // BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it: "Graph must have at least one valid
   // edge if there are multiple node tables". Spanner has no GRAPH_EXPAND.
+  // Each entity is keyed on `id`, and metric `total` sums the first one's.
   const modelWith = (names: string[], more: Partial<SemanticModel> = {}):
       SemanticModel => ({
         name: 'm',
         relationships: [],
-        metrics: [],
+        metrics: [{name: 'total', expression: `SUM(${names[0]}.id)`}],
         entities: names.map(name => ({
           name,
           dataSource: `p.d.${name}`,
@@ -674,18 +675,32 @@ describe('a graph with several node tables and no edge table', () => {
         })),
         ...more,
       });
-  const advice = 'so GRAPH_EXPAND and BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on ' +
-      'the graph and no measure can be read; declare at least one relationship';
+  // Two subtypes of an abstract entity, with no metric.
+  const subtypes = modelWith(['person', 'org'], {metrics: []});
+  subtypes.entities = [
+    {name: 'party', abstract: true, dataSource: '', keys: [], fields: []},
+    ...subtypes.entities.map(e => ({...e, extends: ['party']})),
+  ];
+  const fail = 'so GRAPH_EXPAND and BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the ' +
+      'graph';
+  const advice = 'declare at least one relationship';
   test.each<[string, SemanticModel, string[]]>([
     ['two entities warn on BigQuery', modelWith(['orders', 'customers']),
-     [`no relationship joins entities 'orders' and 'customers', ${advice}`]],
+     [`no relationship joins entities 'orders' and 'customers', ${fail} and ` +
+      `no measure can be read; ${advice}`]],
     ['three datasets of a vanilla model warn on BigQuery',
      modelWith(['a', 'b', 'c'], {version: '0.2.0.dev0'}),
-     [`no relationship joins datasets 'a', 'b' and 'c', ${advice}`]],
+     [`no relationship joins datasets 'a', 'b' and 'c', ${fail} and no ` +
+      `measure can be read; ${advice}`]],
+    ['a graph with no measure warns without naming measures on BigQuery',
+     subtypes,
+     [`no relationship joins entities 'person' and 'org', ${fail}; ${advice}`]],
     ['one entity is silent', modelWith(['orders']), []],
   ])('%s, and Spanner is silent', (_, model, warnings) => {
     expect(generatePropertyGraph(model, GEN_OPTS).warnings).toEqual(warnings);
-    expect(generateSpannerPropertyGraph(model).warnings).toEqual([]);
+    expect(generateSpannerPropertyGraph(model).warnings.filter(
+               w => w.startsWith('no relationship joins')))
+        .toEqual([]);
   });
 });
 

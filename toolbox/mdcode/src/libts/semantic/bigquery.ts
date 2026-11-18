@@ -43,7 +43,8 @@ export type {GenerateResult};
  * mapping the IR (e.g. metrics that could not be placed on a single table).
  * It also warns when the graph has more than one node table and no edge
  * table. BigQuery creates such a graph, and then GRAPH_EXPAND and
- * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it.
+ * BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on it. The warning says no measure can be
+ * read only when the graph has one.
  *
  * Throws when the model yields no valid node table -- it declares no entities,
  * every entity is abstract or extended by another, or every leaf lacks a KEY
@@ -52,7 +53,8 @@ export type {GenerateResult};
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
-  const result = generateGraphDdl(model, bigQueryEngine(opts));
+  const measures: string[] = [];
+  const result = generateGraphDdl(model, bigQueryEngine(opts, measures));
   const nodes =
       result.elements.filter(e => e.kind === 'node').map(e => `'${e.name}'`);
   if (nodes.length > 1 && !result.elements.some(e => e.kind === 'edge')) {
@@ -60,19 +62,22 @@ export function generatePropertyGraph(
                                                           'datasets';
     result.warnings.push(
         `no relationship joins ${kind} ${listed(nodes)}, so GRAPH_EXPAND and ` +
-        `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph and no measure can be ` +
-        `read; declare at least one relationship`);
+        `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph${
+            measures.length ? ' and no measure can be read' : ''}; ` +
+        `declare at least one relationship`);
   }
   return result;
 }
 
-// The BigQuery engine for the shared generator.
-function bigQueryEngine(opts: GenerateOptions): GraphEngine {
+// The BigQuery engine for the shared generator. Its measure placement adds
+// each MEASURE it writes to `measures`.
+function bigQueryEngine(opts: GenerateOptions, measures: string[]): GraphEngine {
   return {
     name: 'BigQuery',
     table: qualifyTable,
     graphName: model => qualifyGraph(model, opts),
-    placeMetrics,
+    placeMetrics: (metrics, input, warnings) =>
+        placeMetrics(metrics, input, warnings, measures),
     elementOptions: (description, ai) => optionsClause(
         elementDescription(description), ai?.synonyms, aiExtensions(ai)),
     fieldOptions: field => optionsClause(
@@ -84,10 +89,12 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
 }
 
 // Places each metric on the single entity its aggregates reference, lowering
-// it to a MEASURE over exposed properties (see placeMetric).
+// it to a MEASURE over exposed properties (see placeMetric), and adds each
+// MEASURE to `measures`. A metric is placed only on an entity with a node
+// table, so every MEASURE reaches the graph.
 function placeMetrics(
-    metrics: Metric[], input: MetricPlacementInput,
-    warnings: string[]): Map<string, string[]> {
+    metrics: Metric[], input: MetricPlacementInput, warnings: string[],
+    measures: string[]): Map<string, string[]> {
   const loweringByEntity = new Map<string, MeasureLowering>();
   // Each metric's and field's name in the graph, and each property
   // exposeOperand adds. BigQuery gives a property name one type across the
@@ -102,6 +109,7 @@ function placeMetrics(
   const placed = new Map<string, string[]>();
   for (const [name, lowering] of loweringByEntity) {
     placed.set(name, [...lowering.derivedProperties, ...lowering.measures]);
+    measures.push(...lowering.measures);
   }
   return placed;
 }

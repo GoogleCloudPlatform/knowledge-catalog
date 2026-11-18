@@ -59,11 +59,11 @@ const ENGINES = [
 ] as const;
 
 // The warnings `engine` gives for a graph with node tables for entities
-// `listed` and no edge table. Only BigQuery warns.
+// `listed`, no edge table and no measure. Only BigQuery warns.
 const unjoined = (engine: string, listed: string) => engine === 'BigQuery' ?
     [`no relationship joins entities ${listed}, so GRAPH_EXPAND and ` +
-     `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph and no measure can be ` +
-     `read; declare at least one relationship`] :
+     `BQ.SHOW_GRAPH_EXPAND_SCHEMA fail on the graph; declare at least one ` +
+     `relationship`] :
     [];
 
 // The trimmed KEY and REFERENCES lines of `ddl`, without a trailing comma.
