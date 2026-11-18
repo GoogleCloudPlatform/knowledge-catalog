@@ -751,21 +751,24 @@ interface ForeignModel {
   anchorId: string;
   // Its entries in the pre-write listing.
   entries: Entry[];
-  // The relationship links of its entity entries.
+  // The relationship links of its entity entries, less those an earlier
+  // other model already holds.
   links: EntryLink[];
 }
 
 /**
  * Returns the model of each anchor ID in `foreignAnchorIds`, with its entries
  * in `existing` and the links of its entity entries, which it looks up while
- * those entries still exist. Returns the error that stops the push when a
- * lookup fails.
+ * those entries still exist. A link that joins the entities of two of these
+ * models goes with the first of them only, so push lists, counts and deletes
+ * it once. Returns the error that stops the push when a lookup fails.
  */
 async function planForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: readonly Entry[],
     foreignAnchorIds: readonly string[],
     isScopeProject: ProjectMatcher): Promise<ForeignModel[]|{error: string}> {
   const models: ForeignModel[] = [];
+  const taken = new Set<string>();
   for (const anchorId of foreignAnchorIds) {
     const entries = entriesOfModel(anchorId, existing);
     const lookedUp = await lookupEntryLinks(
@@ -777,7 +780,10 @@ async function planForeignModels(
             anchorId}' failed: ${message}`,
       };
     }
-    models.push({anchorId, entries, links: [...lookedUp.links.values()]});
+    const links =
+        [...lookedUp.links.values()].filter(l => !taken.has(linkId(l)));
+    for (const link of links) taken.add(linkId(link));
+    models.push({anchorId, entries, links});
   }
   return models;
 }
@@ -1257,7 +1263,9 @@ interface LinkLookupOutcome {
  * project. A link whose project number push cannot resolve is kept only when
  * every reference spells the same project as the link's name. Dataplex spells
  * a looked-up link's name and references alike, and one reference is the
- * looked-up entry, so such a link is in the destination project.
+ * looked-up entry, so such a link is in the destination project. A thrown
+ * error, such as a network failure, is returned like a failed response, so
+ * the caller can name the entry.
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
@@ -1266,13 +1274,17 @@ async function lookupEntryLinks(
       opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`);
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
-    const res = await cat.lookupEntryLinks(
-        opts.project, opts.location, {entry: entityName});
+    const id = entryIdOf(entityName);
+    let res: ApiResult<EntryLink[]>;
+    try {
+      res = await cat.lookupEntryLinks(
+          opts.project, opts.location, {entry: entityName});
+    } catch (err: any) {
+      const message = String(err?.message || err).trim();
+      return {links, error: {entryId: id, message}};
+    }
     if (!isOkStatus(res)) {
-      return {
-        links,
-        error: {entryId: entryIdOf(entityName), message: errText(res)},
-      };
+      return {links, error: {entryId: id, message: errText(res)}};
     }
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];
@@ -1850,8 +1862,8 @@ async function blockedOutcome(
  * Attempts to create `entry` (retrying brief entry-group propagation 404s), and
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
- * first. That happens after a listing the caller may not make, or when another
- * writer created the entry after the listing.
+ * first. That happens when another writer created the entry after the
+ * listing, or when the listing read a brand-new group as empty.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,

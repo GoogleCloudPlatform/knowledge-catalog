@@ -338,7 +338,11 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
 
          const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-         expect(result).toMatchObject({success: false, details: 'fetch failed'});
+         expect(result).toMatchObject({
+           success: false,
+           details: "Looking up entry links for 'sales/entities/orders' from " +
+               "model 'sales' failed: fetch failed",
+         });
          expect(create).not.toHaveBeenCalled();
        });
 });
@@ -404,8 +408,7 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
         .toEqual({...source, ...emitted(ENTITY)});
   });
 
-  // A listing the caller may not make comes back empty, and another writer
-  // can create an entry after the listing.
+  // Another writer can create an entry after the listing.
   test('an entry the listing lacks is read before its update, and its ' +
            'fields are kept',
        async () => {
@@ -2163,25 +2166,84 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
          expect(delLink).not.toHaveBeenCalled();
        });
 
-  test('a dry run under --force-remove fails as push does when the omitted ' +
-           'model\'s link lookup fails',
+  test.each([
+    ['is refused', () => err(403, 'denied'), 'denied'],
+    ['throws', () => {
+      throw new TypeError('fetch failed');
+    }, 'fetch failed'],
+  ])('a dry run under --force-remove fails as push does when the omitted ' +
+         'model\'s link lookup %s',
+     async (_name, links, message) => {
+       stubClient({
+         existing: [
+           {id: 'old', type: MODEL_TYPE},
+           {id: 'old.entities.a', type: ENTITY_TYPE},
+         ],
+         links,
+       });
+
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
+
+       expect(result.success).toBe(false);
+       expect(result.details)
+           .toBe(
+               "Looking up entry links for 'old.entities.a' from removed " +
+               `model 'old' failed: ${message}`);
+     });
+
+  test('--force-remove reports an error thrown while it plans the omitted ' +
+           'model\'s removal, and deletes nothing',
        async () => {
-         stubClient({
+         // A lookup answer that is not a list throws as push reads it.
+         const {del, delLink} = stubClient({
            existing: [
              {id: 'old', type: MODEL_TYPE},
              {id: 'old.entities.a', type: ENTITY_TYPE},
            ],
-           links: () => err(403, 'denied'),
+           links: () => ok({} as any),
          });
 
          const result = await deployKnowledgeCatalog(
-             models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
 
          expect(result.success).toBe(false);
-         expect(result.details)
-             .toBe(
-                 "Looking up entry links for 'old.entities.a' from removed " +
-                 "model 'old' failed: denied");
+         expect(result.details).toBeTruthy();
+         expect(del).not.toHaveBeenCalled();
+         expect(delLink).not.toHaveBeenCalled();
+       });
+
+  test('--force-remove lists, counts and deletes a link between two omitted ' +
+           'models once, under the first',
+       async () => {
+         const cross =
+             linkEntry('old1-a-to-old2-b', ['old1.entities.a', 'old2.entities.b']);
+         const {delLink} = stubClient({
+           existing: [
+             {id: 'old1', type: MODEL_TYPE},
+             {id: 'old1.entities.a', type: ENTITY_TYPE},
+             {id: 'old2', type: MODEL_TYPE},
+             {id: 'old2.entities.b', type: ENTITY_TYPE},
+           ],
+           links: () => ok([cross]),
+         });
+         const opts = {...OPTS, forceRemove: true};
+
+         const dryRun = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...opts, validateOnly: true});
+         const pushed = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+
+         expect(dryRun.plan.slice(-8)).toEqual([
+           "  2 entries of model 'old1' to remove (--force-remove):",
+           '    - old1 (semantic-model)', '    - old1.entities.a (semantic-entity)',
+           "  1 link of model 'old1' to remove (--force-remove):",
+           '    - old1-a-to-old2-b (schema-join)',
+           "  2 entries of model 'old2' to remove (--force-remove):",
+           '    - old2 (semantic-model)', '    - old2.entities.b (semantic-entity)',
+         ]);
+         expect(dryRun.toRemove).toEqual({entries: 4, links: 1});
+         expect(pushed.unlinked).toBe(1);
+         expect(delLink.mock.calls.map(c => c[3])).toEqual(['old1-a-to-old2-b']);
        });
 
   test('--force-remove drops the omitted model (entries + links), then writes',

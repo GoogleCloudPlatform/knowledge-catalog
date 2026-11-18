@@ -1304,7 +1304,11 @@ and each aspect type attached, so a push needs, on the destination entry group:
   use-permission
 
 `--validate-only` writes nothing, but it reads the entry group, its entries
-and their entry links as push does, so it needs read access to them.
+and their entry links as push does, so it needs read access to them. When the
+model declares actions, it also reads the `semantic-action` entry type and
+aspect type in the destination project. When the model declares constraints,
+it reads the `semantic-constraint` ones. It needs read access to those types
+too.
 
 > The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
 > [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).
