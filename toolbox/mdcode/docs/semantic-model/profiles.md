@@ -115,9 +115,11 @@ names each file that writes the source. To say why the entry cannot be read,
 `kcmd` looks up the entries of the table's instance, database and schema in
 turn, and reports the first part it cannot read. That part may not exist, or
 may be too new to be in the catalog yet. When every part is there, the same
-holds for the table. The instance's entry also gives its engine, so `kcmd`
-reports a name with a schema on a MySQL instance, or with none on a PostgreSQL
-or SQL Server instance, before it looks up the database.
+holds for the table. When the instance's entry says Dataplex integration is
+off, `kcmd` says so and gives the command that turns it on. The instance's
+entry also gives its engine, so `kcmd` reports a name with a schema on a MySQL
+instance, or with none on a PostgreSQL or SQL Server instance, before it looks
+up the database.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner

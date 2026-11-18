@@ -267,9 +267,7 @@ semantic_model:
     const rt = await createSemanticRuntimes({ctx: CTX});
     const error = 'error' in rt ? rt.error : '';
     expect(error).toStartWith('[commerce] source ');
-    expect(error).toContain(
-        "turn on integration with 'gcloud sql instances patch ms " +
-        "--enable-dataplex-integration --project acme-ops'");
+    expect(error).toContain("Knowledge Catalog has no entry you may read for its instance 'ms'");
   });
 });
 

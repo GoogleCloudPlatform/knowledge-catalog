@@ -2,15 +2,22 @@
 // source check share, so both read an entry, and the answer, the same way.
 
 import type {ApiResult} from '../gcp/api';
-import {catalogContainer} from '../gcp/dataplex';
+import {catalogContainer, LookupEntryOptions} from '../gcp/dataplex';
+
+// What an entry read gives: the entry's type, names and source, and the data
+// of each aspect the read asked for, keyed by aspect key.
+export interface EntryRead {
+  entryType?: string;
+  fullyQualifiedName?: string;
+  entrySource?: {system?: string};
+  aspects?: Record<string, {data?: Record<string, any>}>;
+}
 
 // The one catalog call an entry read makes; `CatalogClient` provides it.
 export interface EntryLookup {
-  lookupEntry(project: string, location: string, name: string):
-      Promise<ApiResult<{
-        entryType?: string; fullyQualifiedName?: string;
-        entrySource?: {system?: string};
-      }>>;
+  lookupEntry(
+      project: string, location: string, name: string,
+      opts?: LookupEntryOptions): Promise<ApiResult<EntryRead>>;
 }
 
 // What a read gave: its result; `unreadable`, with the status and the
@@ -46,14 +53,16 @@ export async function read<T>(
 }
 
 // Looks up the catalog entry of the resource whose name is `resourceName`, in
-// the entry group `@<system>` at `location`. `what` names the lookup in a
-// message.
+// the entry group `@<system>` at `location`, with the aspects of the aspect
+// types `aspects`. `what` names the lookup in a message.
 export function lookupSystemEntry(
     catalog: EntryLookup, system: string, project: string, location: string,
-    resourceName: string,
-    what = 'looking up its Knowledge Catalog entry'):
-    Promise<Read<{entryType?: string}>> {
+    resourceName: string, what = 'looking up its Knowledge Catalog entry',
+    aspects?: string[]): Promise<Read<EntryRead>> {
   const name = `${catalogContainer(project, location, `@${system}`)}/entries/${
       resourceName}`;
-  return read(what, () => catalog.lookupEntry(project, location, name));
+  return read(
+      what,
+      () => aspects ? catalog.lookupEntry(project, location, name, {aspects}) :
+                      catalog.lookupEntry(project, location, name));
 }

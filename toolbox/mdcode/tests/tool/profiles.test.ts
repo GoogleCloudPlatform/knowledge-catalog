@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {BigQueryClient} from '../../src/libts/gcp/bigquery';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {ApiContext} from '../../src/libts/gcp/context';
 import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
@@ -3027,5 +3028,22 @@ semantic_model:
     errs = [];
     expect(await push({validateOnly: true})).toBe(1);
     expect(errs.join('\n')).toContain(dataplex);
+    expect(errs.join('\n')).not.toContain('integration');
+  });
+
+  test('push says to turn on Dataplex integration when the instance\'s entry says it is off', async () => {
+    writeScope();
+    const aspect = 'projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance';
+    const lookup = spyOn(CatalogClient.prototype, 'lookupEntry').mockImplementation(
+        async (_p, _l, name) => (name.endsWith('/instances/ms') ? {status: 200, result: {
+          entryType: 'projects/dataplex-types/locations/global/entryTypes/cloudsql-sqlserver-instance',
+          aspects: {'dataplex-types.global.cloudsql-instance': {data: {dataplexEnabled: false}}},
+        }} : {status: 403, message: 'Permission denied.'}) as any);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(errs.join('\n')).toContain(
+        "names no table Knowledge Catalog knows about. Dataplex integration is off for instance " +
+        "'ms'. Turn it on with 'gcloud sql instances patch ms --enable-dataplex-integration " +
+        "--project acme' and wait for the table to appear in the catalog.");
+    expect(lookup.mock.calls.find(c => c[2].endsWith('/instances/ms'))?.[3]).toEqual({aspects: [aspect]});
   });
 });

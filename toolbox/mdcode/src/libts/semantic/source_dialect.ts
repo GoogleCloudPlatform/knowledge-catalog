@@ -31,7 +31,7 @@ import type {SpannerClient} from '../gcp/spanner';
 import {fileNameOf, SemanticModelLayout} from '../layouts/semantic-model';
 
 import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
+import {EntryLookup, EntryRead, lookupSystemEntry, Read, read} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
@@ -99,6 +99,11 @@ export function labeledFiles(
   });
 }
 
+// The aspect type of a Cloud SQL instance's entry whose `dataplexEnabled` says
+// whether Dataplex integration is on for the instance.
+const CLOUDSQL_INSTANCE_ASPECT =
+    'projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance';
+
 // The engine each Cloud SQL instance entry type names.
 const ENGINE_OF_INSTANCE_TYPE: Record<string, string> = {
   'cloudsql-mysql-instance': 'MySQL',
@@ -127,17 +132,18 @@ export async function sourceDialects(
   const labelsOf = new Map<string, string[]>();
   // Each lookup of a Cloud SQL instance, database or schema entry, keyed by
   // its entry id, so tables that share one look it up once.
-  const parts = new Map<string, Promise<Read<{entryType?: string}>>>();
-  const lookUpPart = (table: CloudSqlTable, id: string, what: string) => {
-    if (!parts.has(id)) {
-      parts.set(
-          id,
-          lookupSystemEntry(
-              catalog, 'cloudsql', table.project, table.location, id,
-              `looking up the catalog entry of ${what}`));
-    }
-    return parts.get(id)!;
-  };
+  const parts = new Map<string, Promise<Read<EntryRead>>>();
+  const lookUpPart =
+      (table: CloudSqlTable, id: string, what: string, aspects?: string[]) => {
+        if (!parts.has(id)) {
+          parts.set(
+              id,
+              lookupSystemEntry(
+                  catalog, 'cloudsql', table.project, table.location, id,
+                  `looking up the catalog entry of ${what}`, aspects));
+        }
+        return parts.get(id)!;
+      };
   for (const {label, text} of files) {
     for (const source of sourcesToLookUp([text])) {
       const table = cloudSqlTableOf(source);
@@ -149,7 +155,7 @@ export async function sourceDialects(
             table.resourceName,
             () => cloudSqlDialect(
                 catalog, table, labels,
-                (id, what) => lookUpPart(table, id, what)));
+                (id, what, aspects) => lookUpPart(table, id, what, aspects)));
       }
       const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
       if (entry) {
@@ -180,10 +186,10 @@ export async function sourceDialects(
   return {dialects, databases, errors, unread};
 }
 
-// Looks up the entry of a part of a Cloud SQL table, by its entry id; `what`
-// names the part in a message.
-type PartLookup = (id: string, what: string) =>
-    Promise<Read<{entryType?: string}>>;
+// Looks up the entry of a part of a Cloud SQL table, by its entry id, with the
+// aspects of the aspect types `aspects`; `what` names the part in a message.
+type PartLookup = (id: string, what: string, aspects?: string[]) =>
+    Promise<Read<EntryRead>>;
 
 // The dialect of a Cloud SQL table, by its entry's type. `labels` labels the
 // files that write the table, and `lookUpPart` looks up the entries of its
@@ -216,8 +222,10 @@ async function cloudSqlDialect(
 // Dataplex answers 403 both when an entry does not exist and when the caller
 // may not read it, so this looks up the entries of the table's instance, its
 // database and its schema in turn, with `lookUp`, and names the first that
-// cannot be read. Reading the instance's entry also gives its engine, which
-// says whether the table's name needs a schema. A part that is not there, or
+// cannot be read. The catalog keeps the instance's entry even with Dataplex
+// integration off, and the entry says whether integration is on. It also
+// gives the instance's engine, which says whether the table's name needs a
+// schema. A part that is not there, or
 // the table when every part is, may not exist or may be too new to be in the
 // catalog yet.
 async function missingCloudSqlPart(
@@ -225,17 +233,24 @@ async function missingCloudSqlPart(
   const {project, location, instance, database, schema} = table;
   const instanceId = `cloudsql.googleapis.com/projects/${project}/locations/${
       location}/instances/${instance}`;
-  const found = await lookUp(instanceId, `instance '${instance}'`);
+  const found = await lookUp(
+      instanceId, `instance '${instance}'`, [CLOUDSQL_INSTANCE_ASPECT]);
   if ('error' in found) return `kcmd could not tell why: ${found.error}`;
   if ('unreadable' in found) {
     return `Knowledge Catalog has no entry you may read for its instance ` +
         `'${instance}' in project '${project}' and region '${location}'. ` +
-        `The project ID, the region or the instance name may be wrong, you ` +
-        `may not be allowed to read the instance's entry, or Dataplex ` +
-        `integration may be off for the instance. Check the source and your ` +
-        `access. If both are right, turn on integration with 'gcloud sql ` +
-        `instances patch ${instance} --enable-dataplex-integration --project ${
-            project}' and wait for the table to appear in the catalog.`;
+        `The project ID, the region or the instance name may be wrong, or ` +
+        `you may not be allowed to read the instance's entry. Check the ` +
+        `source and your access.`;
+  }
+  // The aspect's key names its type's project by ID or by number.
+  const integration = Object.entries(found.result.aspects ?? {}).find(
+      ([key]) => key.endsWith('.global.cloudsql-instance'))?.[1];
+  if (integration?.data?.dataplexEnabled === false) {
+    return `Dataplex integration is off for instance '${instance}'. Turn it ` +
+        `on with 'gcloud sql instances patch ${instance} ` +
+        `--enable-dataplex-integration --project ${project}' and wait for ` +
+        `the table to appear in the catalog.`;
   }
   const type = (found.result.entryType ?? '').split('/').pop() ?? '';
   const engine = ENGINE_OF_INSTANCE_TYPE[type];

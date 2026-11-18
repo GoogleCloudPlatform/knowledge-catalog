@@ -23,12 +23,13 @@ const SPANNER = 'spanner.googleapis.com/projects/acme/instances/ops/databases';
 const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
 
 // A catalog that answers from `answers`, keyed by entry name, and records each
-// call. An entry it does not know gets the 403 Dataplex gives a missing entry.
+// call, with its options when it has any. An entry it does not know gets the
+// 403 Dataplex gives a missing entry.
 function fakeCatalog(answers: Record<string, ApiResult<object>>) {
-  const calls: Array<{project: string; location: string; name: string}> = [];
+  const calls: Array<{project: string; location: string; name: string; opts?: object}> = [];
   const catalog: EntryLookup = {
-    async lookupEntry(project, location, name) {
-      calls.push({project, location, name});
+    async lookupEntry(project, location, name, opts) {
+      calls.push({project, location, name, ...opts && {opts}});
       return answers[name] ?? entryDenied(name);
     },
   };
@@ -38,6 +39,15 @@ const entryName = (resourceName: string) =>
     `projects/acme/locations/us-central1/entryGroups/@cloudsql/entries/${resourceName}`;
 const typed = (type: string): ApiResult<{entryType?: string}> =>
     ({status: 200, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}});
+// The entry of a SQL Server instance whose cloudsql-instance aspect, keyed by
+// its type's project `project`, says whether Dataplex integration is on.
+const integration = (enabled: boolean, project = 'dataplex-types'): ApiResult<object> => ({
+  status: 200,
+  result: {
+    entryType: 'projects/dataplex-types/locations/global/entryTypes/cloudsql-sqlserver-instance',
+    aspects: {[`${project}.global.cloudsql-instance`]: {data: {dataplexEnabled: enabled}}},
+  },
+});
 // Each text as the text of model file sales.yaml, which messages label 'sales'.
 const asFiles = (texts: string[]) => texts.map(text => ({label: 'sales', text}));
 
@@ -90,9 +100,9 @@ describe('sourceDialects', () => {
     expect(errors).toEqual([]);
   });
 
-  // [label, the table, the type of each entry the catalog has, keyed by its
-  // resource name, the parts looked up after the table, what the message
-  // says after the table's name]. Every other entry answers 403.
+  // [label, the table, the type of each entry the catalog has, or its answer,
+  // keyed by its resource name, the parts looked up after the table, what the
+  // message says after the table's name]. Every other entry answers 403.
   const MS = `${INSTANCE}/ms`;
   const PG = `${INSTANCE}/pg`;
   const SHOP = `${INSTANCE}/shop`;
@@ -101,15 +111,19 @@ describe('sourceDialects', () => {
     ['no instance', SQLSERVER, {}, [MS],
      `${NO_TABLE} Knowledge Catalog has no entry you may read for its instance 'ms' in ` +
      "project 'acme' and region 'us-central1'. The project ID, the region or the instance " +
-     "name may be wrong, you may not be allowed to read the instance's entry, or Dataplex " +
-     'integration may be off for the instance. Check the source and your access. If both ' +
-     "are right, turn on integration with 'gcloud sql instances patch ms " +
-     "--enable-dataplex-integration --project acme' and wait for the table to appear in the " +
-     'catalog.'],
-    ['no database', SQLSERVER, {[MS]: 'cloudsql-sqlserver-instance'}, [MS, `${MS}/databases/shop`],
-     `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is not, so the ` +
-     'database may not exist, or it may be too new to be in the catalog yet. Check the ' +
-     'database name.'],
+     "name may be wrong, or you may not be allowed to read the instance's entry. Check the " +
+     'source and your access.'],
+    ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, '655216118709')}, [MS],
+     `${NO_TABLE} Dataplex integration is off for instance 'ms'. Turn it on with 'gcloud sql ` +
+     "instances patch ms --enable-dataplex-integration --project acme' and wait for the " +
+     'table to appear in the catalog.'],
+    ...[['Dataplex integration on', integration(true)],
+        ['no word on Dataplex integration', typed('cloudsql-sqlserver-instance')]].map(
+        ([label, answer]) => [`no database, ${label}`, SQLSERVER, {[MS]: answer},
+                              [MS, `${MS}/databases/shop`],
+                              `${NO_TABLE} Instance 'ms' is in the catalog, but database ` +
+                              "'shop' is not, so the database may not exist, or it may be " +
+                              'too new to be in the catalog yet. Check the database name.']),
     ['no schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database'},
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
@@ -134,18 +148,22 @@ describe('sourceDialects', () => {
     ['no schema on a PostgreSQL instance', MYSQL, {[SHOP]: 'cloudsql-postgresql-instance'}, [SHOP],
      `${NO_TABLE} Instance 'shop' runs PostgreSQL, so a table's name includes its schema. ` +
      "Add 'schemas/<schema>/' before 'tables/' in the source."],
-  ] as Array<[string, string, Record<string, string>, string[], string]>)(
+  ] as Array<[string, string, Record<string, string|ApiResult<object>>, string[], string]>)(
       'a table the catalog has no entry for, as a read that failed: %s',
       async (_, table, types, looked, says) => {
-        const {catalog, calls} = fakeCatalog(Object.fromEntries(
-            Object.entries(types).map(([name, type]) => [entryName(name), typed(type)])));
+        const {catalog, calls} = fakeCatalog(Object.fromEntries(Object.entries(types).map(
+            ([name, type]) => [entryName(name), typeof type === 'string' ? typed(type) : type])));
         const {dialects, errors, unread} = await sourceDialects(asFiles([table]), catalog);
         expect(dialects.size).toBe(0);
         expect(unread).toEqual(errors);
         expect(errors).toEqual([`[sales] source '${table}' ${says}`]);
-        // Each part is looked up in turn, in the table's project and location.
-        expect(calls).toEqual([table, ...looked].map(
-            name => ({project: 'acme', location: 'us-central1', name: entryName(name)})));
+        // Each part is looked up in turn, in the table's project and location,
+        // and the instance with its cloudsql-instance aspect.
+        const aspects = ['projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance'];
+        expect(calls).toEqual([table, ...looked].map(name => ({
+          project: 'acme', location: 'us-central1', name: entryName(name),
+          ...name.split('/').at(-2) === 'instances' && {opts: {aspects}},
+        })));
       });
 
   test('a part the catalog fails to answer for is named', async () => {
