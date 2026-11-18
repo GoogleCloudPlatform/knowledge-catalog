@@ -6,7 +6,7 @@ NODE TABLES (
     PROPERTIES(
       o_orderkey OPTIONS(description="Order identifier"),
       o_custkey,
-      o_orderdate OPTIONS(description="Order Date\n\nTime dimension.", synonyms=["order date", "date"]),
+      o_orderdate OPTIONS(synonyms=["order date", "date"], extensions=[("is_time", "true"), ("label", "Order Date")]),
       o_totalprice,
       MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue", synonyms=["revenue", "sales"]),
       MEASURE(COUNT(o_orderkey)) AS order_count OPTIONS(description="Number of orders")

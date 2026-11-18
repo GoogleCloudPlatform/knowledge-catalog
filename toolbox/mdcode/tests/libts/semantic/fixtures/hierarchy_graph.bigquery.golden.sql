@@ -6,13 +6,13 @@ NODE TABLES (
     PROPERTIES(
       id,
       loyalty_tier,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Person
     PROPERTIES(
       id,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     ),
   `sqlgen-testing.demo.manager` AS Manager
@@ -22,20 +22,20 @@ NODE TABLES (
       id,
       team_size,
       department,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Employee
     PROPERTIES(
       id,
       department,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Person
     PROPERTIES(
       id,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     ),
   `sqlgen-testing.demo.city` AS City

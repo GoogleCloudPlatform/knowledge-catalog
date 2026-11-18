@@ -14,7 +14,7 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
 import {SpannerClient, SpannerType} from '../gcp/spanner';
 
-import {aiExtensions, elementDescription, fieldDescription} from './bigquery';
+import {aiExtensions, elementDescription, fieldExtensions} from './bigquery';
 import {boundTable} from './binding';
 import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
 import {deploySpanner} from './deploy_spanner';
@@ -622,20 +622,23 @@ function spannerGraphProblems(
 function bigQueryOptionProblems(model: SemanticModel): string[] {
   const problems: string[] = [];
   const check =
-      (kind: string, name: string, description: string|undefined,
-       synonyms: string[] = [], extensions: Array<[string, string]> = [],
-       owner?: string) => {
+      (kind: 'entity'|'relationship'|'field'|'metric', name: string,
+       description: string|undefined, synonyms: string[] = [],
+       extensions: Array<[string, string]> = [], owner?: string) => {
         const what = `${kind} '${owner ? `${owner}.` : ''}${name}'`;
+        // A field or metric is a property of the graph, and an entity or
+        // relationship is a label. Each limit message names that construct.
+        const construct =
+            kind === 'field' || kind === 'metric' ? 'property' : 'label';
         if (description && description.length > MAX_BIGQUERY_DESCRIPTION) {
           problems.push(
               `the description kcmd writes for ${what} is ${
-                  description.length} characters long; a label or ` +
-              `property's description holds at most ${
-                  MAX_BIGQUERY_DESCRIPTION}.`);
+                  description.length} characters long; a ${construct}'s ` +
+              `description holds at most ${MAX_BIGQUERY_DESCRIPTION}.`);
         }
         if (synonyms.length > MAX_BIGQUERY_SYNONYM_COUNT) {
           problems.push(
-              `${what} has ${synonyms.length} synonyms; a label or property ` +
+              `${what} has ${synonyms.length} synonyms; a ${construct} ` +
               `holds at most ${MAX_BIGQUERY_SYNONYM_COUNT}.`);
         }
         const firstByLower = new Map<string, string>();
@@ -666,13 +669,14 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           problems.push(
               `the ${key} kcmd writes for ${what}${
                   key === 'examples' ? ', as a JSON array,' : ''} is ${
-                  value.length} characters long; an extension value of a ` +
-              `label or property holds at most ${
+                  value.length} characters long; a ${
+                  construct}'s extension value holds at most ${
                   MAX_BIGQUERY_EXTENSION_VALUE}.`);
         }
       };
   const element =
-      (kind: string, x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
+      (kind: 'entity'|'relationship'|'metric',
+       x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
           check(
               kind, x.name, elementDescription(x.description),
               x.aiContext?.synonyms, aiExtensions(x.aiContext));
@@ -685,8 +689,8 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
       check(
-          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
-          aiExtensions(f.aiContext), e.name);
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), e.name);
     }
   }
   for (const r of model.relationships ?? []) {
@@ -697,8 +701,8 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
         continue;
       }
       check(
-          'field', f.name, fieldDescription(f), f.aiContext?.synonyms,
-          aiExtensions(f.aiContext), r.name);
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), r.name);
     }
   }
   for (const m of model.metrics ?? []) element('metric', m);

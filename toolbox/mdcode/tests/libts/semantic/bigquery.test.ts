@@ -901,8 +901,12 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
             expression: 'order_date',
             type: 'Date',
             dimension: {isTime: true},
+            label: 'Order date',
             description: 'Date placed',
-            aiContext: {instructions: 'UTC calendar date.'},
+            aiContext: {
+              instructions: 'UTC calendar date.',
+              examples: ['2024-01-31'],
+            },
           },
         ],
       },
@@ -974,7 +978,7 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
       });
 
   test(
-      'instructions and examples emit in OPTIONS(extensions=[...]) on every element kind, not folded into description',
+      'instructions, examples, and a field\'s label and time role emit in OPTIONS(extensions=[...]) on every element kind, not folded into description',
       () => {
         const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
         // Entity DEFAULT LABEL: separate description, synonyms and extensions.
@@ -985,20 +989,23 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
         // Node field with label, description, synonyms, instructions and
         // examples.
         expect(ddl).toContain(
-            '      amount OPTIONS(description="Order amount\\n\\nGross order value", ' +
+            '      amount OPTIONS(description="Gross order value", ' +
             'synonyms=["total", "value"], ' +
             'extensions=[("instructions", "In USD."), ' +
-            '("examples", "[\\"100.00\\",\\"250.50\\"]")]),\n');
+            '("examples", "[\\"100.00\\",\\"250.50\\"]"), ' +
+            '("label", "Order amount")]),\n');
         // Node field with examples=["gold", "silver"] and no instructions.
         expect(ddl).toContain(
             '      segment OPTIONS(description="Marketing segment", ' +
             'synonyms=["tier"], ' +
             'extensions=[("examples", "[\\"gold\\",\\"silver\\"]")]),\n');
-        // Temporal dimension field: `Time dimension.` still folds into
-        // description while `instructions` goes to extensions.
+        // Time dimension field with every extension a field can have, in
+        // order: instructions, examples, the time role and the label.
         expect(ddl).toContain(
-            '      order_date OPTIONS(description="Time dimension.\\n\\nDate placed", ' +
-            'extensions=[("instructions", "UTC calendar date.")]),\n');
+            '      order_date OPTIONS(description="Date placed", ' +
+            'extensions=[("instructions", "UTC calendar date."), ' +
+            '("examples", "[\\"2024-01-31\\"]"), ("is_time", "true"), ' +
+            '("label", "Order date")]),\n');
         // Metric MEASURE(...) AS <metric> with description, synonyms and
         // extensions.
         expect(ddl).toContain(
@@ -1023,7 +1030,7 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
       });
 
   test(
-      'elements with only instructions or only examples emit OPTIONS(extensions=[...]), and blank/custom-only ai_context emits nothing',
+      'elements with only instructions or only examples emit OPTIONS(extensions=[...]), and a blank label or blank/custom-only ai_context emits nothing',
       () => {
         const onlyExtensions: SemanticModel = {
           name: 'm',
@@ -1036,6 +1043,7 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
               {
                 name: 'id',
                 expression: 'id',
+                label: ' \n ',
                 aiContext: {
                   instructions: '   \n\t  ',
                   examples: [],
@@ -1045,6 +1053,7 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
               {
                 name: 'status',
                 expression: 'status',
+                label: '  Order status\n',
                 // `examples` items are kept verbatim, whitespace included.
                 aiContext: {examples: ['open', 'closed', '  ']},
               },
@@ -1065,7 +1074,8 @@ describe('descriptive metadata: structured synonyms and ai_context extensions', 
         expect(ddl).not.toContain('id OPTIONS');
         expect(ddl).toContain(
             '      status OPTIONS(extensions=[("examples", ' +
-            '"[\\"open\\",\\"closed\\",\\"  \\"]")]),\n');
+            '"[\\"open\\",\\"closed\\",\\"  \\"]"), ' +
+            '("label", "Order status")]),\n');
         expect(ddl).toContain(
             '      MEASURE(COUNT(id)) AS order_count ' +
             'OPTIONS(extensions=[("instructions", "Count distinct orders.")])\n');

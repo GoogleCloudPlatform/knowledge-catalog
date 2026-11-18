@@ -3,7 +3,7 @@ NODE TABLES (
   `acme-prod.sales.customers` AS Customer
     KEY(customer_id)
     PROPERTIES(
-      customer_id AS id OPTIONS(description="Customer ID"),
+      customer_id AS id OPTIONS(extensions=[("label", "Customer ID")]),
       customer_name AS name
     ),
   `acme-prod.sales.orders` AS `Order`

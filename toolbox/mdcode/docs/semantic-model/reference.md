@@ -172,10 +172,10 @@ metrics, tables and graph. A profile file beside a vanilla `<file>` and a
 `<model>.profiles/` directory beside `<file>` are checked too. The checks also
 make sure Knowledge Catalog can store each aspect push writes. The deployment
 checks include the names a BigQuery or Spanner graph cannot hold and BigQuery's
-description and synonym limits. Import reports what these checks reject as an
-error under `--input first-party` and as a warning otherwise, except a written
-file that does not load and a deployment target in no accepted form, which are
-errors either way. It reports
+description, synonym and extension value limits. Import reports what these
+checks reject as an error under `--input first-party` and as a warning
+otherwise, except a written file that does not load and a deployment target in
+no accepted form, which are errors either way. It reports
 their warnings as warnings in either mode. They include push's warnings about
 the Knowledge Catalog entries, about the fields each deployment leaves out and
 about each graph. Import leaves out push's notes. A profile file that does not
@@ -929,9 +929,9 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   ignoring case. A BigQuery graph also cannot hold a metric
   named like a field of another entity, ignoring case. BigQuery limits the
   options kcmd writes on each label and property, too. The description holds at
-  most 1,024 characters, counting the field label and the time-dimension line
-  kcmd adds to it. Each `extensions` value (`instructions`, and `examples`
-  serialized as a JSON array) holds at most 1,024 characters. An element holds
+  most 1,024 characters. Each `extensions` value (`instructions`, `examples`
+  serialized as a JSON array, and a field's `label`) holds at most 1,024
+  characters. An element holds
   at most eight synonyms of one to 300 characters each. No two of them may
   match ignoring case, and none may match the element's own name.
   A deployment that names a profile is held to the graph `primary_key` rule

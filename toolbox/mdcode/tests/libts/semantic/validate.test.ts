@@ -3616,8 +3616,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                 deployment = engine.toLowerCase()) =>
         `model 'commerce' (commerce) deployment '${deployment}' targets ` +
         `${engine}, where ${problem}`;
-    const NINE = "field 'purchase.amount' has 9 synonyms; a label or " +
-        'property holds at most 8.';
+    const NINE = "field 'purchase.amount' has 9 synonyms; a property " +
+        'holds at most 8.';
 
     test('rejects an entity and a relationship named alike ignoring case on a BigQuery or Spanner graph', () => {
       expect(errorsAfter(m => m.relationships[0].name = 'Customer',
@@ -3677,29 +3677,30 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         ...errors, ...validatePushRequirements([loaded(model!, 'commerce')]),
       ];
     };
-    const LONG = (what: string, n = 1025) => IN(
+    // An element of each kind, and the construct it is in the graph.
+    const ELEMENTS: Array<[string, 'label'|'property']> = [
+      ["entity 'customer'", 'label'], ["field 'purchase.amount'", 'property'],
+      ["relationship 'placed_by'", 'label'], ["metric 'revenue'", 'property'],
+    ];
+    const LONG = (what: string, construct: string, n = 1025) => IN(
         `the description kcmd writes for ${what} is ${n} characters long; ` +
-        "a label or property's description holds at most 1024.");
-    const timeField = {dimension: {isTime: true}, description: x(1000)};
+        `a ${construct}'s description holds at most 1024.`);
     test.each<[string, (m: SemanticModel) => void, string[]]>([
-      ['past 1024 characters, counting what kcmd adds to a field', m => {
+      ['past 1024 characters', m => {
         m.entities[0].description = x(1025);
-        Object.assign(
-            m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
+        m.entities[1].fields[1].description = x(1025);
         m.relationships[0].description = x(1025);
         m.metrics![0].description = x(1025);
-      }, [
-        "entity 'customer'", "field 'purchase.amount'",
-        "relationship 'placed_by'", "metric 'revenue'",
-      ].map(what => LONG(what))],
-      ['at 1024 characters alongside instructions and examples', m => {
+      }, ELEMENTS.map(([what, construct]) => LONG(what, construct))],
+      ['at 1024 characters alongside instructions and examples, and a field\'s label and time role', m => {
         Object.assign(m.entities[0], {
           description: x(1024),
           aiContext: {instructions: 'Exclude test accounts.', examples: ['a']},
         });
         Object.assign(m.entities[1].fields[1], {
           label: 'Amount',
-          description: x(1016),
+          dimension: {isTime: true},
+          description: x(1024),
           aiContext: {instructions: 'Net of tax.', examples: ['100.00']},
         });
         Object.assign(m.relationships[0], {
@@ -3711,16 +3712,10 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           aiContext: {instructions: 'Completed only.', examples: ['revenue?']},
         });
       }, []],
-      ['of a field with a label and a time role', m => {
-        Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});
-      }, [LONG("field 'purchase.amount'")]],
-      ['of a field with a time role and no label', m => {
-        Object.assign(m.entities[1].fields[1], timeField);
-      }, []],
       ['of 2001 characters, which Knowledge Catalog rejects too', m => {
         m.entities[0].description = x(2001);
       }, [
-        LONG("entity 'customer'", 2001),
+        LONG("entity 'customer'", 'label', 2001),
         "model 'commerce' (commerce): the description of entity 'customer' " +
             "is 2001 characters long; a Knowledge Catalog entry's " +
             'description holds at most 2000.',
@@ -3751,15 +3746,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       ].map(p => IN(p)));
     });
 
-    const LONG_EXT = (key: 'instructions'|'examples', what: string, n = 1025) =>
+    const LONG_EXT =
+        (key: 'instructions'|'examples'|'label', what: string,
+         construct: string, n = 1025) =>
         IN(`the ${key} kcmd writes for ${what}${
                key === 'examples' ? ', as a JSON array,' : ''} is ${
-               n} characters long; an extension value of a label or property ` +
+               n} characters long; a ${construct}'s extension value ` +
            'holds at most 1024.');
-    const ELEMENTS = [
-      "entity 'customer'", "field 'purchase.amount'",
-      "relationship 'placed_by'", "metric 'revenue'",
-    ];
     const setAiOnEveryKind =
         (m: SemanticModel, aiContext: Entity['aiContext']) => {
           m.entities[0].aiContext = aiContext;
@@ -3769,11 +3762,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         };
     test.each<[string, Entity['aiContext'], string[]]>([
       ['of instructions past 1024 characters', {instructions: x(1025)},
-       ELEMENTS.map(what => LONG_EXT('instructions', what))],
+       ELEMENTS.map(([what, construct]) =>
+           LONG_EXT('instructions', what, construct))],
       // Two 510-character items serialize to `["...","..."]`, 1,027 characters.
       ['of examples past 1024 characters as a JSON array',
        {examples: [x(510), x(510)]},
-       ELEMENTS.map(what => LONG_EXT('examples', what, 1027))],
+       ELEMENTS.map(([what, construct]) =>
+           LONG_EXT('examples', what, construct, 1027))],
       ['of examples at 1024 characters as a JSON array', {examples: [x(1020)]},
        []],
       ['of padded instructions that fit within 1024 characters after trimming',
@@ -3781,6 +3776,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     ])('an extension value %s', (_, aiContext, errors) =>
         expect(errorsAfter(m => setAiOnEveryKind(m, aiContext)))
             .toEqual(errors));
+
+    test("checks a field's label as an extension value after trimming", () => {
+      expect(errorsAfter(m => {
+        m.entities[1].fields[0].label = `  ${x(1024)}\n`;
+        m.entities[1].fields[1].label = x(1025);
+      })).toEqual([LONG_EXT('label', "field 'purchase.amount'", 'property')]);
+    });
 
     test("checks the description, synonyms and extensions of a many-to-many edge's fields", () => {
       expect(errorsAfter(m => {
@@ -3793,8 +3795,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
             {
               name: 'tier',
               expression: 'tier',
-              label: 'Tier',
-              description: x(1019),
+              label: x(1025),
+              description: x(1025),
               aiContext: {
                 synonyms: ['Tier', ...synonyms(8)],
                 instructions: x(1025),
@@ -3812,14 +3814,15 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           ],
         };
       })).toEqual([
-        LONG("field 'placed_by.tier'"),
-        IN("field 'placed_by.tier' has 9 synonyms; a label or property holds " +
-           'at most 8.'),
+        LONG("field 'placed_by.tier'", 'property'),
+        IN("field 'placed_by.tier' has 9 synonyms; a property holds at most " +
+           '8.'),
         IN("field 'placed_by.tier' has the synonym 'Tier', which BigQuery " +
            "treats as the field's own name; remove it."),
-        LONG_EXT('instructions', "field 'placed_by.tier'"),
-        LONG_EXT('examples', "field 'placed_by.tier'", 1027),
-        LONG("field 'placed_by.role'"),
+        LONG_EXT('instructions', "field 'placed_by.tier'", 'property'),
+        LONG_EXT('examples', "field 'placed_by.tier'", 'property', 1027),
+        LONG_EXT('label', "field 'placed_by.tier'", 'property'),
+        LONG("field 'placed_by.role'", 'property'),
       ]);
     });
 

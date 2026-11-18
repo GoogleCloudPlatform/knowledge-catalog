@@ -21,10 +21,10 @@ NODE TABLES (
     OPTIONS(description="Date dimension with calendar attributes", synonyms=["calendar", "dates", "time periods"])
     PROPERTIES(
       d_date_sk OPTIONS(description="Surrogate key for date"),
-      d_date OPTIONS(description="Time dimension.\n\nActual date value", synonyms=["date", "calendar date"]),
-      d_year OPTIONS(description="Time dimension.\n\nYear", synonyms=["year"]),
-      d_quarter_name OPTIONS(description="Time dimension.\n\nQuarter name (e.g., 2024Q1)", synonyms=["quarter", "fiscal quarter"]),
-      d_month_name OPTIONS(description="Time dimension.\n\nMonth name", synonyms=["month"])
+      d_date OPTIONS(description="Actual date value", synonyms=["date", "calendar date"], extensions=[("is_time", "true")]),
+      d_year OPTIONS(description="Year", synonyms=["year"], extensions=[("is_time", "true")]),
+      d_quarter_name OPTIONS(description="Quarter name (e.g., 2024Q1)", synonyms=["quarter", "fiscal quarter"], extensions=[("is_time", "true")]),
+      d_month_name OPTIONS(description="Month name", synonyms=["month"], extensions=[("is_time", "true")])
     ),
   `tpcds.public.customer` AS customer
     KEY(c_customer_sk)

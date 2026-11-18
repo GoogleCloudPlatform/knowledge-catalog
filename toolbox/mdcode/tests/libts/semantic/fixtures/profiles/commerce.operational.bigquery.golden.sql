@@ -3,7 +3,7 @@ NODE TABLES (
   `acme-ops.ops.dim_customer` AS Customer
     KEY(cust_key)
     PROPERTIES(
-      cust_key AS id OPTIONS(description="Customer ID"),
+      cust_key AS id OPTIONS(extensions=[("label", "Customer ID")]),
       cust_name AS name,
       cust_segment AS segment,
       cust_segment,
