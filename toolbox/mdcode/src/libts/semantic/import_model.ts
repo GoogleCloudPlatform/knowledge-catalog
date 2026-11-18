@@ -543,13 +543,19 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
   text: string; document: yaml.Document.Parsed; wrapped: boolean;
   moved: boolean;
 } {
+  // A text whose alias no longer finds its anchor does not read back.
   const edited = (t: string, value: unknown) => {
     const d = parseForUpdate(t).document;
-    return !d.errors.length && isDeepStrictEqual(d.toJS(), value) ?
-        {text: t, document: d} :
-        undefined;
+    try {
+      return !d.errors.length && isDeepStrictEqual(d.toJS(), value) ?
+          {text: t, document: d} :
+          undefined;
+    } catch {
+      return undefined;
+    }
   };
-  const {version, ...model} = document.toJS();
+  // A plain copy, so that an alias and its anchor are two values.
+  const {version, ...model} = plainCopy(document.toJS());
   // A root with no key but `version` has nothing to move by text.
   const wrapped = Object.keys(model).length ?
       edited(

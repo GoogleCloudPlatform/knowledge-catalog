@@ -121,6 +121,27 @@ metrics:
         .toBe(local.replace('Old', 'New'));
   });
 
+  test('keeps the tag of a nested block scalar that comes to need an ' +
+           'indentation indicator',
+       () => {
+         expect(updatedText('x:\n  d: !!str |\n    old\n',
+                            'x:\n  d: "old\\n"\n', 'x:\n  d: " new\\n"\n'))
+             .toBe('x:\n  d: !!str |2\n     new\n');
+       });
+
+  test('writes a value whose anchor stood alone before a comment', () => {
+    expect(updatedText('x:\n  &a  # later\ny: *a\n', 'x: null\ny: null\n',
+                       'x: {k: 1}\ny: null\n'))
+        .toBe('x:\n  k: 1  # later\ny: null\n');
+  });
+
+  test('writes a changed list in the space inside its brackets, without its ' +
+           'item\'s anchor',
+       () => {
+         expect(updatedText('x: [ &k a ]\n', 'x: [a]\n', 'x: [b]\n'))
+             .toBe('x: [ b ]\n');
+       });
+
   // A list item with no `name` is matched by the key that names an item of
   // its list, so a changed value keeps the item's comment.
   for (const [what, local, base, pulled, want] of [

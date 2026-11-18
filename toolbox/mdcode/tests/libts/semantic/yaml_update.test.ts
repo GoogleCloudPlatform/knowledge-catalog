@@ -36,6 +36,186 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm:\n  ? a\n  : 1\n  b: 2\n? s\n:\n- x\nf: { &k c: 1, d: { e: 1 } }\nc:\n  t: |  # h\n    x\nz:\n- 1\n'
   ],
   [
+    'a new flow list beside one whose first item has an anchor',
+    'a: [  &k x ]\nm: {b: 1}\n', v => v.m.c = [1], 'a: [  &k x ]\nm: {b: 1, c: [  1  ]}\n'
+  ],
+  [
+    'flow list items beside an anchor or a tag: one removed, one added before it and one after',
+    'f: [&a p, &b q]\ng: *b\nk: [&c r]\nl: *c\nh: [0, !!str 1]\n',
+    v => (v.f.shift(), v.k.unshift('w'), v.h.push(2)),
+    'f: [&b q]\ng: *b\nk: [w, &c r]\nl: *c\nh: [0, !!str 1, 2]\n'
+  ],
+  [
+    'a new flow mapping beside a pair written as a flow list item after an anchor',
+    'l: [ &k a: 1 ]\nm: { b: 1 }\n', v => v.m.c = {d: [1]},
+    'l: [ &k a: 1 ]\nm: { b: 1, c: { d: [ 1 ] } }\n'
+  ],
+  [
+    'block lists after an anchor or a tag on their key line, set to a scalar and a block scalar',
+    'a: &x  # c\n  - 1\nb: *x\nd: !!seq\n  - 2\n', v => (v.a = 'v', v.d = 'p\nq\n'),
+    'a: v  # c\nb:\n  - 1\nd: |\n  p\n  q\n'
+  ],
+  [
+    'values under their key after an anchor or a tag, set to values of another kind',
+    'a:\n  &x [1,\n  2]\nb: *x\nd: !!str  # c\n  x\ne:\n  !!seq [1,\n  2]\n',
+    v => (v.a = [1, 3], v.d = ['w'], v.e = 'x'),
+    'a:\n  - 1\n  - 3\nb:\n  - 1\n  - 2\nd:  # c\n  - w\ne:\n  x\n'
+  ],
+  [
+    'values under an anchor or a tag on a line of its own, set to lists, two before a comment',
+    'a:\n  &x  # c\n  {k: 1}\nb:\n  !!str # d\n  x\ne:\n  &z !!map\n  {k: 1}\n',
+    v => (v.a = [1], v.b = [1], v.e = [1]), 'a:\n  # c\n  [1]\nb:\n  # d\n  - 1\ne:\n  [1]\n'
+  ],
+  [
+    'anchored empty values removed from the end of a flow list and a flow mapping',
+    'f: [a, &b]\ng: *b\nm: {a: 1, b: &y}\nh: *y\n', v => (v.f.pop(), delete v.m.b),
+    'f: [a]\ng: null\nm: {a: 1}\nh: null\n'
+  ],
+  [
+    'scalars after a tag set to values of the same and of another type',
+    'a: !!str x\nb: &k !!str y\nc: !!int 5\nd: !!str\n  z\ne: !!str\n',
+    v => (v.a = 5, v.b = 6, v.c = 6, v.d = 7, v.e = 8), 'a: 5\nb: &k 6\nc: !!int 6\nd:\n  7\ne: 8\n'
+  ],
+  [
+    'numbers after a tag set to numbers it reads as other values, and to one it reads alike',
+    'a: !!float 1.0\nb: !!int 1\nc: !!float 1.5\n', v => (v.a = 2, v.b = 2.5, v.c = 2.5),
+    'a: 2\nb: 2.5\nc: !!float 2.5\n'
+  ],
+  [
+    'scalars after an anchor and a tag in either order set to a number',
+    'a: !!str &k x\ne: &j !!str\n  w\nk:\n  !!str\n', v => (v.a = 5, v.e = 8, v.k = 9),
+    'a: &k 5\ne: &j\n  8\nk:\n  9\n'
+  ],
+  [
+    'empty values after an anchor or a tag alone on their line, before a comment or a space',
+    'a:\n  &x  # c\nb: *x\nc:\n  &y \nd:\n  !!str  # e\nz: 1\n', v => (v.a = [1, 3], v.c = {k: 1}, v.d = 5),
+    'a:\n  - 1  # c\n  - 3\nb: null\nc:\n  k: 1\nd:\n  5  # e\nz: 1\n'
+  ],
+  [
+    'scalars after a core tag set to text the tag cannot read',
+    'a: !!int 1\nb: !!null ~\n', v => (v.a = 'hello', v.b = 'x'), 'a: hello\nb: x\n'
+  ],
+  [
+    'nested block scalars after a tag set to text that needs an indentation indicator',
+    'm:\n  a: !!str |\n    x\n  b: !foo |\n    x\n', v => (v.m.a = ' y\n', v.m.b = ' y\n'),
+    'm:\n  a: !!str |2\n     y\n  b: !foo |2\n     y\n'
+  ],
+  [
+    'values under a key whose line ends in an anchor or a tag and spaces, set to other values',
+    'a: !!str  \n  x\nb: &x  \n  x\nc: !!seq  \n  - 1\nd: !!str  \n',
+    v => (v.a = 5, v.b = [1], v.c = 'v', v.d = 8), 'a:\n  5\nb:\n  - 1\nc: v\nd: 8\n'
+  ],
+  [
+    'anchored or tagged empty collections that gain entries beside a removed flow list item',
+    'w: [a, &m []]\nx: [a, &n {}]\nu: [a, !!seq []]\nsynonyms: [old, &s []]\nz: [&o [], a]\n',
+    v => {
+      // Each kept collection is the object the input gave, so it keeps its node.
+      for (const [k, i] of [['w', 1], ['u', 1], ['synonyms', 1], ['z', 0]] as const) {
+        v[k] = [v[k][i]];
+        v[k][0].push('c');
+      }
+      v.x = [Object.assign(v.x[1], {k: 1})];
+    },
+    'w: [[c]]\nx: [{k: 1}]\nu: [[c]]\nsynonyms: [[c]]\nz: [[c]]\n'
+  ],
+  [
+    'values after a tag and an anchor in either order set to another type, beside a removed entry',
+    'm: {a: 1, b: !!float &k .inf}\np: {a: 1, b: &j !!float .nan}\nw: [old, !!float &i .inf]\n' +
+        'u: [old, !!null &h ~]\ng: {"a":!!str &l x}\n',
+    v => Object.assign(v, {m: {b: null}, p: {b: null}, w: [null], u: [Infinity], g: {a: 5}}),
+    'm: {b: &k null}\np: {b: &j null}\nw: [null]\nu: [.inf]\ng: {"a":&l 5}\n'
+  ],
+  [
+    'flow collections over several lines whose value stays exactly, as a linked item moves, keep their text',
+    'w: [[c], &m\n  []]\nx: [[c], &n  # c\n  []]\nu: [[c],\n  &o\n  []]\ns: [[c],\n  &p  # note\n  []]\n' +
+        'r: &a [[c], &q\n  []]\nt: [.nan,  # c\n  b]\nm: {\n  w: [[c], &e\n    []]\n}\n' +
+        'k: [&f [x],\n  &g [x]]\nj: *f\nl: [&h [x],\n  &i [x]]\nh: *h\nq: .NaN\n',
+    v => {
+      for (const k of ['w', 'x', 'u', 's']) {
+        v[k][1].push('c');
+        v[k] = [v[k][1], []];
+      }
+      v.r[1].push('c');
+      v.r.shift();
+      v.r.push([]);
+      v.t = [NaN, 'b'];
+      v.m.w = [v.m.w[1], []];
+      v.m.w[0].push('c');
+      v.k.reverse();
+      v.l = [v.l[1], v.l[0]];
+    },
+    'w: [[c], &m\n  []]\nx: [[c], &n  # c\n  []]\nu: [[c],\n  &o\n  []]\ns: [[c],\n  &p  # note\n  []]\n' +
+        'r: &a [[c], &q\n  []]\nt: [.nan,  # c\n  b]\nm: {\n  w: [[c], &e\n    []]\n}\n' +
+        'k: [&f [x],\n  &g [x]]\nj: *f\nl: [&h [x],\n  &i [x]]\nh: *h\nq: .NaN\n'
+  ],
+  [
+    'an alias in a flow list over several lines whose value stays, written out when its anchor changes',
+    'a: &a\n  - c\nw: [\n  *a,\n  [*a]\n]\n', v => v.a.push('d'),
+    'a: &a\n  - c\n  - d\nw: [\n  [c],\n  [[c]]\n]\n'
+  ],
+  [
+    'a key added after the first line of a text that starts with a byte order mark',
+    '\uFEFFa: 1\nb: 2\n', v => v.c = 3, '\uFEFFa: 1\nb: 2\nc: 3\n'
+  ],
+  [
+    'empty values whose key has an anchor, removed from the end of a flow mapping and a flow list',
+    'm: {a: 1, &k }\ng: *k\nl: [a, ? &j]\nh: *j\n', v => {
+      delete v.m[''];
+      v.l = ['a'];
+    },
+    'm: {a: 1}\ng: null\nl: [a]\nh: null\n'
+  ],
+  [
+    'pairs written as flow list items, without braces, that gain a second entry',
+    'l: [ &k a: 1 ]\nm: [a: 1]\n', v => (v.l[0].b = 2, v.m[0].b = 2),
+    'l: [ {a: 1, b: 2} ]\nm: [{a: 1, b: 2}]\n'
+  ],
+  [
+    'flow mappings over several lines with alias keys whose anchor changes or goes, patched item by item',
+    'a: &k p\nc: {*k : 1,\n  q: b}\nd: &j r\ne: {*j : 1,\n  q: b}\n', v => {
+      v.a = 'z';
+      delete v.d;
+    },
+    'a: &k z\nc: {p: 1,\n  q: b}\ne: {r: 1,\n  q: b}\n'
+  ],
+  [
+    'flow mappings over several lines whose keys repeat through an alias key whose anchor goes',
+    'a: &k p\nm: {\n  *k : 1,\n  *k : 2\n}\no: {\n  p: 1,\n  *k : 2\n}\n', v => delete v.a,
+    'm:\n  p: 2\no: {\n  p: 2\n}\n'
+  ],
+  [
+    'flow mappings over several lines with alias keys, beside a changed key, patched item by item',
+    'k: &k key\nv: &v val\nx: 1\nm: {\n  *k : *v\n}\no: {\n  *k : [\n    *v\n  ]\n}\n',
+    v => v.x = 2, 'k: &k key\nv: &v val\nx: 2\nm:\n  key: val\no:\n  key:\n    - val\n'
+  ],
+  [
+    'flow mappings over several lines with comments, with an alias key that repeats a key or names a list',
+    'x: 1\nm: {  # open\n  &k p: 1,\n  *k : 2\n}  # close\nl: &j [1]\nr: {\n  *j : v,\n  q: b\n}\n',
+    v => v.x = 2, 'x: 2\nm: {  # open\n  &k p: 2\n}  # close\nl: &j [1]\nr: {\n  *j : v,\n  q: b\n}\n'
+  ],
+  [
+    'flow collections over several lines whose value changes exactly, written in block style',
+    'u: [null,\n  1]\nm: {a: null,\n  b: 1}\nw: [old,\n  .inf]  # c\nz: [0,\n  1]\ne: [.nan,\n  1]\n',
+    v => {
+      v.u[0] = Infinity;
+      v.m.a = -Infinity;
+      v.w[1] = null;
+      v.z[0] = -0;
+      v.e[0] = '\0NaN';
+    },
+    'u:\n  - .inf\n  - 1\nm:\n  a: -.inf\n  b: 1\nw:  # c\n  - old\n  - null\nz:\n  - -0\n  - 1\n' +
+        'e:\n  - "\\0NaN"\n  - 1\n'
+  ],
+  [
+    'scalars after a custom tag set to a string and to a number it reads as a string',
+    'a: !foo x\nb: !foo x\n', v => (v.a = 'y', v.b = 5), 'a: !foo "y"\nb: 5\n'
+  ],
+  [
+    'flow values after an anchor or a tag, set to values of another kind',
+    'g: !!map {a: 1}\nm: {a: !!str x, b: &y }\n', v => (v.g = [1], v.m.a = [1], v.m.b = [2]),
+    'g: [1]\nm: {a: [1], b: [2]}\n'
+  ],
+  [
     'the last key of a mapping removed through the final newline, beside a key added after the mapping',
     'a:\n  k: 1\n  e:\n', v => (delete v.a.e, v.z = 1), 'a:\n  k: 1\nz: 1\n'
   ],
@@ -354,6 +534,73 @@ test.each<[string, string, (value: any) => void, string?]>([
   expect(output.endsWith('\n'))
       .toBe(text.endsWith('\n') || endsInKeptBlock(output));
   if (expected) expect(output).toBe(expected);
+});
+
+// kcmd reads a value under a tag outside YAML's core schema, such as
+// `!!binary`, or under a `%TAG` shorthand, as text, so a new string keeps it.
+test.each([
+  ['a: !!binary aGVsbG8=\n', 'd29ybGQ=', 'a: !!binary d29ybGQ=\n'],
+  ['a: !!timestamp 2001-12-14\n', '2002-01-01', 'a: !!timestamp "2002-01-01"\n'],
+  ['%TAG !e! tag:example.com,2000:\n---\na: !e!foo x\n', 'y',
+   '%TAG !e! tag:example.com,2000:\n---\na: !e!foo "y"\n'],
+])('%j set to a string keeps its tag', (input, a, expected) => {
+  const {document, text} = parseForUpdate(input);
+  const value = plainCopy(document.toJS());
+  const links = linkNodes(value, document.contents);
+  value.a = a;
+
+  expect(updateText(text, document, value, links)).toBe(expected);
+});
+
+test('a key renamed in a flow mapping over several lines is written again in place', () => {
+  const {document, text} = parseForUpdate('m: {datasets: [a],  # c\n  x: 1}\n');
+  const m = (document.contents as yaml.YAMLMap).items[0].value as yaml.YAMLMap;
+  (m.items[0].key as yaml.Scalar).value = 'entities';
+  const value = {m: {entities: ['a'], x: 1}};
+
+  expect(updateText(text, document, value, linkNodes(value, document.contents)))
+      .toBe('m: {entities: [a],  # c\n  x: 1}\n');
+});
+
+test('a flow list nested 20 deep over several lines stays as written', () => {
+  let list = '1';
+  for (let i = 0; i < 20; i++) list = `[${list},\n ${i}]`;
+  const {document, text} = parseForUpdate(`x: ${list}\ny: 1\n`);
+  const value = plainCopy(document.toJS());
+  const links = linkNodes(value, document.contents);
+  value.y = 2;
+
+  expect(updateText(text, document, value, links)).toBe(`x: ${list}\ny: 2\n`);
+});
+
+test('a key renamed in the document keeps its tag and its value\'s', () => {
+  const {document, text} = parseForUpdate('!!str datasets: !!seq\n  - a\n');
+  ((document.contents as yaml.YAMLMap).items[0].key as yaml.Scalar).value = 'entities';
+  const value = {entities: ['a']};
+
+  expect(updateText(text, document, value, linkNodes(value, document.contents)))
+      .toBe('!!str entities: !!seq\n  - a\n');
+});
+
+// A root set to a value of another kind loses its tag. The `---` or byte
+// order mark before it stays, and so do its final line break and the lines
+// after it.
+test.each<[string, unknown, string]>([
+  ['!!seq [1]\n', {a: 1}, '{a: 1}\n'],
+  ['!!str\n', {a: 1}, '{a: 1}\n'],
+  ['--- !!seq\n[1]\n', {a: 1}, '---\n{a: 1}\n'],
+  ['--- !!seq  \n[1]\n', {a: 1}, '---\n{a: 1}\n'],
+  ['\uFEFF!!seq\n[1]\n', {a: 1}, '\uFEFF{a: 1}\n'],
+  ['!!map\na: 1\n# trailing\n', [1], '[1]\n# trailing\n'],
+  ['!!map\na: 1\n...\n', [1], '[1]\n...\n'],
+  ['!!str |\n  hello\n# trailing\n', [1], '[1]\n# trailing\n'],
+])('the root of %j set to another kind', (input, value, expected) => {
+  const {document, text} = parseForUpdate(input);
+
+  const output = updateText(text, document, value, new Map());
+
+  expect(yaml.parse(output)).toEqual(value);
+  expect(output).toBe(expected);
 });
 
 // Whether a block scalar that keeps its final line breaks, as `|+` does, ends
