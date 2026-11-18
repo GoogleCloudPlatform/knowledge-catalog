@@ -306,7 +306,7 @@ it is deploying, and an entry group holds exactly one model, so it never
 disturbs another model's links.
 
 `kcmd push --validate-only --print` lists the entries and links a push would
-remove, before any of them is removed.
+remove, before any of them is removed. Without `--print`, it says how many.
 
 **When you remove a whole model** — deleting its document does *not* remove it
 from the catalog. As long as you still push at least one other model in the same

@@ -147,6 +147,11 @@ export interface KcDeployResult {
   // result that stops before push reads what the catalog holds lists only
   // the writes.
   plan: string[];
+  // How many entries and links a dry run found push would remove. The
+  // entries include each other model's under `--force-remove`. Links push
+  // deletes and creates again are not counted, since they exist after the
+  // push. Set only by a dry run that finds something to remove.
+  toRemove?: {entries: number; links: number};
 }
 
 // Running tallies threaded through the write phase so a partial failure still
@@ -242,12 +247,14 @@ export async function planKnowledgeCatalog(
       new CatalogClient(ctx), opts, prepared,
       scopeProjectMatcher(ctx, opts.project));
   const failed = 'error' in planned;
+  const toRemove = failed ? undefined : planned.toRemove;
   return {
     success: !failed,
     warnings: [...prepared.warnings],
     ...noCounts(),
     plan: failed ? prepared.plan : planned.plan,
     ...(failed ? {details: planned.error} : {}),
+    ...(toRemove && toRemove.entries + toRemove.links ? {toRemove} : {}),
   };
 }
 
@@ -711,14 +718,16 @@ interface WritePlan {
 /**
  * Works out what the push of `prepared` writes and deletes, before any write,
  * and returns the error that stops it. Writes nothing. Returns each emitted
- * model's write plan, and the preflight's plan with the lines of what push
- * removes added. A thrown error, such as a network failure, is reported like
- * a failed read.
+ * model's write plan, the preflight's plan with the lines of what push
+ * removes added, and how many entries and links push removes. A thrown error,
+ * such as a network failure, is reported like a failed read.
  */
 async function planWrites(
     cat: CatalogClient, opts: KcDeployOptions, prepared: KcPreparedDeploy,
-    isScopeProject: ProjectMatcher):
-    Promise<{writePlans: WritePlan[]; plan: string[]}|{error: string}> {
+    isScopeProject: ProjectMatcher): Promise<{
+  writePlans: WritePlan[]; plan: string[];
+  toRemove: {entries: number; links: number};
+}|{error: string}> {
   const {emitted, existing} = prepared;
   const writePlans: WritePlan[] = [];
   for (const {model, resources} of emitted) {
@@ -731,24 +740,24 @@ async function planWrites(
   }
   const foreignAnchorIds =
       opts.forceRemove ? findForeignAnchorIds(emitted[0], existing) : [];
-  return {
-    writePlans,
-    plan: [
-      ...prepared.plan,
-      ...removalPlan(writePlans, foreignAnchorIds, existing),
-    ],
-  };
+  const {lines, ...toRemove} =
+      removalPlan(writePlans, foreignAnchorIds, existing);
+  return {writePlans, plan: [...prepared.plan, ...lines], toRemove};
 }
 
 /**
  * The plan lines of what push removes: for each model in `writePlans`, the
  * entries and links it deletes and the links it deletes and creates again with
  * new endpoints, then the entries in `existing` of each model in
- * `foreignAnchorIds`. A kind with nothing in it gets no line.
+ * `foreignAnchorIds`. Each list is sorted by ID, which puts a model's own
+ * entry first, since its ID starts the ID of every other entry of the model.
+ * A kind with nothing in it gets no line. Also returns how many entries and
+ * links push removes for good, which leaves out the links it creates again.
  */
 function removalPlan(
     writePlans: readonly WritePlan[], foreignAnchorIds: readonly string[],
-    existing: readonly Entry[]): string[] {
+    existing: readonly Entry[]):
+    {lines: string[]; entries: number; links: number} {
   // A heading such as "  2 entries to remove:" over one line per item.
   const listed = (items: string[], one: string, many: string, what: string) => {
     if (!items.length) return [];
@@ -758,21 +767,30 @@ function removalPlan(
       ...items.map(item => `    - ${item}`),
     ];
   };
+  const byId = <T>(list: readonly T[], id: (item: T) => string) =>
+      [...list].sort((a, b) => id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0);
   const entries = (list: readonly Entry[]) =>
-      list.map(e => `${entryId(e)} (${entryTypeId(e)})`);
+      byId(list, entryId).map(e => `${entryId(e)} (${entryTypeId(e)})`);
   const links = (list: readonly EntryLink[]) =>
-      list.map(l => `${linkId(l)} (${linkTypeId(l)})`);
-  return [
-    ...writePlans.flatMap(p => [
-      ...listed(entries(p.orphanedEntries), 'entry', 'entries', 'to remove'),
-      ...listed(links(p.orphanedLinks), 'link', 'links', 'to remove'),
-      ...listed(links(p.staleLinks.links), 'link', 'links', 'to recreate'),
-    ]),
-    ...foreignAnchorIds.flatMap(
-        id => listed(
-            entries(entriesOfModel(id, existing)), 'entry', 'entries',
-            `of model '${id}' to remove (--force-remove)`)),
-  ];
+      byId(list, linkId).map(l => `${linkId(l)} (${linkTypeId(l)})`);
+  const others =
+      foreignAnchorIds.map(id => ({id, owned: entriesOfModel(id, existing)}));
+  return {
+    lines: [
+      ...writePlans.flatMap(p => [
+        ...listed(entries(p.orphanedEntries), 'entry', 'entries', 'to remove'),
+        ...listed(links(p.orphanedLinks), 'link', 'links', 'to remove'),
+        ...listed(links(p.staleLinks.links), 'link', 'links', 'to recreate'),
+      ]),
+      ...others.flatMap(
+          ({id, owned}) => listed(
+              entries(owned), 'entry', 'entries',
+              `of model '${id}' to remove (--force-remove)`)),
+    ],
+    entries: writePlans.flatMap(p => p.orphanedEntries).length +
+        others.flatMap(o => o.owned).length,
+    links: writePlans.flatMap(p => p.orphanedLinks).length,
+  };
 }
 
 /**

@@ -1351,6 +1351,7 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
     expect(getGroup).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
     expect(create).not.toHaveBeenCalled();
+    expect(result.toRemove).toBeUndefined();
     expect(result.plan.join('\n')).toContain('Knowledge Catalog plan');
     expect(result.plan.join('\n')).toContain('sales');
   });
@@ -1665,19 +1666,27 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
         expect(del).toHaveBeenCalledTimes(2);
       });
 
-  test('validateOnly lists the entry push would delete, and deletes nothing',
+  test('validateOnly lists the entries push would delete, sorted, and ' +
+           'deletes nothing',
        async () => {
-         const {del} = stubClient(
-             {existing: [{id: 'sales/metrics/removed', type: METRIC_TYPE}]});
+         const {del} = stubClient({
+           existing: [
+             {id: 'sales/metrics/removed', type: METRIC_TYPE},
+             {id: 'sales/entities/removed', type: ENTITY_TYPE},
+           ],
+         });
 
          const result = await deployKnowledgeCatalog(
              models(DOCS), CTX, {...OPTS, validateOnly: true});
 
          expect(result.success).toBe(true);
          expect(result.deleted).toBe(0);
-         expect(result.plan.slice(-2)).toEqual([
-           '  1 entry to remove:', '    - sales/metrics/removed (semantic-metric)',
+         expect(result.plan.slice(-3)).toEqual([
+           '  2 entries to remove:',
+           '    - sales/entities/removed (semantic-entity)',
+           '    - sales/metrics/removed (semantic-metric)',
          ]);
+         expect(result.toRemove).toEqual({entries: 2, links: 0});
          expect(del).not.toHaveBeenCalled();
        });
 });
@@ -1990,29 +1999,42 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         expect(createLink).not.toHaveBeenCalled();
       });
 
-  // The catalog still holds entity supplier, a link from orders to it, and,
-  // under the ID of the reference link to orders, a reference link to it.
-  test('validateOnly lists the entry and links push would delete and the ' +
-           'link it would recreate, and writes nothing',
+  // The catalog still holds entity supplier, links from orders to supplier
+  // and to warehouse, and, under the ID of the reference link to orders, a
+  // reference link to supplier. The lookup returns the two links from orders
+  // in the reverse of their ID order.
+  test('validateOnly lists the entry and links push would delete, sorted, ' +
+           'and the link it would recreate, and writes nothing',
        async () => {
          const supplier = 'sales/entities/supplier';
          const stale = directed(
              'reference', STAR_REFERENCES[0],
              'sales/relationships/orders_to_customer', supplier);
+         const warehouseId =
+             semanticLinkId('link', 'sales', 'orders', 'warehouse');
+         const [first, second] = [SUPPLIER_ID, warehouseId].sort();
+         const toWarehouse = semanticLink(warehouseId, 'orders', 'warehouse');
+         const toSupplier = semanticLink(SUPPLIER_ID, 'orders', 'supplier');
          const {create, update, del, createLink, delLink} = stubClient({
            existing: [...V2_ENTRIES, {id: supplier, type: ENTITY_TYPE}],
-           links: linksTo(semanticLink(SUPPLIER_ID, 'orders', 'supplier'), stale),
+           links: linksTo(
+               ...first === SUPPLIER_ID ? [toWarehouse, toSupplier] :
+                                          [toSupplier, toWarehouse],
+               stale),
          });
 
          const result = await deployKnowledgeCatalog(
              models(STAR_DOCS), CTX, {...OPTS, validateOnly: true});
 
          expect(result.success).toBe(true);
-         expect(result.plan.slice(-6)).toEqual([
+         expect(result.plan.slice(-7)).toEqual([
            '  1 entry to remove:', `    - ${supplier} (semantic-entity)`,
-           '  1 link to remove:', `    - ${SUPPLIER_ID} (semantic-link)`,
+           '  2 links to remove:', `    - ${first} (semantic-link)`,
+           `    - ${second} (semantic-link)`,
            '  1 link to recreate:', `    - ${STAR_REFERENCES[0]} (reference)`,
          ]);
+         // Push creates the stale link again, so it is not counted.
+         expect(result.toRemove).toEqual({entries: 1, links: 2});
          for (const write of [create, update, del, createLink, delLink]) {
            expect(write).not.toHaveBeenCalled();
          }
@@ -2082,11 +2104,12 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
   test('a dry run under --force-remove lists the omitted model\'s entries ' +
            'and deletes nothing',
        async () => {
+         // The listing gives the model entry last.
          const {del} = stubClient({
            existing: [
-             {id: 'old', type: MODEL_TYPE},
-             {id: 'old.entities.a', type: ENTITY_TYPE},
              {id: 'old/metrics/m', type: METRIC_TYPE},
+             {id: 'old.entities.a', type: ENTITY_TYPE},
+             {id: 'old', type: MODEL_TYPE},
            ],
          });
 
@@ -2099,6 +2122,7 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
            '    - old (semantic-model)', '    - old.entities.a (semantic-entity)',
            '    - old/metrics/m (semantic-metric)',
          ]);
+         expect(result.toRemove).toEqual({entries: 3, links: 0});
          expect(del).not.toHaveBeenCalled();
        });
 

@@ -142,6 +142,28 @@ describe('push prints Knowledge Catalog warnings', () => {
       'Warning: a relationship is skipped',
     ]);
   });
+
+  // Under --print the plan lists them instead.
+  test.each([
+    [{entries: 2, links: 3}, {},
+     'Push would remove 2 Knowledge Catalog entries and 3 entry links; run ' +
+         'with --print to list them.'],
+    [{entries: 0, links: 1}, {},
+     'Push would remove 1 entry link; run with --print to list it.'],
+    [{entries: 2, links: 3}, {print: true}, '-- Knowledge Catalog --'],
+  ])('a dry run that would remove %o, with %o, says so before its last line',
+     async (toRemove, flags, line) => {
+       writeWorkspace();
+       const log = spyOn(console, 'log').mockImplementation(() => {});
+       spyOn(kc, 'preflightKnowledgeCatalog').mockResolvedValue({
+         prepared: {emitted: [], existing: [], warnings: [], plan: []},
+       });
+       spyOn(kc, 'planKnowledgeCatalog').mockResolvedValue({...RESULT, toRemove});
+
+       expect(await push({validateOnly: true, ...flags})).toBe(0);
+       expect(log.mock.calls.slice(-2).map(c => String(c[0])))
+           .toEqual([line, 'Validation complete; no changes applied.']);
+     });
 });
 
 describe('push preflights under a deployment\'s profile', () => {

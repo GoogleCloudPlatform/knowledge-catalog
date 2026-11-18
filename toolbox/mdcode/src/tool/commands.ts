@@ -1980,6 +1980,10 @@ function reportCatalogResult(
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :
       '';
+  // Without --print, a dry run still says when push would remove something.
+  if (options.validateOnly && !options.print && result.toRemove) {
+    console.log(removalLine(result.toRemove));
+  }
   console.log(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
@@ -1987,6 +1991,20 @@ function reportCatalogResult(
               `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${
                   unchangedEntries}${removed}${linked}${unlinked}.`);
   return 0;
+}
+
+// The line a dry run without --print prints when push would remove `entries`
+// entries and `links` links, at least one of them.
+function removalLine({entries, links}: {entries: number; links: number}):
+    string {
+  const counted = [
+    entries ? `${entries} Knowledge Catalog ${
+                  plural(entries, 'entry', 'entries')}` :
+              '',
+    links ? `${links} entry ${plural(links, 'link', 'links')}` : '',
+  ].filter(c => c);
+  return `Push would remove ${counted.join(' and ')}; run with --print to ` +
+      `list ${entries + links === 1 ? 'it' : 'them'}.`;
 }
 
 

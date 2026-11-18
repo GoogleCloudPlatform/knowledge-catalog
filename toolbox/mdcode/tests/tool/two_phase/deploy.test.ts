@@ -639,7 +639,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
-    name: 'a dry run under --print lists an entry push would remove, and writes nothing',
+    name: 'a dry run lists an entry push would remove under --print, or says so in one line without it, and writes nothing',
     flags: {validateOnly: true, print: true},
     services: {
       listEntries: [{
@@ -655,6 +655,15 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       '  1 entry to remove:', '    - commerce/metrics/old (semantic-metric)',
       msg.VALIDATED,
     ]),
+    // Without --print, one line says so.
+    then: [{
+      flags: {validateOnly: true},
+      log: [
+        'Push would remove 1 Knowledge Catalog entry; run with --print to ' +
+            'list it.',
+        msg.VALIDATED,
+      ],
+    }],
   },
   {
     name: 'rejects before any write, also in the report, deployments of the model file\'s own bindings that leave a field of a concrete leaf entity without an expression, and deploys once the field has one or the deployment uses a profile that excludes it',
