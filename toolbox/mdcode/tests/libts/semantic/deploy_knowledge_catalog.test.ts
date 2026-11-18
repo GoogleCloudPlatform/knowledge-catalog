@@ -1339,6 +1339,9 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
 });
 
 
+// Dataplex's answer to a read of an entry group the caller may not read.
+const GROUP_DENIED = 'Permission \'dataplex.entryGroups.get\' denied on resource (or it may not exist).';
+
 describe('deployKnowledgeCatalog: validateOnly', () => {
   test('reads the entry group, writes nothing and returns a plan', async () => {
     const {getGroup, list, create} = stubClient();
@@ -1359,6 +1362,8 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
   test.each([
     ['a missing entry group', {getGroup: err(404, 'not found')},
      "entry group 'eg' does not exist"],
+    ['an entry group it may not read', {getGroup: err(403, GROUP_DENIED)},
+     `reading entry group 'eg': ${GROUP_DENIED}`],
     ['another model without --force-remove',
      {existing: [{id: 'old', type: MODEL_TYPE}]},
      'already contains model(s) this push does not include: old'],
@@ -1400,13 +1405,16 @@ describe('deployKnowledgeCatalog: failures', () => {
          expect(create).not.toHaveBeenCalled();
        });
 
-  test('a refused read of the entry group lets the push go on', async () => {
-    stubClient({getGroup: err(403, 'denied')});
+  test('a refused read of the entry group stops the push before any write',
+       async () => {
+         const {list, create} = stubClient({getGroup: err(403, GROUP_DENIED)});
 
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-    expect(result.success).toBe(true);
-  });
+         expect(result.details).toBe(`reading entry group 'eg': ${GROUP_DENIED}`);
+         expect(list).not.toHaveBeenCalled();
+         expect(create).not.toHaveBeenCalled();
+       });
 
   test('a read of the entry group that throws stops the push', async () => {
     const {getGroup, list} = stubClient();
@@ -2102,28 +2110,55 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
      });
 
   test('a dry run under --force-remove lists the omitted model\'s entries ' +
-           'and deletes nothing',
+           'and links and deletes nothing',
        async () => {
          // The listing gives the model entry last.
-         const {del} = stubClient({
+         const {del, delLink} = stubClient({
            existing: [
              {id: 'old/metrics/m', type: METRIC_TYPE},
              {id: 'old.entities.a', type: ENTITY_TYPE},
              {id: 'old', type: MODEL_TYPE},
            ],
+           links: (entry: string) => entry.endsWith('old.entities.a') ?
+               ok([linkEntry('old-a-to-b', ['old.entities.a', 'old.entities.b'])]) :
+               ok([]),
          });
 
          const result = await deployKnowledgeCatalog(
              models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
 
          expect(result.success).toBe(true);
-         expect(result.plan.slice(-4)).toEqual([
+         expect(result.plan.slice(-6)).toEqual([
            "  3 entries of model 'old' to remove (--force-remove):",
            '    - old (semantic-model)', '    - old.entities.a (semantic-entity)',
            '    - old/metrics/m (semantic-metric)',
+           "  1 link of model 'old' to remove (--force-remove):",
+           '    - old-a-to-b (schema-join)',
          ]);
-         expect(result.toRemove).toEqual({entries: 3, links: 0});
+         expect(result.toRemove).toEqual({entries: 3, links: 1});
          expect(del).not.toHaveBeenCalled();
+         expect(delLink).not.toHaveBeenCalled();
+       });
+
+  test('a dry run under --force-remove fails as push does when the omitted ' +
+           'model\'s link lookup fails',
+       async () => {
+         stubClient({
+           existing: [
+             {id: 'old', type: MODEL_TYPE},
+             {id: 'old.entities.a', type: ENTITY_TYPE},
+           ],
+           links: () => err(403, 'denied'),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
+
+         expect(result.success).toBe(false);
+         expect(result.details)
+             .toBe(
+                 "Looking up entry links for 'old.entities.a' from removed " +
+                 "model 'old' failed: denied");
        });
 
   test('--force-remove drops the omitted model (entries + links), then writes',

@@ -46,7 +46,7 @@ Knowledge Catalog.
 | `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
 | `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
-| `--validate-only` | Run every check push runs and report pass/fail, but write nothing. It reads the destination entry group as push does before its first write. With `--print`, its plan lists the entries and links push would write, the entries and links push would remove, and the links push would delete and create again. Under `--force-remove`, the plan also lists each other model's entries, which push would delete. Without `--print`, it prints one line with how many entries and links push would remove, when there are any. `--dry-run` is the same. |
+| `--validate-only` | Run every check push runs and report pass/fail, but write nothing. It reads the destination entry group as push does before its first write. With `--print`, its plan lists the entries and links push would write, the entries and links push would remove, and the links push would delete and create again. Under `--force-remove`, the plan also lists each other model's entries and links, which push would delete. Without `--print`, it prints one line with how many entries and links push would remove, when there are any. `--dry-run` is the same. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 
@@ -1329,6 +1329,8 @@ project:
 
 The entry group is required. A push to an entry group that does not exist
 stops before writing anything and asks you to run `kcmd init --semantic-model`.
+A push that may not read the entry group stops there too, with Dataplex's
+message.
 A pull of such an entry group says the same.
 When the scope in catalog.yaml names the wrong location or group, correct the
 scope instead. When the entry group or a type already exists, init goes on even

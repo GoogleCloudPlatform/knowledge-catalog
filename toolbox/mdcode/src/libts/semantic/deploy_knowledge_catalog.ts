@@ -147,10 +147,10 @@ export interface KcDeployResult {
   // result that stops before push reads what the catalog holds lists only
   // the writes.
   plan: string[];
-  // How many entries and links a dry run found push would remove. The
-  // entries include each other model's under `--force-remove`. Links push
-  // deletes and creates again are not counted, since they exist after the
-  // push. Set only by a dry run that finds something to remove.
+  // How many entries and links a dry run found push would remove. They
+  // include each other model's entries and links under `--force-remove`.
+  // Links push deletes and creates again are not counted, since they exist
+  // after the push. Set only by a dry run that finds something to remove.
   toRemove?: {entries: number; links: number};
 }
 
@@ -279,31 +279,27 @@ export async function applyKnowledgeCatalog(
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
   const cat = new CatalogClient(ctx);
-  const {emitted, existing} = prepared;
+  const {emitted} = prepared;
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
   const planned = await planWrites(cat, opts, prepared, isScopeProject);
   if ('error' in planned) return result(false, planned.error);
-  const {writePlans} = planned;
+  const {writePlans, foreign} = planned;
   plan = planned.plan;
 
-  if (opts.forceRemove) {
-    const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
-    if (foreignAnchorIds.length) {
-      // A thrown error is reported like a failed delete.
-      const removed =
-          await removeForeignModels(
-              cat, opts, existing, foreignAnchorIds, isScopeProject)
-              .catch((err: any) => ({
-                       deleted: 0,
-                       unlinked: 0,
-                       error: String(err?.message || err).trim(),
-                     }));
-      counts.deleted += removed.deleted;
-      counts.unlinked += removed.unlinked;
-      if (removed.error) return result(false, removed.error);
-    }
+  if (foreign.length) {
+    // A thrown error is reported like a failed delete.
+    const removed =
+        await removeForeignModels(cat, opts, foreign)
+            .catch((err: any) => ({
+                     deleted: 0,
+                     unlinked: 0,
+                     error: String(err?.message || err).trim(),
+                   }));
+    counts.deleted += removed.deleted;
+    counts.unlinked += removed.unlinked;
+    if (removed.error) return result(false, removed.error);
   }
 
   // Write each emitted model's entries and relationship links and delete any
@@ -401,6 +397,14 @@ async function preflightEmittedModels(
   if (typeof group === 'string') return {result: result(false, group)};
   if (isNotFoundStatus(group)) {
     return {result: result(false, missingEntryGroupMessage(opts))};
+  }
+  // Any other refusal stops the push too, since the listing would read the
+  // group as empty.
+  if (!isOkStatus(group)) {
+    return {
+      result: result(
+          false, `reading entry group '${opts.entryGroup}': ${errText(group)}`),
+    };
   }
   const listing = await listEntryGroup(cat, opts);
   if (listing.error) return {result: result(false, listing.error)};
@@ -718,14 +722,15 @@ interface WritePlan {
 /**
  * Works out what the push of `prepared` writes and deletes, before any write,
  * and returns the error that stops it. Writes nothing. Returns each emitted
- * model's write plan, the preflight's plan with the lines of what push
- * removes added, and how many entries and links push removes. A thrown error,
- * such as a network failure, is reported like a failed read.
+ * model's write plan, each other model `--force-remove` deletes, the
+ * preflight's plan with the lines of what push removes added, and how many
+ * entries and links push removes. A thrown error, such as a network failure,
+ * is reported like a failed read.
  */
 async function planWrites(
     cat: CatalogClient, opts: KcDeployOptions, prepared: KcPreparedDeploy,
     isScopeProject: ProjectMatcher): Promise<{
-  writePlans: WritePlan[]; plan: string[];
+  writePlans: WritePlan[]; foreign: ForeignModel[]; plan: string[];
   toRemove: {entries: number; links: number};
 }|{error: string}> {
   const {emitted, existing} = prepared;
@@ -740,23 +745,62 @@ async function planWrites(
   }
   const foreignAnchorIds =
       opts.forceRemove ? findForeignAnchorIds(emitted[0], existing) : [];
-  const {lines, ...toRemove} =
-      removalPlan(writePlans, foreignAnchorIds, existing);
-  return {writePlans, plan: [...prepared.plan, ...lines], toRemove};
+  const foreign =
+      await planForeignModels(
+          cat, opts, existing, foreignAnchorIds, isScopeProject)
+          .catch((err: any) => ({error: String(err?.message || err).trim()}));
+  if ('error' in foreign) return foreign;
+  const {lines, ...toRemove} = removalPlan(writePlans, foreign);
+  return {writePlans, foreign, plan: [...prepared.plan, ...lines], toRemove};
+}
+
+/** Another model in the entry group, which `--force-remove` deletes. */
+interface ForeignModel {
+  anchorId: string;
+  // Its entries in the pre-write listing.
+  entries: Entry[];
+  // The relationship links of its entity entries.
+  links: EntryLink[];
+}
+
+/**
+ * Returns the model of each anchor ID in `foreignAnchorIds`, with its entries
+ * in `existing` and the links of its entity entries, which it looks up while
+ * those entries still exist. Returns the error that stops the push when a
+ * lookup fails.
+ */
+async function planForeignModels(
+    cat: CatalogClient, opts: KcDeployOptions, existing: readonly Entry[],
+    foreignAnchorIds: readonly string[],
+    isScopeProject: ProjectMatcher): Promise<ForeignModel[]|{error: string}> {
+  const models: ForeignModel[] = [];
+  for (const anchorId of foreignAnchorIds) {
+    const entries = entriesOfModel(anchorId, existing);
+    const lookedUp = await lookupEntryLinks(
+        cat, opts, collectEntityNames(entries), isScopeProject);
+    if (lookedUp.error) {
+      const {entryId, message} = lookedUp.error;
+      return {
+        error: `Looking up entry links for '${entryId}' from removed model '${
+            anchorId}' failed: ${message}`,
+      };
+    }
+    models.push({anchorId, entries, links: [...lookedUp.links.values()]});
+  }
+  return models;
 }
 
 /**
  * The plan lines of what push removes: for each model in `writePlans`, the
  * entries and links it deletes and the links it deletes and creates again with
- * new endpoints, then the entries in `existing` of each model in
- * `foreignAnchorIds`. Each list is sorted by ID, which puts a model's own
- * entry first, since its ID starts the ID of every other entry of the model.
- * A kind with nothing in it gets no line. Also returns how many entries and
- * links push removes for good, which leaves out the links it creates again.
+ * new endpoints, then the entries and links of each model in `foreign`. Each
+ * list is sorted by ID, which puts a model's own entry first, since its ID
+ * starts the ID of every other entry of the model. A kind with nothing in it
+ * gets no line. Also returns how many entries and links push removes for
+ * good, which leaves out the links it creates again.
  */
 function removalPlan(
-    writePlans: readonly WritePlan[], foreignAnchorIds: readonly string[],
-    existing: readonly Entry[]):
+    writePlans: readonly WritePlan[], foreign: readonly ForeignModel[]):
     {lines: string[]; entries: number; links: number} {
   // A heading such as "  2 entries to remove:" over one line per item.
   const listed = (items: string[], one: string, many: string, what: string) => {
@@ -773,8 +817,6 @@ function removalPlan(
       byId(list, entryId).map(e => `${entryId(e)} (${entryTypeId(e)})`);
   const links = (list: readonly EntryLink[]) =>
       byId(list, linkId).map(l => `${linkId(l)} (${linkTypeId(l)})`);
-  const others =
-      foreignAnchorIds.map(id => ({id, owned: entriesOfModel(id, existing)}));
   return {
     lines: [
       ...writePlans.flatMap(p => [
@@ -782,14 +824,18 @@ function removalPlan(
         ...listed(links(p.orphanedLinks), 'link', 'links', 'to remove'),
         ...listed(links(p.staleLinks.links), 'link', 'links', 'to recreate'),
       ]),
-      ...others.flatMap(
-          ({id, owned}) => listed(
-              entries(owned), 'entry', 'entries',
-              `of model '${id}' to remove (--force-remove)`)),
+      ...foreign.flatMap(m => {
+        const what = `of model '${m.anchorId}' to remove (--force-remove)`;
+        return [
+          ...listed(entries(m.entries), 'entry', 'entries', what),
+          ...listed(links(m.links), 'link', 'links', what),
+        ];
+      }),
     ],
     entries: writePlans.flatMap(p => p.orphanedEntries).length +
-        others.flatMap(o => o.owned).length,
-    links: writePlans.flatMap(p => p.orphanedLinks).length,
+        foreign.flatMap(m => m.entries).length,
+    links: writePlans.flatMap(p => p.orphanedLinks).length +
+        foreign.flatMap(m => m.links).length,
   };
 }
 
@@ -1386,6 +1432,14 @@ function isStaleLink(existingLink: EntryLink, link: EntryLink): boolean {
 
 // The entries in `existing` of the model whose anchor ID is `anchor`: the
 // anchor, and each entry whose ID starts with the anchor ID and a `.` or `/`.
+//
+// A foreign model is by definition not in this push, so its emitter's
+// `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
+// a separator (`.` or `/`), which matches every ID scheme
+// (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
+// names. Naming the segments here would leave a model published by a different
+// emitter with its children orphaned and unreachable -- the anchor goes, so no
+// later push sees a foreign model, and nothing owns the remainder.
 function entriesOfModel(anchor: string, existing: readonly Entry[]): Entry[] {
   const owner: KcAnchor = {
     anchorId: anchor,
@@ -1395,51 +1449,23 @@ function entriesOfModel(anchor: string, existing: readonly Entry[]): Entry[] {
 }
 
 /**
- * Deletes models already in the entry group that this push does not re-emit
- * (`--force-remove`).
+ * Deletes the other models in `foreign` (`--force-remove`), each with the
+ * entries and links planning found for it.
  *
- * For each foreign anchor, looks up its relationship links and then deletes
- * the anchor before anything else. Dataplex deletes an entry's child entries
- * with it, and a link with an entry it references, so a push that stops here
- * leaves the whole foreign model or none of it. Pull then returns the whole
- * model or finds none. The links and the children present in `existing` are
+ * Deletes each model's anchor before anything else. Dataplex deletes an
+ * entry's child entries with it, and a link with an entry it references, so a
+ * push that stops here leaves the whole foreign model or none of it. Pull then
+ * returns the whole model or finds none. The links and the children are
  * deleted after the anchor, and a 404 for one already gone counts as success.
- *
- * A foreign model is by definition not in this push, so its emitter's
- * `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
- * a separator (`.` or `/`), which matches every ID scheme
- * (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
- * names. Naming the segments here would leave a model published by a different
- * emitter with its children orphaned and unreachable -- the anchor goes, so no
- * later push sees a foreign model, and nothing owns the remainder.
  */
 async function removeForeignModels(
-    cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
-    foreignAnchorIds: string[], isScopeProject: ProjectMatcher):
+    cat: CatalogClient, opts: KcDeployOptions,
+    foreign: readonly ForeignModel[]):
     Promise<{deleted: number; unlinked: number; error?: string}> {
   let deleted = 0;
   let unlinked = 0;
-  for (const foreignAnchorId of foreignAnchorIds) {
-    // Find the foreign model's anchor entry and all of its child entries
-    // across both the V1 dotted (`<anchor>.`) and V2/LookML slash (`<anchor>/`)
-    // namespaces, then extract the full resource names of its `semantic-entity`
-    // entries so we can look up their relationship links.
-    const foreignEntries = entriesOfModel(foreignAnchorId, existing);
-    const foreignEntityNames = collectEntityNames(foreignEntries);
-
-    // Look the links up while their entity entries still exist.
-    const lookedUp = await lookupEntryLinks(
-        cat, opts, foreignEntityNames, isScopeProject);
-    if (lookedUp.error) {
-      const {entryId, message} = lookedUp.error;
-      return {
-        deleted,
-        unlinked,
-        error: `Looking up entry links for '${entryId}' from removed model '${
-            foreignAnchorId}' failed: ${message}`,
-      };
-    }
-
+  for (const model of foreign) {
+    const foreignAnchorId = model.anchorId;
     // The anchor goes first and takes its children and their links with it.
     // A failure before it leaves the foreign model whole. The deletes after it
     // remove anything Dataplex left and normally get 404.
@@ -1449,12 +1475,12 @@ async function removeForeignModels(
       error: `Deleting entry '${e.entryId}' from removed model '${
           foreignAnchorId}' failed: ${e.message}`,
     });
-    const anchors = await deleteEntries(
-        cat, opts, foreignEntries.filter(isAnchorEntry));
+    const anchors =
+        await deleteEntries(cat, opts, model.entries.filter(isAnchorEntry));
     deleted += anchors.deleted;
     if (anchors.error) return entryFailure(anchors.error);
 
-    const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
+    const links = await deleteEntryLinks(cat, opts, model.links);
     unlinked += links.deleted.length;
     if (links.error) {
       const {linkId, message} = links.error;
@@ -1467,7 +1493,7 @@ async function removeForeignModels(
     }
 
     const children = await deleteEntries(
-        cat, opts, foreignEntries.filter(e => !isAnchorEntry(e)));
+        cat, opts, model.entries.filter(e => !isAnchorEntry(e)));
     deleted += children.deleted;
     if (children.error) return entryFailure(children.error);
   }
