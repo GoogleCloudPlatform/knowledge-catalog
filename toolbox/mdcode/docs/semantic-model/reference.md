@@ -1113,10 +1113,13 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   deployment this way, whether or not `--deployment` names it, and under
   `--no-deployment` too. It reads each entity's `source` from the profile the
   deployment names, or from the model file when it names none. A deployment
-  whose tables are outside its database gets one error that lists those
-  entities. When the deployment names no profile and a profile binds them to
-  tables in the deployment's database, the error names each such profile, so
-  you can set the deployment's profile. *(static)*
+  that binds entities to tables outside its database gets one error that lists
+  those entities. When the deployment names no profile, the error lists each
+  profile that binds those entities to tables in the deployment's database
+  and binds no entity outside it, in name order. You can set the deployment's
+  profile to one of them. When no profile does, the error says to bind those
+  entities in the model file to tables in the deployment's database, or to set
+  the deployment's profile to a profile that does. *(static)*
 * **Every source names a table Knowledge Catalog knows about.** Every push
   runs this source check before it writes anything, under `--no-deployment`
   and `--validate-only` too. It looks up the Knowledge Catalog entry of each

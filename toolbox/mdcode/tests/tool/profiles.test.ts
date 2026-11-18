@@ -2803,9 +2803,9 @@ describe('kcmd profiles --print-store', () => {
     });
   }
 
-  // Push refuses a deployment whose database holds no table an entity is
-  // bound to, so --print-store gives push's error, naming the model file. A
-  // GOOGLE block profile has no file of its own.
+  // Push refuses a deployment that binds an entity to a table outside the
+  // database it targets, so --print-store gives push's error, naming the
+  // model file. A GOOGLE block profile has no file of its own.
   test('gives push\'s error for the tables outside the database the deployment targets', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml());
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');

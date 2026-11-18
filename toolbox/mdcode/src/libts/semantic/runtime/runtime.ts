@@ -320,7 +320,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
-    // inheritance does not change. Push's error for a table outside a
+    // inheritance does not change. Push's check for a table outside a
     // deployment's database reads the profiles the model declares.
     const specs = (profilesByDoc.get(document) ?? []).flatMap(p => {
       const spec =
