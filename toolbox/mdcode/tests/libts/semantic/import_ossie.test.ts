@@ -376,6 +376,10 @@ semantic_model:
                 rest: '    ai_context: {synonyms: [&n total]}\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      '        ai_context:\n          synonyms:\n            - total\n'],
+    ["a dataset's metrics key written as an alias",
+     ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      - name: m\n        entity: orders\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',

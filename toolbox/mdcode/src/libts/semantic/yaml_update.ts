@@ -1018,8 +1018,9 @@ export function wrappedRoot(
  * list. Each source's `key` goes, and the comments above it and on its line
  * go above its first item. The items keep their comments and their text, each
  * line moved by the same number of columns. An empty flow list under a
- * source's `key` goes with it. Undefined for any other value under `key`, and
- * for a source that holds `key` alone.
+ * source's `key` goes with it. Undefined for any other value under `key`, for
+ * a source that holds `key` alone, and for a source that writes `key` as
+ * something other than a scalar, such as an alias.
  */
 export function movedItems(
     text: string, doc: yaml.Document.Parsed, sources: yaml.YAMLMap[],
@@ -1043,7 +1044,7 @@ export function movedItems(
   for (const source of sources) {
     const i = source.items.findIndex(p => keyOf(p) === key);
     const pair = source.items[i];
-    if (source.flow || source.items.length < 2) return undefined;
+    if (i < 0 || source.flow || source.items.length < 2) return undefined;
     const {head, start, end} = geometry({text, doc}, source, false)[i];
     edits.push([head, end, '']);
     if (yaml.isSeq(pair.value) && pair.value.flow && !pair.value.items.length) {
