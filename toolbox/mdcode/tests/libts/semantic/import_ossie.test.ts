@@ -338,7 +338,7 @@ semantic_model:
                     'relationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
                     'to_columns: [id], ai_context: {synonyms: [*n]}}]\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     'to_columns: [id], ai_context: {synonyms: [buyers]}}]\n'],
+     '        to_columns: [id]\n        ai_context:\n          synonyms:\n            - buyers\n'],
     ["a moved metric with an anchored key whose name a later dataset defines again for a join column",
      ossieFile({orders: '      - name: sql\n        expression: {sql: dialects}\n    metrics:\n      - name: m\n' +
                     '        expression: {\n          &k sql: COUNT(orders.sql)\n        }\n',
@@ -346,44 +346,17 @@ semantic_model:
                     'relationships: [{name: r, from: orders, to: customers, from_columns: [*k], to_columns: [id]}]\n'}),
      {flavor: 'ossie'},
      "relationship 'r': rewrote from_columns entry 'sql' as column 'dialects', which field 'orders.sql' reads.",
-     'from_columns: [dialects]'],
+     '        from_columns:\n          - dialects\n'],
     ['an anchored version after the other keys, whose name a dataset defines again',
      ossieFile({orders: '    ai_context: {instructions: &v 0.3.0.dev0}\n'}).replace('version: 0.3.0.dev0\n', '') +
          'version: &v 0.3.0.dev0\nrelationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
          'to_columns: [id], ai_context: {instructions: *v}}]\n',
      {}, WRAPPED, '        to_columns: [id]\n        ai_context:\n          instructions: 0.3.0.dev0\n'],
-    ['an anchored version that stays first, whose name a dataset defines again',
-     ossieFile({version: '&v 0.3.0.dev0', orders: '    description: *v\n' + SUM,
-                rest: '    description: &v 0.3.0.dev0\n'}),
-     {}, WRAPPED, '    metrics:\n      # The sum.\n      - name: m\n'],
-    ['an alias key whose name the file defines twice',
-     ossieFile({orders: SUM, rest: '    ai_context: {note: &k a, instructions: &k b}\n' +
-                    'relationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
-                    'to_columns: [id], ai_context: {*k : c}}]\n'}),
+    ['a file that defines each anchor name once, which keeps its comments',
+     ossieFile({orders: SUM, rest: '    ai_context: {note: &k a}\nrelationships: [{name: r, from: orders, to: customers, ' +
+                    'from_columns: [order_id], to_columns: [id], ai_context: {note: *k}}]\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      '    metrics:\n      # The sum.\n      - name: m\n'],
-    ['an alias in the value of an alias key, whose name the file defines twice',
-     ossieFile({orders: '    ai_context:\n      note: &k a\n      instructions: &k b\n      custom:\n        *k : {x: *k}\n' + SUM}),
-     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     '    metrics:\n      # The sum.\n      - name: m\n'],
-    ['a .nan key whose value is an alias of a name the file defines twice',
-     ossieFile({orders: '    ai_context:\n      note: &k a\n      instructions: &k b\n      .nan: *k\n' + SUM}),
-     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     '    metrics:\n      # The sum.\n      - name: m\n'],
-    ['a list key that holds an alias of a name the file defines twice',
-     ossieFile({orders: '    ai_context:\n      note: &k a\n      instructions: &k b\n      custom: {[*k]: c}\n' + SUM}),
-     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     '    metrics:\n      # The sum.\n      - name: m\n'],
-    ['a dataset metric written as an alias whose name the file defines twice',
-     ossieFile({orders: '    metrics:\n      # The sum.\n      - &w\n        name: m\n        expression:\n          sql: SUM(amount)\n',
-                rest: '    metrics:\n      - *w\ndescription: &w The shop.\n'}),
-     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     '    metrics:\n      # The sum.\n      - &w\n        name: m\n'],
-    ["an alias in a moved metric whose anchor's name a later dataset defines again",
-     ossieFile({orders: '    ai_context: {synonyms: [&n total]}\n' + SUM + '        ai_context: {synonyms: [*n]}\n',
-                rest: '    ai_context: {synonyms: [&n total]}\n'}),
-     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
-     '        ai_context:\n          synonyms:\n            - total\n'],
     ["a dataset's metrics key written as an alias",
      ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
@@ -447,58 +420,15 @@ relationships:
       ${key}: *note
 `;
 
-  test("writes out an alias when a moved metric defines its anchor's name again above it", async () => {
-    const res = await importSemanticModelYaml(notes('Counts orders.', 'Counts customers.'), {flavor: 'ossie'});
-    expect(res.files[0].content).toBe(`version: "0.2.0.dev0"
-semantic_model:
-  - name: shop
-    datasets:
-      - name: orders
-        source: ${TABLES}/orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: id}]}
-      - name: customers
-        source: ${TABLES}/customers
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: id}]}
-        ai_context:
-          note: &note Counts customers.
-    metrics:
-      - name: customer_count
-        expression: {dialects: [{dialect: OSSIE_SQL_2026, expression: COUNT(customers.id)}]}
-      - name: order_count
-        expression:
-          dialects:
-            - dialect: OSSIE_SQL_2026
-              expression: COUNT(orders.id)
-        ai_context:
-          note: &note Counts orders.
-        custom_extensions:
-          - vendor_name: GOOGLE
-            data: '{"entity":"orders"}'
-    relationships:
-      - name: orders_customers
-        from: orders
-        to: customers
-        from_columns: [id]
-        to_columns: [id]
-        ai_context:
-          note: Counts customers.
-`);
-  });
-
   // The Google flavor moves `note` into `custom` and leaves `instructions` in
   // place.
   test.each([
+    ['ossie', 'note', 'Counts orders.', 'Counts customers.', 'Counts customers.'],
     ['ossie', 'note', '.nan', 'null', 'null'],
     ['ossie', 'note', '-0', '0', '0'],
     ['ossie', 'note', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
     ['google', 'instructions', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
-  ] as const)('writes out such an alias in the %s flavor under %s when the moved anchor holds %s and its own anchor %s', async (flavor, key, moved, later, written) => {
+  ] as const)('writes out the alias in the %s flavor under %s when the moved anchor holds %s and its own anchor %s', async (flavor, key, moved, later, written) => {
     const res = await importSemanticModelYaml(notes(moved, later, key), {flavor});
     expect(res.files[0].content).toEndWith(`to_columns: [id]\n        ai_context:\n          ${key}: ${written}\n`);
   });

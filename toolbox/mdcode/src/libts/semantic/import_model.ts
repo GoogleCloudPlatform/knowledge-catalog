@@ -21,7 +21,7 @@ import {loadSqlEngine, soleColumn} from './sql_parser';
 import {hasDoubleQuotedColumn, transpileModel} from './transpile';
 import {localChecks, pruningLines, withProfileFiles, yamlChangedStatementErrors} from './validate';
 import {documentValue, YAML_OPTIONS, yamlErrorMessage} from './yaml_options';
-import {aliasNodes, linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
+import {linkNodes, movedItems, nodeJson, parseForUpdate, spliced, updateText, wrappedRoot} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -537,24 +537,23 @@ function moveDatasetMetrics(
  * document root, with the model wrapped in `semantic_model`, and then with the
  * metrics its datasets list moved to the model (see movingDatasets). Each edit
  * is made on the text, so every comment stays, when the edited text reads as
- * the edited value. Gives the text, its document and the edits made.
+ * the edited value. A document that defines an anchor name more than once
+ * gets no edit, since moved text could change what its aliases name. Gives
+ * the text, its document and the edits made.
  */
 function rootModelText(text: string, document: yaml.Document.Parsed): {
   text: string; document: yaml.Document.Parsed; wrapped: boolean;
   moved: boolean;
 } {
-  // A text whose alias no longer finds its anchor, or names another node
-  // than in `from`, does not read back. `links` maps each object of the value
-  // to its node in `from`.
-  const edited = (
-      t: string, value: unknown, from: yaml.Document,
-      links: ReadonlyMap<object, yaml.Node>) => {
+  if (redefinesAnchor(document)) {
+    return {text, document, wrapped: false, moved: false};
+  }
+  // A text whose alias no longer finds its anchor does not read back.
+  const edited = (t: string, value: unknown) => {
     const d = parseForUpdate(t).document;
     try {
-      const dLinks = linkNodes(value, d.contents);
-      return !d.errors.length && isDeepStrictEqual(d.toJS(), value) &&
-              sameAliasNodes(from, links, d, dLinks) ?
-          {text: t, document: d, links: dLinks} :
+      return !d.errors.length && isDeepStrictEqual(d.toJS(), value) ?
+          {text: t, document: d} :
           undefined;
     } catch {
       return undefined;
@@ -562,16 +561,11 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
   };
   // A plain copy, so that an alias and its anchor are two values.
   const {version, ...model} = plainCopy(document.toJS());
-  // The value of each text. The input's root stands for the model and for the
-  // root that wraps it, so its `version` stands for the wrapped root's.
-  const root = {version, semantic_model: [model]};
-  const links =
-      linkNodes(model, document.contents).set(root, document.contents!);
   // A root with no key but `version` has nothing to move by text.
   const wrapped = Object.keys(model).length ?
       edited(
-          wrappedRoot(text, document, 'semantic_model', 'version'), root,
-          document, links) :
+          wrappedRoot(text, document, 'semantic_model', 'version'),
+          {version, semantic_model: [model]}) :
       undefined;
   if (!wrapped) return {text, document, wrapped: false, moved: false};
   const datasets = movingDatasets(model);
@@ -587,74 +581,24 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
       undefined;
   const moved = movedText === undefined ?
       undefined :
-      edited(movedText, root, wrapped.document, wrapped.links);
+      edited(movedText, {version, semantic_model: [model]});
   return moved ? {...moved, wrapped: true, moved: true} :
                  {...wrapped, wrapped: true, moved: false};
 }
 
-/**
- * Whether each alias of `from` whose name `from` defines more than once names
- * the same node in `to`. Two nodes are the same when `fromLinks` and `toLinks`
- * map one object to them. In two nodes that are the same, a pair with a scalar
- * key is the same as the next pair with an equal key, `.nan` included. A pair
- * with another key, such as an alias, is the same as the pair at its place
- * among such pairs. A list item is the same as the item of `to` that holds its
- * object, such as a metric moved to another list. Any other list item is the
- * same as the item at its place. The keys of two pairs that are the same are
- * the same, and so are their values.
- */
-function sameAliasNodes(
-    from: yaml.Document, fromLinks: ReadonlyMap<object, yaml.Node>,
-    to: yaml.Document, toLinks: ReadonlyMap<object, yaml.Node>): boolean {
-  const same = new Map<unknown, unknown>();
-  const holder = new Map<unknown, unknown>();
-  for (const [value, node] of toLinks) {
-    if (!Array.isArray(value)) continue;
-    value.forEach((v, i) => void (typeof v === 'object' && v !== null &&
-                                  holder.set(v, (node as yaml.YAMLSeq).items[i])));
-  }
-  // Pairs `node`, whose value is `value` when it has a link, with `other`,
-  // and then its items. A linked item pairs through its own link.
-  const linked = new Set<unknown>(fromLinks.values());
-  const pair = (node: unknown, other: unknown, value?: unknown) => {
-    same.set(node, other);
-    if (!yaml.isCollection(node)) return;
-    const items = yaml.isCollection(other) ? other.items as unknown[] : [];
-    // The pairs of `other` by scalar key. A Map finds a NaN key, and takes -0
-    // for 0, which one mapping cannot hold both of. The pairs with another key
-    // are under `node` itself.
-    const pairs = new Map<unknown, yaml.Pair[]>();
-    for (const p of items) {
-      if (!yaml.isPair(p)) continue;
-      const k = yaml.isScalar(p.key) ? p.key.value : node;
-      pairs.set(k, [...pairs.get(k) ?? [], p]);
-    }
-    (node.items as unknown[]).forEach((item, i) => {
-      const v = Array.isArray(value) ? value[i] : undefined;
-      if (!yaml.isPair(item)) {
-        if (!linked.has(item)) pair(item, holder.get(v) ?? items[i]);
-        return;
-      }
-      const match =
-          pairs.get(yaml.isScalar(item.key) ? item.key.value : node)?.shift();
-      if (!match) return;
-      pair(item.key, match.key);
-      if (!linked.has(item.value)) pair(item.value, match.value);
-    });
-  };
-  for (const [value, node] of fromLinks) pair(node, toLinks.get(value), value);
-  // An alias whose name is defined once names that definition or none, and
-  // the value read back shows which.
-  const names: string[] = [];
-  yaml.visit(from, {
-    Node: (_, n) => void (!yaml.isAlias(n) && n.anchor && names.push(n.anchor)),
+/** Whether `doc` defines some anchor name more than once. */
+function redefinesAnchor(doc: yaml.Document): boolean {
+  const names = new Set<string>();
+  let again = false;
+  yaml.visit(doc, {
+    Node: (_, n) => {
+      if (!n.anchor) return undefined;
+      again = names.has(n.anchor);
+      names.add(n.anchor);
+      return again ? yaml.visit.BREAK : undefined;
+    },
   });
-  const toNodes = aliasNodes(to);
-  return [...aliasNodes(from)].every(([a, node]) => {
-    const b = same.get(a);
-    return names.indexOf(a.source) === names.lastIndexOf(a.source) ||
-        yaml.isAlias(b) && same.get(node) === toNodes.get(b);
-  });
+  return again;
 }
 
 /**

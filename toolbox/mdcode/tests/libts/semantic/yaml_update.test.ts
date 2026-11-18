@@ -538,6 +538,15 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.k.e = v.m.e, delete v.m.e, v.m.z = 1), 'm:\n  z: 1\nk: {a: 1, e: null}\n'
   ],
   [
+    'a value given to a flow mapping key that is only an anchor', 'm: {&x}\nb: *x\n', v => v.m[''] = 5,
+    'm: {&x : 5}\nb: null\n'
+  ],
+  ['a value given to a flow mapping key that is only a tag', 'm: {!!str}\n', v => v.m[''] = 5, 'm: {!!str : 5}\n'],
+  ['a value given to a flow mapping key that is only `!`', 'm: {!}\n', v => v.m[''] = 5, 'm: {! : 5}\n'],
+  ['a value given to a flow mapping key that is only `?`', 'm: {?}\n', v => v.m[''] = 5, 'm: {? : 5}\n'],
+  ['a value given to a later flow mapping key that is only `?`', 'm: {a: 1, ?}\n', v => v.m[''] = 5, 'm: {a: 1, ? : 5}\n'],
+  ['a value given to a pair in a flow list whose key is only `?`', 'm: [?]\n', v => v.m[0][''] = 5, 'm: [? : 5]\n'],
+  [
     'a first key removed above a comment at column 0',
     'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
   ],

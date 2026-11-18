@@ -64,7 +64,7 @@ export function linkNodes(
  * The node each alias of `doc` names: the last node above it with its anchor,
  * or undefined when there is none.
  */
-export function aliasNodes(doc: yaml.Document):
+function aliasNodes(doc: yaml.Document):
     Map<yaml.Alias, yaml.Node|undefined> {
   const named = new Map<yaml.Alias, yaml.Node|undefined>();
   const anchors = new Map<string, yaml.Node>();
@@ -283,7 +283,10 @@ interface Update {
 interface Slot {
   /** The column of the key or `-` that holds the node. */
   col: number;
-  /** `:` after a key, or `-`. */
+  /**
+   * `:` after a key, or `-`. ` :` after a flow key with no `:` and no text of
+   * its own.
+   */
   prefix: string;
   /**
    * The offset after that `:` or `-`, or after a key written with no `:`.
@@ -422,11 +425,15 @@ function patchItems(
     const sep = yaml.isPair(item) ?
         item.srcToken?.sep?.find(s => s.type === 'map-value-ind')?.offset :
         g[i].start;
-    const prefix = yaml.isPair(item) ? ':' : '-';
     // A key written with no `:`, as `b` in `{a: 1, b}`, has its slot right
-    // after it.
-    const after = sep !== undefined ? sep + 1 :
-        ((item as yaml.Pair).key as yaml.Node).range![1];
+    // after it. A key with no text of its own, as in `{&x}` or `{?}`, ends in
+    // an anchor, a tag or `?`, so a space goes before the new `:`, which would
+    // otherwise join them.
+    const key = yaml.isPair(item) ? item.key as yaml.Node : undefined;
+    const after = sep !== undefined ? sep + 1 : key!.range![1];
+    const spaced = sep === undefined && flow && key!.range![0] === after &&
+        /\S/.test(t[after - 1]);
+    const prefix = !yaml.isPair(item) ? '-' : spaced ? ' :' : ':';
     return {col, prefix, after, flow, props: props[i]};
   };
   // Removes each run of items no entry keeps.
