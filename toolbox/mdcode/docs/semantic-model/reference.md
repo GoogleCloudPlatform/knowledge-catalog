@@ -957,10 +957,11 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   `DATABRICKS`, `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing
   entry, or one that gives no dialect, stops the command before anything is
   written. So does an entry whose `fullyQualifiedName` names something other
-  than a table or view, such as the schema `snowflake:acme.retail.public`. A
-  field the model file binds to the table then needs SQL in that dialect or in
-  `ANSI_SQL`. So does every field and metric of a profile whose sources fix
-  that dialect. *(live — needs read access to the entry)*
+  than a table or view, such as the schema `snowflake:acme.retail.public`. The
+  message for an entry that cannot be read ends with what Dataplex said about
+  the lookup. A field the model file binds to the table then needs SQL in that
+  dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
+  sources fix that dialect. *(live — needs read access to the entry)*
 * **A Spanner table takes its database's dialect.** Knowledge Catalog does not
   record whether a Spanner database is GoogleSQL or PostgreSQL, so push and
   `kcmd profiles` read each database a source names once, with the Spanner

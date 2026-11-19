@@ -116,12 +116,21 @@ describe('sourceDialects', () => {
   const PG = `${INSTANCE}/pg`;
   const SHOP = `${INSTANCE}/shop`;
   const NO_TABLE = 'names no table Knowledge Catalog knows about.';
+  const NO_INSTANCE = `${NO_TABLE} Knowledge Catalog has no entry you may read for its ` +
+      "instance 'ms' in project 'acme' and region 'us-central1'. The project ID, the region " +
+      "or the instance name may be wrong, or you may not be allowed to read the instance's " +
+      'entry. Check the source and your access. Dataplex said:';
+  // What Dataplex says of a missing entry, and of every lookup when its API is
+  // off in the project the call is billed to.
+  const denied = (resourceName: string) => entryDenied(entryName(resourceName)).message;
+  const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
+      'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
+      'dataplex.googleapis.com/overview?project=123 then retry.';
   test.each([
-    ['no instance', SQLSERVER, {}, [MS],
-     `${NO_TABLE} Knowledge Catalog has no entry you may read for its instance 'ms' in ` +
-     "project 'acme' and region 'us-central1'. The project ID, the region or the instance " +
-     "name may be wrong, or you may not be allowed to read the instance's entry. Check the " +
-     'source and your access.'],
+    ['no instance', SQLSERVER, {}, [MS], `${NO_INSTANCE} ${denied(MS)}`],
+    ['the Dataplex API off', SQLSERVER,
+     {[SQLSERVER]: {status: 403, message: DISABLED}, [MS]: {status: 403, message: DISABLED}},
+     [MS], `${NO_INSTANCE} ${DISABLED}`],
     ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, {project: '655216118709'})}, [MS],
      `${NO_TABLE} Dataplex integration is off for instance 'ms'. Turn it on with 'gcloud sql ` +
      "instances patch ms --enable-dataplex-integration --project acme' and wait for the " +
@@ -144,9 +153,11 @@ describe('sourceDialects', () => {
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
      `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
      'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
-     'the table.'],
-    ['every part of a MySQL table', MYSQL,
-     {[SHOP]: 'cloudsql-mysql-instance', [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
+     `the table. Dataplex said: ${denied(SQLSERVER)}`],
+    // A 403 with no message adds nothing.
+    ['every part of a MySQL table, whose lookup gives no message', MYSQL,
+     {[MYSQL]: {status: 403}, [SHOP]: 'cloudsql-mysql-instance',
+      [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
      [SHOP, `${SHOP}/databases/sales`],
      `${NO_TABLE} Its instance and database are in the catalog. The table may not exist, or ` +
      'it may be too new to be in the catalog yet. Check the table name, or create the table.'],
@@ -155,12 +166,14 @@ describe('sourceDialects', () => {
      'from the source.'],
     ['no schema on a PostgreSQL instance', MYSQL, {[SHOP]: 'cloudsql-postgresql-instance'}, [SHOP],
      `${NO_TABLE} Instance 'shop' runs PostgreSQL, so a table's name includes its schema. ` +
-     "Add 'schemas/<schema>/' before 'tables/' in the source."],
+     "Add 'schemas/<schema>/' before 'tables/' in the source, such as 'schemas/public/' for " +
+     'the default schema.'],
     // The name is wrong whether or not integration is on, so it is named first.
     ['no schema on a SQL Server instance with Dataplex integration off',
      `${MS}/databases/shop/tables/orders`, {[MS]: integration(false)}, [MS],
      `${NO_TABLE} Instance 'ms' runs SQL Server, so a table's name includes its schema. ` +
-     "Add 'schemas/<schema>/' before 'tables/' in the source."],
+     "Add 'schemas/<schema>/' before 'tables/' in the source, such as 'schemas/dbo/' for " +
+     'the default schema.'],
     ['a schema on a MySQL instance with Dataplex integration off', POSTGRES,
      {[PG]: integration(false, {engine: 'mysql'})}, [PG],
      `${NO_TABLE} Instance 'pg' runs MySQL, which has no schemas. Remove 'schemas/sales/' ` +

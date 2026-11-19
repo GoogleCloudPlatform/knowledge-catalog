@@ -31,7 +31,7 @@ import type {SpannerClient} from '../gcp/spanner';
 
 import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, EntryRead, lookupSystemEntry, Read, read} from './catalog_entry';
-import {storeMessage} from './parameters';
+import {sentence, storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
 // The dialect each entrySource.system gives, in lower case.
@@ -130,12 +130,23 @@ export function dialectErrors(
 const CLOUDSQL_INSTANCE_ASPECT =
     'projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance';
 
+// A Cloud SQL engine's name, and its default schema when it has schemas.
+type Engine = {name: string; defaultSchema?: string};
+
 // The engine each Cloud SQL instance entry type names.
-const ENGINE_OF_INSTANCE_TYPE: Record<string, string> = {
-  'cloudsql-mysql-instance': 'MySQL',
-  'cloudsql-postgresql-instance': 'PostgreSQL',
-  'cloudsql-sqlserver-instance': 'SQL Server',
+const ENGINE_OF_INSTANCE_TYPE: Record<string, Engine> = {
+  'cloudsql-mysql-instance': {name: 'MySQL'},
+  'cloudsql-postgresql-instance': {name: 'PostgreSQL', defaultSchema: 'public'},
+  'cloudsql-sqlserver-instance': {name: 'SQL Server', defaultSchema: 'dbo'},
 };
+
+// Dataplex's own message for a lookup it refused, as a sentence to add after
+// kcmd's, or '' when it gave none. Dataplex answers 403 for causes kcmd cannot
+// tell apart, such as a missing entry or the Dataplex API being off in the
+// project the call is billed to, and its message says which.
+function dataplexSaid({message}: {message?: string}): string {
+  return message?.trim() ? ` Dataplex said: ${sentence(message)}` : '';
+}
 
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
 // third-party table the files `texts` write (see sourcesToLookUp), and of every
@@ -216,7 +227,7 @@ async function cloudSqlDialect(
     return {
       unread: true,
       reason: ` names no table Knowledge Catalog knows about. ${
-          await missingCloudSqlPart(table, lookUpPart)}`,
+          await missingCloudSqlPart(table, lookUpPart, res)}`,
     };
   }
   // The type comes back as a full name; its last part says the engine.
@@ -245,9 +256,12 @@ async function cloudSqlDialect(
 // When every part can be read, the table may not exist, or it may be too new
 // to be in the catalog yet. When a part's lookup fails in another way, such as
 // with another status or with no answer, it says kcmd could not tell why and
-// gives that lookup's error.
+// gives that lookup's error. When the instance's entry cannot be read, it adds
+// Dataplex's message for that lookup. When every part can be read, it adds
+// Dataplex's message for the table's lookup, which `refused` holds.
 async function missingCloudSqlPart(
-    table: CloudSqlTable, lookUp: PartLookup): Promise<string> {
+    table: CloudSqlTable, lookUp: PartLookup,
+    refused: {message?: string}): Promise<string> {
   const {project, location, instance, database, schema} = table;
   const instanceId = `cloudsql.googleapis.com/projects/${project}/locations/${
       location}/instances/${instance}`;
@@ -259,18 +273,19 @@ async function missingCloudSqlPart(
         `'${instance}' in project '${project}' and region '${location}'. ` +
         `The project ID, the region or the instance name may be wrong, or ` +
         `you may not be allowed to read the instance's entry. Check the ` +
-        `source and your access.`;
+        `source and your access.${dataplexSaid(found)}`;
   }
   const type = (found.result.entryType ?? '').split('/').pop() ?? '';
   const engine = ENGINE_OF_INSTANCE_TYPE[type];
-  if (engine === 'MySQL' && schema !== undefined) {
-    return `Instance '${instance}' runs MySQL, which has no schemas. Remove ` +
-        `'schemas/${schema}/' from the source.`;
+  if (engine && !engine.defaultSchema && schema !== undefined) {
+    return `Instance '${instance}' runs ${engine.name}, which has no ` +
+        `schemas. Remove 'schemas/${schema}/' from the source.`;
   }
-  if (engine && engine !== 'MySQL' && schema === undefined) {
-    return `Instance '${instance}' runs ${engine}, so a table's name ` +
+  if (engine?.defaultSchema && schema === undefined) {
+    return `Instance '${instance}' runs ${engine.name}, so a table's name ` +
         `includes its schema. Add 'schemas/<schema>/' before 'tables/' in ` +
-        `the source.`;
+        `the source, such as 'schemas/${engine.defaultSchema}/' for the ` +
+        `default schema.`;
   }
   // The aspect's key names its type's project by ID or by number.
   const integration = Object.entries(found.result.aspects ?? {}).find(
@@ -307,7 +322,7 @@ async function missingCloudSqlPart(
                                          'instance, database and schema';
   return `Its ${present} are in the catalog. The table may not exist, or it ` +
       `may be too new to be in the catalog yet. Check the table name, or ` +
-      `create the table.`;
+      `create the table.${dataplexSaid(refused)}`;
 }
 
 // The dialect of the Spanner database `database`, by its databaseDialect.
@@ -348,7 +363,7 @@ async function thirdPartyDialect(
       reason: ` names no table Knowledge Catalog knows about. The entry ` +
           `may not exist, or you may not be allowed to read it. kcmd reads a ` +
           `third-party table's dialect from its entry, so add the table to ` +
-          `Knowledge Catalog, or fix the source.`,
+          `Knowledge Catalog, or fix the source.${dataplexSaid(res)}`,
     };
   }
   const {fullyQualifiedName: fqn, entrySource} = res.result;

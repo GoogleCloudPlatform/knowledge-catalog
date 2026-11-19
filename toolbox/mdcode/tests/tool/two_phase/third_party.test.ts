@@ -25,7 +25,7 @@ const MISSING = err(
     `[commerce] source '${ENTRY}' names no table Knowledge Catalog knows about. The ` +
     'entry may not exist, or you may not be allowed to read it. kcmd reads a ' +
     "third-party table's dialect from its entry, so add the table to " +
-    'Knowledge Catalog, or fix the source.');
+    `Knowledge Catalog, or fix the source. Dataplex said: ${entryDenied(ENTRY).message}`);
 const BQ = 'a BigQuery graph';
 const SPANNER = "Spanner database 'test-project/i/db'";
 const ALLOYDB_DB = "AlloyDB database 'test-project/us-central1/c/db'";

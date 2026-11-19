@@ -116,10 +116,13 @@ instance, database and schema, and reports the first of these that holds:
 
 1. The instance's entry cannot be read. The project ID, the region or the
    instance name may be wrong, or the caller may not be allowed to read the
-   entry.
+   entry. The message ends with what Dataplex said about the lookup.
+   Dataplex's text names causes `kcmd` cannot see, such as the Dataplex API
+   being turned off in the project the call is billed to.
 2. The table's name does not fit the engine the instance's entry gives. A
    MySQL table's name has no schema. A PostgreSQL or SQL Server table's name
-   has one.
+   has one. For a name with no schema, the message names the engine's default
+   schema: `schemas/public/` for PostgreSQL and `schemas/dbo/` for SQL Server.
 3. The instance's entry says Dataplex integration is off. The message gives
    the command that turns it on.
 4. The database's entry cannot be read. The database may not exist, or it may
@@ -128,7 +131,8 @@ instance, database and schema, and reports the first of these that holds:
    too new to be in the catalog yet.
 
 When every part can be read, the table may not exist, or it may be too new to
-be in the catalog yet. When one of these lookups fails in another way, such as
+be in the catalog yet. The message then ends with what Dataplex said about the
+table's lookup. When one of these lookups fails in another way, such as
 with another HTTP status or with no answer, the message says `kcmd` could not
 tell why and gives that lookup's error.
 
