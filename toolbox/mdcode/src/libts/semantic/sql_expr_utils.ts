@@ -481,10 +481,11 @@ export function measureAggregates(expression: string, dialect: string):
     };
   }
   // BigQuery accepts a graph whose measure calls a user-defined function
-  // outside its aggregates, but every GRAPH_EXPAND query on that node table
-  // then fails with "Function not found". One inside an aggregate's operand
-  // becomes a property, so it stays allowed.
-  const udf = userDefinedFunction(sqlExpressionTree(rest, dialect));
+  // outside its aggregates, even one named with its project, but every
+  // GRAPH_EXPAND query on that node table then fails with "Function not
+  // found". One inside an aggregate's operand becomes a property, which
+  // projectlessFunction checks.
+  const [udf] = userDefinedFunctions(sqlExpressionTree(rest, dialect));
   if (udf) {
     return {
       problem: `it calls user-defined function '${udf}' outside an ` +
@@ -494,28 +495,78 @@ export function measureAggregates(expression: string, dialect: string):
   return {aggregates};
 }
 
-// The first user-defined function the parser's tree `node` calls, by its
-// dotted name, such as `ds.f`, or undefined when it calls none: a call whose
-// name has a dot, other than `SAFE.` before one name, as in `SAFE.LOG10`.
-// BigQuery reads `ml.f` or `net.f` as the function of a dataset with that
-// name. The parser reads `` `p.ds.f`(…) `` as a function of that name, and
-// `ds.f(…)` or `p.ds.f(…)` as a method call on a column.
-function userDefinedFunction(node: unknown): string|undefined {
-  if (node === null || typeof node !== 'object') return undefined;
-  for (const [kind, value] of Object.entries(node)) {
+// The first user-defined function `expression`, read in `dialect`, calls by a
+// dataset and a name alone, as in `ds.f(x)` or `` `ds.f`(x) ``, or undefined
+// when it calls none or the parser cannot read it. BigQuery creates a graph
+// whose property calls one, but every query on the graph then fails with
+// "Function not found: ds.f". One named with its project, as in
+// `` `p.ds.f`(x) ``, works.
+export function projectlessFunction(
+    expression: string, dialect: string): string|undefined {
+  return userDefinedFunctions(sqlExpressionTree(expression, dialect))
+      .find(name => name.split('.').length === 2);
+}
+
+// BigQuery's built-in functions whose names have a dot, from its function
+// reference. BigQuery reads any other dotted name, such as `ml.score` or
+// `net.score`, as the function of a dataset with that name.
+const BIGQUERY_DOTTED_FUNCTIONS: ReadonlySet<string> = new Set(
+    Object.entries({
+      AEAD: 'DECRYPT_BYTES DECRYPT_STRING ENCRYPT',
+      AI: 'AGG CAUSAL_EFFECT CHUNK_DOCUMENT CLASSIFY COUNT_TOKENS ' +
+          'DETECT_ANOMALIES EMBED EVALUATE FORECAST GENERATE GENERATE_BOOL ' +
+          'GENERATE_DOUBLE GENERATE_EMBEDDING GENERATE_INT GENERATE_TABLE ' +
+          'GENERATE_TEXT IF KEY_DRIVERS PARSE_DOCUMENT PREDICT RANK SCORE ' +
+          'SEARCH SIMILARITY TRANSLATE',
+      HLL_COUNT: 'EXTRACT INIT MERGE MERGE_PARTIAL',
+      KEYS: 'ADD_KEY_FROM_RAW_BYTES KEYSET_CHAIN KEYSET_FROM_JSON ' +
+          'KEYSET_LENGTH KEYSET_TO_JSON NEW_KEYSET NEW_WRAPPED_KEYSET ' +
+          'REWRAP_KEYSET ROTATE_KEYSET ROTATE_WRAPPED_KEYSET',
+      KLL_QUANTILES: 'EXTRACT_FLOAT64 EXTRACT_INT64 EXTRACT_POINT_FLOAT64 ' +
+          'EXTRACT_POINT_INT64 INIT_FLOAT64 INIT_INT64 MERGE_FLOAT64 ' +
+          'MERGE_INT64 MERGE_PARTIAL MERGE_POINT_FLOAT64 MERGE_POINT_INT64',
+      ML: 'ADVANCED_WEIGHTS ANNOTATE_IMAGE ARIMA_COEFFICIENTS ARIMA_EVALUATE ' +
+          'BAG_OF_WORDS BUCKETIZE CENTROIDS CONFUSION_MATRIX ' +
+          'CONVERT_COLOR_SPACE CONVERT_IMAGE_TYPE CORRELATION DECODE_IMAGE ' +
+          'DESCRIBE_DATA DETECT_ANOMALIES DETECT_CHANGE_POINTS DISTANCE ' +
+          'ENTITY_FEATURES_AT_TIME EVALUATE EXPLAIN_FORECAST EXPLAIN_PREDICT ' +
+          'FEATURE_CROSS FEATURE_IMPORTANCE FEATURE_INFO FEATURES_AT_TIME ' +
+          'FORECAST GENERATE_EMBEDDING GENERATE_TEXT GET_INSIGHTS ' +
+          'GLOBAL_EXPLAIN HASH_BUCKETIZE HOLIDAY_INFO IMPUTER LABEL_ENCODER ' +
+          'LP_NORM MAX_ABS_SCALER METRICS MIN_MAX_SCALER MULTI_HOT_ENCODER ' +
+          'NGRAMS NORMALIZER ONE_HOT_ENCODER POLYNOMIAL_EXPAND PREDICT ' +
+          'PRINCIPAL_COMPONENT_INFO PRINCIPAL_COMPONENTS PROCESS_DOCUMENT ' +
+          'QUANTILE_BUCKETIZE RECOMMEND RECONSTRUCTION_LOSS RESIZE_IMAGE ' +
+          'ROBUST_SCALER ROC_CURVE SEASONALITY STANDARD_SCALER TFDV_DESCRIBE ' +
+          'TFDV_VALIDATE TF_IDF TRAINING_INFO TRANSCRIBE TRANSFORM TRANSLATE ' +
+          'TREND TRIAL_INFO UNDERSTAND_TEXT VALIDATE_DATA_DRIFT ' +
+          'VALIDATE_DATA_SKEW WEIGHTS',
+      NET: 'HOST IP_FROM_STRING IP_NET_MASK IP_TO_STRING IP_TRUNC ' +
+          'IPV4_FROM_INT64 IPV4_TO_INT64 PUBLIC_SUFFIX REG_DOMAIN ' +
+          'SAFE_IP_FROM_STRING',
+      OBJ: 'FETCH_METADATA GET_ACCESS_URL GET_READ_URL LIST MAKE_REF',
+      VECTOR_INDEX: 'STATISTICS',
+    }).flatMap(([space, names]) => names.split(' ').map(n => `${space}.${n}`)));
+
+// The user-defined functions the parser's tree `node` calls, by their dotted
+// names, such as `ds.f`, in the order written: each call whose name has a
+// dot, other than one of BIGQUERY_DOTTED_FUNCTIONS, such as `NET.HOST`, or
+// `SAFE.` before one name, as in `SAFE.LOG10`. The parser reads
+// `` `p.ds.f`(…) `` as a function of that name, and `ds.f(…)` or `p.ds.f(…)`
+// as a method call on a column.
+function userDefinedFunctions(node: unknown): string[] {
+  if (node === null || typeof node !== 'object') return [];
+  return Object.entries(node).flatMap(([kind, value]) => {
     const name = kind === 'function' ? String(value.name) :
         kind === 'method_call' ?
         [...namePath(value.this), value.method?.name].join('.') :
         '';
     const parts = name.split('.');
-    if (parts.length > 1 &&
-        !(parts.length === 2 && parts[0].toUpperCase() === 'SAFE')) {
-      return name;
-    }
-    const inner = userDefinedFunction(value);
-    if (inner) return inner;
-  }
-  return undefined;
+    const udf = parts.length > 1 &&
+        !(parts.length === 2 && parts[0].toUpperCase() === 'SAFE') &&
+        !BIGQUERY_DOTTED_FUNCTIONS.has(name.toUpperCase());
+    return [...udf ? [name] : [], ...userDefinedFunctions(value)];
+  });
 }
 
 // The parts of the dotted name the parser's tree `node` reads, such as

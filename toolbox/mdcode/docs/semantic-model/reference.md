@@ -459,7 +459,7 @@ becomes one part of that graph:
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. A measure over a field that reads another column also adds that column as a property, and a measure over other SQL adds a property named `<metric>_input`. A column whose name another property in the graph already has goes through a `<metric>_input` property too. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables; a relationship declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
-| Metric | `MEASURE` on a node table | must resolve to a single entity and read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; BigQuery's built-in scalar SQL may combine them, as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a user-defined function may not (otherwise the push is rejected; see [Validation](#validation)) |
+| Metric | `MEASURE` on a node table | must resolve to a single entity and read every field inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; BigQuery's built-in scalar SQL may combine them, as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a user-defined function may not, and one inside an aggregate must be written with its project (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down; a supertype forms no node table of its own (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 | Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
@@ -931,10 +931,14 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   becomes a measure, so it must read every field inside `SUM`, `AVG`, `COUNT`,
   `MIN` or `MAX`, each over one operand. Scalar SQL may combine the aggregates,
   as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around
-  them must be a BigQuery built-in function whose name has no dot, or one with
-  the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
-  text. A BigQuery or Spanner graph cannot hold an entity and a relationship
-  whose names match ignoring case. The `graphs/<g>` segment of a Spanner
+  them must be one of BigQuery's built-in functions, such as `SAFE_DIVIDE` or
+  `NET.HOST`. The measure rule skips a metric that has only a vendor text. A
+  field, or an aggregate's operand in a metric, that calls a user-defined
+  function must write it with its project, as in
+  `` `my-project.ds.f`(amount) ``: BigQuery creates a graph whose property calls
+  `ds.f(amount)`, but every query on the graph then fails with "Function not
+  found: ds.f". A BigQuery or Spanner graph cannot hold an entity and a
+  relationship whose names match ignoring case. The `graphs/<g>` segment of a Spanner
   target names the graph. Spanner takes a graph name that starts with a
   letter, holds only letters, digits and underscores, and is at most 128
   characters long. The name cannot be that of a table the graph reads,
@@ -947,8 +951,9 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   at most eight synonyms of one to 300 characters each. No two of them may
   match ignoring case, and none may match the element's own name.
   A deployment that names a profile is held to the graph `primary_key` rule
-  and, on BigQuery, the join-key and measure rules under that profile, with the
-  keys and joins it states, except for the metrics it leaves unavailable. On
+  and, on BigQuery, the join-key, measure and user-defined function rules under
+  that profile, with the keys and joins it states, except for the metrics it
+  leaves unavailable. On
   Spanner, that profile must leave every metric unavailable.
   *(static)*
 * **A third-party table is written as its entry name, and takes the dialect

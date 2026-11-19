@@ -28,7 +28,7 @@ import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
+import {columnsForSource, isColumnName, measureAggregates, measureEntities, projectlessFunction, requalified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
 import {movedOffset} from './yaml_update';
@@ -271,16 +271,23 @@ export function validateDeployments(
       validateExpressionReferences(
           [{document, model}], false, [], referenced, load);
     }
+    // The metrics reported here or by the reference rules, which the
+    // function check leaves out.
+    const reported = new Set(referenced);
     for (const m of available) {
       const problem =
           !referenced.has(m.name) && measureProblem(bound.model, m);
       if (problem) {
+        reported.add(m.name);
         add(d.name,
             `targets BigQuery, where metric '${m.name}' cannot be a measure: ${
                 problem}.`);
       }
     }
     for (const p of bigQueryOptionProblems(bound.model)) add(d.name, p);
+    for (const p of bigQueryFunctionProblems(bound.model, reported)) {
+      add(d.name, p);
+    }
   }
   // The verb that starts each problem agrees with the number of deployments.
   return [...problems].map(([problem, names]) => {
@@ -708,6 +715,58 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
   }
   for (const m of model.metrics ?? []) element('metric', m);
   return problems.map(p => `targets BigQuery, where ${p}`);
+}
+
+// One message for each property of `model`'s BigQuery graph that calls a
+// user-defined function by its dataset and name alone, as in `ds.f(amount)`:
+// each field of a node or edge table, and each operand of a metric not in
+// `skipped`. BigQuery creates such a graph, but every query on it then fails
+// with "Function not found: ds.f" (see projectlessFunction). A field that
+// reads such a field reports nothing of its own.
+function bigQueryFunctionProblems(
+    model: SemanticModel, skipped: ReadonlySet<string>): string[] {
+  const problems: string[] = [];
+  // Adds the message for `what` when `text` calls such a function. Reads it
+  // with each of `qualifiers` renamed to a name the SQL parser does not
+  // reserve, as measureProblem reads a metric.
+  const check =
+      (what: string, text: string|undefined, qualifiers: string[]) => {
+        if (text === undefined) return;
+        for (const q of qualifiers) {
+          text = requalified(text, q, unusedName(text, 'kcmd_entity'));
+        }
+        const udf = projectlessFunction(text, 'BIGQUERY');
+        if (!udf) return;
+        problems.push(
+            `targets BigQuery, where ${what} calls user-defined function '${
+                udf}' without its project; BigQuery creates the graph, but ` +
+            `every query on it then fails with "Function not found: ${
+                udf}". Name the project, for example \`my-project.${udf}\`.`);
+      };
+  const entities = model.entities ?? [];
+  const extended = new Set(entities.flatMap(e => e.extends ?? []));
+  for (const e of resolvedEntities(model)) {
+    if (!e.keys.length || extended.has(e.name)) continue;
+    for (const f of e.fields) {
+      check(
+          `field '${e.name}.${f.name}'`, expressionForDialect(f, 'BIGQUERY'),
+          [e.name]);
+    }
+  }
+  for (const r of model.relationships ?? []) {
+    for (const f of r.association?.fields ?? []) {
+      check(
+          `field '${r.name}.${f.name}'`, expressionForDialect(f, 'BIGQUERY'),
+          [r.name]);
+    }
+  }
+  const names = entities.map(e => e.name);
+  for (const m of model.metrics ?? []) {
+    const text = expressionForDialect(m, 'BIGQUERY');
+    if (text === undefined || skipped.has(m.name)) continue;
+    check(`metric '${m.name}'`, text, measureEntities(text, names, m.entity));
+  }
+  return problems;
 }
 
 // Static, target-independent checks for a model's actions. Returns one message

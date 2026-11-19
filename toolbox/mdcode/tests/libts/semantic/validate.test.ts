@@ -3534,6 +3534,128 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           {...extended.entities[0], name: 'vip', extends: ['customer']});
       expect(check(extended)).toEqual([]);
     });
+
+    // BigQuery creates a graph whose property calls a dataset's function
+    // without the project, but every query on the graph then fails.
+    describe('a user-defined function without its project', () => {
+      // The error saying `what` calls `udf`, after the deployments and verb
+      // `deployments`.
+      const PROJECTLESS =
+          (what: string, udf = 'ds.f',
+           deployments = "deployment 'bigquery' targets") =>
+              `model 'commerce' (commerce) ${deployments} BigQuery, where ${
+                  what} calls user-defined function '${udf}' without its ` +
+              `project; BigQuery creates the graph, but every query on it ` +
+              `then fails with "Function not found: ${udf}". Name the ` +
+              `project, for example \`my-project.${udf}\`.`;
+      // The errors with purchase's field note bound to `expression`.
+      const withNote = (expression: string, deployments = BQ) => {
+        const m = commerce({deployments});
+        m.entities[1].fields[2] = {name: 'note', expression};
+        return check(m);
+      };
+
+      // Field noted reads note, and gets no error of its own.
+      test('rejects a field that calls one, but not a field that reads that field', () => {
+        for (const [e, udf] of [
+               ['ds.f(note)', 'ds.f'],
+               ['`ds.f`(note)', 'ds.f'],
+               ['`ds`.f(note)', 'ds.f'],
+               ['IFNULL(ds.clean(note), \'\')', 'ds.clean'],
+               ['ml.score(note)', 'ml.score'],
+             ]) {
+          expect({e, errors: withNote(e)}).toEqual({
+            e,
+            errors: [PROJECTLESS("field 'purchase.note'", udf)],
+          });
+        }
+        // The entity's qualifier is renamed, as the measure check reads it.
+        const m = commerce({deployments: BQ});
+        m.entities.push({
+          ...m.entities[1],
+          name: 'Date',
+          fields: [
+            {name: 'p_id', expression: 'p_id'},
+            {name: 'day', expression: 'ds.f(Date.p_id)'},
+          ],
+        });
+        expect(check(m)).toEqual([PROJECTLESS("field 'Date.day'")]);
+      });
+
+      test('accepts a function named with its project, a built-in, and SAFE. before one name, and any function on Spanner', () => {
+        for (const e of [
+               '`p.ds.f`(note)', '`p`.ds.f(note)', 'p.ds.f(note)',
+               'NET.HOST(note)', 'SAFE.LOWER(note)',
+             ]) {
+          expect({e, errors: withNote(e)}).toEqual({e, errors: []});
+        }
+        expect(withNote('ds.f(note)', deployment('spanner'))).toEqual([]);
+      });
+
+      test("rejects a metric that calls one in an aggregate's operand", () => {
+        expect(bigQuery(anchored('SUM(ds.f(purchase.amount))')))
+            .toEqual([PROJECTLESS("metric 'm'")]);
+        expect(bigQuery(anchored('SUM(`ds`.f(purchase.amount)) / COUNT(*)')))
+            .toEqual([PROJECTLESS("metric 'm'")]);
+        // The entity's qualifier is renamed, as the measure check reads it.
+        const onDate = onBigQuery(
+            '{ name: m, expression: "SUM(ds.f(Date.amount))" }');
+        onDate.entities.push({...onDate.entities[1], name: 'Date'});
+        expect(check(onDate)).toEqual([PROJECTLESS("metric 'm'")]);
+        for (const e of [
+               'SUM(`p.ds.f`(purchase.amount))',
+               'COUNT(DISTINCT NET.HOST(purchase.note))',
+               'NET.HOST(MAX(purchase.note))',
+             ]) {
+          expect({e, errors: bigQuery(anchored(e))}).toEqual({e, errors: []});
+        }
+        // One outside the aggregates fails with its project too, and gets
+        // only the measure error.
+        expect(bigQuery(anchored('ds.f(SUM(purchase.amount))'))).toEqual([
+          MEASURE("it calls user-defined function 'ds.f' outside an " +
+                  'aggregate, which BigQuery cannot read in a measure'),
+        ]);
+      });
+
+      test("rejects a many-to-many edge's field that calls one", () => {
+        const m = commerce({deployments: BQ});
+        m.relationships[0].association = {
+          dataSource: 'p.d.customer_purchases',
+          keys: ['id'],
+          sourceColumns: ['p_id'],
+          destinationColumns: ['c_id'],
+          fields: [
+            {name: 'tier', expression: 'ds.tier(code)'},
+            {name: 'rank', expression: '`p.ds.rank`(code)'},
+          ],
+        };
+        expect(check(m))
+            .toEqual([PROJECTLESS("field 'placed_by.tier'", 'ds.tier')]);
+      });
+
+      test('rejects a field only under the profile that binds it so', () => {
+        const m = commerce({
+          deployments:
+              `${BQ}      - name: dev\n        target: ${BQ_TARGET}2\n` +
+              '        profile: ops\n',
+        });
+        m.profiles = [{
+          name: 'ops',
+          entities: [{
+            name: 'purchase',
+            fields: [{name: 'note', expression: 'ds.f(note)'}],
+          }],
+          relationships: [],
+        }];
+        expect(check(m)).toEqual([PROJECTLESS(
+            "field 'purchase.note'", 'ds.f', "deployment 'dev' targets")]);
+        // Both deployments, when the model file binds it so too.
+        m.entities[1].fields[2] = {name: 'note', expression: 'ds.f(note)'};
+        expect(check(m)).toEqual([PROJECTLESS(
+            "field 'purchase.note'", 'ds.f',
+            "deployments 'bigquery' and 'dev' target")]);
+      });
+    });
   });
 
   // A deployment that names a profile reads it from `model.profiles`: its

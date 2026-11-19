@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, projectlessFunction, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -578,6 +578,8 @@ describe('measureAggregates', () => {
            'SUM(ds.f(o.a)) / COUNT(o.id)', 'SUM(`p.ds.f`(o.a))',
            'SAFE.SAFE_DIVIDE(SUM(o.a), COUNT(o.id))',
            'safe.safe_divide(SUM(o.a), COUNT(o.id))',
+           // BigQuery's own functions with a dot in their names.
+           'NET.HOST(MAX(o.url))', 'ml.bucketize(SUM(o.a), [0, 10])',
            'SUM(o.a) + (COUNT(o.b))', 'SUM(o.a) * +(COUNT(o.b))',
          ]) {
       expect(problem(text)).toEqual({text, problem: undefined});
@@ -690,6 +692,41 @@ describe('measureAggregates', () => {
     ];
     for (const [text, why] of expected) {
       expect(problem(text)).toEqual({text, problem: why});
+    }
+  });
+});
+
+describe('projectlessFunction', () => {
+  test('gives the first user-defined function called by its dataset and name alone', () => {
+    for (const [text, udf] of [
+           ['ds.f(amount)', 'ds.f'],
+           ['`ds.f`(amount)', 'ds.f'],
+           ['`ds`.f(amount)', 'ds.f'],
+           ['ROUND(ds.f(a) * 2, 1)', 'ds.f'],
+           ['IF(a > 0, `p.ds.f`(a), ds.g(a))', 'ds.g'],
+           ['SUM(ds.f(o.a)) / COUNT(o.id)', 'ds.f'],
+           // BigQuery reads `ml` and `net` here as datasets.
+           ['ml.score(a)', 'ml.score'],
+           ['net.score(a)', 'net.score'],
+         ]) {
+      expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
+          .toEqual({text, udf});
+    }
+  });
+
+  test('passes a function named with its project, a built-in, and SAFE. before one name', () => {
+    for (const text of [
+           '`p.ds.f`(amount)', '`p`.ds.f(amount)', 'p.ds.f(amount)',
+           '`p.ds`.f(amount)', '`example.com:p.ds.f`(amount)',
+           // `safe` is a project here.
+           'safe.ds.f(amount)',
+           'NET.HOST(url)', 'net.host(url)', 'ML.BUCKETIZE(a, [1, 2])',
+           'AEAD.DECRYPT_STRING(k, c, d)', 'SAFE.LOG10(a)',
+           'safe.safe_divide(a, b)', 'ROUND(a * 2, 1)', 's.field.sub',
+           'SUM(o.a)', 'ds.f(', '  ',
+         ]) {
+      expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
+          .toEqual({text, udf: undefined});
     }
   });
 });
