@@ -82,8 +82,9 @@ export function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-// What to add after kcmd's sentence about a call that threw `err`: `: ` and
-// the error's message as one sentence, or a period when it has no message.
+// The end of kcmd's sentence about a call that threw `err`: `: ` and the
+// error's message as one sentence. A message that is only whitespace gives a
+// period.
 export function thrownSaid(err: any): string {
   const why = oneLine(String(err?.message ?? err));
   return why ? `: ${sentence(why)}` : '.';
