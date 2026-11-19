@@ -102,10 +102,10 @@ export interface KcDeployOptions {
   // a removed or renamed model's entries and links. Without it, an unrecognized
   // model in the group is a hard error rather than a silent orphan.
   forceRemove?: boolean;
-  // How many times to try entries.create and the entry listing before giving
-  // up: a just-created entry group can briefly fail them as not yet visible,
-  // and push retries that window. Overridable so tests exercise the retry
-  // without burning wall-clock. Default PROPAGATION_TRIES.
+  // How many times push tries entries.create and the entry listing while
+  // they fail with an error worded like an entry group that is not yet
+  // visible (see `isPropagationError`). Overridable so tests exercise the
+  // retry without burning wall-clock. Default PROPAGATION_TRIES.
   propagationTries?: number;
   // Delay between those retries, in ms. Default PROPAGATION_RETRY_MS.
   propagationRetryMs?: number;
@@ -202,8 +202,8 @@ export interface KcPreparedDeploy {
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
 
-// The retry of a just-created entry group's not-yet-visible errors (see
-// `withPropagationRetry`).
+// The retry of errors worded like an entry group that is not yet visible
+// (see `withPropagationRetry`).
 const PROPAGATION_TRIES = 3;
 const PROPAGATION_RETRY_MS = 3000;
 
@@ -211,17 +211,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// The message of an error a request threw, such as on a network failure.
+// The message of an error a request threw, such as on a network failure, or
+// 'unknown error' when the error has no text.
 function thrownMessage(err: any): string {
-  return String(err?.message || err).trim();
+  return String(err?.message || err).trim() || 'unknown error';
 }
 
 /**
  * Calls `attempt`, and calls it again while `notYetVisible` matches its
- * outcome. It makes at most `opts.propagationTries` calls,
+ * outcome, which is an error worded like an entry group that is not yet
+ * visible. It makes at most `opts.propagationTries` calls,
  * `opts.propagationRetryMs` apart, and waits only after an outcome that
- * matches. A just-created entry group can briefly fail requests for its
- * entries that way. Returns the last outcome.
+ * matches. Returns the last outcome.
  */
 async function withPropagationRetry<T>(
     opts: KcDeployOptions, attempt: () => Promise<T>,
@@ -430,7 +431,7 @@ async function preflightEmittedModels(
   const group =
       await cat.getEntryGroup(opts.project, opts.location, opts.entryGroup)
           .catch((err: any) => `reading entry group '${opts.entryGroup}': ${
-                     err?.message || String(err)}`);
+                     thrownMessage(err)}`);
   if (typeof group === 'string') return {result: result(false, group)};
   if (isNotFoundStatus(group)) {
     return {result: result(false, missingEntryGroupMessage(opts))};
@@ -808,8 +809,8 @@ interface ForeignModel {
  * those entries still exist. An entry or a link that two of these models hold
  * goes with the first of them only, so push lists, counts and deletes it
  * once. An entry is held by two models when one anchor ID starts the other's,
- * such as `old` and `old.sub`, and a link when it joins the entities of two
- * models. Returns the error that stops the push when a lookup fails.
+ * such as `old` and `old.sub`. A link is held by two models when it joins
+ * their entities. Returns the error that stops the push when a lookup fails.
  */
 async function planForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: readonly Entry[],
@@ -1168,7 +1169,7 @@ async function setPushState(
         await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
     return isOkStatus(res) ? undefined : errText(res);
   } catch (err: any) {
-    return thrownMessage(err) || 'unknown error';
+    return thrownMessage(err);
   }
 }
 
@@ -1265,9 +1266,9 @@ async function deleteEntries(
  * Snapshots the destination entry group's entries once, before any write, and
  * returns the error when the listing fails.
  *
- * A brand-new entry group can briefly fail to list its entries with a
- * not-yet-visible error, and `createEntry` rides out the same window. After
- * such an error, push lists the group again from its first page, as
+ * After a listing error worded like an entry group that is not yet visible,
+ * such as "may not exist", "entry group ... not found" or "entry group ...
+ * does not exist", push lists the group again from its first page, as
  * `withPropagationRetry` allows. Dataplex words some permanent refusals the
  * same way, so an error that persists stops the push like any other.
  */

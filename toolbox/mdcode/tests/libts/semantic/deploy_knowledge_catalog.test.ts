@@ -306,13 +306,19 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
     throw new TypeError('fetch failed');
   };
 
-  test('a write that throws fails the push with its message', async () => {
-    stubClient({create: fetchFailed});
+  test.each([
+    ['its message', fetchFailed, 'fetch failed'],
+    ['\'unknown error\' when its message is blank', (): never => {
+      throw new Error(' ');
+    }, 'unknown error'],
+  ])('a write that throws fails the push with %s',
+     async (_name, create, details) => {
+       stubClient({create});
 
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+       const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-    expect(result).toMatchObject({success: false, details: 'fetch failed'});
-  });
+       expect(result).toMatchObject({success: false, details});
+     });
 
   test('a delete of another model that throws fails the push before any ' +
            'write',
