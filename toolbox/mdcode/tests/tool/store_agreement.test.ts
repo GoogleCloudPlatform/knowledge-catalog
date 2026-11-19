@@ -43,7 +43,7 @@ import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../src/libts/gcp/spanner';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
-import {passGraphChecks, passSourceCheck} from '../libts/mocks';
+import {passCatalogPreflight, passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 import {msg} from './two_phase/harness';
 
@@ -128,13 +128,9 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
-  // Push's live checks, and the custom entry and aspect types its Knowledge
-  // Catalog preflight looks up. Their local checks run before them, in
-  // checkBeforeWrites.
-  spyOn(CatalogClient.prototype, 'getEntryType')
-      .mockResolvedValue({status: 200, result: {}} as any);
-  spyOn(CatalogClient.prototype, 'getAspectType')
-      .mockResolvedValue({status: 200, result: {}} as any);
+  // Push's live checks and its Knowledge Catalog preflight. Their local checks
+  // run before them, in checkBeforeWrites.
+  passCatalogPreflight();
   spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
   spyOn(validateMod, 'validateBigQueryActionStatements').mockResolvedValue([]);
   passGraphChecks();

@@ -191,6 +191,18 @@ const SERVICES = {
   getHiveCatalog:
       [BigLakeClient.prototype, 'getHiveCatalog', ok(REGIONAL_CATALOG)],
   lookupEntry: [CatalogClient.prototype, 'lookupEntry', ok({})],
+  // A dry run runs the catalog preflight too: it reads the entry group, then
+  // lists its entries. listEntries returns the entries a case gives, by
+  // default none.
+  getEntryGroup: [CatalogClient.prototype, 'getEntryGroup', ok({})],
+  listEntries: [CatalogClient.prototype, 'listEntries', () => []],
+  // A dry run then plans as push does. It looks up the links of each entity
+  // entry the listing holds, and by default finds none. When push would
+  // delete a link, it reads each link the model writes that the lookups
+  // missed, and by default finds none of them.
+  lookupEntryLinks: [CatalogClient.prototype, 'lookupEntryLinks', ok([])],
+  getEntryLink: [CatalogClient.prototype, 'getEntryLink',
+                 () => ({status: 404, message: 'not found'})],
   getEntryType: [CatalogClient.prototype, 'getEntryType', ok({})],
   getAspectType: [CatalogClient.prototype, 'getAspectType', ok({})],
   fetch: [globalThis, 'fetch', () => {
@@ -211,6 +223,11 @@ const entry = (service: Service, a: Call) =>
     `${service} ${deploymentNames(a[0])}` :
     service === 'lookupEntry' ? `${service} ${a[2]}` : service;
 
+// Whether `method` streams its answer, as an async generator such as
+// listEntries does.
+const streams = (method: Function) => Object.prototype.toString.call(method) ===
+    '[object AsyncGeneratorFunction]';
+
 // Answers the calls `applies` holds for. Other calls get the default answer.
 export const when = (applies: (...a: any[]) => unknown, answer: unknown) =>
     (...a: any[]) => applies(...a) ? answer : undefined;
@@ -229,11 +246,22 @@ function installFake(services: Services): Fake {
     const answer = (self: unknown, a: Call) =>
         (typeof given === 'function' ? given(...a) : given) ??
         fallback(a, () => REAL[name].apply(self, a));
+    const answered = async function(this: any, ...a: Call) {
+      fake.calls.push(entry(name, a));
+      return answer(this, a);
+    };
+    // A method that streams yields each item of its answer, a list.
+    const streamed = async function*(this: any, ...a: Call) {
+      const items = await answered.apply(this, a);
+      if (!Array.isArray(items)) {
+        throw new Error(`the ${name} fake answered ${
+            JSON.stringify(items)}, which is not a list`);
+      }
+      yield* items;
+    };
     fake[name] = spyOn(owner as any, method as any)
-                     .mockImplementation(async function(this: any, ...a: Call) {
-                       fake.calls.push(entry(name, a));
-                       return answer(this, a);
-                     });
+                     .mockImplementation(
+                         streams(REAL[name]) ? streamed : answered);
   }
   return fake;
 }

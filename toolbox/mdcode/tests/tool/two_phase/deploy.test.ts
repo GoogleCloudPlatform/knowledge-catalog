@@ -6,6 +6,7 @@
 import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
+import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
 import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
@@ -414,6 +415,11 @@ const PLACED_BY = {
   },
 };
 const SP_DEPLOYED = ['preflight', 'apply', 'deploy sp'];
+// The default scope's entry group, as Dataplex names it.
+const EG = 'projects/test-project/locations/us/entryGroups/commerce_eg';
+// Dataplex's answer to a read of an entry link the caller may not read.
+const LINK_DENIED = "Permission 'dataplex.entryLinks.get' denied on " +
+    `'${EG}/entryLinks/x'`;
 const ALLOYDB_NOTE = "Note: deployment 'ad' targets an AlloyDB database, " +
     'which has no property graph, so push deploys no graph there. The model ' +
     'runs against that database as published to Knowledge Catalog.';
@@ -637,6 +643,71 @@ scenarios('how push deploys each deployment in order, and what it prints', [
                         .toBe(r.printed.indexOf('Warning: ddl warning g2') + 1),
       },
     ],
+  },
+  {
+    name: 'a dry run lists an entry push would remove under --print, or says so in one line without it, and writes nothing',
+    flags: {validateOnly: true, print: true},
+    services: {
+      listEntries: [{
+        name: 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
+            'entries/commerce/metrics/old',
+        entryType:
+            'projects/dataplex-types/locations/global/entryTypes/semantic-metric',
+      }],
+    },
+    events: ['preflight'],
+    nothingWritten: true,
+    check: r => expect(r.log.slice(-3)).toEqual([
+      '  1 entry to remove:', '    - commerce/metrics/old (semantic-metric)',
+      msg.VALIDATED,
+    ]),
+    // Without --print, one line says so.
+    then: [{
+      flags: {validateOnly: true},
+      log: [
+        'Push would remove 1 Knowledge Catalog entry; run with --print to ' +
+            'list it.',
+        msg.VALIDATED,
+      ],
+    }],
+  },
+  {
+    // The group holds entity Customer. Its lookup finds a link to entity
+    // Gone, which push would delete, so push first reads each link the model
+    // writes.
+    name: 'a dry run stops with push\'s error when a read of a link the model writes fails, and writes nothing',
+    deployments: [{name: 'g', profile: 'prod'}],
+    entities: [CUSTOMER, ORDERS],
+    ...PLACED_BY,
+    flags: {validateOnly: true},
+    services: {
+      listEntries: [{
+        name: `${EG}/entries/commerce/entities/Customer`,
+        entryType: 'projects/dataplex-types/locations/global/entryTypes/' +
+            'semantic-entity',
+      }],
+      lookupEntryLinks: {
+        status: 200,
+        result: [{
+          name: `${EG}/entryLinks/old-link`,
+          entryLinkType: 'projects/dataplex-types/locations/global/' +
+              'entryLinkTypes/semantic-link',
+          entryReferences: ['Customer', 'Gone'].map(
+              e => ({name: `${EG}/entries/commerce/entities/${e}`})),
+        }],
+      },
+      getEntryLink: {status: 403, message: LINK_DENIED},
+    },
+    code: 1,
+    errors: [
+      'Error pushing semantic model to Knowledge Catalog: Model ' +
+      `'commerce': reading entry link '${
+          semanticLinkId('link', 'commerce', 'Orders', 'Customer')}' ` +
+      `failed: ${LINK_DENIED}`,
+    ],
+    events: ['preflight'],
+    called: {getEntryLink: 1},
+    nothingWritten: true,
   },
   {
     name: 'rejects before any write, also in the report, deployments of the model file\'s own bindings that leave a field of a concrete leaf entity without an expression, and deploys once the field has one or the deployment uses a profile that excludes it',

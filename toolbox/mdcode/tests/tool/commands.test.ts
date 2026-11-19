@@ -24,7 +24,7 @@ import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
-import {passGraphChecks, passSourceCheck} from '../libts/mocks';
+import {passCatalogPreflight, passGraphChecks, passSourceCheck} from '../libts/mocks';
 import {FIRST_GEN_MODEL_FILE, FIRST_GEN_OPTS, firstGenEntries} from '../libts/semantic/fixtures/first_gen_entries';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -77,11 +77,7 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
-  // Push checks that each custom type a model uses exists.
-  spyOn(CatalogClient.prototype, 'getEntryType')
-      .mockResolvedValue({status: 200, result: {}} as any);
-  spyOn(CatalogClient.prototype, 'getAspectType')
-      .mockResolvedValue({status: 200, result: {}} as any);
+  passCatalogPreflight();
   passGraphChecks();
   passSourceCheck();
 });
@@ -130,11 +126,15 @@ describe('push prints Knowledge Catalog warnings', () => {
     ]);
   });
 
-  test('under --validate-only, from the result', async () => {
+  test('under --validate-only, from the preflight', async () => {
     writeWorkspace();
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
-    // Under --validate-only the preflight gives its result, warnings included.
-    spyOn(kc, 'preflightKnowledgeCatalog').mockResolvedValue({result: RESULT});
+    // Under --validate-only too, the preflight gives its warnings with the
+    // prepared writes, and the plan that follows carries them again.
+    spyOn(kc, 'preflightKnowledgeCatalog').mockResolvedValue({
+      prepared: {emitted: [], existing: [], warnings: RESULT.warnings, plan: []},
+    });
+    spyOn(kc, 'planKnowledgeCatalog').mockResolvedValue(RESULT);
 
     expect(await push({validateOnly: true})).toBe(0);
     expect(warn.mock.calls.map(c => String(c[0]))).toEqual([
@@ -142,6 +142,28 @@ describe('push prints Knowledge Catalog warnings', () => {
       'Warning: a relationship is skipped',
     ]);
   });
+
+  // Under --print the plan lists them instead.
+  test.each([
+    [{entries: 2, links: 3}, {},
+     'Push would remove 2 Knowledge Catalog entries and 3 entry links; run ' +
+         'with --print to list them.'],
+    [{entries: 0, links: 1}, {},
+     'Push would remove 1 entry link; run with --print to list it.'],
+    [{entries: 2, links: 3}, {print: true}, '-- Knowledge Catalog --'],
+  ])('a dry run that would remove %o, with %o, says so before its last line',
+     async (toRemove, flags, line) => {
+       writeWorkspace();
+       const log = spyOn(console, 'log').mockImplementation(() => {});
+       spyOn(kc, 'preflightKnowledgeCatalog').mockResolvedValue({
+         prepared: {emitted: [], existing: [], warnings: [], plan: []},
+       });
+       spyOn(kc, 'planKnowledgeCatalog').mockResolvedValue({...RESULT, toRemove});
+
+       expect(await push({validateOnly: true, ...flags})).toBe(0);
+       expect(log.mock.calls.slice(-2).map(c => String(c[0])))
+           .toEqual([line, 'Validation complete; no changes applied.']);
+     });
 });
 
 describe('push preflights under a deployment\'s profile', () => {

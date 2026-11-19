@@ -17,7 +17,7 @@ import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
-import {passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
+import {passCatalogPreflight, passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
 
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -128,6 +128,7 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('a test made a network call');
   }) as any);
+  passCatalogPreflight();
   passGraphChecks();
   passSourceCheck();
   spyOn(ApiContext, 'default').mockReturnValue(CTX);

@@ -67,12 +67,12 @@ function entryName(id: string, project = 'dest'): string {
   return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
-// entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
+// propagationTries: 1 keeps the propagation retry from sleeping in tests.
 const OPTS = {
   project: 'dest',
   location: 'us',
   entryGroup: 'eg',
-  entryCreateTries: 1,
+  propagationTries: 1,
 };
 
 // The most data Dataplex stores in an aspect other than schema.
@@ -114,6 +114,9 @@ function stubClient(opts: {
                 labels?: Record<string, string>;
                 source?: Record<string, string>
               })[],
+  // The message listEntries throws with, as the client does for a page that
+  // fails. Default: none, the listing succeeds.
+  listError?: string,
   // How listEntries spells the project in the names it yields. Defaults to the
   // scope's own project; set to a number to reproduce the server's inconsistent
   // id/number spelling.
@@ -165,6 +168,10 @@ function stubClient(opts: {
   });
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
+                     if (opts.listError) {
+                       throw new Error(
+                           `Failed to list entries: ${opts.listError}`);
+                     }
                      yield* listed;
                    });
   const lookup =
@@ -299,13 +306,19 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
     throw new TypeError('fetch failed');
   };
 
-  test('a write that throws fails the push with its message', async () => {
-    stubClient({create: fetchFailed});
+  test.each([
+    ['its message', fetchFailed, 'fetch failed'],
+    ['\'unknown error\' when its message is blank', (): never => {
+      throw new Error(' ');
+    }, 'unknown error'],
+  ])('a write that throws fails the push with %s',
+     async (_name, create, details) => {
+       stubClient({create});
 
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+       const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-    expect(result).toMatchObject({success: false, details: 'fetch failed'});
-  });
+       expect(result).toMatchObject({success: false, details});
+     });
 
   test('a delete of another model that throws fails the push before any ' +
            'write',
@@ -331,7 +344,11 @@ describe('deployKnowledgeCatalog: a thrown error', () => {
 
          const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-         expect(result).toMatchObject({success: false, details: 'fetch failed'});
+         expect(result).toMatchObject({
+           success: false,
+           details: "Looking up entry links for 'sales/entities/orders' from " +
+               "model 'sales' failed: fetch failed",
+         });
          expect(create).not.toHaveBeenCalled();
        });
 });
@@ -397,8 +414,7 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
         .toEqual({...source, ...emitted(ENTITY)});
   });
 
-  // A listing the caller may not make comes back empty, and another writer
-  // can create an entry after the listing.
+  // Another writer can create an entry after the listing.
   test('an entry the listing lacks is read before its update, and its ' +
            'fields are kept',
        async () => {
@@ -1339,19 +1355,56 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
 });
 
 
+// Dataplex's answer to a read of an entry group the caller may not read.
+const GROUP_DENIED = 'Permission \'dataplex.entryGroups.get\' denied on resource (or it may not exist)';
+// Dataplex's answer to a listing of the entries of that entry group. Some
+// Dataplex refusals end with ' (or it may not exist)', as GROUP_DENIED does.
+const LIST_DENIED = 'Permission \'dataplex.entries.list\' denied on \'projects/dest/locations/us/entryGroups/eg\'';
+const MAY_NOT_EXIST = ' (or it may not exist)';
+
 describe('deployKnowledgeCatalog: validateOnly', () => {
-  test('writes nothing and returns a plan', async () => {
-    const {group, create} = stubClient();
+  test('reads the entry group, writes nothing and returns a plan', async () => {
+    // A dry run skips push's read of each listed entry it would write.
+    const {getGroup, list, lookup, create} =
+        stubClient({existing: [{id: 'sales', type: MODEL_TYPE}]});
 
     const result = await deployKnowledgeCatalog(
         models(DOCS), CTX, {...OPTS, validateOnly: true});
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(0);
-    expect(group).not.toHaveBeenCalled();
+    expect(getGroup).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(lookup).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
+    expect(result.toRemove).toBeUndefined();
     expect(result.plan.join('\n')).toContain('Knowledge Catalog plan');
     expect(result.plan.join('\n')).toContain('sales');
+  });
+
+  test.each([
+    ['an entry group it may neither read nor list',
+     {
+       getGroup: err(403, GROUP_DENIED),
+       listError: LIST_DENIED + MAY_NOT_EXIST,
+     },
+     `listing entries in entry group 'eg': Failed to list entries: ${
+         LIST_DENIED}${MAY_NOT_EXIST}`],
+    ['a model whose link lookup fails',
+     {
+       existing: [{id: 'sales/entities/orders', type: ENTITY_TYPE}],
+       links: () => err(500, 'boom'),
+     },
+     "Looking up entry links for 'sales/entities/orders' from model 'sales' " +
+         'failed: boom'],
+  ])('refuses %s, as a push does', async (_name, stub, error) => {
+    stubClient(stub);
+
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, validateOnly: true});
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain(error);
   });
 });
 
@@ -1376,12 +1429,27 @@ describe('deployKnowledgeCatalog: failures', () => {
        });
 
   test('a refused read of the entry group lets the push go on', async () => {
-    stubClient({getGroup: err(403, 'denied')});
+    stubClient({getGroup: err(403, GROUP_DENIED)});
 
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
   });
+
+  test('after a refused read of the entry group, a failed listing stops the ' +
+           'push before any write',
+       async () => {
+         const {create} = stubClient(
+             {getGroup: err(403, GROUP_DENIED), listError: LIST_DENIED});
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+         expect(result.details)
+             .toBe(
+                 "listing entries in entry group 'eg': Failed to list " +
+                 `entries: ${LIST_DENIED}`);
+         expect(create).not.toHaveBeenCalled();
+       });
 
   test('a read of the entry group that throws stops the push', async () => {
     const {getGroup, list} = stubClient();
@@ -1641,17 +1709,29 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
         expect(del).toHaveBeenCalledTimes(2);
       });
 
-  test('validateOnly never lists or deletes (offline)', async () => {
-    const {list, del} = stubClient({existing: ['sales.entities.removed']});
+  test('validateOnly lists the entries push would delete, sorted, and ' +
+           'deletes nothing',
+       async () => {
+         const {del} = stubClient({
+           existing: [
+             {id: 'sales/metrics/removed', type: METRIC_TYPE},
+             {id: 'sales/entities/removed', type: ENTITY_TYPE},
+           ],
+         });
 
-    const result =
-        await deployKnowledgeCatalog(models(DOCS), CTX, {...OPTS, validateOnly: true});
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, validateOnly: true});
 
-    expect(result.success).toBe(true);
-    expect(result.deleted).toBe(0);
-    expect(list).not.toHaveBeenCalled();
-    expect(del).not.toHaveBeenCalled();
-  });
+         expect(result.success).toBe(true);
+         expect(result.deleted).toBe(0);
+         expect(result.plan.slice(-3)).toEqual([
+           '  2 entries to remove:',
+           '    - sales/entities/removed (semantic-entity)',
+           '    - sales/metrics/removed (semantic-metric)',
+         ]);
+         expect(result.toRemove).toEqual({entries: 2, links: 0});
+         expect(del).not.toHaveBeenCalled();
+       });
 });
 
 
@@ -1962,20 +2042,42 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         expect(createLink).not.toHaveBeenCalled();
       });
 
-  test('validateOnly never looks up or deletes links (offline)', async () => {
-    const {lookupLinks, delLink} = stubClient({
-      links: () => ok([linkEntry(
-          'sales-orders-to-supplier',
-          ['sales.entities.orders', 'sales.entities.supplier'])]),
-    });
+  // The catalog still holds entity supplier, links from orders to supplier
+  // and to warehouse, and, under the ID of the reference link to orders, a
+  // reference link to supplier. The lookup returns the two links from orders
+  // in the reverse of their ID order.
+  test('validateOnly lists the entry and links push would delete, sorted, ' +
+           'and the link it would recreate, and writes nothing',
+       async () => {
+         const supplier = 'sales/entities/supplier';
+         const stale = directed(
+             'reference', STAR_REFERENCES[0],
+             'sales/relationships/orders_to_customer', supplier);
+         const toWarehouse =
+             semanticLink('orders-to-warehouse', 'orders', 'warehouse');
+         const toSupplier =
+             semanticLink('orders-to-supplier', 'orders', 'supplier');
+         const {create, update, del, createLink, delLink} = stubClient({
+           existing: [...V2_ENTRIES, {id: supplier, type: ENTITY_TYPE}],
+           links: linksTo(toWarehouse, toSupplier, stale),
+         });
 
-    const result = await deployKnowledgeCatalog(
-        models(STAR_DOCS), CTX, {...OPTS, validateOnly: true});
+         const result = await deployKnowledgeCatalog(
+             models(STAR_DOCS), CTX, {...OPTS, validateOnly: true});
 
-    expect(result.success).toBe(true);
-    expect(lookupLinks).not.toHaveBeenCalled();
-    expect(delLink).not.toHaveBeenCalled();
-  });
+         expect(result.success).toBe(true);
+         expect(result.plan.slice(-7)).toEqual([
+           '  1 entry to remove:', `    - ${supplier} (semantic-entity)`,
+           '  2 links to remove:', '    - orders-to-supplier (semantic-link)',
+           '    - orders-to-warehouse (semantic-link)',
+           '  1 link to recreate:', `    - ${STAR_REFERENCES[0]} (reference)`,
+         ]);
+         // Push creates the stale link again, so it is not counted.
+         expect(result.toRemove).toEqual({entries: 1, links: 2});
+         for (const write of [create, update, del, createLink, delLink]) {
+           expect(write).not.toHaveBeenCalled();
+         }
+       });
 
   test('deletes a link whose BOTH endpoints were removed in this push',
      async () => {
@@ -2036,6 +2138,139 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
        // Nothing is written or deleted -- the guard runs before any mutation.
        expect(create).not.toHaveBeenCalled();
        expect(del).not.toHaveBeenCalled();
+     });
+
+  test('a dry run under --force-remove lists the omitted model\'s entries ' +
+           'and links and deletes nothing',
+       async () => {
+         // The listing gives the model entry last.
+         const {del, delLink} = stubClient({
+           existing: [
+             {id: 'old/metrics/m', type: METRIC_TYPE},
+             {id: 'old.entities.a', type: ENTITY_TYPE},
+             {id: 'old', type: MODEL_TYPE},
+           ],
+           links: (entry: string) => entry.endsWith('old.entities.a') ?
+               ok([linkEntry('old-a-to-b', ['old.entities.a', 'old.entities.b'])]) :
+               ok([]),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
+
+         expect(result.success).toBe(true);
+         expect(result.plan.slice(-6)).toEqual([
+           "  3 entries of model 'old' to remove (--force-remove):",
+           '    - old (semantic-model)', '    - old.entities.a (semantic-entity)',
+           '    - old/metrics/m (semantic-metric)',
+           "  1 link of model 'old' to remove (--force-remove):",
+           '    - old-a-to-b (schema-join)',
+         ]);
+         expect(result.toRemove).toEqual({entries: 3, links: 1});
+         expect(del).not.toHaveBeenCalled();
+         expect(delLink).not.toHaveBeenCalled();
+       });
+
+  test.each([
+    ['is refused', () => err(403, 'denied'), 'denied'],
+    ['throws', () => {
+      throw new TypeError('fetch failed');
+    }, 'fetch failed'],
+  ])('a dry run under --force-remove fails as push does when the omitted ' +
+         'model\'s link lookup %s',
+     async (_name, links, message) => {
+       stubClient({
+         existing: [
+           {id: 'old', type: MODEL_TYPE},
+           {id: 'old.entities.a', type: ENTITY_TYPE},
+         ],
+         links,
+       });
+
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...OPTS, forceRemove: true, validateOnly: true});
+
+       expect(result.success).toBe(false);
+       expect(result.details)
+           .toBe(
+               "Looking up entry links for 'old.entities.a' from removed " +
+               `model 'old' failed: ${message}`);
+     });
+
+  test('--force-remove reports an error thrown while it plans the omitted ' +
+           'model\'s removal, and deletes nothing',
+       async () => {
+         // A lookup answer that is not a list throws as push reads it.
+         const {del, delLink} = stubClient({
+           existing: [
+             {id: 'old', type: MODEL_TYPE},
+             {id: 'old.entities.a', type: ENTITY_TYPE},
+           ],
+           links: () => ok({} as any),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result.success).toBe(false);
+         expect(result.details).toBeTruthy();
+         expect(del).not.toHaveBeenCalled();
+         expect(delLink).not.toHaveBeenCalled();
+       });
+
+  test.each([
+    [
+      'a link between two omitted models',
+      ['old1', 'old2'],
+      [
+        "  2 entries of model 'old1' to remove (--force-remove):",
+        '    - old1 (semantic-model)', '    - old1.entities.a (semantic-entity)',
+        "  1 link of model 'old1' to remove (--force-remove):",
+        '    - a-to-b (schema-join)',
+        "  2 entries of model 'old2' to remove (--force-remove):",
+        '    - old2 (semantic-model)', '    - old2.entities.b (semantic-entity)',
+      ],
+      ['old1', 'old1.entities.a', 'old2', 'old2.entities.b'],
+    ],
+    // The anchor ID old1 starts old1.sub's, so old1 holds old1.sub's entries.
+    [
+      'an entry of two omitted models',
+      ['old1', 'old1.sub'],
+      [
+        "  4 entries of model 'old1' to remove (--force-remove):",
+        '    - old1 (semantic-model)', '    - old1.entities.a (semantic-entity)',
+        '    - old1.sub (semantic-model)',
+        '    - old1.sub.entities.b (semantic-entity)',
+        "  1 link of model 'old1' to remove (--force-remove):",
+        '    - a-to-b (schema-join)',
+      ],
+      ['old1', 'old1.sub', 'old1.entities.a', 'old1.sub.entities.b'],
+    ],
+  ])('--force-remove lists, counts and deletes %s once, under the first',
+     async (_name, [first, second], plan, deletes) => {
+       const cross =
+           linkEntry('a-to-b', [`${first}.entities.a`, `${second}.entities.b`]);
+       const {del, delLink} = stubClient({
+         existing: [
+           {id: first, type: MODEL_TYPE},
+           {id: `${first}.entities.a`, type: ENTITY_TYPE},
+           {id: second, type: MODEL_TYPE},
+           {id: `${second}.entities.b`, type: ENTITY_TYPE},
+         ],
+         links: () => ok([cross]),
+       });
+       const opts = {...OPTS, forceRemove: true};
+
+       const dryRun = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...opts, validateOnly: true});
+       const pushed = await deployKnowledgeCatalog(models(DOCS), CTX, opts);
+
+       expect(dryRun.plan.slice(-plan.length)).toEqual(plan);
+       expect(dryRun.toRemove).toEqual({entries: 4, links: 1});
+       expect(pushed.deleted).toBe(4);
+       expect(pushed.unlinked).toBe(1);
+       expect(del.mock.calls.map(c => c[3])).toEqual(deletes);
+       expect(delLink.mock.calls.map(c => c[3])).toEqual(['a-to-b']);
      });
 
   test('--force-remove drops the omitted model (entries + links), then writes',
@@ -2404,6 +2639,22 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
                 'internal error');
       });
 
+  test.each([['entry', 'entryType'], ['aspect', 'aspectType']])(
+      'fails preflight naming the %s type when its read throws',
+      async (kind, read) => {
+        stubClient({
+          [read]: () => {
+            throw new TypeError('fetch failed');
+          },
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+
+        expect(pre.result?.details)
+            .toBe(`checking ${kind} type 'semantic-action': fetch failed`);
+      });
+
   test(
       'skips getEntryType and getAspectType when no custom types are used, ' +
           'and succeeds when used custom types exist',
@@ -2557,32 +2808,76 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
                 '\'old\' failed: delete entry failed');
       });
 
-  test(
-      'preflight treats a transient entry-group propagation error during ' +
-          'listEntries as empty and fails on non-propagation errors',
-      async () => {
-        stubClient();
-        spyOn(CatalogClient.prototype, 'listEntries')
-            .mockImplementationOnce(async function*() {
-              throw new Error('Entry group eg may not exist');
-            })
-            .mockImplementationOnce(async function*() {
-              throw new Error('backend unavailable');
-            });
+  // The listing retries a not-yet-visible error up to three times in all.
+  const RETRY = {...OPTS, propagationTries: 3, propagationRetryMs: 0};
+  const ORPHAN = {
+    name: entryName('sales/metrics/old'),
+    entryType: METRIC_TYPE,
+  } as any;
 
-        const transientPre =
-            await preflightKnowledgeCatalog(models(DOCS), CTX, OPTS);
-        expect(transientPre.result).toBeUndefined();
-        expect(transientPre.prepared?.existing).toEqual([]);
+  // Each row gives the entries the first listing reads before its error,
+  // then those the second listing reads.
+  test.each([
+    ['an empty group', [], [], undefined],
+    ['the group\'s entries', [], [ORPHAN], {entries: 1, links: 0}],
+    // The first listing reads an entry, then fails on its next page.
+    ['the group\'s entries once, after a later page fails', [ORPHAN],
+     [ORPHAN], {entries: 1, links: 0}],
+  ])('a not-yet-visible listing error that clears on a retry gives %s',
+     async (_name, readFirst, listed, toRemove) => {
+       stubClient();
+       const list = spyOn(CatalogClient.prototype, 'listEntries')
+                        .mockImplementationOnce(async function*() {
+                          yield* readFirst;
+                          throw new Error(
+                              `Failed to list entries: ${LIST_DENIED}${
+                                  MAY_NOT_EXIST}`);
+                        })
+                        .mockImplementationOnce(async function*() {
+                          yield* listed;
+                        });
 
-        const fatalPre =
-            await preflightKnowledgeCatalog(models(DOCS), CTX, OPTS);
-        expect(fatalPre.prepared).toBeUndefined();
-        expect(fatalPre.result?.success).toBe(false);
-        expect(fatalPre.result?.details)
-            .toContain(
-                'listing entries in entry group \'eg\': backend unavailable');
-      });
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...RETRY, validateOnly: true});
+
+       expect(result.success).toBe(true);
+       expect(result.toRemove).toEqual(toRemove);
+       expect(list).toHaveBeenCalledTimes(2);
+     });
+
+  test.each([
+    ['the dry run', {validateOnly: true}],
+    ['the push', {}],
+  ])('a not-yet-visible listing error that persists stops %s with the ' +
+         'listing error',
+     async (_name, mode) => {
+       const {list, create} = stubClient({
+         getGroup: err(403, GROUP_DENIED),
+         listError: LIST_DENIED + MAY_NOT_EXIST,
+       });
+
+       const result =
+           await deployKnowledgeCatalog(models(DOCS), CTX, {...RETRY, ...mode});
+
+       expect(result.details)
+           .toBe(
+               "listing entries in entry group 'eg': Failed to list " +
+               `entries: ${LIST_DENIED}${MAY_NOT_EXIST}`);
+       expect(list).toHaveBeenCalledTimes(3);
+       expect(create).not.toHaveBeenCalled();
+     });
+
+  test('another listing error stops the push without a retry', async () => {
+    const {list} = stubClient({listError: 'backend unavailable'});
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, RETRY);
+
+    expect(result.details)
+        .toBe(
+            "listing entries in entry group 'eg': Failed to list entries: " +
+            'backend unavailable');
+    expect(list).toHaveBeenCalledTimes(1);
+  });
 
   test(
       'retries createEntry on transient entry-group propagation errors and ' +
@@ -2597,8 +2892,8 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
         });
         const retryOpts = {
           ...OPTS,
-          entryCreateTries: 2,
-          entryCreateRetryMs: 0,
+          propagationTries: 2,
+          propagationRetryMs: 0,
         };
 
         const recovered =
@@ -3505,7 +3800,7 @@ semantic_model:
 
   test('validateOnly plans its entry and reference links, with no warning',
        async () => {
-         const {list, create, createLink} = stubClient();
+         const {create, createLink} = stubClient();
 
          const result = await deployKnowledgeCatalog(
              models(HR_DOCS), CTX, {...OPTS, validateOnly: true});
@@ -3519,7 +3814,6 @@ semantic_model:
          // of the three relationships.
          expect(result.plan).toContain('  1 semantic-link link:');
          expect(result.plan).toContain('  6 reference links:');
-         expect(list).not.toHaveBeenCalled();
          expect(create).not.toHaveBeenCalled();
          expect(createLink).not.toHaveBeenCalled();
        });

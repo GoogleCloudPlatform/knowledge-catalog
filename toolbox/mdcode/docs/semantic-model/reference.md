@@ -46,7 +46,7 @@ Knowledge Catalog.
 | `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still runs the local checks of every deployment. The checks that read a deployment's store run only for these. Push still publishes the model to Knowledge Catalog first. |
 | `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. That phase still runs the local checks of every deployment, and none of the checks that read a deployment's store. Push refuses it with `--deployment`, in either order. |
 | `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
-| `--validate-only` | Run the validation checks and report pass/fail, but write nothing. It skips the Knowledge Catalog checks on the entry group and the custom types, which find a missing entry group or type, a model the push would refuse, or one `--force-remove` would delete. `--dry-run` is the same. |
+| `--validate-only` | Run every check push runs and report pass/fail, but write nothing. It reads the destination entry group as push does before its first write. With `--print`, its plan lists the model's entries and links, the entries and links push would remove, and the links push would delete and create again. Under `--force-remove`, the plan also lists each other model's entries and links, which push would delete. Without `--print`, it prints one line with how many entries and links push would remove, when there are any. `--dry-run` is the same. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 
@@ -326,9 +326,9 @@ table, and each Spanner database a source names, for the dialect.
 The other checks that need a service run only at push time: the source check,
 the BigQuery source table probe, the dry runs of action statements and of each
 BigQuery graph's DDL, the check that a deployment's BigQuery dataset or Spanner
-database exists, the check of a Spanner deployment's instance edition, and (on
-a push without `--validate-only`) the Knowledge Catalog checks on the entry
-group and the custom types. It exits non-zero when push would reject a binding.
+database exists, the check of a Spanner deployment's instance edition, and the
+Knowledge Catalog checks on the entry group and the custom types. It exits
+non-zero when push would reject a binding.
 Under each profile it prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
@@ -857,9 +857,8 @@ warning, and `--force-remove` deletes it.
 
 ## Validation
 
-`push` and `--validate-only` run the same checks, apart from the Knowledge
-Catalog checks on the entry group and the custom types, which only a push
-without `--validate-only` runs. [push](#push) says when each check runs.
+`push` and `--validate-only` run the same checks. [push](#push) says when each
+check runs.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:
@@ -1280,7 +1279,10 @@ and each aspect type attached, so a push needs, on the destination entry group:
   the model's entries. It deletes orphaned entries. It reads each entry the
   model defines that the catalog already holds, to skip the unchanged ones.
   Each read requests every aspect type push writes or removes on that entry.
-  It reads the model entry again before it labels the push finished.
+  It reads the model entry again before it labels the push finished. It also
+  looks up the links of each entity entry the group already holds, including
+  another model's under `--force-remove`. Each lookup needs
+  `dataplex.entries.get` on that entry.
 * `dataplex.entryLinks.create`, `dataplex.entryLinks.get`,
   `dataplex.entryLinks.update`, `dataplex.entryLinks.delete` and
   `dataplex.entries.link` — push creates and reads the `semantic-link` and
@@ -1303,6 +1305,16 @@ and each aspect type attached, so a push needs, on the destination entry group:
   constraints — those types are custom rather than built-in, so they are
   authorized on the type resource instead of through an entry-group
   use-permission
+* `dataplex.entryTypes.get` and `dataplex.aspectTypes.get` on the
+  `semantic-action` entry type and aspect type in the destination project,
+  when the model declares actions, and on the `semantic-constraint` ones when
+  it declares constraints. Push reads them before its first write to check
+  that they exist.
+
+`--validate-only` writes nothing, so of this list it needs only
+`dataplex.entries.list`, `dataplex.entries.get` for the link lookups,
+`dataplex.entryLinks.get` for the link reads, and the reads of the custom
+types above.
 
 > The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
 > [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).
@@ -1328,6 +1340,8 @@ project:
 The entry group is required. A push to an entry group that does not exist
 stops before writing anything and asks you to run `kcmd init --semantic-model`.
 A pull of such an entry group says the same.
+A push that may not list the entry group's entries also stops before writing
+anything, with Dataplex's message.
 When the scope in catalog.yaml names the wrong location or group, correct the
 scope instead. When the entry group or a type already exists, init goes on even
 if you may not create or update it, and reports a refusal to update a type as a

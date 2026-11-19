@@ -48,6 +48,10 @@
 //     The model's last write, after its orphaned entries are deleted,
 //     relabels the anchor `finished`. A model with nothing to create, update
 //     or delete, whose anchor is labeled `finished`, gets no write.
+//   * A dry run runs the preflight and then `planKnowledgeCatalog`, which
+//     makes apply's entry link lookups, works out what apply would write and
+//     remove, and writes nothing. It skips apply's reads of stored entries.
+//     Those reads feed only apply's writes, and a dry run makes none.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -66,7 +70,7 @@ import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entr
 import {entryIdOf} from './kc_ids';
 import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
 import * as kcEmit from './knowledge_catalog';
-import {LoadedModel} from './loader';
+import {LoadedModel, plural} from './loader';
 
 export interface KcDeployOptions {
   // Project that owns the destination entry group. Flag overrides are applied
@@ -91,19 +95,20 @@ export interface KcDeployOptions {
   // result carries them too. Not called for validateOnly or when the preflight
   // fails.
   onWarnings?: (warnings: readonly string[]) => void;
-  // Compile and report only; never writes to the catalog (a dry run).
+  // A dry run: reads the catalog to work out what a push would write and
+  // remove, and never writes to it.
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
   // a removed or renamed model's entries and links. Without it, an unrecognized
   // model in the group is a hard error rather than a silent orphan.
   forceRemove?: boolean;
-  // How many times to try entries.create before giving up: a just-created entry
-  // group can briefly 404, and the create path retries that window. Overridable
-  // so tests exercise the retry without burning wall-clock. Default
-  // ENTRY_CREATE_TRIES.
-  entryCreateTries?: number;
-  // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
-  entryCreateRetryMs?: number;
+  // How many times push tries entries.create and the entry listing while
+  // they fail with an error whose text says "may not exist" or that an entry
+  // group is not found (see `isPropagationError`). Overridable so tests
+  // exercise the retry without burning wall-clock. Default PROPAGATION_TRIES.
+  propagationTries?: number;
+  // Delay between those retries, in ms. Default PROPAGATION_RETRY_MS.
+  propagationRetryMs?: number;
 }
 
 export interface KcDeployResult {
@@ -138,9 +143,16 @@ export interface KcDeployResult {
   // renamed on a still-present model, and from force-removed models (0 for
   // validateOnly).
   unlinked: number;
-  // A human-readable plan of what would be written: the sole output of a
-  // validateOnly run, and also returned (for --print) on a real push.
+  // A human-readable plan of the model's entries and links and of what push
+  // removes: the sole output of a validateOnly run, and also returned (for
+  // --print) on a real push. A result that stops before push reads what the
+  // catalog holds lists only the model's entries and links.
   plan: string[];
+  // How many entries and links a dry run found push would remove. They
+  // include each other model's entries and links under `--force-remove`.
+  // Links push deletes and creates again are not counted, since they exist
+  // after the push. Set only by a dry run that finds something to remove.
+  toRemove?: {entries: number; links: number};
 }
 
 // Running tallies threaded through the write phase so a partial failure still
@@ -154,6 +166,19 @@ interface Counts {
   linked: number;
   unchangedLinks: number;
   unlinked: number;
+}
+
+// Counts of a run that has written nothing.
+function noCounts(): Counts {
+  return {
+    created: 0,
+    updated: 0,
+    unchangedEntries: 0,
+    deleted: 0,
+    linked: 0,
+    unchangedLinks: 0,
+    unlinked: 0,
+  };
 }
 
 /** One authored model paired with the catalog resources it emitted. */
@@ -177,12 +202,41 @@ export interface KcPreparedDeploy {
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
 
-// entries.create propagation retry: a just-created entry group can briefly 404.
-const ENTRY_CREATE_TRIES = 3;
-const ENTRY_CREATE_RETRY_MS = 3000;
+// How many times, and how far apart, push tries a request again after an
+// error whose text says "may not exist" or that an entry group is not found
+// (see `withPropagationRetry`).
+const PROPAGATION_TRIES = 3;
+const PROPAGATION_RETRY_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// The message of an error a request threw, such as on a network failure. An
+// error with no text gives 'unknown error'.
+function thrownMessage(err: any): string {
+  return String(err?.message || err).trim() || 'unknown error';
+}
+
+/**
+ * Calls `attempt`, and calls it again while `notYetVisible` returns true for
+ * its outcome. Each caller's `notYetVisible` returns true for an error whose
+ * text says "may not exist" or that an entry group is not found. It makes at
+ * most `opts.propagationTries` calls, `opts.propagationRetryMs` apart, and
+ * waits only after an outcome that `notYetVisible` matches. Returns the last
+ * outcome.
+ */
+async function withPropagationRetry<T>(
+    opts: KcDeployOptions, attempt: () => Promise<T>,
+    notYetVisible: (outcome: T) => boolean): Promise<T> {
+  const tries = opts.propagationTries ?? PROPAGATION_TRIES;
+  const retryMs = opts.propagationRetryMs ?? PROPAGATION_RETRY_MS;
+  let outcome = await attempt();
+  for (let n = 1; n < tries && notYetVisible(outcome); n++) {
+    await sleep(retryMs);
+    outcome = await attempt();
+  }
+  return outcome;
 }
 
 /**
@@ -191,8 +245,8 @@ function sleep(ms: number): Promise<void> {
  *
  * The method performs the following actions:
  *   1. Translates the IR models into catalog resources.
- *   2. Verifies that exactly one model is being deployed, builds the dry-run
- *      plan, and returns early when `opts.validateOnly` is set.
+ *   2. Verifies that exactly one model is being deployed, and builds the plan
+ *      that lists the model's entries and links.
  *   3. Fails when the destination entry group does not exist. Lists it and
  *      fails if an unrecognized model's anchor entry is present without
  *      `--force-remove`.
@@ -210,11 +264,41 @@ export async function preflightKnowledgeCatalog(
 }
 
 /**
+ * Works out what a preflight-checked Knowledge Catalog deployment writes and
+ * removes, as a dry run does, and writes nothing. The result's plan adds the
+ * entries and links push removes, the links it deletes and creates again and,
+ * under `--force-remove`, each other model's entries and links. A read that
+ * fails gives the error the push would stop with.
+ */
+export async function planKnowledgeCatalog(
+    prepared: KcPreparedDeploy, ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
+  const planned = await planWrites(
+      new CatalogClient(ctx), opts, prepared,
+      scopeProjectMatcher(ctx, opts.project));
+  const result = {
+    success: true,
+    warnings: [...prepared.warnings],
+    ...noCounts(),
+    plan: prepared.plan,
+  };
+  if ('error' in planned) {
+    return {...result, success: false, details: planned.error};
+  }
+  const {plan, toRemove} = planned;
+  return {
+    ...result,
+    plan,
+    ...(toRemove.entries + toRemove.links ? {toRemove} : {}),
+  };
+}
+
+/**
  * Writes a preflight-checked Knowledge Catalog deployment.
  *
  * The method performs the following actions:
  *   1. Works out what each emitted model's push writes and deletes, before
- *      any write (see `planModelWrites`).
+ *      any write (see `planWrites`).
  *   2. Removes foreign models when `--force-remove` is set.
  *   3. Writes each emitted model's new and changed entries and relationship
  *      links and deletes any orphaned links and entries. A model with nothing
@@ -224,53 +308,38 @@ export async function applyKnowledgeCatalog(
     prepared: KcPreparedDeploy, ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [...prepared.warnings];
-  const counts:
-      Counts = {
-        created: 0,
-        updated: 0,
-        unchangedEntries: 0,
-        deleted: 0,
-        linked: 0,
-        unchangedLinks: 0,
-        unlinked: 0,
-      };
-  const plan = prepared.plan;
-  const result: ResultBuilder = (success, details) =>
-      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
-
+  const counts = noCounts();
   const cat = new CatalogClient(ctx);
-  const {emitted, existing} = prepared;
+  const {emitted} = prepared;
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
-  // Read what the catalog holds before the first write. A thrown error, such
-  // as a network failure, is reported like a failed read.
-  const writePlans: WritePlan[] = [];
-  for (const {model, resources} of emitted) {
-    const planned =
-        await planModelWrites(
-            cat, opts, model, resources, existing, isScopeProject)
-            .catch((err: any) => ({error: String(err?.message || err).trim()}));
-    if ('error' in planned) return result(false, planned.error);
-    writePlans.push(planned);
+  const planned = await planWrites(cat, opts, prepared, isScopeProject);
+  if ('error' in planned) {
+    return {
+      success: false,
+      warnings,
+      ...counts,
+      plan: prepared.plan,
+      details: planned.error,
+    };
   }
+  const {writePlans, foreign, plan} = planned;
+  const result: ResultBuilder = (success, details) =>
+      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
-  if (opts.forceRemove) {
-    const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
-    if (foreignAnchorIds.length) {
-      // A thrown error is reported like a failed delete.
-      const removed =
-          await removeForeignModels(
-              cat, opts, existing, foreignAnchorIds, isScopeProject)
-              .catch((err: any) => ({
-                       deleted: 0,
-                       unlinked: 0,
-                       error: String(err?.message || err).trim(),
-                     }));
-      counts.deleted += removed.deleted;
-      counts.unlinked += removed.unlinked;
-      if (removed.error) return result(false, removed.error);
-    }
+  if (foreign.length) {
+    // A thrown error is reported like a failed delete.
+    const removed =
+        await removeForeignModels(cat, opts, foreign)
+            .catch((err: any) => ({
+                     deleted: 0,
+                     unlinked: 0,
+                     error: thrownMessage(err),
+                   }));
+    counts.deleted += removed.deleted;
+    counts.unlinked += removed.unlinked;
+    if (removed.error) return result(false, removed.error);
   }
 
   // Write each emitted model's entries and relationship links and delete any
@@ -281,7 +350,7 @@ export async function applyKnowledgeCatalog(
       await writeEmittedModels(
           cat, opts, emitted, writePlans, counts)
           .catch((err: any): WriteModelsOutcome =>
-                     ({error: String(err?.message || err).trim()}));
+                     ({error: thrownMessage(err)}));
   if (written.error) return result(false, written.error);
 
   return result(true);
@@ -290,16 +359,13 @@ export async function applyKnowledgeCatalog(
 /**
  * Deploys every authored model's Knowledge Catalog resources.
  *
- * Runs `preflightKnowledgeCatalog` followed by `applyKnowledgeCatalog`, and
- * passes the warnings to `opts.onWarnings` between the two.
+ * Emits the models and passes them to `deployEmittedModels`.
  */
 export async function deployKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
-  const pre = await preflightKnowledgeCatalog(models, ctx, opts);
-  if (pre.result) return pre.result;
-  opts.onWarnings?.(pre.prepared!.warnings);
-  return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
+  const emit = emitModels(models, opts);
+  return deployEmittedModels(emit.emitted, emit.warnings, ctx, opts);
 }
 
 /**
@@ -307,12 +373,16 @@ export async function deployKnowledgeCatalog(
  *
  * Origin-agnostic wrapper over `preflightEmittedModels` and
  * `applyKnowledgeCatalog` for callers with their own emitter (such as LookML).
+ * It passes the warnings to `opts.onWarnings` between the two. With
+ * `opts.validateOnly`, it runs `planKnowledgeCatalog` after the preflight
+ * instead, and calls no `onWarnings`.
  */
 export async function deployEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const pre = await preflightEmittedModels(emitted, emitWarnings, ctx, opts);
   if (pre.result) return pre.result;
+  if (opts.validateOnly) return planKnowledgeCatalog(pre.prepared!, ctx, opts);
   opts.onWarnings?.(pre.prepared!.warnings);
   return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
 }
@@ -323,7 +393,7 @@ export async function deployEmittedModels(
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model and that
  *      every aspect size and instance count is within its limit. Builds the
- *      dry-run plan and returns early when `opts.validateOnly` is set.
+ *      plan that lists the model's entries and links.
  *   2. Validates that the destination entry group exists. Lists it and
  *      validates that it contains no foreign models unless `--force-remove`
  *      is set.
@@ -335,15 +405,7 @@ async function preflightEmittedModels(
     opts: KcDeployOptions):
     Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const warnings: string[] = [...emitWarnings];
-  const counts: Counts = {
-    created: 0,
-    updated: 0,
-    unchangedEntries: 0,
-    deleted: 0,
-    linked: 0,
-    unchangedLinks: 0,
-    unlinked: 0,
-  };
+  const counts = noCounts();
   let plan: string[] = [];
   const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
@@ -361,7 +423,6 @@ async function preflightEmittedModels(
   const aspectsError = emittedAspectsError(model);
   if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
-  if (opts.validateOnly) return {result: result(true)};
 
   // 2. Snapshot the entry group once, before any write: the same listing feeds
   //    the foreign-model guard, link reconciliation, and deletion
@@ -372,7 +433,7 @@ async function preflightEmittedModels(
   const group =
       await cat.getEntryGroup(opts.project, opts.location, opts.entryGroup)
           .catch((err: any) => `reading entry group '${opts.entryGroup}': ${
-                     err?.message || String(err)}`);
+                     thrownMessage(err)}`);
   if (typeof group === 'string') return {result: result(false, group)};
   if (isNotFoundStatus(group)) {
     return {result: result(false, missingEntryGroupMessage(opts))};
@@ -571,22 +632,28 @@ async function checkCustomTypes(
     typeIds: readonly string[]): Promise<string|undefined> {
   const home = customTypeHome(dest);
   for (const typeId of typeIds) {
+    // A read that throws gives its message.
     const [entryTypeRes, aspectTypeRes] = await Promise.all([
-      cat.getEntryType(home.project, home.location, typeId),
-      cat.getAspectType(home.project, home.location, typeId),
+      cat.getEntryType(home.project, home.location, typeId)
+          .catch(thrownMessage),
+      cat.getAspectType(home.project, home.location, typeId)
+          .catch(thrownMessage),
     ]);
-    if (isNotFoundStatus(entryTypeRes) || isNotFoundStatus(aspectTypeRes)) {
+    if ([entryTypeRes, aspectTypeRes].some(
+            res => typeof res !== 'string' && isNotFoundStatus(res))) {
       return `Custom type '${typeId}' not found in project ` +
           `'${dest.project}'; run 'kcmd init --semantic-model' first.`;
     }
-    if (!isOkStatus(entryTypeRes)) {
-      return `checking entry type '${typeId}' ` +
-          `(HTTP ${entryTypeRes.status}): ${errText(entryTypeRes)}`;
-    }
-    if (!isOkStatus(aspectTypeRes)) {
-      return `checking aspect type '${typeId}' ` +
-          `(HTTP ${aspectTypeRes.status}): ${errText(aspectTypeRes)}`;
-    }
+    // The error for a read of the `kind` type that threw or failed.
+    const failure = (kind: string, res: ApiResult<unknown>|string) => {
+      const what = `checking ${kind} type '${typeId}'`;
+      if (typeof res === 'string') return `${what}: ${res}`;
+      return isOkStatus(res) ? undefined :
+                               `${what} (HTTP ${res.status}): ${errText(res)}`;
+    };
+    const error =
+        failure('entry', entryTypeRes) ?? failure('aspect', aspectTypeRes);
+    if (error) return error;
   }
   return undefined;
 }
@@ -668,16 +735,18 @@ interface WritePlan {
   // lacks, those whose read failed, and those whose stored copy differs from
   // what the update would leave. No label counts as a difference. An emitted
   // entry sets none, and the update carries over every stored label it does
-  // not set.
+  // not set. A dry run reads no stored entry, so here it holds every emitted
+  // entry. Only a real push reads it.
   writes: Entry[];
   // The number of emitted entries the catalog already holds as the update
-  // would leave them.
+  // would leave them. A dry run leaves it 0. Only a real push reads it.
   unchanged: number;
   // The entrySource each listed entry holds, by entry ID: the one read for
-  // the plan, or the listed one when that read failed.
+  // the plan, or the listed one when that read failed. In a dry run it holds
+  // the listed ones. Only a real push reads it.
   sources: Map<string, Entry['entrySource']>;
   // The model entry as read for the plan. Unset when the listing lacks it or
-  // its read failed.
+  // its read failed, and in a dry run. Only a real push reads it.
   storedAnchor?: Entry;
   // The model's relationship links that it no longer emits. They and the
   // stale links in `staleLinks` are deleted before the link writes.
@@ -691,6 +760,137 @@ interface WritePlan {
 }
 
 /**
+ * Works out what the push of `prepared` writes and deletes, before any write,
+ * and returns the error that stops it. Writes nothing. Returns each emitted
+ * model's write plan, each other model `--force-remove` deletes, the
+ * preflight's plan with the lines of what push removes added, and how many
+ * entries and links push removes. A thrown error, such as a network failure,
+ * is reported like a failed read.
+ */
+async function planWrites(
+    cat: CatalogClient, opts: KcDeployOptions, prepared: KcPreparedDeploy,
+    isScopeProject: ProjectMatcher): Promise<{
+  writePlans: WritePlan[]; foreign: ForeignModel[]; plan: string[];
+  toRemove: {entries: number; links: number};
+}|{error: string}> {
+  const {emitted, existing} = prepared;
+  const writePlans: WritePlan[] = [];
+  for (const {model, resources} of emitted) {
+    const planned =
+        await planModelWrites(
+            cat, opts, model, resources, existing, isScopeProject)
+            .catch((err: any) => ({error: thrownMessage(err)}));
+    if ('error' in planned) return planned;
+    writePlans.push(planned);
+  }
+  const foreignAnchorIds =
+      opts.forceRemove ? findForeignAnchorIds(emitted[0], existing) : [];
+  const foreign =
+      await planForeignModels(
+          cat, opts, existing, foreignAnchorIds, isScopeProject)
+          .catch((err: any) => ({error: thrownMessage(err)}));
+  if ('error' in foreign) return foreign;
+  const {lines, ...toRemove} = removalPlan(writePlans, foreign);
+  return {writePlans, foreign, plan: [...prepared.plan, ...lines], toRemove};
+}
+
+/** Another model in the entry group, which `--force-remove` deletes. */
+interface ForeignModel {
+  anchorId: string;
+  // Its entries in the pre-write listing, less those an earlier other model
+  // already holds.
+  entries: Entry[];
+  // The relationship links of its entity entries, less those an earlier
+  // other model already holds.
+  links: EntryLink[];
+}
+
+/**
+ * Returns the model of each anchor ID in `foreignAnchorIds`, with its entries
+ * in `existing` and the links of its entity entries, which it looks up while
+ * those entries still exist. An entry or a link that two of these models hold
+ * goes with the first of them only, so push lists, counts and deletes it
+ * once. An entry is held by two models when one anchor ID starts the other's,
+ * such as `old` and `old.sub`. A link is held by two models when it joins
+ * their entities. Returns the error that stops the push when a lookup fails.
+ */
+async function planForeignModels(
+    cat: CatalogClient, opts: KcDeployOptions, existing: readonly Entry[],
+    foreignAnchorIds: readonly string[],
+    isScopeProject: ProjectMatcher): Promise<ForeignModel[]|{error: string}> {
+  const models: ForeignModel[] = [];
+  const takenEntries = new Set<string>();
+  const takenLinks = new Set<string>();
+  for (const anchorId of foreignAnchorIds) {
+    const entries = entriesOfModel(anchorId, existing)
+                        .filter(e => !takenEntries.has(entryId(e)));
+    for (const entry of entries) takenEntries.add(entryId(entry));
+    const lookedUp = await lookupEntryLinks(
+        cat, opts, collectEntityNames(entries), isScopeProject);
+    if (lookedUp.error) {
+      const {entryId, message} = lookedUp.error;
+      return {
+        error: `Looking up entry links for '${entryId}' from removed model '${
+            anchorId}' failed: ${message}`,
+      };
+    }
+    const links =
+        [...lookedUp.links.values()].filter(l => !takenLinks.has(linkId(l)));
+    for (const link of links) takenLinks.add(linkId(link));
+    models.push({anchorId, entries, links});
+  }
+  return models;
+}
+
+/**
+ * The plan lines of what push removes: for each model in `writePlans`, the
+ * entries and links it deletes and the links it deletes and creates again with
+ * new endpoints, then the entries and links of each model in `foreign`. Each
+ * list is sorted by ID, which puts a model's own entry first, since its ID
+ * starts the ID of every other entry of the model. A kind with nothing in it
+ * gets no line. Also returns how many entries and links push removes for
+ * good, which leaves out the links it creates again.
+ */
+function removalPlan(
+    writePlans: readonly WritePlan[], foreign: readonly ForeignModel[]):
+    {lines: string[]; entries: number; links: number} {
+  // A heading such as "  2 entries to remove:" over one line per item.
+  const listed = (items: string[], one: string, many: string, what: string) => {
+    if (!items.length) return [];
+    return [
+      `  ${items.length} ${plural(items.length, one, many)} ${what}:`,
+      ...items.map(item => `    - ${item}`),
+    ];
+  };
+  const byId = <T>(list: readonly T[], id: (item: T) => string) =>
+      [...list].sort((a, b) => id(a) < id(b) ? -1 : id(a) > id(b) ? 1 : 0);
+  const entries = (list: readonly Entry[]) =>
+      byId(list, entryId).map(e => `${entryId(e)} (${entryTypeId(e)})`);
+  const links = (list: readonly EntryLink[]) =>
+      byId(list, linkId).map(l => `${linkId(l)} (${linkTypeId(l)})`);
+  return {
+    lines: [
+      ...writePlans.flatMap(p => [
+        ...listed(entries(p.orphanedEntries), 'entry', 'entries', 'to remove'),
+        ...listed(links(p.orphanedLinks), 'link', 'links', 'to remove'),
+        ...listed(links(p.staleLinks.links), 'link', 'links', 'to recreate'),
+      ]),
+      ...foreign.flatMap(m => {
+        const what = `of model '${m.anchorId}' to remove (--force-remove)`;
+        return [
+          ...listed(entries(m.entries), 'entry', 'entries', what),
+          ...listed(links(m.links), 'link', 'links', what),
+        ];
+      }),
+    ],
+    entries: writePlans.flatMap(p => p.orphanedEntries).length +
+        foreign.flatMap(m => m.entries).length,
+    links: writePlans.flatMap(p => p.orphanedLinks).length +
+        foreign.flatMap(m => m.links).length,
+  };
+}
+
+/**
  * Works out what the push of one model writes and deletes, and returns the
  * error that stops it. Writes nothing.
  *
@@ -698,7 +898,11 @@ interface WritePlan {
  *   1. Reads each emitted entry the pre-write listing `existing` holds, with
  *      the aspect types its update names, at most READ_CONCURRENCY at a time,
  *      and sorts out the entries the update would leave as stored. A read
- *      that fails counts as a difference.
+ *      that fails counts as a difference. A dry run makes none of these
+ *      reads. They feed only push's writes: which entries push writes and
+ *      the entrySource each update starts from. The push-state label update
+ *      sends back the entrySource of the stored model entry read here. A dry
+ *      run writes nothing.
  *   2. Looks up the model's existing relationship links when `existing`
  *      contains entities owned by the model, and finds the orphaned links (no
  *      longer emitted) and stale links (changed endpoints) owned by the model.
@@ -713,8 +917,10 @@ async function planModelWrites(
     isScopeProject: ProjectMatcher): Promise<WritePlan|{error: string}> {
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
   const listed = resources.entries.filter(e => sources.has(entryId(e)));
-  const stored = await mapConcurrent(
-      listed, READ_CONCURRENCY, e => readStored(cat, opts, e));
+  const stored = opts.validateOnly ?
+      [] :
+      await mapConcurrent(
+          listed, READ_CONCURRENCY, e => readStored(cat, opts, e));
   const unchanged = new Set<Entry>();
   listed.forEach((entry, i) => {
     const held = stored[i];
@@ -770,7 +976,7 @@ async function planModelWrites(
           await readEmittedLink(cat, link)
               .catch((err: any): ReadLinkOutcome => ({
                        error: `entry link '${linkId(link)}': ${
-                           String(err?.message || err).trim()}`,
+                           thrownMessage(err)}`,
                      }));
       if (read.error) return {error: `Model '${model}': ${read.error}`};
       if (read.existing && !isStaleLink(read.existing, link)) {
@@ -965,7 +1171,7 @@ async function setPushState(
         await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
     return isOkStatus(res) ? undefined : errText(res);
   } catch (err: any) {
-    return String(err?.message || err).trim() || 'unknown error';
+    return thrownMessage(err);
   }
 }
 
@@ -1059,36 +1265,43 @@ async function deleteEntries(
 }
 
 /**
- * Snapshots the destination entry group's entries once, before any write.
+ * Snapshots the destination entry group's entries once, before any write, and
+ * returns the error when the listing fails.
  *
- * A brand-new entry group can briefly fail to list its entries collection (the
- * same propagation window `createEntry` rides out); treat only that
- * not-yet-visible error as empty so any other listing failure (such as a
- * backend error or permission problem) is surfaced rather than masked.
+ * Push lists the group again from its first page after a listing error that
+ * `isPropagationError` matches, as `withPropagationRetry` allows. The text of
+ * such an error says "may not exist", "entry group ... not found" or "entry
+ * group ... does not exist". It may be the delay before a new group is
+ * visible. Dataplex words some permanent refusals the same way, so an error
+ * that persists stops the push like any other.
  */
 async function listEntryGroup(
     cat: CatalogClient,
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
-  const entries: Entry[] = [];
-  try {
-    // Push writes listed source fields back, so it keeps each `resource` as
-    // stored.
-    for await (const entry of cat.listEntries(
-        opts.project, opts.location, opts.entryGroup,
-        {keepSourceResource: true})) {
-      entries.push(entry);
+  // All the entries, or the message of the error the listing threw.
+  const listAll = async (): Promise<Entry[]|string> => {
+    const entries: Entry[] = [];
+    try {
+      // Push writes listed source fields back, so it keeps each `resource`
+      // as stored.
+      for await (const entry of cat.listEntries(
+          opts.project, opts.location, opts.entryGroup,
+          {keepSourceResource: true})) {
+        entries.push(entry);
+      }
+    } catch (err: any) {
+      return thrownMessage(err);
     }
-  } catch (err: any) {
-    const msg = err.message || String(err);
-    if (isPropagationError({message: msg})) {
-      return {entries: []};
-    }
-    return {
-      entries: [],
-      error: `listing entries in entry group '${opts.entryGroup}': ${msg}`,
-    };
-  }
-  return {entries};
+    return entries;
+  };
+  const listing = await withPropagationRetry(
+      opts, listAll,
+      res => typeof res === 'string' && isPropagationError({message: res}));
+  if (typeof listing !== 'string') return {entries: listing};
+  return {
+    entries: [],
+    error: `listing entries in entry group '${opts.entryGroup}': ${listing}`,
+  };
 }
 
 interface LinkReconcileOutcome {
@@ -1116,7 +1329,9 @@ interface LinkLookupOutcome {
  * project. A link whose project number push cannot resolve is kept only when
  * every reference spells the same project as the link's name. Dataplex spells
  * a looked-up link's name and references alike, and one reference is the
- * looked-up entry, so such a link is in the destination project.
+ * looked-up entry, so such a link is in the destination project. An error
+ * the lookup request throws, such as a network failure, is returned like a
+ * failed response, so the caller can name the entry.
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
@@ -1125,13 +1340,16 @@ async function lookupEntryLinks(
       opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`);
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
-    const res = await cat.lookupEntryLinks(
-        opts.project, opts.location, {entry: entityName});
+    const entityId = entryIdOf(entityName);
+    let res: ApiResult<EntryLink[]>;
+    try {
+      res = await cat.lookupEntryLinks(
+          opts.project, opts.location, {entry: entityName});
+    } catch (err: any) {
+      return {links, error: {entryId: entityId, message: thrownMessage(err)}};
+    }
     if (!isOkStatus(res)) {
-      return {
-        links,
-        error: {entryId: entryIdOf(entityName), message: errText(res)},
-      };
+      return {links, error: {entryId: entityId, message: errText(res)}};
     }
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];
@@ -1202,8 +1420,7 @@ async function deleteEntryLinks(
       del = await cat.deleteEntryLink(
           opts.project, opts.location, opts.entryGroup, id);
     } catch (err: any) {
-      const message = String(err?.message || err).trim();
-      return {deleted, error: {linkId: id, message}};
+      return {deleted, error: {linkId: id, message: thrownMessage(err)}};
     }
     if (isOkStatus(del) || isNotFoundStatus(del)) {
       deleted.push(link);
@@ -1281,56 +1498,42 @@ function isStaleLink(existingLink: EntryLink, link: EntryLink): boolean {
   return !sameLinkReferences(existingLink, link);
 }
 
+// The entries in `existing` of the model whose anchor ID is `anchor`: the
+// anchor, and each entry whose ID starts with the anchor ID and a `.` or `/`.
+//
+// A foreign model is by definition not in this push, so its emitter's
+// `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
+// a separator (`.` or `/`), which matches every ID scheme
+// (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
+// names. Naming the segments here would leave a model published by a different
+// emitter with its children orphaned and unreachable -- the anchor goes, so no
+// later push sees a foreign model, and nothing owns the remainder.
+function entriesOfModel(anchor: string, existing: readonly Entry[]): Entry[] {
+  const owner: KcAnchor = {
+    anchorId: anchor,
+    ownedPrefixes: [`${anchor}.`, `${anchor}/`],
+  };
+  return collectOwnedEntries(owner, existing);
+}
+
 /**
- * Deletes models already in the entry group that this push does not re-emit
- * (`--force-remove`).
+ * Deletes the other models in `foreign` (`--force-remove`), each with the
+ * entries and links planning found for it.
  *
- * For each foreign anchor, looks up its relationship links and then deletes
- * the anchor before anything else. Dataplex deletes an entry's child entries
- * with it, and a link with an entry it references, so a push that stops here
- * leaves the whole foreign model or none of it. Pull then returns the whole
- * model or finds none. The links and the children present in `existing` are
+ * Deletes each model's anchor before anything else. Dataplex deletes an
+ * entry's child entries with it, and a link with an entry it references, so a
+ * push that stops here leaves the whole foreign model or none of it. Pull then
+ * returns the whole model or finds none. The links and the children are
  * deleted after the anchor, and a 404 for one already gone counts as success.
- *
- * A foreign model is by definition not in this push, so its emitter's
- * `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
- * a separator (`.` or `/`), which matches every ID scheme
- * (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
- * names. Naming the segments here would leave a model published by a different
- * emitter with its children orphaned and unreachable -- the anchor goes, so no
- * later push sees a foreign model, and nothing owns the remainder.
  */
 async function removeForeignModels(
-    cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
-    foreignAnchorIds: string[], isScopeProject: ProjectMatcher):
+    cat: CatalogClient, opts: KcDeployOptions,
+    foreign: readonly ForeignModel[]):
     Promise<{deleted: number; unlinked: number; error?: string}> {
   let deleted = 0;
   let unlinked = 0;
-  for (const foreignAnchorId of foreignAnchorIds) {
-    // Find the foreign model's anchor entry and all of its child entries
-    // across both the V1 dotted (`<anchor>.`) and V2/LookML slash (`<anchor>/`)
-    // namespaces, then extract the full resource names of its `semantic-entity`
-    // entries so we can look up their relationship links.
-    const foreignAnchor: KcAnchor = {
-      anchorId: foreignAnchorId,
-      ownedPrefixes: [`${foreignAnchorId}.`, `${foreignAnchorId}/`],
-    };
-    const foreignEntries = collectOwnedEntries(foreignAnchor, existing);
-    const foreignEntityNames = collectEntityNames(foreignEntries);
-
-    // Look the links up while their entity entries still exist.
-    const lookedUp = await lookupEntryLinks(
-        cat, opts, foreignEntityNames, isScopeProject);
-    if (lookedUp.error) {
-      const {entryId, message} = lookedUp.error;
-      return {
-        deleted,
-        unlinked,
-        error: `Looking up entry links for '${entryId}' from removed model '${
-            foreignAnchorId}' failed: ${message}`,
-      };
-    }
-
+  for (const model of foreign) {
+    const foreignAnchorId = model.anchorId;
     // The anchor goes first and takes its children and their links with it.
     // A failure before it leaves the foreign model whole. The deletes after it
     // remove anything Dataplex left and normally get 404.
@@ -1340,12 +1543,12 @@ async function removeForeignModels(
       error: `Deleting entry '${e.entryId}' from removed model '${
           foreignAnchorId}' failed: ${e.message}`,
     });
-    const anchors = await deleteEntries(
-        cat, opts, foreignEntries.filter(isAnchorEntry));
+    const anchors =
+        await deleteEntries(cat, opts, model.entries.filter(isAnchorEntry));
     deleted += anchors.deleted;
     if (anchors.error) return entryFailure(anchors.error);
 
-    const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
+    const links = await deleteEntryLinks(cat, opts, model.links);
     unlinked += links.deleted.length;
     if (links.error) {
       const {linkId, message} = links.error;
@@ -1358,7 +1561,7 @@ async function removeForeignModels(
     }
 
     const children = await deleteEntries(
-        cat, opts, foreignEntries.filter(e => !isAnchorEntry(e)));
+        cat, opts, model.entries.filter(e => !isAnchorEntry(e)));
     deleted += children.deleted;
     if (children.error) return entryFailure(children.error);
   }
@@ -1628,8 +1831,10 @@ async function replaceEntryLink(
         opts.project, opts.location, opts.entryGroup, id, link);
     return {...linkOutcome(link, recreated), deleted: existingLink};
   } catch (err: any) {
-    const message = String(err?.message || err).trim();
-    return {error: `entry link '${id}': ${message}`, deleted: existingLink};
+    return {
+      error: `entry link '${id}': ${thrownMessage(err)}`,
+      deleted: existingLink,
+    };
   }
 }
 
@@ -1723,8 +1928,8 @@ async function blockedOutcome(
  * Attempts to create `entry` (retrying brief entry-group propagation 404s), and
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
- * first. That happens after a listing the caller may not make, or when another
- * writer created the entry after the listing.
+ * first. That happens when another writer created the entry after the
+ * listing.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
@@ -1873,19 +2078,12 @@ function sendsNamedAspects(
 async function createEntry(
     cat: CatalogClient, opts: KcDeployOptions, id: string,
     entry: Entry): Promise<ApiResult<Entry>> {
-  const tries = opts.entryCreateTries ?? ENTRY_CREATE_TRIES;
-  const retryMs = opts.entryCreateRetryMs ?? ENTRY_CREATE_RETRY_MS;
-  let res = await cat.createEntry(
-      opts.project, opts.location, opts.entryGroup, id, entry);
-  for (let attempt = 1; attempt < tries; attempt++) {
-    if (isOkStatus(res) || isExistsStatus(res) || !isPropagationError(res)) {
-      break;
-    }
-    await sleep(retryMs);
-    res = await cat.createEntry(
-        opts.project, opts.location, opts.entryGroup, id, entry);
-  }
-  return res;
+  return withPropagationRetry(
+      opts,
+      () => cat.createEntry(
+          opts.project, opts.location, opts.entryGroup, id, entry),
+      res => !isOkStatus(res) && !isExistsStatus(res) &&
+          isPropagationError(res));
 }
 
 /**
@@ -1913,10 +2111,10 @@ function isNotFoundStatus(res: {status: number}): boolean {
 }
 
 /**
- * Returns true for a transient "not visible yet" entry-group propagation error
- * worth retrying, matching the propagation phrasing specifically rather than a
- * bare "not found" (which also covers a genuinely missing aspect or entry
- * type).
+ * Returns true when the text of `res` says "may not exist", or says an entry
+ * group is not found or does not exist. Callers retry such an error because
+ * it may be the delay before a new entry group is visible. A bare "not found"
+ * does not match, since it also covers a missing aspect type or entry type.
  */
 function isPropagationError(res: {message?: string}): boolean {
   const msg = res.message ?? '';
