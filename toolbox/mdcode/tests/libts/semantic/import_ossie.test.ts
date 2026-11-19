@@ -242,6 +242,11 @@ semantic_model:
 
   const WRAPPED = "Moved the model from the document root into 'semantic_model', and " +
       "wrote version '0.2.0.dev0/google' in place of '0.3.0.dev0'.";
+  // A dataset metric of orders with a comment above it.
+  const SUM = '    metrics:\n      # The sum.\n      - name: m\n        expression:\n          sql: SUM(amount)\n';
+  // Two fields of orders that each define `&s`.
+  const TWICE = '      - name: x\n        description: &s a\n        expression:\n          sql: x\n' +
+      '      - name: y\n        description: &s b\n        expression:\n          sql: y\n';
   // [what the input holds, the input, the options, the line that reports it,
   // and a line of the written file]
   test.each([
@@ -331,6 +336,49 @@ semantic_model:
                              '        ai_context: {*k : the order id,\n          o_id: again}\n'),
      {flavor: 'ossie'}, "field 'orders.order_id': moved 'sql' into an 'OSSIE_SQL_2026' entry of 'dialects'.",
      '            ai_context: {o_id: again}\n'],
+    ["a moved metric with an anchor whose name a later dataset defines again for a later alias",
+     ossieFile({orders: '    metrics:\n      - name: m\n        expression:\n          sql: SUM(amount)\n' +
+                    '        ai_context: {synonyms: [&n total]}\n',
+                rest: '    ai_context: {synonyms: [&n buyers]}\nmetrics: [{name: c, expression: {sql: COUNT(customers.id)}}]\n' +
+                    'relationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
+                    'to_columns: [id], ai_context: {synonyms: [*n]}}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '        to_columns: [id]\n        ai_context:\n          synonyms:\n            - buyers\n'],
+    ["a moved metric with an anchored key whose name a later dataset defines again for a join column",
+     ossieFile({orders: '      - name: sql\n        expression: {sql: dialects}\n    metrics:\n      - name: m\n' +
+                    '        expression: {\n          &k sql: COUNT(orders.sql)\n        }\n',
+                rest: '    ai_context: {note: &k sql}\nmetrics:\n  - {name: c, expression: {sql: COUNT(customers.id)}}\n' +
+                    'relationships: [{name: r, from: orders, to: customers, from_columns: [*k], to_columns: [id]}]\n'}),
+     {flavor: 'ossie'},
+     "relationship 'r': rewrote from_columns entry 'sql' as column 'dialects', which field 'orders.sql' reads.",
+     '        from_columns:\n          - dialects\n'],
+    ['an anchored version after the other keys, whose name a dataset defines again',
+     ossieFile({orders: '    ai_context: {instructions: &v 0.3.0.dev0}\n'}).replace('version: 0.3.0.dev0\n', '') +
+         'version: &v 0.3.0.dev0\nrelationships: [{name: r, from: orders, to: customers, from_columns: [order_id], ' +
+         'to_columns: [id], ai_context: {instructions: *v}}]\n',
+     {}, WRAPPED, '        to_columns: [id]\n        ai_context:\n          instructions: 0.3.0.dev0\n'],
+    ['a file that defines each anchor name once, which keeps its comments',
+     ossieFile({orders: SUM, rest: '    ai_context: {note: &k a}\nrelationships: [{name: r, from: orders, to: customers, ' +
+                    'from_columns: [order_id], to_columns: [id], ai_context: {note: *k}}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define and no alias uses, which keeps its comments',
+     ossieFile({orders: TWICE + SUM}), {},
+     "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define and no alias uses, which keeps its comments in the Ossie flavor',
+     ossieFile({orders: TWICE + SUM}), {flavor: 'ossie'},
+     "dataset 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define beside an alias of another name, which keeps its comments',
+     ossieFile({orders: TWICE + SUM, rest: '    description: &t Buyers\nrelationships: [{name: r, from: orders, ' +
+                    'to: customers, from_columns: [order_id], to_columns: [id], description: *t}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ["a dataset's metrics key written as an alias",
+     ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      - name: m\n        entity: orders\n'],
     ['an empty dataset metrics list', ossieFile({orders: '    metrics: []\n'}), {},
      "entity 'orders': removed its empty 'metrics' list, since kcmd lists every metric in the model's " +
          'metrics.',
@@ -350,6 +398,57 @@ semantic_model:
     const res = await importSemanticModelYaml(input, {flavor: 'google', ...opts});
     expect(res.warnings).toContain(line);
     expect(res.files[0].content).toContain(written);
+  });
+
+  // An Ossie file where a dataset's metric defines `&note` as `moved` under
+  // `key` in its ai_context, a later dataset defines it again as `later`, and a
+  // relationship names it.
+  const notes = (moved: string, later: string, key = 'note') => `version: "0.3.0.dev0"
+name: shop
+datasets:
+  - name: orders
+    source: ${TABLES}/orders
+    primary_key: [id]
+    fields:
+      - name: id
+        expression: {sql: id}
+    metrics:
+      - name: order_count
+        expression: {sql: COUNT(orders.id)}
+        ai_context:
+          ${key}: &note ${moved}
+  - name: customers
+    source: ${TABLES}/customers
+    primary_key: [id]
+    fields:
+      - name: id
+        expression: {sql: id}
+    ai_context:
+      ${key}: &note ${later}
+metrics:
+  - name: customer_count
+    expression: {sql: COUNT(customers.id)}
+relationships:
+  - name: orders_customers
+    from: orders
+    to: customers
+    from_columns: [id]
+    to_columns: [id]
+    ai_context:
+      ${key}: *note
+`;
+
+  // The Google flavor moves `note` into `custom` and leaves `instructions` in
+  // place.
+  test.each([
+    ['ossie', 'note', 'Counts orders.', 'Counts customers.', 'Counts customers.'],
+    ['ossie', 'note', '.nan', 'null', 'null'],
+    ['ossie', 'note', '-0', '0', '0'],
+    ['ossie', 'note', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
+    ['google', 'instructions', 'Counts rows.', 'Counts rows.', 'Counts rows.'],
+  ] as const)('writes out the alias in the %s flavor under %s when the moved anchor holds %s and its own anchor %s', async (flavor, key, moved, later, written) => {
+    const res = await importSemanticModelYaml(notes(moved, later, key), {flavor});
+    expect(res.files[0].content).toEndWith(`to_columns: [id]\n        ai_context:\n          ${key}: ${written}\n`);
   });
 
   // The load error of a written file whose dataset orders keeps its `metrics`.
@@ -377,6 +476,11 @@ semantic_model:
      ossieFile({orders: '    metrics: [{name: m, expression: {sql: SUM(amount)}}]\n', rest: 'metrics: oops\n'}),
      "entity 'orders': left its 'metrics' as written, since the model's 'metrics' is not a list.",
      `${KEPT_METRICS}\nmodel 'shop': 'metrics' is 'oops'; it takes a list`],
+    ["the mapping data of a metric's extension block under a dataset's metrics key written as an alias",
+     ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n' +
+                    '        custom_extensions: [{vendor_name: acme, data: {a: 1}}]\n'}),
+     "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     "Semantic model load error: metric 'm': 'data' of entry 1 of 'custom_extensions' is a mapping; it takes a string"],
   ])('leaves %s as written, and stops, since the written file does not load', async (_, input, line, error) => {
     const res = await importSemanticModelYaml(input, {flavor: 'google'});
     expect(res.warnings).toContain(line);

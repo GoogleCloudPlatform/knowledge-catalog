@@ -142,6 +142,20 @@ metrics:
              .toBe('x: [ b ]\n');
        });
 
+  test('writes out an alias when a moved item defines its anchor\'s name ' +
+           'again above it',
+       () => {
+         const field = (name: string) => `{name: ${name}, ai_context: {note: ${name}}}`;
+         expect(updatedText(
+                    'fields:\n  - name: a\n    ai_context:\n      note: &n a\n' +
+                        '  - name: b\n    ai_context:\n      note: &n b\nnote: *n\n',
+                    `fields: [${field('a')}, ${field('b')}]\nnote: b\n`,
+                    `fields: [${field('b')}, ${field('a')}]\nnote: b\n`))
+             .toBe(
+                 'fields:\n  - name: b\n    ai_context:\n      note: &n b\n' +
+                 '  - name: a\n    ai_context:\n      note: &n a\nnote: b\n');
+       });
+
   // A list item with no `name` is matched by the key that names an item of
   // its list, so a changed value keeps the item's comment.
   for (const [what, local, base, pulled, want] of [
