@@ -537,9 +537,10 @@ function moveDatasetMetrics(
  * document root, with the model wrapped in `semantic_model`, and then with the
  * metrics its datasets list moved to the model (see movingDatasets). Each edit
  * is made on the text, so every comment stays, when the edited text reads as
- * the edited value. A document that defines an anchor name more than once
- * gets no edit, since moved text could change what its aliases name. Gives
- * the text, its document and the edits made.
+ * the edited value. A document gets no edit when an alias uses an anchor name
+ * that the document defines more than once, since moved text could change
+ * which node that alias names. Gives the text, its document and the edits
+ * made.
  */
 function rootModelText(text: string, document: yaml.Document.Parsed): {
   text: string; document: yaml.Document.Parsed; wrapped: boolean;
@@ -586,19 +587,20 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
                  {...wrapped, wrapped: true, moved: false};
 }
 
-/** Whether `doc` defines some anchor name more than once. */
+/**
+ * Whether `doc` defines more than once an anchor name that an alias uses.
+ * Alias keys count too, as do aliases under a merge key `<<`.
+ */
 function redefinesAnchor(doc: yaml.Document): boolean {
-  const names = new Set<string>();
-  let again = false;
+  const counts = new Map<string, number>();
+  const used = new Set<string>();
   yaml.visit(doc, {
     Node: (_, n) => {
-      if (!n.anchor) return undefined;
-      again = names.has(n.anchor);
-      names.add(n.anchor);
-      return again ? yaml.visit.BREAK : undefined;
+      if (yaml.isAlias(n)) used.add(n.source);
+      else if (n.anchor) counts.set(n.anchor, (counts.get(n.anchor) ?? 0) + 1);
     },
   });
-  return again;
+  return [...used].some(name => (counts.get(name) ?? 0) > 1);
 }
 
 /**

@@ -242,6 +242,9 @@ semantic_model:
       "wrote version '0.2.0.dev0/google' in place of '0.3.0.dev0'.";
   // A dataset metric of orders with a comment above it.
   const SUM = '    metrics:\n      # The sum.\n      - name: m\n        expression:\n          sql: SUM(amount)\n';
+  // Two fields of orders that each define `&s`.
+  const TWICE = '      - name: x\n        description: &s a\n        expression:\n          sql: x\n' +
+      '      - name: y\n        description: &s b\n        expression:\n          sql: y\n';
   // [what the input holds, the input, the options, the line that reports it,
   // and a line of the written file]
   test.each([
@@ -357,6 +360,19 @@ semantic_model:
                     'from_columns: [order_id], to_columns: [id], ai_context: {note: *k}}]\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
      '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define and no alias uses, which keeps its comments',
+     ossieFile({orders: TWICE + SUM}), {},
+     "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define and no alias uses, which keeps its comments in the Ossie flavor',
+     ossieFile({orders: TWICE + SUM}), {flavor: 'ossie'},
+     "dataset 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
+    ['an anchor name two fields define beside an alias of another name, which keeps its comments',
+     ossieFile({orders: TWICE + SUM, rest: '    description: &t Buyers\nrelationships: [{name: r, from: orders, ' +
+                    'to: customers, from_columns: [order_id], to_columns: [id], description: *t}]\n'}),
+     {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     '    metrics:\n      # The sum.\n      - name: m\n'],
     ["a dataset's metrics key written as an alias",
      ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n'}),
      {}, "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
@@ -458,6 +474,11 @@ relationships:
      ossieFile({orders: '    metrics: [{name: m, expression: {sql: SUM(amount)}}]\n', rest: 'metrics: oops\n'}),
      "entity 'orders': left its 'metrics' as written, since the model's 'metrics' is not a list.",
      `${KEPT_METRICS}\nmodel 'shop': 'metrics' is 'oops'; it takes a list`],
+    ["the mapping data of a metric's extension block under a dataset's metrics key written as an alias",
+     ossieFile({orders: '    description: &m metrics\n    *m :\n      - name: m\n        expression:\n          sql: SUM(amount)\n' +
+                    '        custom_extensions: [{vendor_name: acme, data: {a: 1}}]\n'}),
+     "entity 'orders': moved metric 'm' to the model's metrics, anchored on 'orders'.",
+     "Semantic model load error: metric 'm': 'data' of entry 1 of 'custom_extensions' is a mapping; it takes a string"],
   ])('leaves %s as written, and stops, since the written file does not load', async (_, input, line, error) => {
     const res = await importSemanticModelYaml(input, {flavor: 'google'});
     expect(res.warnings).toContain(line);
