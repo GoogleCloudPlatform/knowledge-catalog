@@ -29,7 +29,7 @@ import * as yaml from 'yaml';
 
 import type {SpannerClient} from '../gcp/spanner';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, EntryRead, lookupSystemEntry, Read, read} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
@@ -60,8 +60,8 @@ export interface SourceDialects {
   failures: Map<string, Failure>;
 }
 
-// Why kcmd cannot tell a table's dialect. `reason` is the message after
-// `source '<name>'`, from its colon or from the space before its verb.
+// Why kcmd cannot tell a table's dialect. `reason` is the rest of the message
+// after `source '<name>'`. It starts with `: ` or with ` names no table`.
 // `unread` marks a read that failed: a 403 or 404, another failed status, or
 // no answer. Without it, the entry was read and gives no dialect.
 type Failure = {reason: string; unread?: true};
@@ -95,8 +95,8 @@ export function labeledFiles(
 // write, sorted. Each message starts with the label of every file that writes
 // its source, in file order, then names the first such source. For a Spanner
 // table, those are the files and the first source that write a table of its
-// database. A Cloud SQL table is named by its resource name. `unread` holds
-// the messages for a read that failed.
+// database. A source written as a resource URI is named by its resource name.
+// `unread` holds the messages for a read that failed.
 export function dialectErrors(
     files: Iterable<LabeledText>,
     read: SourceDialects): {errors: string[]; unread: string[]} {
@@ -117,8 +117,8 @@ export function dialectErrors(
   for (const [key, {source, labels}] of written) {
     const failure = read.failures.get(key);
     if (!failure) continue;
-    const name = cloudSqlTableOf(source)?.resourceName ?? source;
-    const error = `[${labels.join(', ')}] source '${name}'${failure.reason}`;
+    const error = `[${labels.join(', ')}] source '${asResourceName(source)}'${
+        failure.reason}`;
     errors.push(error);
     if (failure.unread) unread.push(error);
   }

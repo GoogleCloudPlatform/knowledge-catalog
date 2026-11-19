@@ -211,7 +211,7 @@ describe('sourceDialects', () => {
   // message is left out.
   test('each message labels every file that writes its source, once, in file order', async () => {
     const files = [
-      {label: 'sales', text: `a: //${POSTGRES}\nb: ${POSTGRES}\nsource: ${SPANNER}/x/tables/t\n`},
+      {label: 'sales', text: `a: //${POSTGRES}\nb: ${POSTGRES}\nsource: //${SPANNER}/x/tables/t\n`},
       {label: 'sales.profile.pg.yaml', text: `source: //${POSTGRES}\n`},
       {label: 'sales.profile.sf.yaml', text: `${THIRD_PARTY_FILE}\n`},
       {label: 'ops', text: `source: ${SPANNER}/x/tables/u\n`},
@@ -219,7 +219,7 @@ describe('sourceDialects', () => {
     const spanner = {getDatabase: async () => ({status: 403, message: 'Permission denied.'})};
     const got = await sourceDialects(
         [...files.map(f => f.text), SQLSERVER], fakeCatalog({}).catalog, {spanner});
-    // A Cloud SQL table is named by its resource name, however it is written.
+    // A source is named by its resource name, however it is written.
     expect(dialectErrors(files, got).errors.map(e => e.match(/^\[.*?\] source '.*?'/)![0])).toEqual([
       `[sales, ops] source '${SPANNER}/x/tables/t'`,
       `[sales, sales.profile.pg.yaml] source '${POSTGRES}'`,
