@@ -284,6 +284,11 @@ describe('sourceEntryErrors', () => {
      INSTANCE_DENIED,
      refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message,
              INSTANCE_HINT)],
+    // A message of several lines is printed on one.
+    ['a refused instance read whose message spans lines', SPANNER, `getInstance ${P} kcmd-src-reg`,
+     {...INSTANCE_DENIED, message: INSTANCE_DENIED.message.replace(' on ', '\n  on ')},
+     refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message,
+             INSTANCE_HINT)],
     // With no replica regions to look in instead.
     ['a refused instance config read, for an instance that lists no replica regions',
      SPANNER_NAM22, `getInstanceConfig ${NAM22_CONFIG.name}`, NAM22_CONFIG_DENIED,
@@ -295,6 +300,13 @@ describe('sourceEntryErrors', () => {
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
     ['a catalog read that answers 503', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, UNAVAILABLE,
      couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed (HTTP 503: unavailable).")],
+    // The read keeps the table's name as written, and a message of only
+    // spaces adds nothing.
+    ['a read of a table whose name holds two spaces, which answers 500 with no message',
+     BIGQUERY.replace(/orders$/, 'order  items'), `getTable ${P} kcmd_demo order  items`,
+     {status: 500, message: ' '},
+     couldNotCheck(BIGQUERY.replace(/orders$/, 'order  items'),
+                   `reading table '${P}.kcmd_demo.order  items' failed (HTTP 500).`)],
     ['a catalog read that throws', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, new Error('socket hang up'),
      couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed: socket hang up.")],
     ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,

@@ -30,7 +30,7 @@ import * as yaml from 'yaml';
 import type {SpannerClient} from '../gcp/spanner';
 
 import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, Read, read, Refusal} from './catalog_entry';
+import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, oneLine, Read, read, Refusal} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
@@ -336,7 +336,7 @@ async function spannerDialect(
     const postgres = res.result?.databaseDialect === 'POSTGRESQL';
     return {dialect: postgres ? 'POSTGRES' : 'SPANNER'};
   } catch (err: any) {
-    return failed(err?.message ?? String(err));
+    return failed(oneLine(String(err?.message ?? err)));
   }
 }
 

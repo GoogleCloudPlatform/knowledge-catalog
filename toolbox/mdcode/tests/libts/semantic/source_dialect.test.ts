@@ -21,8 +21,8 @@ const SPANNER = 'spanner.googleapis.com/projects/acme/instances/ops/databases';
 // A file that binds THIRD_PARTY, which is collected only as a source.
 const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
 // What Dataplex says when its API is off in the project the call is billed
-// to, and that answer, by default for every lookup. Dataplex's generic denial,
-// which every other entry gives, is not quoted.
+// to. disabled() gives a 403 with that message, or with `message`. Dataplex's
+// generic denial, which every other entry gives, is not quoted.
 const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
     'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
     'dataplex.googleapis.com/overview?project=123 then retry.';
@@ -217,9 +217,9 @@ describe('sourceDialects', () => {
       });
 
   test('a part the catalog fails to answer for is named', async () => {
-    const failing = (part: string): EntryLookup => ({
+    const failing = (part: string, thrown = new Error('socket hang up')): EntryLookup => ({
       async lookupEntry(_p, _l, name) {
-        if (name.endsWith(`/${part}`)) throw new Error('socket hang up');
+        if (name.endsWith(`/${part}`)) throw thrown;
         if (name.endsWith('/instances/ms')) return typed('cloudsql-sqlserver-instance');
         if (name.endsWith('/databases/shop')) {
           return {status: 500, message: 'Internal error.\nTry again.'};
@@ -227,9 +227,13 @@ describe('sourceDialects', () => {
         return entryDenied(name);
       },
     });
-    const says = async (part: string) => (await read([SQLSERVER], failing(part))).errors;
+    const says = async (...failed: Parameters<typeof failing>) =>
+        (await read([SQLSERVER], failing(...failed))).errors;
     expect(await says('instances/ms')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
-        "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up"]);
+        "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up."]);
+    // A thrown error with no message leaves no colon.
+    expect(await says('instances/ms', new Error(' '))).toEqual([`[sales] source '${SQLSERVER}' ` +
+        `${NO_TABLE} kcmd could not tell why: looking up the catalog entry of instance 'ms' failed.`]);
     // A message of two lines is printed on one.
     expect(await says('nothing')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
         "kcmd could not tell why: looking up the catalog entry of database 'shop' failed (HTTP 500: " +
@@ -292,7 +296,8 @@ describe('sourceDialects', () => {
         throw new Error('socket hang up');
       },
     };
-    const spanner = {getDatabase: async () => { throw new Error('socket hang up'); }};
+    // Spanner's error of two lines is printed on one.
+    const spanner = {getDatabase: async () => { throw new Error('socket\n  hang up'); }};
     const {errors, unread} = await read(
         [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`,
          `source: ${SPANNER}/x/tables/u`],
@@ -301,8 +306,8 @@ describe('sourceDialects', () => {
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `[sales] source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
-      `[sales] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
-      `[sales] source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up`,
+      `[sales] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up.`,
+      `[sales] source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up.`,
       `[sales] source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
       'dialect, and could not read database acme/ops/x: socket hang up',
     ]);
