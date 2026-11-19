@@ -119,18 +119,25 @@ describe('sourceDialects', () => {
   const NO_INSTANCE = `${NO_TABLE} Knowledge Catalog has no entry you may read for its ` +
       "instance 'ms' in project 'acme' and region 'us-central1'. The project ID, the region " +
       "or the instance name may be wrong, or you may not be allowed to read the instance's " +
-      'entry. Check the source and your access. Dataplex said:';
-  // What Dataplex says of a missing entry, and of every lookup when its API is
-  // off in the project the call is billed to.
-  const denied = (resourceName: string) => entryDenied(entryName(resourceName)).message;
+      'entry. Check the source and your access.';
+  const NO_DATABASE = `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is ` +
+      'not. The database may not exist, or it may be too new to be in the catalog yet. Check ' +
+      'the database name.';
+  // What Dataplex says when its API is off in the project the call is billed
+  // to. Its generic denial, which every other entry gives, is not quoted.
   const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
       'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
       'dataplex.googleapis.com/overview?project=123 then retry.';
+  const disabled = (message = DISABLED) => ({status: 403, message});
   test.each([
-    ['no instance', SQLSERVER, {}, [MS], `${NO_INSTANCE} ${denied(MS)}`],
-    ['the Dataplex API off', SQLSERVER,
-     {[SQLSERVER]: {status: 403, message: DISABLED}, [MS]: {status: 403, message: DISABLED}},
-     [MS], `${NO_INSTANCE} ${DISABLED}`],
+    ['no instance', SQLSERVER, {}, [MS], NO_INSTANCE],
+    ['the Dataplex API off', SQLSERVER, {[SQLSERVER]: disabled(), [MS]: disabled()}, [MS],
+     `${NO_INSTANCE} Dataplex said: ${DISABLED}`],
+    // The text is quoted on one line.
+    ['the Dataplex API off at the database, in a text of two lines', SQLSERVER,
+     {[MS]: 'cloudsql-sqlserver-instance',
+      [`${MS}/databases/shop`]: disabled(DISABLED.replace(' Enable', '\n  Enable'))},
+     [MS, `${MS}/databases/shop`], `${NO_DATABASE} Dataplex said: ${DISABLED}`],
     ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, {project: '655216118709'})}, [MS],
      `${NO_TABLE} Dataplex integration is off for instance 'ms'. Turn it on with 'gcloud sql ` +
      "instances patch ms --enable-dataplex-integration --project acme' and wait for the " +
@@ -138,10 +145,7 @@ describe('sourceDialects', () => {
     ...[['Dataplex integration on', integration(true)],
         ['no word on Dataplex integration', typed('cloudsql-sqlserver-instance')]].map(
         ([label, answer]) => [`no database, ${label}`, SQLSERVER, {[MS]: answer},
-                              [MS, `${MS}/databases/shop`],
-                              `${NO_TABLE} Instance 'ms' is in the catalog, but database ` +
-                              "'shop' is not. The database may not exist, or it may be too " +
-                              'new to be in the catalog yet. Check the database name.']),
+                              [MS, `${MS}/databases/shop`], NO_DATABASE]),
     ['no schema', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database'},
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
@@ -153,11 +157,9 @@ describe('sourceDialects', () => {
      [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
      `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
      'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
-     `the table. Dataplex said: ${denied(SQLSERVER)}`],
-    // A 403 with no message adds nothing.
-    ['every part of a MySQL table, whose lookup gives no message', MYSQL,
-     {[MYSQL]: {status: 403}, [SHOP]: 'cloudsql-mysql-instance',
-      [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
+     'the table.'],
+    ['every part of a MySQL table', MYSQL,
+     {[SHOP]: 'cloudsql-mysql-instance', [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
      [SHOP, `${SHOP}/databases/sales`],
      `${NO_TABLE} Its instance and database are in the catalog. The table may not exist, or ` +
      'it may be too new to be in the catalog yet. Check the table name, or create the table.'],
@@ -181,9 +183,7 @@ describe('sourceDialects', () => {
     // An instance type kcmd does not know names no engine, so the name is not
     // checked against one.
     ['no database on an instance of another type', `${MS}/databases/shop/tables/orders`,
-     {[MS]: 'cloudsql-oracle-instance'}, [MS, `${MS}/databases/shop`],
-     `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is not. The database ` +
-     'may not exist, or it may be too new to be in the catalog yet. Check the database name.'],
+     {[MS]: 'cloudsql-oracle-instance'}, [MS, `${MS}/databases/shop`], NO_DATABASE],
   ] as Array<[string, string, Record<string, string|ApiResult<object>>, string[], string]>)(
       'a table the catalog has no entry for, as a read that failed: %s',
       async (_, table, types, looked, says) => {

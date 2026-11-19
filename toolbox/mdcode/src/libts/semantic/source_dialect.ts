@@ -30,8 +30,8 @@ import * as yaml from 'yaml';
 import type {SpannerClient} from '../gcp/spanner';
 
 import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {EntryLookup, EntryRead, lookupSystemEntry, Read, read} from './catalog_entry';
-import {sentence, storeMessage} from './parameters';
+import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, Read, read, Refusal} from './catalog_entry';
+import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
 // The dialect each entrySource.system gives, in lower case.
@@ -139,14 +139,6 @@ const ENGINE_OF_INSTANCE_TYPE: Record<string, Engine> = {
   'cloudsql-postgresql-instance': {name: 'PostgreSQL', defaultSchema: 'public'},
   'cloudsql-sqlserver-instance': {name: 'SQL Server', defaultSchema: 'dbo'},
 };
-
-// Dataplex's own message for a lookup it refused, as a sentence to add after
-// kcmd's, or '' when it gave none. Dataplex answers 403 for causes kcmd cannot
-// tell apart, such as a missing entry or the Dataplex API being off in the
-// project the call is billed to, and its message says which.
-function dataplexSaid({message}: {message?: string}): string {
-  return message?.trim() ? ` Dataplex said: ${sentence(message)}` : '';
-}
 
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
 // third-party table the files `texts` write (see sourcesToLookUp), and of every
@@ -256,12 +248,13 @@ async function cloudSqlDialect(
 // When every part can be read, the table may not exist, or it may be too new
 // to be in the catalog yet. When a part's lookup fails in another way, such as
 // with another status or with no answer, it says kcmd could not tell why and
-// gives that lookup's error. When the instance's entry cannot be read, it adds
-// Dataplex's message for that lookup. When every part can be read, it adds
-// Dataplex's message for the table's lookup, which `refused` holds.
+// gives that lookup's error. The reason ends with what Dataplex said in the
+// refusal it rests on (see dataplexSaid). That is the refusal of the
+// instance's, database's or schema's lookup, or of the table's own lookup when
+// every part can be read. `refused` holds the table's.
 async function missingCloudSqlPart(
     table: CloudSqlTable, lookUp: PartLookup,
-    refused: {message?: string}): Promise<string> {
+    refused: Refusal): Promise<string> {
   const {project, location, instance, database, schema} = table;
   const instanceId = `cloudsql.googleapis.com/projects/${project}/locations/${
       location}/instances/${instance}`;
@@ -316,7 +309,7 @@ async function missingCloudSqlPart(
   for (const {id, what, missing} of parts) {
     const res = await lookUp(id, what);
     if ('error' in res) return `kcmd could not tell why: ${res.error}`;
-    if ('unreadable' in res) return missing;
+    if ('unreadable' in res) return `${missing}${dataplexSaid(res)}`;
   }
   const present = schema === undefined ? 'instance and database' :
                                          'instance, database and schema';

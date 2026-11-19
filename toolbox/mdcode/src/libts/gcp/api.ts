@@ -65,6 +65,31 @@ export function errorMessage(body: string): string {
       `${plain.slice(0, MAX_MESSAGE_LENGTH)}...` : plain;
 }
 
+// The reason and domain of a Google API error's ErrorInfo detail, which name
+// the kind of error, such as `forbidden` in `dataplex.googleapis.com`.
+export interface ErrorInfo {
+  reason: string;
+  domain: string;
+}
+
+// The ErrorInfo of the failed response body `body`, or undefined when the body
+// has none.
+export function errorInfo(body: string): ErrorInfo|undefined {
+  try {
+    const details = JSON.parse(body)?.error?.details;
+    const info = Array.isArray(details) ?
+        details.find(
+            (d: any) => d?.['@type']?.endsWith('google.rpc.ErrorInfo')) :
+        undefined;
+    return isText(info?.reason) && isText(info?.domain) ?
+        {reason: info.reason, domain: info.domain} :
+        undefined;
+  } catch {
+    // Not JSON, or a detail of an unexpected shape.
+    return undefined;
+  }
+}
+
 function isText(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }

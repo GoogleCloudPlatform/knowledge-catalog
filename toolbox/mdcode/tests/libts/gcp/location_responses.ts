@@ -161,11 +161,18 @@ export function spannerDenied(permission: string, resource: string) {
 }
 
 // Knowledge Catalog's answer for the entry `name` when it is missing or in
-// another location.
+// another location. The body keeps the ErrorInfo detail (live in
+// kc-looker-external, 2026-11-19).
 export function entryDenied(name: string) {
+  const message = `Permission denied on resource \`${name}\` (or it may not exist).`;
   return {
     status: 403,
-    message: `Permission denied on resource \`${name}\` (or it may not exist).`,
+    message,
+    body: JSON.stringify({error: {code: 403, message, status: 'PERMISSION_DENIED', details: [{
+      '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+      reason: 'forbidden',
+      domain: 'dataplex.googleapis.com',
+    }]}}),
   };
 }
 
