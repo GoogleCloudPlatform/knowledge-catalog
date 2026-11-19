@@ -3420,23 +3420,25 @@ const LEGACY_ALLOYDB_INSTANCE_URI =
 // other two but not PostgreSQL from SQL Server, so the dialect comes from the
 // table's catalog entry, not from the source (see sourcesDialect).
 const CLOUDSQL_TABLE_URI =
-    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/[^/]+\/tables\/[^/]+$/;
+    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/;
 const CLOUDSQL_SCHEMA_TABLE_URI =
-    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
+    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/schemas\/([^/]+)\/tables\/[^/]+$/;
 
 // A double quote or a backtick, which no resource name or entry name holds.
 const QUOTE = /["`]/;
 
 // A Cloud SQL table written as its resource name or resource URI: its
-// project, location and instance, and its resource name with no leading `//`,
-// which is also the id of its catalog entry in the `@cloudsql` entry group.
+// project, location, instance, database and schema, and its resource name
+// with no leading `//`, which is also the id of its catalog entry in the
+// `@cloudsql` entry group.
 export interface CloudSqlTable {
   project: string;
   location: string;
   instance: string;
+  database: string;
+  // Unset for a name with no schema, which only a MySQL table has.
+  schema?: string;
   resourceName: string;
-  // False for a MySQL table, whose name has no schema.
-  inSchema: boolean;
 }
 
 // The Cloud SQL table `source` names, or undefined when it names none. A name
@@ -3448,8 +3450,8 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
   const m = mysql ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
   if (!m) return undefined;
   return {
-    project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2),
-    inSchema: !mysql,
+    project: m[1], location: m[2], instance: m[3], database: m[4],
+    ...!mysql && {schema: m[5]}, resourceName: uri.slice(2),
   };
 }
 

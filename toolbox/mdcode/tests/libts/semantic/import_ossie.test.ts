@@ -4,6 +4,8 @@
 import {describe, expect, test} from 'bun:test';
 
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
+import {sourceDialects} from '../../../src/libts/semantic/source_dialect';
+import {entryDenied} from '../gcp/location_responses';
 
 const TABLES = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables';
 
@@ -462,10 +464,20 @@ semantic_model:
         '            - dialect: BIGQUERY\n              expression: SUM(orders.amount)\n');
   });
 
-  test('gives no advice about a profile file beside it', async () => {
-    const res = await importSemanticModelYaml(
-        ossieFile(), {flavor: 'google', profileFiles: [{fileName: 'shop.profile.dev.yaml', content: 'name: dev\n'}]});
+  test('gives no advice about a profile file beside it, and looks up none of its tables', async () => {
+    const table = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg/' +
+        'databases/shop/schemas/sales/tables/orders';
+    const looked: string[] = [];
+    const res = await importSemanticModelYaml(ossieFile(), {
+      flavor: 'google',
+      profileFiles: [{fileName: 'shop.profile.dev.yaml', content: `name: dev\nentities:\n  - name: orders\n    source: ${table}\n`}],
+      readDialects: texts => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => {
+        looked.push(name);
+        return entryDenied(name);
+      }}),
+    });
     expect(res.warnings.join('\n')).not.toContain('shop.profile.dev.yaml');
+    expect(looked).toEqual([]);
   });
 
   const VANILLA = `# yaml-language-server: $schema=ossie.json\nversion: "0.2.0.dev0"\nsemantic_model:\n` +

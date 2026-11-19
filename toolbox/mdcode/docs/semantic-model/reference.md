@@ -191,12 +191,15 @@ input keeps that flag, since the command then reads the file the import wrote.
 The checks that read a service stay with push, such as whether each source
 names a table Knowledge Catalog knows about. For its checks, import reads only
 each table's dialect, as push does: a Cloud SQL or third-party table's from its
-Knowledge Catalog entry, and a Spanner table's from its database. Import then
-judges each table in that dialect. When it cannot read a table's dialect, it
-warns with push's reason and skips the checks that need the dialect: whether a
-field has SQL in its table's dialect, what an `ANSI_SQL` text reads when every
-table of the model file or profile is such a table, and whether a profile's or
-the model file's tables are in one database when only that table's entry can
+Knowledge Catalog entry, and a Spanner table's from its database. The tables are
+those of the model file and of the profile files that go in with it. When one of
+those profile files breaks a [profile file rule](profiles.md#file-layout),
+import looks up the tables of none of them, as push does. Import then judges
+each table in its dialect. When it cannot read a table's dialect, it warns with
+push's reason and skips the checks that need the dialect: whether a field has
+SQL in its table's dialect, what an `ANSI_SQL` text reads when every table of
+the model file or profile is such a table, and whether a profile's or the model
+file's tables are in one database when only that table's entry can
 say. Tables of two systems are never in one database, so import still reports a
 profile or model file that binds a BigQuery table beside such a table. Nothing
 is written when the import reports an error. Import rewrites only the values it
@@ -228,9 +231,8 @@ root, with `datasets` and no `semantic_model` there: a `0.3.0.dev0` file, or a
 `0.2.0.dev0` file as the Ossie converters write it. A `0.3.0.dev0` file without
 `datasets`, such as an Ossie ontology or mapping file, holds no model, and
 import refuses it. Only an import without `--input first-party` reads a
-root-model file. Import does not write or check a `<model>.profile.<name>.yaml`
-file beside it. It still reads the dialect of each table such a file names. It
-also warns about a `<model>.profiles/` directory beside it. Every other command
+root-model file. Import ignores a `<model>.profile.<name>.yaml` file beside it.
+It warns about a `<model>.profiles/` directory beside it. Every other command
 refuses such a file and says to run `kcmd import`. Import stops on a `GOOGLE`
 block in such a file, on a `0.3.0.dev0` file with a `semantic_model` list, and
 on a name kcmd's name rules refuse. A third-party import that stops on a name
@@ -969,7 +971,10 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   than a table or view, such as the schema `snowflake:acme.retail.public`. A
   field the model file binds to the table then needs SQL in that dialect or in
   `ANSI_SQL`. So does every field and metric of a profile whose sources fix
-  that dialect. *(live — needs read access to the entry)*
+  that dialect. The message about an entry that cannot be read ends with
+  Dataplex's text when that text says more than Dataplex's generic denial,
+  "Permission denied on resource … (or it may not exist)". *(live — needs read
+  access to the entry)*
 * **A Spanner table takes its database's dialect.** Knowledge Catalog does not
   record whether a Spanner database is GoogleSQL or PostgreSQL, so push and
   `kcmd profiles` read each database a source names once, with the Spanner

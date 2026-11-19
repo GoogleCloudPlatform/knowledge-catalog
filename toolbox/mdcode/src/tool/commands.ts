@@ -35,7 +35,7 @@ import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, Di
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
-import {SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
+import {dialectErrors, labeledFiles, SourceDialects, sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {DeploymentPlan, inlineBindingWarnings, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, validateSpannerGraph, withProfileFiles, yamlChangedStatementErrors} from '../libts/semantic/validate';
@@ -463,6 +463,30 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
   };
 }
 
+// A model's profile files as `profileDocs` gives them, or none when the layout
+// rejects one. The command reports that file where it reads it.
+function profileDocsOrNone(
+    profileDocs: ProfileDocs, model: string): ReturnType<ProfileDocs> {
+  try {
+    return profileDocs(model);
+  } catch {
+    return [];
+  }
+}
+
+// Reads the dialect of each source the model documents `docs` and their
+// profile files write, as readDialects does. `profileDocs` gives each model's
+// profile files. Gives what the read found, and its messages, each labeled
+// with the files that write its source (see dialectErrors).
+async function scopeDialects(
+    ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
+    profileDocs: ProfileDocs) {
+  const files =
+      labeledFiles(docs, model => profileDocsOrNone(profileDocs, model));
+  const read = await readDialects(ctx, files.map(f => f.text));
+  return {read, ...dialectErrors(files, read)};
+}
+
 // The dialects sourceDialects reads for the model documents `docs` and their
 // profile files, for every load the command makes, and what the import the
 // advice to add a BigQuery text suggests gives for each document that may get
@@ -472,17 +496,9 @@ async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs,
     layout: SemanticModelLayout): Promise<DialectLoad|null> {
-  const texts = docs.map(d => d.text);
-  for (const doc of docs) {
-    try {
-      texts.push(...profileDocs(doc.name).map(p => p.text));
-    } catch {
-      // A profile file the layout rejects is reported where it is read.
-    }
-  }
-  const read = await readDialects(ctx, texts);
-  if (read.errors.length) {
-    for (const e of read.errors) console.error(`Error: ${e}`);
+  const {read, errors} = await scopeDialects(ctx, docs, profileDocs);
+  if (errors.length) {
+    for (const e of errors) console.error(`Error: ${e}`);
     return null;
   }
   const load = {sourceDialects: read.dialects, sourceDatabases: read.databases};
@@ -507,15 +523,9 @@ function transpilingModel(
     if (!(err instanceof SemanticModelError)) throw err;
   }
   if (!model) return undefined;
-  let files: Array<{name: string; text: string}> = [];
-  try {
-    files = profileDocs(doc.name);
-  } catch {
-    // A profile file the layout rejects is reported where it is read.
-  }
   const profiles = [
     ...model.profiles ?? [],
-    ...files.flatMap(f => {
+    ...profileDocsOrNone(profileDocs, doc.name).flatMap(f => {
       try {
         return [loadProfileFile(f.text, f.name, {skipActions: true})];
       } catch (err) {
@@ -542,15 +552,7 @@ async function scopeTranspileOutcomes(
   const docs = layout.modelDocuments().filter(
       doc => transpilingModel(doc, profileDocs, {}));
   if (!docs.length) return undefined;
-  const texts = docs.map(d => d.text);
-  for (const doc of docs) {
-    try {
-      texts.push(...profileDocs(doc.name).map(p => p.text));
-    } catch {
-      // A profile file the layout rejects is reported where it is read.
-    }
-  }
-  const read = await readDialects(ctx, texts);
+  const {read} = await scopeDialects(ctx, docs, profileDocs);
   return transpileOutcomes(
       ctx, docs, profileDocs, layout,
       {sourceDialects: read.dialects, sourceDatabases: read.databases}, read);
@@ -1505,11 +1507,9 @@ async function printStore(
       // can still get the store of a database it has not created yet. An
       // entry that reads but gives no dialect or names no table gets push's
       // error.
-      const read = await readDialects(ctx, [
-        ...docs.map(d => d.text),
-        ...docs.flatMap(d => profileDocs(d.name).map(p => p.text)),
-      ]);
-      refused = read.errors.filter(e => !read.unread.includes(e));
+      const {read, errors, unread} =
+          await scopeDialects(ctx, docs, profileDocs);
+      refused = errors.filter(e => !unread.includes(e));
       if (refused.length) return false;
       const load = {
         sourceDialects: read.dialects,
@@ -2304,7 +2304,7 @@ async function pushRefusal(
   const docs = layout.modelDocuments();
   const profileDocs = profileDocsReader(layout);
   const noDialects: SourceDialects =
-      {dialects: new Map(), databases: new Map(), errors: [], unread: []};
+      {dialects: new Map(), databases: new Map(), failures: new Map()};
   const load = {
     readWithoutDialect: true,
     transpileOutcomes: await transpileOutcomes(

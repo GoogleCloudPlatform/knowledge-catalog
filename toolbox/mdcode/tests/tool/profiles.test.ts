@@ -10,11 +10,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {BigQueryClient} from '../../src/libts/gcp/bigquery';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {ApiContext} from '../../src/libts/gcp/context';
 import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
+import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
 
 
@@ -3018,12 +3020,31 @@ semantic_model:
   test('stops kcmd profiles and push when its entry cannot be read', async () => {
     writeScope();
     stubCloudSqlEntry(403);
-    const dataplex = "Turn on Dataplex integration for instance 'ms' (gcloud sql " +
-        'instances patch ms --enable-dataplex-integration --project acme)';
+    const dataplex = "Error: [commerce.profile.prod.yaml] source 'cloudsql.googleapis.com/" +
+        "projects/acme/locations/us-central1/instances/ms/databases/shop/schemas/sales/" +
+        "tables/orders' names no table Knowledge Catalog knows about. Knowledge Catalog has " +
+        "no entry you may read for its instance 'ms'";
     expect(await profiles({profile: 'prod'})).toBe(1);
     expect(errs.join('\n')).toContain(dataplex);
     errs = [];
     expect(await push({validateOnly: true})).toBe(1);
     expect(errs.join('\n')).toContain(dataplex);
+    expect(errs.join('\n')).not.toContain('integration');
+  });
+
+  test('push says to turn on Dataplex integration when the instance\'s entry says it is off', async () => {
+    writeScope();
+    const aspect = 'projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance';
+    const lookup = spyOn(CatalogClient.prototype, 'lookupEntry').mockImplementation(
+        async (_p, _l, name) => (name.endsWith('/instances/ms') ? {status: 200, result: {
+          entryType: 'projects/dataplex-types/locations/global/entryTypes/cloudsql-sqlserver-instance',
+          aspects: {'dataplex-types.global.cloudsql-instance': {data: {dataplexEnabled: false}}},
+        }} : entryDenied(name)) as any);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(errs.join('\n')).toContain(
+        "names no table Knowledge Catalog knows about. Dataplex integration is off for instance " +
+        "'ms'. Turn it on with 'gcloud sql instances patch ms --enable-dataplex-integration " +
+        "--project acme' and wait for the table to appear in the catalog.");
+    expect(lookup.mock.calls.find(c => c[2].endsWith('/instances/ms'))?.[3]).toEqual({aspects: [aspect]});
   });
 });

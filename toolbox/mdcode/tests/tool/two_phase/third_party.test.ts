@@ -22,7 +22,7 @@ const LOOKUP = {
   })[name],
 };
 const MISSING = err(
-    `source '${ENTRY}' names no table Knowledge Catalog knows about. The ` +
+    `[commerce] source '${ENTRY}' names no table Knowledge Catalog knows about. The ` +
     'entry may not exist, or you may not be allowed to read it. kcmd reads a ' +
     "third-party table's dialect from its entry, so add the table to " +
     'Knowledge Catalog, or fix the source.');

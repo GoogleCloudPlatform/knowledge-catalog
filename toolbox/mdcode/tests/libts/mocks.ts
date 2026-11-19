@@ -6,7 +6,7 @@ import * as bigquery from '../../src/libts/gcp/bigquery';
 import * as spanner from '../../src/libts/gcp/spanner';
 import {leadingDmlVerb} from '../../src/libts/semantic/sql_identifiers';
 
-import {REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
+import {entryDenied, REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
 export const TEST_API_CONTEXT = new gcp.ApiContext('test-project', 'test-location', 'test-token');
@@ -18,11 +18,12 @@ export const cloudSqlEntry = (type: string) => ({
 });
 
 // Stubs the Knowledge Catalog lookup of a Cloud SQL table's entry: it answers
-// `status`, with entry type `type` when that is 200. `mock.restore()` undoes it.
-export function stubCloudSqlEntry(status: number, type?: string) {
-  return spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(async () =>
-      (status === 200 ? cloudSqlEntry(type!) :
-           {status, message: 'Permission denied (or it may not exist).'}) as any);
+// with entry type `type`, or with Dataplex's denial of a missing entry when
+// `status` is 403. `mock.restore()` undoes it.
+export function stubCloudSqlEntry(status: 200|403, type?: string) {
+  return spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
+      async (_p, _l, name) =>
+          (status === 200 ? cloudSqlEntry(type!) : entryDenied(name)) as any);
 }
 
 // Makes every Spanner database answer that it is GoogleSQL, as the dialect

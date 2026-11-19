@@ -108,9 +108,37 @@ matching `-view` entry types give the same dialects. `kcmd push`,
 load the model. The entry exists only when the instance has Dataplex
 integration turned on (`gcloud sql instances patch <i>
 --enable-dataplex-integration`), and the catalog can take a while to list a new
-table. When the entry cannot be read, the command stops and says so.
+table. When the entry cannot be read, the command stops.
 `kcmd profiles --print-store` stops too. `kcmd import` reads it too, and when
-it cannot, it warns and skips the checks that need the dialect.
+it cannot, it warns and skips the checks that need the dialect. The message
+says why the entry cannot be read. `kcmd` looks up the entries of the table's
+instance, database and schema, and reports the first of these that holds:
+
+1. The instance's entry cannot be read. The project ID, the region or the
+   instance name may be wrong, or the caller may not be allowed to read the
+   entry.
+2. The table's name does not fit the engine the instance's entry gives. A
+   MySQL table's name has no schema. A PostgreSQL or SQL Server table's name
+   has one. For a name with no schema, the message names the engine's default
+   schema: `schemas/public/` for PostgreSQL and `schemas/dbo/` for SQL Server.
+3. The instance's entry says Dataplex integration is off. The message gives
+   the command that turns it on.
+4. The database's entry cannot be read. The database may not exist, or it may
+   be too new to be in the catalog yet.
+5. The schema's entry cannot be read. The schema may not exist, or it may be
+   too new to be in the catalog yet.
+
+When every part can be read, the table may not exist, or it may be too new to
+be in the catalog yet. When one of these lookups fails in another way, such as
+with another HTTP status or with no answer, the message says `kcmd` could not
+tell why and gives that lookup's error.
+
+The message ends with Dataplex's text for the refused lookup it reports, when
+that text says more than Dataplex's generic denial, "Permission denied on
+resource … (or it may not exist)". The lookup is the instance's, the
+database's or the schema's, or the table's own when every part can be read.
+Dataplex's other texts name causes `kcmd` cannot see, such as the Dataplex API
+being turned off in the project the call is billed to.
 
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner
@@ -121,6 +149,13 @@ the command stops and says so. `kcmd profiles --print-store` reads it too, and
 when it cannot, it skips the checks that need the dialect. `kcmd import` reads
 it too, and when it cannot, it warns and skips the checks that need the
 dialect.
+
+A message about a Cloud SQL, Spanner or third-party table whose dialect cannot
+be read starts with the files that write the table, in brackets, as push's
+other messages do. A model file is named by its document name, such as
+`[shop]`, and a profile file by its file name, such as `[shop.profile.pg.yaml]`.
+A Spanner database gets one message, which lists every file that writes one of
+its tables.
 
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL

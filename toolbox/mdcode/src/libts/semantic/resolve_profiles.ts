@@ -1414,7 +1414,9 @@ export function tableDialects(
   if (table) {
     // Only a MySQL table's name has no schema.
     const mysql = DIALECT_OF_SYSTEM.cloudsql_mysql;
-    if (!table.inSchema) return {name: mysql, dialects: [mysql], guessed: true};
+    if (table.schema === undefined) {
+      return {name: mysql, dialects: [mysql], guessed: true};
+    }
     const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))].filter(
         d => d !== mysql);
     return {name: 'Cloud SQL', dialects, unread: true};
@@ -1607,7 +1609,7 @@ export function firstEntityPerDatabase(
     // entry no lookup read is compared after the loop.
     const table = cloudSqlTableOf(s);
     const instance = table?.resourceName.split('/databases/')[0];
-    if (lookedUp === undefined && table?.inSchema) {
+    if (lookedUp === undefined && table?.schema !== undefined) {
       const fits = (k: string) => k === db || k === instance;
       unreadTables.push({entity, key: instance!, fits});
       continue;

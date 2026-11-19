@@ -244,6 +244,25 @@ describe('kcmd import', () => {
     expect(errors).toEqual([`Error: ${error}.`]);
   });
 
+  // This import's own warning names the model file after the model, retail.
+  // The import its advice suggests reads raw.yaml, so the advice quotes that
+  // import's message about the Snowflake table, which names raw.
+  test('a third-party import over its input quotes the file name the command it suggests gives', async () => {
+    spyOn(CatalogClient.prototype, 'lookupEntry').mockResolvedValue({status: 200, result: {}} as any);
+    const entry = 'projects/acme/locations/us/entryGroups/sf/entries/items';
+    write('raw.yaml', model().replace('dialect: BIGQUERY', 'dialect: SNOWFLAKE') +
+        `      - name: items\n        source: ${entry}\n        primary_key: [id]\n` +
+        '        fields:\n          - {name: id, expression: id}\n' + DESCRIBED);
+    const says = (file: string) => `[${file}] source '${entry}': kcmd cannot tell the table's SQL dialect`;
+    expect(await importModel('raw.yaml', {flavor: 'ossie', out: 'raw.yaml'})).toBe(0);
+    expect(warnings).toContainEqual(expect.stringMatching(/^Warning: \[retail\] source /));
+    expect(warnings).toContainEqual(expect.stringContaining(
+        `'kcmd import <file> --input first-party --flavor ossie --transpile' after fixing this: ${says('raw')}`));
+    expect(await importModel('raw.yaml', {flavor: 'ossie', input: 'first-party', transpile: true}))
+        .toBe(1);
+    expect(errors).toEqual([expect.stringContaining(`Error: ${says('raw')}`)]);
+  });
+
   // A profile that passes its checks prints its load warnings, which name the
   // same command as the model file's.
   test('a third-party import of a Google model and its profile file names one command', async () => {

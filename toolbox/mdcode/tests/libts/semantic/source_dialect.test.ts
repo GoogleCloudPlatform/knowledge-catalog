@@ -8,7 +8,7 @@ import {describe, expect, test} from 'bun:test';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {EntryLookup} from '../../../src/libts/semantic/catalog_entry';
-import {sourceDialects, sourcesToLookUp} from '../../../src/libts/semantic/source_dialect';
+import {dialectErrors, sourceDialects, sourcesToLookUp} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const INSTANCE = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances';
@@ -20,14 +20,22 @@ const THIRD_PARTY = 'projects/acme/locations/us-central1/entryGroups/sf/entries/
 const SPANNER = 'spanner.googleapis.com/projects/acme/instances/ops/databases';
 // A file that binds THIRD_PARTY, which is collected only as a source.
 const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
+// What Dataplex says when its API is off in the project the call is billed
+// to. disabled() gives a 403 with that message, or with `message`. Dataplex's
+// generic denial, which every other entry gives, is not quoted.
+const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
+    'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
+    'dataplex.googleapis.com/overview?project=123 then retry.';
+const disabled = (message = DISABLED) => ({status: 403, message});
 
 // A catalog that answers from `answers`, keyed by entry name, and records each
-// call. An entry it does not know gets the 403 Dataplex gives a missing entry.
+// call, with its options when it has any. An entry it does not know gets the
+// 403 Dataplex gives a missing entry.
 function fakeCatalog(answers: Record<string, ApiResult<object>>) {
-  const calls: Array<{project: string; location: string; name: string}> = [];
+  const calls: Array<{project: string; location: string; name: string; opts?: object}> = [];
   const catalog: EntryLookup = {
-    async lookupEntry(project, location, name) {
-      calls.push({project, location, name});
+    async lookupEntry(project, location, name, opts) {
+      calls.push({project, location, name, ...opts && {opts}});
       return answers[name] ?? entryDenied(name);
     },
   };
@@ -37,6 +45,27 @@ const entryName = (resourceName: string) =>
     `projects/acme/locations/us-central1/entryGroups/@cloudsql/entries/${resourceName}`;
 const typed = (type: string): ApiResult<{entryType?: string}> =>
     ({status: 200, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}});
+// The entry of an instance whose cloudsql-instance aspect says whether
+// Dataplex integration is on. The instance runs `engine`, SQL Server by
+// default, and the aspect's key names its type's project `project`.
+const integration = (enabled: boolean, {project = 'dataplex-types', engine = 'sqlserver'} = {}):
+    ApiResult<object> => {
+  const instance = typed(`cloudsql-${engine}-instance`);
+  return {...instance, result: {
+    ...instance.result,
+    aspects: {[`${project}.global.cloudsql-instance`]: {data: {dataplexEnabled: enabled}}},
+  }};
+};
+// What a command gets for `texts`, each the text of a model file that messages
+// label 'sales': each dialect and database, and each message (see
+// dialectErrors).
+async function read(texts: string[], ...lookup: [EntryLookup, Parameters<typeof sourceDialects>[2]?]) {
+  const got = await sourceDialects(texts, ...lookup);
+  return {
+    dialects: got.dialects, databases: got.databases,
+    ...dialectErrors(texts.map(text => ({label: 'sales', text})), got),
+  };
+}
 
 describe('sourceDialects', () => {
   // Each argument is read as a file's text; a bare resource name is a file
@@ -49,7 +78,7 @@ describe('sourceDialects', () => {
       [entryName(SQLSERVER)]: typed('cloudsql-sqlserver-table'),
     });
     const {dialects, errors} =
-        await sourceDialects([MYSQL, POSTGRES, POSTGRES_VIEW, SQLSERVER], catalog);
+        await read([MYSQL, POSTGRES, POSTGRES_VIEW, SQLSERVER], catalog);
     expect(errors).toEqual([]);
     expect(dialects).toEqual(new Map([
       [MYSQL, 'MYSQL'], [POSTGRES, 'POSTGRES'], [POSTGRES_VIEW, 'POSTGRES'],
@@ -67,19 +96,19 @@ describe('sourceDialects', () => {
         result: {entryType: 'projects/655216118709/locations/global/entryTypes/cloudsql-postgresql-table'},
       },
     });
-    expect((await sourceDialects([POSTGRES], catalog)).dialects.get(POSTGRES)).toBe('POSTGRES');
+    expect((await read([POSTGRES], catalog)).dialects.get(POSTGRES)).toBe('POSTGRES');
   });
 
   test('each table is looked up once', async () => {
     const {catalog, calls} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-table')});
-    const {dialects} = await sourceDialects([MYSQL, MYSQL], catalog);
+    const {dialects} = await read([MYSQL, MYSQL], catalog);
     expect(calls).toHaveLength(1);
     expect(dialects).toEqual(new Map([[MYSQL, 'MYSQL']]));
   });
 
   test('other sources are not looked up', async () => {
     const {catalog, calls} = fakeCatalog({});
-    const {dialects, errors} = await sourceDialects([
+    const {dialects, errors} = await read([
       'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
     ], catalog);
     expect(calls).toEqual([]);
@@ -87,28 +116,172 @@ describe('sourceDialects', () => {
     expect(errors).toEqual([]);
   });
 
-  test('a missing or unreadable entry says to turn on Dataplex integration, as a read that failed', async () => {
-    const {catalog} = fakeCatalog({});
-    const {dialects, errors, unread} = await sourceDialects([SQLSERVER], catalog);
-    expect(dialects.size).toBe(0);
-    expect(unread).toEqual(errors);
-    expect(errors).toEqual([
-      `source '${SQLSERVER}': kcmd reads a Cloud SQL table's dialect from its ` +
-      `Knowledge Catalog entry, and could not read it. Turn on Dataplex ` +
-      `integration for instance 'ms' (gcloud sql instances patch ms ` +
-      `--enable-dataplex-integration --project acme) and wait for the table to ` +
-      `appear in the catalog, or check that you can read the table. If ` +
-      `integration is on, check the name: the project ID, the instance's ` +
-      `region, and a schema only for PostgreSQL and SQL Server.`,
+  // [label, the table, the type of each entry the catalog has, or its answer,
+  // keyed by its resource name, the parts looked up after the table, what the
+  // message says after the table's name]. Every other entry answers 403.
+  const MS = `${INSTANCE}/ms`;
+  const PG = `${INSTANCE}/pg`;
+  const SHOP = `${INSTANCE}/shop`;
+  const NO_TABLE = 'names no table Knowledge Catalog knows about.';
+  const NO_INSTANCE = `${NO_TABLE} Knowledge Catalog has no entry you may read for its ` +
+      "instance 'ms' in project 'acme' and region 'us-central1'. The project ID, the region " +
+      "or the instance name may be wrong, or you may not be allowed to read the instance's " +
+      'entry. Check the source and your access.';
+  const NO_DATABASE = `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is ` +
+      'not. The database may not exist, or it may be too new to be in the catalog yet. Check ' +
+      'the database name.';
+  // A denial that names the permission it needs.
+  const NAMED = "Permission 'dataplex.aspectTypes.use' denied on resource '//dataplex." +
+      "googleapis.com/projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance'.";
+  test.each([
+    ['no instance', SQLSERVER, {}, [MS], NO_INSTANCE],
+    ['the Dataplex API off', SQLSERVER, {[SQLSERVER]: disabled(), [MS]: disabled()}, [MS],
+     `${NO_INSTANCE} Dataplex said: ${DISABLED}`],
+    ['a denial of the instance that names its permission', SQLSERVER,
+     {[MS]: {status: 403, message: NAMED}}, [MS], `${NO_INSTANCE} Dataplex said: ${NAMED}`],
+    // The text is quoted on one line.
+    ['the Dataplex API off at the database, in a text of two lines', SQLSERVER,
+     {[MS]: 'cloudsql-sqlserver-instance',
+      [`${MS}/databases/shop`]: disabled(DISABLED.replace(' Enable', '\n  Enable'))},
+     [MS, `${MS}/databases/shop`], `${NO_DATABASE} Dataplex said: ${DISABLED}`],
+    ['Dataplex integration off', SQLSERVER, {[MS]: integration(false, {project: '655216118709'})}, [MS],
+     `${NO_TABLE} Dataplex integration is off for instance 'ms'. Turn it on with 'gcloud sql ` +
+     "instances patch ms --enable-dataplex-integration --project acme' and wait for the " +
+     'table to appear in the catalog.'],
+    ...[['Dataplex integration on', integration(true)],
+        ['no word on Dataplex integration', typed('cloudsql-sqlserver-instance')]].map(
+        ([label, answer]) => [`no database, ${label}`, SQLSERVER, {[MS]: answer},
+                              [MS, `${MS}/databases/shop`], NO_DATABASE]),
+    ['no schema', SQLSERVER,
+     {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database'},
+     [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
+     `${NO_TABLE} Database 'shop' is in the catalog, but schema 'sales' is not. The schema ` +
+     'may not exist, or it may be too new to be in the catalog yet. Check the schema name.'],
+    ['every part of a table in a schema', SQLSERVER,
+     {[MS]: 'cloudsql-sqlserver-instance', [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database',
+      [`${MS}/databases/shop/schemas/sales`]: 'cloudsql-sqlserver-schema'},
+     [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
+     `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
+     'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
+     'the table.'],
+    ['every part of a table in a schema, with the Dataplex API off at the table', SQLSERVER,
+     {[SQLSERVER]: disabled(), [MS]: 'cloudsql-sqlserver-instance',
+      [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database',
+      [`${MS}/databases/shop/schemas/sales`]: 'cloudsql-sqlserver-schema'},
+     [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
+     `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
+     'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
+     `the table. Dataplex said: ${DISABLED}`],
+    ['every part of a MySQL table', MYSQL,
+     {[SHOP]: 'cloudsql-mysql-instance', [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
+     [SHOP, `${SHOP}/databases/sales`],
+     `${NO_TABLE} Its instance and database are in the catalog. The table may not exist, or ` +
+     'it may be too new to be in the catalog yet. Check the table name, or create the table.'],
+    ['a schema on a MySQL instance', POSTGRES, {[PG]: 'cloudsql-mysql-instance'}, [PG],
+     `${NO_TABLE} Instance 'pg' runs MySQL, which has no schemas. Remove 'schemas/sales/' ` +
+     'from the source.'],
+    ['no schema on a PostgreSQL instance', MYSQL, {[SHOP]: 'cloudsql-postgresql-instance'}, [SHOP],
+     `${NO_TABLE} Instance 'shop' runs PostgreSQL, so a table's name includes its schema. ` +
+     "Add 'schemas/<schema>/' before 'tables/' in the source, such as 'schemas/public/' for " +
+     'the default schema.'],
+    // The name is wrong whether or not integration is on, so it is named first.
+    ['no schema on a SQL Server instance with Dataplex integration off',
+     `${MS}/databases/shop/tables/orders`, {[MS]: integration(false)}, [MS],
+     `${NO_TABLE} Instance 'ms' runs SQL Server, so a table's name includes its schema. ` +
+     "Add 'schemas/<schema>/' before 'tables/' in the source, such as 'schemas/dbo/' for " +
+     'the default schema.'],
+    ['a schema on a MySQL instance with Dataplex integration off', POSTGRES,
+     {[PG]: integration(false, {engine: 'mysql'})}, [PG],
+     `${NO_TABLE} Instance 'pg' runs MySQL, which has no schemas. Remove 'schemas/sales/' ` +
+     'from the source.'],
+    // An instance type kcmd does not know names no engine, so the name is not
+    // checked against one.
+    ['no database on an instance of another type', `${MS}/databases/shop/tables/orders`,
+     {[MS]: 'cloudsql-oracle-instance'}, [MS, `${MS}/databases/shop`], NO_DATABASE],
+  ] as Array<[string, string, Record<string, string|ApiResult<object>>, string[], string]>)(
+      'a table the catalog has no entry for, as a read that failed: %s',
+      async (_, table, types, looked, says) => {
+        const {catalog, calls} = fakeCatalog(Object.fromEntries(Object.entries(types).map(
+            ([name, type]) => [entryName(name), typeof type === 'string' ? typed(type) : type])));
+        const {dialects, errors, unread} = await read([table], catalog);
+        expect(dialects.size).toBe(0);
+        expect(unread).toEqual(errors);
+        expect(errors).toEqual([`[sales] source '${table}' ${says}`]);
+        // Each part is looked up in turn, in the table's project and location,
+        // and the instance with its cloudsql-instance aspect.
+        const aspects = ['projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance'];
+        expect(calls).toEqual([table, ...looked].map(name => ({
+          project: 'acme', location: 'us-central1', name: entryName(name),
+          ...name.split('/').at(-2) === 'instances' && {opts: {aspects}},
+        })));
+      });
+
+  test('a part the catalog fails to answer for is named', async () => {
+    const failing = (part: string, thrown = new Error('socket hang up')): EntryLookup => ({
+      async lookupEntry(_p, _l, name) {
+        if (name.endsWith(`/${part}`)) throw thrown;
+        if (name.endsWith('/instances/ms')) return typed('cloudsql-sqlserver-instance');
+        if (name.endsWith('/databases/shop')) {
+          return {status: 500, message: 'Internal error.\nTry again.'};
+        }
+        return entryDenied(name);
+      },
+    });
+    const says = async (...failed: Parameters<typeof failing>) =>
+        (await read([SQLSERVER], failing(...failed))).errors;
+    expect(await says('instances/ms')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
+        "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up."]);
+    // A thrown error whose message is one space leaves no colon.
+    expect(await says('instances/ms', new Error(' '))).toEqual([`[sales] source '${SQLSERVER}' ` +
+        `${NO_TABLE} kcmd could not tell why: looking up the catalog entry of instance 'ms' failed.`]);
+    // A message of two lines is printed on one.
+    expect(await says('nothing')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
+        "kcmd could not tell why: looking up the catalog entry of database 'shop' failed (HTTP 500: " +
+        'Internal error. Try again.).']);
+  });
+
+  // A Spanner table's message names every file that writes a table of its
+  // database, and the first such table. No file here writes SQLSERVER, so its
+  // message is left out.
+  test('each message labels every file that writes its source, once, in file order', async () => {
+    const files = [
+      {label: 'sales', text: `a: //${POSTGRES}\nb: ${POSTGRES}\nsource: //${SPANNER}/x/tables/t\n`},
+      {label: 'sales.profile.pg.yaml', text: `source: //${POSTGRES}\n`},
+      {label: 'sales.profile.sf.yaml', text: `${THIRD_PARTY_FILE}\n`},
+      {label: 'ops', text: `source: ${SPANNER}/x/tables/u\n`},
+    ];
+    const spanner = {getDatabase: async () => ({status: 403, message: 'Permission denied.'})};
+    const got = await sourceDialects(
+        [...files.map(f => f.text), SQLSERVER], fakeCatalog({}).catalog, {spanner});
+    // A source written as a resource URI is named by its resource name.
+    expect(dialectErrors(files, got).errors.map(e => e.match(/^\[.*?\] source '.*?'/)![0])).toEqual([
+      `[sales, ops] source '${SPANNER}/x/tables/t'`,
+      `[sales, sales.profile.pg.yaml] source '${POSTGRES}'`,
+      `[sales.profile.sf.yaml] source '${THIRD_PARTY}'`,
     ]);
+    expect(dialectErrors(files.slice(3), got).errors).toEqual([`[ops] source '${SPANNER}/x/tables/u': ` +
+        "kcmd reads its Spanner database's SQL dialect, and could not read database acme/ops/x: " +
+        'Permission denied.']);
+  });
+
+  test('tables that share an instance, database and schema look each up once', async () => {
+    const {catalog, calls} = fakeCatalog({
+      [entryName(MS)]: typed('cloudsql-sqlserver-instance'),
+      [entryName(`${MS}/databases/shop`)]: typed('cloudsql-sqlserver-database'),
+    });
+    const {errors} = await read([SQLSERVER, `${SQLSERVER}_2`], catalog);
+    expect(errors).toHaveLength(2);
+    expect(calls.map(c => c.name).sort()).toEqual([
+      SQLSERVER, `${SQLSERVER}_2`, MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`,
+    ].map(entryName).sort());
   });
 
   test('an entry of another type is reported with its type, as an entry that was read', async () => {
     const {catalog} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-database')});
-    const {errors, unread} = await sourceDialects([MYSQL], catalog);
+    const {errors, unread} = await read([MYSQL], catalog);
     expect(unread).toEqual([]);
     expect(errors).toEqual([
-      `source '${MYSQL}': its Knowledge Catalog entry has type ` +
+      `[sales] source '${MYSQL}': its Knowledge Catalog entry has type ` +
       `'cloudsql-mysql-database', which is not a Cloud SQL table or view type ` +
       `kcmd knows (cloudsql-mysql-table, cloudsql-mysql-view, ` +
       `cloudsql-postgresql-table, cloudsql-postgresql-view, ` +
@@ -123,20 +296,28 @@ describe('sourceDialects', () => {
         throw new Error('socket hang up');
       },
     };
-    const spanner = {getDatabase: async () => { throw new Error('socket hang up'); }};
-    const {errors, unread} = await sourceDialects(
+    // Spanner's error of two lines is printed on one.
+    const spanner = {getDatabase: async () => { throw new Error('socket\n  hang up'); }};
+    const {errors, unread} = await read(
         [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`,
          `source: ${SPANNER}/x/tables/u`],
         failing, {spanner});
     expect(unread).toEqual(errors);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
-      `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
-      `source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
-      `source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up`,
-      `source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
-      'dialect, and could not read database acme/ops/x: socket hang up',
+      `[sales] source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
+      `[sales] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up.`,
+      `[sales] source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up.`,
+      `[sales] source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
+      'dialect, and could not read database acme/ops/x: socket hang up.',
     ]);
+  });
+
+  test('a Spanner read that throws a message of one space ends with a period', async () => {
+    const spanner = {getDatabase: async () => { throw new Error(' '); }};
+    const {errors} = await read([`source: ${SPANNER}/x/tables/t`], fakeCatalog({}).catalog, {spanner});
+    expect(errors).toEqual([`[sales] source '${SPANNER}/x/tables/t': kcmd reads its Spanner ` +
+        "database's SQL dialect, and could not read database acme/ops/x."]);
   });
 
   test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER, and gives SPANNER with no client', async () => {
@@ -148,11 +329,11 @@ describe('sourceDialects', () => {
     }};
     const files = ['pg/tables/a', 'pg/tables/ops.b', 'gsql/tables/a', 'old/tables/a']
                       .map(t => `source: ${SPANNER}/${t}`);
-    const {dialects, errors} = await sourceDialects(files, fakeCatalog({}).catalog, {spanner});
+    const {dialects, errors} = await read(files, fakeCatalog({}).catalog, {spanner});
     expect({dialects, errors}).toEqual({errors: [], dialects: new Map([
       [`${SPANNER}/pg`, 'POSTGRES'], [`${SPANNER}/gsql`, 'SPANNER'], [`${SPANNER}/old`, 'SPANNER']])});
     expect(calls.sort()).toEqual(['acme/ops/gsql', 'acme/ops/old', 'acme/ops/pg']);
-    expect((await sourceDialects(files, fakeCatalog({}).catalog)).dialects).toEqual(new Map(
+    expect((await read(files, fakeCatalog({}).catalog)).dialects).toEqual(new Map(
         ['pg', 'gsql', 'old'].map(db => [`${SPANNER}/${db}`, 'SPANNER'])));
   });
 
@@ -169,7 +350,7 @@ describe('sourceDialects', () => {
 // table or view.
 describe('sourceDialects of a third-party table', () => {
   const dialectOf = async (result: object) =>
-      sourceDialects([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
+      read([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
 
   test('each fullyQualifiedName prefix and system gives its dialect, and the prefix wins', async () => {
     const fqn = (fullyQualifiedName: string) => ({fullyQualifiedName});
@@ -219,7 +400,7 @@ describe('sourceDialects of a third-party table', () => {
        "fullyQualifiedName 'postgres:host.db.public.orders'"],
     ] as const) {
       expect(await dialectOf(result)).toEqual({dialects: new Map(), databases: new Map(), errors: [
-        `source '${THIRD_PARTY}': kcmd cannot tell the table's SQL dialect from ` +
+        `[sales] source '${THIRD_PARTY}': kcmd cannot tell the table's SQL dialect from ` +
         `its Knowledge Catalog entry, which has ${has}. kcmd reads the prefix ` +
         `of the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
         `postgresql: or sqlserver:), or entrySource.system when there is no ` +
@@ -244,7 +425,7 @@ describe('sourceDialects of a third-party table', () => {
     ];
     for (const [fullyQualifiedName, form] of rows) {
       expect(await dialectOf({fullyQualifiedName})).toEqual({dialects: new Map(), databases: new Map(), errors: [
-        `source '${THIRD_PARTY}': its Knowledge Catalog entry has ` +
+        `[sales] source '${THIRD_PARTY}': its Knowledge Catalog entry has ` +
         `fullyQualifiedName '${fullyQualifiedName}', which names no table or ` +
         `view. A table's fullyQualifiedName has the form ${form}. Write the ` +
         `entry name of the table's own entry.`,
@@ -252,9 +433,22 @@ describe('sourceDialects of a third-party table', () => {
     }
   });
 
+  test('a missing entry ends with what Dataplex said, unless it is the generic denial', async () => {
+    const says = async (answer: ApiResult<object>) =>
+        (await read([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: answer}).catalog)).errors;
+    const missing = `[sales] source '${THIRD_PARTY}' names no table Knowledge Catalog knows ` +
+        'about. The entry may not exist, or you may not be allowed to read it. kcmd reads a ' +
+        "third-party table's dialect from its entry, so add the table to Knowledge Catalog, " +
+        'or fix the source.';
+    expect(await says(disabled())).toEqual([`${missing} Dataplex said: ${DISABLED}`]);
+    // The generic denial, here without its last period.
+    const denial = entryDenied(THIRD_PARTY);
+    expect(await says({...denial, message: denial.message.slice(0, -1)})).toEqual([missing]);
+  });
+
   test('is looked up once, in its own project and location', async () => {
     const {catalog, calls} = fakeCatalog({});
-    await sourceDialects([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog);
+    await read([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog);
     expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
   });
 });
