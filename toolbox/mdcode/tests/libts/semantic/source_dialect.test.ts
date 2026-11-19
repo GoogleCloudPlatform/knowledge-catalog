@@ -20,6 +20,13 @@ const THIRD_PARTY = 'projects/acme/locations/us-central1/entryGroups/sf/entries/
 const SPANNER = 'spanner.googleapis.com/projects/acme/instances/ops/databases';
 // A file that binds THIRD_PARTY, which is collected only as a source.
 const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
+// What Dataplex says when its API is off in the project the call is billed
+// to, and that answer, by default for every lookup. Dataplex's generic denial,
+// which every other entry gives, is not quoted.
+const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
+    'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
+    'dataplex.googleapis.com/overview?project=123 then retry.';
+const disabled = (message = DISABLED) => ({status: 403, message});
 
 // A catalog that answers from `answers`, keyed by entry name, and records each
 // call, with its options when it has any. An entry it does not know gets the
@@ -123,16 +130,15 @@ describe('sourceDialects', () => {
   const NO_DATABASE = `${NO_TABLE} Instance 'ms' is in the catalog, but database 'shop' is ` +
       'not. The database may not exist, or it may be too new to be in the catalog yet. Check ' +
       'the database name.';
-  // What Dataplex says when its API is off in the project the call is billed
-  // to. Its generic denial, which every other entry gives, is not quoted.
-  const DISABLED = 'Cloud Dataplex API has not been used in project 123 before or it is ' +
-      'disabled. Enable it by visiting https://console.developers.google.com/apis/api/' +
-      'dataplex.googleapis.com/overview?project=123 then retry.';
-  const disabled = (message = DISABLED) => ({status: 403, message});
+  // A denial that names the permission it needs.
+  const NAMED = "Permission 'dataplex.aspectTypes.use' denied on resource '//dataplex." +
+      "googleapis.com/projects/dataplex-types/locations/global/aspectTypes/cloudsql-instance'.";
   test.each([
     ['no instance', SQLSERVER, {}, [MS], NO_INSTANCE],
     ['the Dataplex API off', SQLSERVER, {[SQLSERVER]: disabled(), [MS]: disabled()}, [MS],
      `${NO_INSTANCE} Dataplex said: ${DISABLED}`],
+    ['a denial of the instance that names its permission', SQLSERVER,
+     {[MS]: {status: 403, message: NAMED}}, [MS], `${NO_INSTANCE} Dataplex said: ${NAMED}`],
     // The text is quoted on one line.
     ['the Dataplex API off at the database, in a text of two lines', SQLSERVER,
      {[MS]: 'cloudsql-sqlserver-instance',
@@ -158,6 +164,14 @@ describe('sourceDialects', () => {
      `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
      'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
      'the table.'],
+    ['every part of a table in a schema, with the Dataplex API off at the table', SQLSERVER,
+     {[SQLSERVER]: disabled(), [MS]: 'cloudsql-sqlserver-instance',
+      [`${MS}/databases/shop`]: 'cloudsql-sqlserver-database',
+      [`${MS}/databases/shop/schemas/sales`]: 'cloudsql-sqlserver-schema'},
+     [MS, `${MS}/databases/shop`, `${MS}/databases/shop/schemas/sales`],
+     `${NO_TABLE} Its instance, database and schema are in the catalog. The table may not ` +
+     'exist, or it may be too new to be in the catalog yet. Check the table name, or create ' +
+     `the table. Dataplex said: ${DISABLED}`],
     ['every part of a MySQL table', MYSQL,
      {[SHOP]: 'cloudsql-mysql-instance', [`${SHOP}/databases/sales`]: 'cloudsql-mysql-database'},
      [SHOP, `${SHOP}/databases/sales`],
@@ -207,16 +221,19 @@ describe('sourceDialects', () => {
       async lookupEntry(_p, _l, name) {
         if (name.endsWith(`/${part}`)) throw new Error('socket hang up');
         if (name.endsWith('/instances/ms')) return typed('cloudsql-sqlserver-instance');
-        if (name.endsWith('/databases/shop')) return {status: 503, message: 'unavailable'};
+        if (name.endsWith('/databases/shop')) {
+          return {status: 500, message: 'Internal error.\nTry again.'};
+        }
         return entryDenied(name);
       },
     });
     const says = async (part: string) => (await read([SQLSERVER], failing(part))).errors;
     expect(await says('instances/ms')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
         "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up"]);
+    // A message of two lines is printed on one.
     expect(await says('nothing')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
-        "kcmd could not tell why: looking up the catalog entry of database 'shop' failed (HTTP 503: " +
-        'unavailable).']);
+        "kcmd could not tell why: looking up the catalog entry of database 'shop' failed (HTTP 500: " +
+        'Internal error. Try again.).']);
   });
 
   // A Spanner table's message names every file that writes a table of its
@@ -402,6 +419,19 @@ describe('sourceDialects of a third-party table', () => {
         `entry name of the table's own entry.`,
       ], unread: []});
     }
+  });
+
+  test('a missing entry ends with what Dataplex said, unless it is the generic denial', async () => {
+    const says = async (answer: ApiResult<object>) =>
+        (await read([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: answer}).catalog)).errors;
+    const missing = `[sales] source '${THIRD_PARTY}' names no table Knowledge Catalog knows ` +
+        'about. The entry may not exist, or you may not be allowed to read it. kcmd reads a ' +
+        "third-party table's dialect from its entry, so add the table to Knowledge Catalog, " +
+        'or fix the source.';
+    expect(await says(disabled())).toEqual([`${missing} Dataplex said: ${DISABLED}`]);
+    // The generic denial, here without its last period.
+    const denial = entryDenied(THIRD_PARTY);
+    expect(await says({...denial, message: denial.message.slice(0, -1)})).toEqual([missing]);
   });
 
   test('is looked up once, in its own project and location', async () => {
