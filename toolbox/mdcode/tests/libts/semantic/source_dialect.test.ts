@@ -219,7 +219,7 @@ describe('sourceDialects', () => {
     const spanner = {getDatabase: async () => ({status: 403, message: 'Permission denied.'})};
     const got = await sourceDialects(
         [...files.map(f => f.text), SQLSERVER], fakeCatalog({}).catalog, {spanner});
-    // A source is named by its resource name, however it is written.
+    // A source written as a resource URI is named by its resource name.
     expect(dialectErrors(files, got).errors.map(e => e.match(/^\[.*?\] source '.*?'/)![0])).toEqual([
       `[sales, ops] source '${SPANNER}/x/tables/t'`,
       `[sales, sales.profile.pg.yaml] source '${POSTGRES}'`,
