@@ -103,9 +103,9 @@ export interface KcDeployOptions {
   // model in the group is a hard error rather than a silent orphan.
   forceRemove?: boolean;
   // How many times push tries entries.create and the entry listing while
-  // they fail with an error worded like an entry group that is not yet
-  // visible (see `isPropagationError`). Overridable so tests exercise the
-  // retry without burning wall-clock. Default PROPAGATION_TRIES.
+  // they fail with an error whose text says "may not exist" or that an entry
+  // group is not found (see `isPropagationError`). Overridable so tests
+  // exercise the retry without burning wall-clock. Default PROPAGATION_TRIES.
   propagationTries?: number;
   // Delay between those retries, in ms. Default PROPAGATION_RETRY_MS.
   propagationRetryMs?: number;
@@ -202,7 +202,8 @@ export interface KcPreparedDeploy {
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
 
-// The retry of errors worded like an entry group that is not yet visible
+// How many times, and how far apart, push tries a request again after an
+// error whose text says "may not exist" or that an entry group is not found
 // (see `withPropagationRetry`).
 const PROPAGATION_TRIES = 3;
 const PROPAGATION_RETRY_MS = 3000;
@@ -211,18 +212,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// The message of an error a request threw, such as on a network failure, or
-// 'unknown error' when the error has no text.
+// The message of an error a request threw, such as on a network failure. An
+// error with no text gives 'unknown error'.
 function thrownMessage(err: any): string {
   return String(err?.message || err).trim() || 'unknown error';
 }
 
 /**
- * Calls `attempt`, and calls it again while `notYetVisible` matches its
- * outcome, which is an error worded like an entry group that is not yet
- * visible. It makes at most `opts.propagationTries` calls,
- * `opts.propagationRetryMs` apart, and waits only after an outcome that
- * matches. Returns the last outcome.
+ * Calls `attempt`, and calls it again while `notYetVisible` returns true for
+ * its outcome. Each caller's `notYetVisible` returns true for an error whose
+ * text says "may not exist" or that an entry group is not found. It makes at
+ * most `opts.propagationTries` calls, `opts.propagationRetryMs` apart, and
+ * waits only after an outcome that `notYetVisible` matches. Returns the last
+ * outcome.
  */
 async function withPropagationRetry<T>(
     opts: KcDeployOptions, attempt: () => Promise<T>,
@@ -1266,11 +1268,12 @@ async function deleteEntries(
  * Snapshots the destination entry group's entries once, before any write, and
  * returns the error when the listing fails.
  *
- * After a listing error worded like an entry group that is not yet visible,
- * such as "may not exist", "entry group ... not found" or "entry group ...
- * does not exist", push lists the group again from its first page, as
- * `withPropagationRetry` allows. Dataplex words some permanent refusals the
- * same way, so an error that persists stops the push like any other.
+ * Push lists the group again from its first page after a listing error that
+ * `isPropagationError` matches, as `withPropagationRetry` allows. The text of
+ * such an error says "may not exist", "entry group ... not found" or "entry
+ * group ... does not exist". It may be the delay before a new group is
+ * visible. Dataplex words some permanent refusals the same way, so an error
+ * that persists stops the push like any other.
  */
 async function listEntryGroup(
     cat: CatalogClient,
@@ -1926,7 +1929,7 @@ async function blockedOutcome(
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
  * first. That happens when another writer created the entry after the
- * listing, or when the listing read a brand-new group as empty.
+ * listing.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
@@ -2108,10 +2111,10 @@ function isNotFoundStatus(res: {status: number}): boolean {
 }
 
 /**
- * Returns true for a transient "not visible yet" entry-group propagation error
- * worth retrying, matching the propagation phrasing specifically rather than a
- * bare "not found" (which also covers a genuinely missing aspect or entry
- * type).
+ * Returns true when the text of `res` says "may not exist", or says an entry
+ * group is not found or does not exist. Callers retry such an error because
+ * it may be the delay before a new entry group is visible. A bare "not found"
+ * does not match, since it also covers a missing aspect type or entry type.
  */
 function isPropagationError(res: {message?: string}): boolean {
   const msg = res.message ?? '';
