@@ -588,8 +588,8 @@ function rootModelText(text: string, document: yaml.Document.Parsed): {
 }
 
 /**
- * Whether `doc` defines more than once an anchor name that an alias uses.
- * Alias keys count too, as do aliases under a merge key `<<`.
+ * Whether an alias in `doc` uses an anchor name that `doc` defines more than
+ * once. Alias keys and aliases in a key list count too.
  */
 function redefinesAnchor(doc: yaml.Document): boolean {
   const counts = new Map<string, number>();
