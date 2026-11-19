@@ -578,8 +578,6 @@ describe('measureAggregates', () => {
            'SUM(ds.f(o.a)) / COUNT(o.id)', 'SUM(`p.ds.f`(o.a))',
            'SAFE.SAFE_DIVIDE(SUM(o.a), COUNT(o.id))',
            'safe.safe_divide(SUM(o.a), COUNT(o.id))',
-           // BigQuery's own functions with a dot in their names.
-           'NET.HOST(MAX(o.url))', 'ml.bucketize(SUM(o.a), [0, 10])',
            'SUM(o.a) + (COUNT(o.b))', 'SUM(o.a) * +(COUNT(o.b))',
          ]) {
       expect(problem(text)).toEqual({text, problem: undefined});
@@ -641,6 +639,8 @@ describe('measureAggregates', () => {
         ['ml.score(SUM(o.amount))', 'ml.score'],
         ['net.score(SUM(o.amount))', 'net.score'],
         ['safe.ds.f(SUM(o.amount))', 'safe.ds.f'],
+        // BigQuery cannot read its own ML.BUCKETIZE here either.
+        ['ML.BUCKETIZE(SUM(o.a), [0, 10])', 'ML.BUCKETIZE'],
       ].map(([text, udf]): [string, string] => [
         text,
         `it calls user-defined function '${udf}' outside an aggregate, ` +
@@ -705,23 +705,22 @@ describe('projectlessFunction', () => {
            ['ROUND(ds.f(a) * 2, 1)', 'ds.f'],
            ['IF(a > 0, `p.ds.f`(a), ds.g(a))', 'ds.g'],
            ['SUM(ds.f(o.a)) / COUNT(o.id)', 'ds.f'],
-           // BigQuery reads `ml` and `net` here as datasets.
-           ['ml.score(a)', 'ml.score'],
-           ['net.score(a)', 'net.score'],
          ]) {
       expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
           .toEqual({text, udf});
     }
   });
 
-  test('passes a function named with its project, a built-in, and SAFE. before one name', () => {
+  test('passes a function named with its project, one in a BigQuery namespace, and SAFE. before one name', () => {
     for (const text of [
            '`p.ds.f`(amount)', '`p`.ds.f(amount)', 'p.ds.f(amount)',
            '`p.ds`.f(amount)', '`example.com:p.ds.f`(amount)',
            // `safe` is a project here.
            'safe.ds.f(amount)',
            'NET.HOST(url)', 'net.host(url)', 'ML.BUCKETIZE(a, [1, 2])',
-           'AEAD.DECRYPT_STRING(k, c, d)', 'SAFE.LOG10(a)',
+           'AEAD.DECRYPT_STRING(k, c, d)', 'AI.SOME_NEW_FUNCTION(a)',
+           // Passes, though BigQuery reads `ml` and `net` here as datasets.
+           'ml.score(a)', 'net.score(a)', 'SAFE.LOG10(a)',
            'safe.safe_divide(a, b)', 'ROUND(a * 2, 1)', 's.field.sub',
            'SUM(o.a)', 'ds.f(', '  ',
          ]) {

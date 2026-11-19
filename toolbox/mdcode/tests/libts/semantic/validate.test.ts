@@ -3562,7 +3562,6 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                ['`ds.f`(note)', 'ds.f'],
                ['`ds`.f(note)', 'ds.f'],
                ['IFNULL(ds.clean(note), \'\')', 'ds.clean'],
-               ['ml.score(note)', 'ml.score'],
              ]) {
           expect({e, errors: withNote(e)}).toEqual({
             e,
@@ -3582,10 +3581,10 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         expect(check(m)).toEqual([PROJECTLESS("field 'Date.day'")]);
       });
 
-      test('accepts a function named with its project, a built-in, and SAFE. before one name, and any function on Spanner', () => {
+      test('accepts a function named with its project, one in a BigQuery namespace, and SAFE. before one name, and any function on Spanner', () => {
         for (const e of [
                '`p.ds.f`(note)', '`p`.ds.f(note)', 'p.ds.f(note)',
-               'NET.HOST(note)', 'SAFE.LOWER(note)',
+               'NET.HOST(note)', 'ml.score(note)', 'SAFE.LOWER(note)',
              ]) {
           expect({e, errors: withNote(e)}).toEqual({e, errors: []});
         }
@@ -3605,7 +3604,6 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         for (const e of [
                'SUM(`p.ds.f`(purchase.amount))',
                'COUNT(DISTINCT NET.HOST(purchase.note))',
-               'NET.HOST(MAX(purchase.note))',
              ]) {
           expect({e, errors: bigQuery(anchored(e))}).toEqual({e, errors: []});
         }

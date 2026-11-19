@@ -931,13 +931,15 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   becomes a measure, so it must read every field inside `SUM`, `AVG`, `COUNT`,
   `MIN` or `MAX`, each over one operand. Scalar SQL may combine the aggregates,
   as in `SUM(orders.amount) / COUNT(orders.order_id)`, but a function around
-  them must be one of BigQuery's built-in functions, such as `SAFE_DIVIDE` or
-  `NET.HOST`. The measure rule skips a metric that has only a vendor text. A
-  field, or an aggregate's operand in a metric, that calls a user-defined
-  function must write it with its project, as in
+  them must be a BigQuery built-in function whose name has no dot, or one with
+  the `SAFE.` prefix. The measure rule skips a metric that has only a vendor
+  text. A field, or an aggregate's operand in a metric, that calls a
+  user-defined function must write it with its project, as in
   `` `my-project.ds.f`(amount) ``: BigQuery creates a graph whose property calls
   `ds.f(amount)`, but every query on the graph then fails with "Function not
-  found: ds.f". A BigQuery or Spanner graph cannot hold an entity and a
+  found: ds.f". A name that starts with `AEAD`, `AI`, `HLL_COUNT`, `KEYS`,
+  `KLL_QUANTILES`, `ML`, `NET` or `OBJ`, BigQuery's function namespaces, counts
+  as built-in. A BigQuery or Spanner graph cannot hold an entity and a
   relationship whose names match ignoring case. The `graphs/<g>` segment of a Spanner
   target names the graph. Spanner takes a graph name that starts with a
   letter, holds only letters, digits and underscores, and is at most 128

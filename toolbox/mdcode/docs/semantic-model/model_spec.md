@@ -397,10 +397,10 @@ Each rule and its reason:
   `COUNT(*)` on a keyed node also passes. Arithmetic, `CASE`, `IF`,
   `SAFE_DIVIDE` and other scalar functions, and literals, may combine the
   aggregates, as in `SUM(orders.amount) / COUNT(orders.order_id)`. A function
-  around the aggregates MUST be one of BigQuery's built-in functions, such as
-  `SAFE_DIVIDE` or `NET.HOST`; a user-defined function may appear only inside
-  an aggregate's operand. No aggregate may hold another, and the metric may
-  hold no window or subquery. A metric that breaks this cannot become a
+  around the aggregates MUST be a BigQuery built-in function whose name has no
+  dot, or one with the `SAFE.` prefix; a user-defined function may appear only
+  inside an aggregate's operand. No aggregate may hold another, and the metric
+  may hold no window or subquery. A metric that breaks this cannot become a
   `MEASURE`, and the push is rejected (see
   [Validation](reference.md#validation)). *Why:* BigQuery allows only these five
   aggregates in a measure, and a measure aggregates the rows of one node table,
@@ -411,12 +411,12 @@ Each rule and its reason:
 - **A graph-bound field or metric MUST name the project of a user-defined
   function it calls.** For a BigQuery target, a field, or an aggregate's operand
   in a metric, that calls a user-defined function MUST write the function with
-  its project, as in `` `my-project.ds.f`(amount) ``, not `ds.f(amount)`.
-  BigQuery reads a dotted name that is not one of its built-in functions, such
-  as `ml.score`, as the function of a dataset. A push that breaks this is
-  rejected. *Why:* each becomes a property of the graph. BigQuery creates a
-  graph whose property calls `ds.f`, but every query on the graph then fails
-  with "Function not found: ds.f".
+  its project, as in `` `my-project.ds.f`(amount) ``, not `ds.f(amount)`. A
+  name that starts with one of BigQuery's function namespaces, such as
+  `NET.HOST`, counts as built-in. A push that breaks this is rejected. *Why:*
+  each becomes a property of the graph. BigQuery creates a graph whose property
+  calls `ds.f`, but every query on the graph then fails with "Function not
+  found: ds.f".
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, every relationship MUST supply both `from_columns` and `to_columns`
