@@ -41,8 +41,7 @@ export async function read<T>(
   try {
     res = await call();
   } catch (err: any) {
-    const why = oneLine(String(err?.message ?? err));
-    return {error: `${what} failed${why ? `: ${sentence(why)}` : '.'}`};
+    return {error: `${what} failed${thrownSaid(err)}`};
   }
   const said = oneLine(res.message ?? '');
   // Dataplex answers 403 both when an entry does not exist and when the caller
@@ -64,8 +63,8 @@ export async function read<T>(
 const GENERIC_DENIAL =
     /^Permission denied on resource `[^`]*` \(or it may not exist\)\.?$/;
 
-// What Dataplex said in the refusal `refused`, as a sentence to add after
-// kcmd's own. The sentence is `Dataplex said:` and the refusal's message.
+// What Dataplex said in a refusal, as a sentence to add after kcmd's own. The
+// sentence is `Dataplex said:` and the refusal's message.
 // Gives '' when the refusal has no message. Also gives '' for Dataplex's
 // generic denial, "Permission denied on resource `<name>` (or it may not
 // exist).", with or without its final period. That text says only that the
@@ -77,9 +76,17 @@ export function dataplexSaid({message}: Refusal): string {
 }
 
 // A failed lookup's message `text`, with each run of whitespace made one
-// space, so that a message that quotes it stays on one line.
+// space and the whitespace at either end removed, so that a message that
+// quotes it stays on one line.
 export function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+// What to add after kcmd's sentence about a call that threw `err`: `: ` and
+// the error's message as one sentence, or a period when it has no message.
+export function thrownSaid(err: any): string {
+  const why = oneLine(String(err?.message ?? err));
+  return why ? `: ${sentence(why)}` : '.';
 }
 
 // Looks up the catalog entry of the resource whose name is `resourceName`, in

@@ -57,6 +57,7 @@ import type {SpannerClient} from '../gcp/spanner';
 import {EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
 import type {SemanticModel} from './ir';
 import {SourceTable, sourceTableOf, writtenSource} from './loader';
+import {sentence} from './parameters';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 // The reads the check makes; the GCP clients provide them.
@@ -365,7 +366,7 @@ async function checked<T>(
             `404).${hint} Create the ${kind.replace(/^an? /, '')} or fix the ` +
             `source.` :
         `could not be checked: ${what} was refused (HTTP 403).${
-            res.message ? ` ${res.message}` : ''}${hint} The ` +
+            res.message ? ` ${sentence(res.message)}` : ''}${hint} The ` +
             `source's catalog entry was not looked up. Fix the access or ` +
             `the source.`,
   };

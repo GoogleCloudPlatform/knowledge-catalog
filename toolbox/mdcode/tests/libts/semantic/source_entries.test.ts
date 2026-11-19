@@ -284,6 +284,10 @@ describe('sourceEntryErrors', () => {
      INSTANCE_DENIED,
      refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message,
              INSTANCE_HINT)],
+    // A message with no final period gets one.
+    ['a refused table read whose message has no final period', BIGQUERY,
+     `getTable ${P} kcmd_demo orders`, {status: 403, message: 'The caller does not have permission'},
+     refused(BIGQUERY, `reading table '${P}.kcmd_demo.orders'`, 'The caller does not have permission.')],
     // A message of several lines is printed on one.
     ['a refused instance read whose message spans lines', SPANNER, `getInstance ${P} kcmd-src-reg`,
      {...INSTANCE_DENIED, message: INSTANCE_DENIED.message.replace(' on ', '\n  on ')},
@@ -302,7 +306,7 @@ describe('sourceEntryErrors', () => {
      couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed (HTTP 503: unavailable).")],
     // The read keeps the table's name as written, and a message of only
     // spaces adds nothing.
-    ['a read of a table whose name holds two spaces, which answers 500 with no message',
+    ['a read of a table whose name holds two spaces, which answers 500 with a message of one space',
      BIGQUERY.replace(/orders$/, 'order  items'), `getTable ${P} kcmd_demo order  items`,
      {status: 500, message: ' '},
      couldNotCheck(BIGQUERY.replace(/orders$/, 'order  items'),

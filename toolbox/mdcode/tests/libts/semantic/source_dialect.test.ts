@@ -231,7 +231,7 @@ describe('sourceDialects', () => {
         (await read([SQLSERVER], failing(...failed))).errors;
     expect(await says('instances/ms')).toEqual([`[sales] source '${SQLSERVER}' ${NO_TABLE} ` +
         "kcmd could not tell why: looking up the catalog entry of instance 'ms' failed: socket hang up."]);
-    // A thrown error with no message leaves no colon.
+    // A thrown error whose message is one space leaves no colon.
     expect(await says('instances/ms', new Error(' '))).toEqual([`[sales] source '${SQLSERVER}' ` +
         `${NO_TABLE} kcmd could not tell why: looking up the catalog entry of instance 'ms' failed.`]);
     // A message of two lines is printed on one.
@@ -309,8 +309,15 @@ describe('sourceDialects', () => {
       `[sales] source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up.`,
       `[sales] source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up.`,
       `[sales] source '${SPANNER}/x/tables/t': kcmd reads its Spanner database's SQL ` +
-      'dialect, and could not read database acme/ops/x: socket hang up',
+      'dialect, and could not read database acme/ops/x: socket hang up.',
     ]);
+  });
+
+  test('a Spanner read that throws a message of one space ends with a period', async () => {
+    const spanner = {getDatabase: async () => { throw new Error(' '); }};
+    const {errors} = await read([`source: ${SPANNER}/x/tables/t`], fakeCatalog({}).catalog, {spanner});
+    expect(errors).toEqual([`[sales] source '${SPANNER}/x/tables/t': kcmd reads its Spanner ` +
+        "database's SQL dialect, and could not read database acme/ops/x."]);
   });
 
   test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER, and gives SPANNER with no client', async () => {

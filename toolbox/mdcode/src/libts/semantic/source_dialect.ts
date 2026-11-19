@@ -30,7 +30,7 @@ import * as yaml from 'yaml';
 import type {SpannerClient} from '../gcp/spanner';
 
 import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, oneLine, Read, read, Refusal} from './catalog_entry';
+import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, Read, read, Refusal, thrownSaid} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
 
@@ -323,20 +323,21 @@ async function spannerDialect(
     spanner: Pick<SpannerClient, 'getDatabase'>,
     database: string): Promise<Dialect> {
   const [, , project, , instance, , name] = database.split('/');
-  const failed = (why: string): Dialect => ({
+  // `said` ends the message, after the database's name.
+  const failed = (said: string): Dialect => ({
     unread: true,
     reason: `: kcmd reads its Spanner database's SQL dialect, and could not ` +
-        `read database ${project}/${instance}/${name}: ${why}`,
+        `read database ${project}/${instance}/${name}${said}`,
   });
   try {
     const res = await spanner.getDatabase(project, instance, name);
     if (res.status !== 200) {
-      return failed(storeMessage(res.message, res.status));
+      return failed(`: ${storeMessage(res.message, res.status)}`);
     }
     const postgres = res.result?.databaseDialect === 'POSTGRESQL';
     return {dialect: postgres ? 'POSTGRES' : 'SPANNER'};
   } catch (err: any) {
-    return failed(oneLine(String(err?.message ?? err)));
+    return failed(thrownSaid(err));
   }
 }
 
