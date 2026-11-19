@@ -2004,7 +2004,7 @@ function removalLine({entries, links}: {entries: number; links: number}):
     links ? `${links} entry ${plural(links, 'link', 'links')}` : '',
   ].filter(c => c);
   return `Push would remove ${counted.join(' and ')}; run with --print to ` +
-      `list ${entries + links === 1 ? 'it' : 'them'}.`;
+      `list ${plural(entries + links, 'it', 'them')}.`;
 }
 
 

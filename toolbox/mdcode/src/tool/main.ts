@@ -134,7 +134,7 @@ pushCmd
     .option(
         '--dry-run',
         ENABLE_SEMANTIC ?
-            'Run every check and apply nothing; reads the Knowledge Catalog entry group, and with --print lists what push would write and remove' :
+            'Run every check and apply nothing; reads the Knowledge Catalog entry group, and with --print lists the model\'s entries and links and what push would remove' :
             'Run every check and show what would change, without applying anything')
     .option('--validate-only', 'Same as --dry-run')
     .option(

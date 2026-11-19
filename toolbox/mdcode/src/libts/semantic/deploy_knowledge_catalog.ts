@@ -70,7 +70,7 @@ import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entr
 import {entryIdOf} from './kc_ids';
 import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
 import * as kcEmit from './knowledge_catalog';
-import {LoadedModel} from './loader';
+import {LoadedModel, plural} from './loader';
 
 export interface KcDeployOptions {
   // Project that owns the destination entry group. Flag overrides are applied
@@ -102,13 +102,13 @@ export interface KcDeployOptions {
   // a removed or renamed model's entries and links. Without it, an unrecognized
   // model in the group is a hard error rather than a silent orphan.
   forceRemove?: boolean;
-  // How many times to try entries.create before giving up: a just-created entry
-  // group can briefly 404, and the create path retries that window. Overridable
-  // so tests exercise the retry without burning wall-clock. Default
-  // ENTRY_CREATE_TRIES.
-  entryCreateTries?: number;
-  // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
-  entryCreateRetryMs?: number;
+  // How many times to try entries.create and the entry listing before giving
+  // up: a just-created entry group can briefly fail them as not yet visible,
+  // and push retries that window. Overridable so tests exercise the retry
+  // without burning wall-clock. Default PROPAGATION_TRIES.
+  propagationTries?: number;
+  // Delay between those retries, in ms. Default PROPAGATION_RETRY_MS.
+  propagationRetryMs?: number;
 }
 
 export interface KcDeployResult {
@@ -143,10 +143,10 @@ export interface KcDeployResult {
   // renamed on a still-present model, and from force-removed models (0 for
   // validateOnly).
   unlinked: number;
-  // A human-readable plan of what push writes and removes: the sole output of
-  // a validateOnly run, and also returned (for --print) on a real push. A
-  // result that stops before push reads what the catalog holds lists only
-  // the writes.
+  // A human-readable plan of the model's entries and links and of what push
+  // removes: the sole output of a validateOnly run, and also returned (for
+  // --print) on a real push. A result that stops before push reads what the
+  // catalog holds lists only the model's entries and links.
   plan: string[];
   // How many entries and links a dry run found push would remove. They
   // include each other model's entries and links under `--force-remove`.
@@ -202,12 +202,38 @@ export interface KcPreparedDeploy {
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
 
-// entries.create propagation retry: a just-created entry group can briefly 404.
-const ENTRY_CREATE_TRIES = 3;
-const ENTRY_CREATE_RETRY_MS = 3000;
+// The retry of a just-created entry group's not-yet-visible errors (see
+// `withPropagationRetry`).
+const PROPAGATION_TRIES = 3;
+const PROPAGATION_RETRY_MS = 3000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// The message of an error a request threw, such as on a network failure.
+function thrownMessage(err: any): string {
+  return String(err?.message || err).trim();
+}
+
+/**
+ * Calls `attempt`, and calls it again while `notYetVisible` matches its
+ * outcome. It makes at most `opts.propagationTries` calls,
+ * `opts.propagationRetryMs` apart, and waits only after an outcome that
+ * matches. A just-created entry group can briefly fail requests for its
+ * entries that way. Returns the last outcome.
+ */
+async function withPropagationRetry<T>(
+    opts: KcDeployOptions, attempt: () => Promise<T>,
+    notYetVisible: (outcome: T) => boolean): Promise<T> {
+  const tries = opts.propagationTries ?? PROPAGATION_TRIES;
+  const retryMs = opts.propagationRetryMs ?? PROPAGATION_RETRY_MS;
+  let outcome = await attempt();
+  for (let n = 1; n < tries && notYetVisible(outcome); n++) {
+    await sleep(retryMs);
+    outcome = await attempt();
+  }
+  return outcome;
 }
 
 /**
@@ -217,7 +243,7 @@ function sleep(ms: number): Promise<void> {
  * The method performs the following actions:
  *   1. Translates the IR models into catalog resources.
  *   2. Verifies that exactly one model is being deployed, and builds the plan
- *      of what push writes.
+ *      that lists the model's entries and links.
  *   3. Fails when the destination entry group does not exist. Lists it and
  *      fails if an unrecognized model's anchor entry is present without
  *      `--force-remove`.
@@ -247,15 +273,20 @@ export async function planKnowledgeCatalog(
   const planned = await planWrites(
       new CatalogClient(ctx), opts, prepared,
       scopeProjectMatcher(ctx, opts.project));
-  const failed = 'error' in planned;
-  const toRemove = failed ? undefined : planned.toRemove;
-  return {
-    success: !failed,
+  const result = {
+    success: true,
     warnings: [...prepared.warnings],
     ...noCounts(),
-    plan: failed ? prepared.plan : planned.plan,
-    ...(failed ? {details: planned.error} : {}),
-    ...(toRemove && toRemove.entries + toRemove.links ? {toRemove} : {}),
+    plan: prepared.plan,
+  };
+  if ('error' in planned) {
+    return {...result, success: false, details: planned.error};
+  }
+  const {plan, toRemove} = planned;
+  return {
+    ...result,
+    plan,
+    ...(toRemove.entries + toRemove.links ? {toRemove} : {}),
   };
 }
 
@@ -275,19 +306,24 @@ export async function applyKnowledgeCatalog(
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [...prepared.warnings];
   const counts = noCounts();
-  let plan = prepared.plan;
-  const result: ResultBuilder = (success, details) =>
-      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
-
   const cat = new CatalogClient(ctx);
   const {emitted} = prepared;
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
   const planned = await planWrites(cat, opts, prepared, isScopeProject);
-  if ('error' in planned) return result(false, planned.error);
-  const {writePlans, foreign} = planned;
-  plan = planned.plan;
+  if ('error' in planned) {
+    return {
+      success: false,
+      warnings,
+      ...counts,
+      plan: prepared.plan,
+      details: planned.error,
+    };
+  }
+  const {writePlans, foreign, plan} = planned;
+  const result: ResultBuilder = (success, details) =>
+      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
   if (foreign.length) {
     // A thrown error is reported like a failed delete.
@@ -296,7 +332,7 @@ export async function applyKnowledgeCatalog(
             .catch((err: any) => ({
                      deleted: 0,
                      unlinked: 0,
-                     error: String(err?.message || err).trim(),
+                     error: thrownMessage(err),
                    }));
     counts.deleted += removed.deleted;
     counts.unlinked += removed.unlinked;
@@ -311,7 +347,7 @@ export async function applyKnowledgeCatalog(
       await writeEmittedModels(
           cat, opts, emitted, writePlans, counts)
           .catch((err: any): WriteModelsOutcome =>
-                     ({error: String(err?.message || err).trim()}));
+                     ({error: thrownMessage(err)}));
   if (written.error) return result(false, written.error);
 
   return result(true);
@@ -354,7 +390,7 @@ export async function deployEmittedModels(
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model and that
  *      every aspect size and instance count is within its limit. Builds the
- *      plan of what push writes.
+ *      plan that lists the model's entries and links.
  *   2. Validates that the destination entry group exists. Lists it and
  *      validates that it contains no foreign models unless `--force-remove`
  *      is set.
@@ -592,12 +628,13 @@ async function checkCustomTypes(
     cat: CatalogClient, dest: {project: string},
     typeIds: readonly string[]): Promise<string|undefined> {
   const home = customTypeHome(dest);
-  // A read that throws, such as on a network failure, gives its message.
-  const thrown = (err: any) => String(err?.message || err).trim();
   for (const typeId of typeIds) {
+    // A read that throws gives its message.
     const [entryTypeRes, aspectTypeRes] = await Promise.all([
-      cat.getEntryType(home.project, home.location, typeId).catch(thrown),
-      cat.getAspectType(home.project, home.location, typeId).catch(thrown),
+      cat.getEntryType(home.project, home.location, typeId)
+          .catch(thrownMessage),
+      cat.getAspectType(home.project, home.location, typeId)
+          .catch(thrownMessage),
     ]);
     if ([entryTypeRes, aspectTypeRes].some(
             res => typeof res !== 'string' && isNotFoundStatus(res))) {
@@ -695,16 +732,18 @@ interface WritePlan {
   // lacks, those whose read failed, and those whose stored copy differs from
   // what the update would leave. No label counts as a difference. An emitted
   // entry sets none, and the update carries over every stored label it does
-  // not set.
+  // not set. A dry run reads no stored entry, so here it holds every emitted
+  // entry. Only a real push reads it.
   writes: Entry[];
   // The number of emitted entries the catalog already holds as the update
-  // would leave them.
+  // would leave them. A dry run leaves it 0. Only a real push reads it.
   unchanged: number;
   // The entrySource each listed entry holds, by entry ID: the one read for
-  // the plan, or the listed one when that read failed.
+  // the plan, or the listed one when that read failed. In a dry run it holds
+  // the listed ones. Only a real push reads it.
   sources: Map<string, Entry['entrySource']>;
   // The model entry as read for the plan. Unset when the listing lacks it or
-  // its read failed.
+  // its read failed, and in a dry run. Only a real push reads it.
   storedAnchor?: Entry;
   // The model's relationship links that it no longer emits. They and the
   // stale links in `staleLinks` are deleted before the link writes.
@@ -737,7 +776,7 @@ async function planWrites(
     const planned =
         await planModelWrites(
             cat, opts, model, resources, existing, isScopeProject)
-            .catch((err: any) => ({error: String(err?.message || err).trim()}));
+            .catch((err: any) => ({error: thrownMessage(err)}));
     if ('error' in planned) return planned;
     writePlans.push(planned);
   }
@@ -746,7 +785,7 @@ async function planWrites(
   const foreign =
       await planForeignModels(
           cat, opts, existing, foreignAnchorIds, isScopeProject)
-          .catch((err: any) => ({error: String(err?.message || err).trim()}));
+          .catch((err: any) => ({error: thrownMessage(err)}));
   if ('error' in foreign) return foreign;
   const {lines, ...toRemove} = removalPlan(writePlans, foreign);
   return {writePlans, foreign, plan: [...prepared.plan, ...lines], toRemove};
@@ -755,7 +794,8 @@ async function planWrites(
 /** Another model in the entry group, which `--force-remove` deletes. */
 interface ForeignModel {
   anchorId: string;
-  // Its entries in the pre-write listing.
+  // Its entries in the pre-write listing, less those an earlier other model
+  // already holds.
   entries: Entry[];
   // The relationship links of its entity entries, less those an earlier
   // other model already holds.
@@ -765,18 +805,23 @@ interface ForeignModel {
 /**
  * Returns the model of each anchor ID in `foreignAnchorIds`, with its entries
  * in `existing` and the links of its entity entries, which it looks up while
- * those entries still exist. A link that joins the entities of two of these
- * models goes with the first of them only, so push lists, counts and deletes
- * it once. Returns the error that stops the push when a lookup fails.
+ * those entries still exist. An entry or a link that two of these models hold
+ * goes with the first of them only, so push lists, counts and deletes it
+ * once. An entry is held by two models when one anchor ID starts the other's,
+ * such as `old` and `old.sub`, and a link when it joins the entities of two
+ * models. Returns the error that stops the push when a lookup fails.
  */
 async function planForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: readonly Entry[],
     foreignAnchorIds: readonly string[],
     isScopeProject: ProjectMatcher): Promise<ForeignModel[]|{error: string}> {
   const models: ForeignModel[] = [];
-  const taken = new Set<string>();
+  const takenEntries = new Set<string>();
+  const takenLinks = new Set<string>();
   for (const anchorId of foreignAnchorIds) {
-    const entries = entriesOfModel(anchorId, existing);
+    const entries = entriesOfModel(anchorId, existing)
+                        .filter(e => !takenEntries.has(entryId(e)));
+    for (const entry of entries) takenEntries.add(entryId(entry));
     const lookedUp = await lookupEntryLinks(
         cat, opts, collectEntityNames(entries), isScopeProject);
     if (lookedUp.error) {
@@ -787,8 +832,8 @@ async function planForeignModels(
       };
     }
     const links =
-        [...lookedUp.links.values()].filter(l => !taken.has(linkId(l)));
-    for (const link of links) taken.add(linkId(link));
+        [...lookedUp.links.values()].filter(l => !takenLinks.has(linkId(l)));
+    for (const link of links) takenLinks.add(linkId(link));
     models.push({anchorId, entries, links});
   }
   return models;
@@ -809,9 +854,8 @@ function removalPlan(
   // A heading such as "  2 entries to remove:" over one line per item.
   const listed = (items: string[], one: string, many: string, what: string) => {
     if (!items.length) return [];
-    const kind = items.length === 1 ? one : many;
     return [
-      `  ${items.length} ${kind} ${what}:`,
+      `  ${items.length} ${plural(items.length, one, many)} ${what}:`,
       ...items.map(item => `    - ${item}`),
     ];
   };
@@ -852,10 +896,10 @@ function removalPlan(
  *      the aspect types its update names, at most READ_CONCURRENCY at a time,
  *      and sorts out the entries the update would leave as stored. A read
  *      that fails counts as a difference. A dry run makes none of these
- *      reads. They feed only push's writes: which entries push writes, the
- *      entrySource each update starts from, and the stored model entry whose
- *      entrySource the push state label update sends back. A dry run writes
- *      nothing.
+ *      reads. They feed only push's writes: which entries push writes and
+ *      the entrySource each update starts from. The push-state label update
+ *      sends back the entrySource of the stored model entry read here. A dry
+ *      run writes nothing.
  *   2. Looks up the model's existing relationship links when `existing`
  *      contains entities owned by the model, and finds the orphaned links (no
  *      longer emitted) and stale links (changed endpoints) owned by the model.
@@ -929,7 +973,7 @@ async function planModelWrites(
           await readEmittedLink(cat, link)
               .catch((err: any): ReadLinkOutcome => ({
                        error: `entry link '${linkId(link)}': ${
-                           String(err?.message || err).trim()}`,
+                           thrownMessage(err)}`,
                      }));
       if (read.error) return {error: `Model '${model}': ${read.error}`};
       if (read.existing && !isStaleLink(read.existing, link)) {
@@ -1124,7 +1168,7 @@ async function setPushState(
         await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
     return isOkStatus(res) ? undefined : errText(res);
   } catch (err: any) {
-    return String(err?.message || err).trim() || 'unknown error';
+    return thrownMessage(err) || 'unknown error';
   }
 }
 
@@ -1218,36 +1262,42 @@ async function deleteEntries(
 }
 
 /**
- * Snapshots the destination entry group's entries once, before any write.
+ * Snapshots the destination entry group's entries once, before any write, and
+ * returns the error when the listing fails.
  *
- * A brand-new entry group can briefly fail to list its entries collection (the
- * same propagation window `createEntry` rides out); treat only that
- * not-yet-visible error as empty so any other listing failure (such as a
- * backend error or permission problem) is surfaced rather than masked.
+ * A brand-new entry group can briefly fail to list its entries with a
+ * not-yet-visible error, and `createEntry` rides out the same window. After
+ * such an error, push lists the group again from its first page, as
+ * `withPropagationRetry` allows. Dataplex words some permanent refusals the
+ * same way, so an error that persists stops the push like any other.
  */
 async function listEntryGroup(
     cat: CatalogClient,
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
-  const entries: Entry[] = [];
-  try {
-    // Push writes listed source fields back, so it keeps each `resource` as
-    // stored.
-    for await (const entry of cat.listEntries(
-        opts.project, opts.location, opts.entryGroup,
-        {keepSourceResource: true})) {
-      entries.push(entry);
+  // All the entries, or the message of the error the listing threw.
+  const listAll = async (): Promise<Entry[]|string> => {
+    const entries: Entry[] = [];
+    try {
+      // Push writes listed source fields back, so it keeps each `resource`
+      // as stored.
+      for await (const entry of cat.listEntries(
+          opts.project, opts.location, opts.entryGroup,
+          {keepSourceResource: true})) {
+        entries.push(entry);
+      }
+    } catch (err: any) {
+      return thrownMessage(err);
     }
-  } catch (err: any) {
-    const msg = err.message || String(err);
-    if (isPropagationError({message: msg})) {
-      return {entries: []};
-    }
-    return {
-      entries: [],
-      error: `listing entries in entry group '${opts.entryGroup}': ${msg}`,
-    };
-  }
-  return {entries};
+    return entries;
+  };
+  const listing = await withPropagationRetry(
+      opts, listAll,
+      res => typeof res === 'string' && isPropagationError({message: res}));
+  if (typeof listing !== 'string') return {entries: listing};
+  return {
+    entries: [],
+    error: `listing entries in entry group '${opts.entryGroup}': ${listing}`,
+  };
 }
 
 interface LinkReconcileOutcome {
@@ -1292,8 +1342,7 @@ async function lookupEntryLinks(
       res = await cat.lookupEntryLinks(
           opts.project, opts.location, {entry: entityName});
     } catch (err: any) {
-      const message = String(err?.message || err).trim();
-      return {links, error: {entryId: entityId, message}};
+      return {links, error: {entryId: entityId, message: thrownMessage(err)}};
     }
     if (!isOkStatus(res)) {
       return {links, error: {entryId: entityId, message: errText(res)}};
@@ -1367,8 +1416,7 @@ async function deleteEntryLinks(
       del = await cat.deleteEntryLink(
           opts.project, opts.location, opts.entryGroup, id);
     } catch (err: any) {
-      const message = String(err?.message || err).trim();
-      return {deleted, error: {linkId: id, message}};
+      return {deleted, error: {linkId: id, message: thrownMessage(err)}};
     }
     if (isOkStatus(del) || isNotFoundStatus(del)) {
       deleted.push(link);
@@ -1779,8 +1827,10 @@ async function replaceEntryLink(
         opts.project, opts.location, opts.entryGroup, id, link);
     return {...linkOutcome(link, recreated), deleted: existingLink};
   } catch (err: any) {
-    const message = String(err?.message || err).trim();
-    return {error: `entry link '${id}': ${message}`, deleted: existingLink};
+    return {
+      error: `entry link '${id}': ${thrownMessage(err)}`,
+      deleted: existingLink,
+    };
   }
 }
 
@@ -2024,19 +2074,12 @@ function sendsNamedAspects(
 async function createEntry(
     cat: CatalogClient, opts: KcDeployOptions, id: string,
     entry: Entry): Promise<ApiResult<Entry>> {
-  const tries = opts.entryCreateTries ?? ENTRY_CREATE_TRIES;
-  const retryMs = opts.entryCreateRetryMs ?? ENTRY_CREATE_RETRY_MS;
-  let res = await cat.createEntry(
-      opts.project, opts.location, opts.entryGroup, id, entry);
-  for (let attempt = 1; attempt < tries; attempt++) {
-    if (isOkStatus(res) || isExistsStatus(res) || !isPropagationError(res)) {
-      break;
-    }
-    await sleep(retryMs);
-    res = await cat.createEntry(
-        opts.project, opts.location, opts.entryGroup, id, entry);
-  }
-  return res;
+  return withPropagationRetry(
+      opts,
+      () => cat.createEntry(
+          opts.project, opts.location, opts.entryGroup, id, entry),
+      res => !isOkStatus(res) && !isExistsStatus(res) &&
+          isPropagationError(res));
 }
 
 /**
