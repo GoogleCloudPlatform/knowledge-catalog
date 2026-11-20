@@ -1308,7 +1308,7 @@ function parseImportDocument(
       loadModels(rawYaml, {
         bindingOptional: true,
         warnUnacceptedSource: true,
-        thirdPartyInput: !opts.strict,
+        callVersionUnknown: !opts.strict,
       });
     } catch (err: any) {
       return err?.message ?? String(err);
