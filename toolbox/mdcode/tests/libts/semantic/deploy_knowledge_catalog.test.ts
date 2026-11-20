@@ -415,8 +415,7 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
         .toEqual({...source, ...emitted(ENTITY)});
   });
 
-  // Another writer can create an entry after the listing. Push reads the
-  // version of a model entry it finds that way, and goes on at 0.2.0.dev0.
+  // Another writer can create an entry after the listing.
   test('an entry the listing lacks is read before its update, and its ' +
            'fields are kept',
        async () => {
@@ -424,20 +423,14 @@ describe('deployKnowledgeCatalog: other writers\' fields', () => {
            system: 'other-tool',
            labels: {'owner': 'data-team'},
          };
-         const {getEntry, lookup, update} = stubClient({
+         const {getEntry, update} = stubClient({
            create: exists,
            // A listed entry with no entrySource is not read again.
            existing: [{id: ENTITY, type: ENTITY_TYPE}],
            getEntry: (id) => ok(id === 'sales' ? {entrySource: source} : {}),
          });
-         lookup.mockImplementation(
-             serving(modelEntry({specVersion: '0.2.0.dev0'})) as any);
          expect((await deployKnowledgeCatalog(models(DOCS), CTX, OPTS)).success)
              .toBe(true);
-         // Push reads the listed entity to compare it with the update, and
-         // checks the version of the model entry alone.
-         expect(lookup.mock.calls.map((c: any[]) => entryIdOf(c[2])))
-             .toEqual([ENTITY, 'sales']);
          expect(updated(update, 'sales')[0].entrySource).toEqual({
            system: 'other-tool',
            displayName: 'sales',
@@ -1455,13 +1448,6 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
       'to a version that supports it, or, if losing that model is ' +
       'acceptable, delete it in Knowledge Catalog and push again.';
   const LISTED = (type = MODEL_TYPE) => ({existing: [{id: 'sales', type}]});
-  // The listing lacks the model entry, which another writer created with its
-  // types in another project.
-  const CREATED = {
-    create: EXISTS,
-    getEntry: (id: string) =>
-        ok(id === 'sales' ? modelEntry({}, 'other-types') : {}),
-  };
   const V040 = serving(modelEntry({specVersion: '0.4.0'}));
   const OTHER_V040 = serving(modelEntry({specVersion: '0.4.0'}, 'other-types'));
   // As Dataplex words its answers, a reason ends with a period.
@@ -1508,8 +1494,6 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
       entryType: () => err(404, 'not found'), docs: ACTIONS_DOCS},
      serving(modelEntry({specVersion: '0.4.0'}, undefined, 'commerce')),
      UNSUPPORTED('commerce')],
-    ['a model entry of version 0.4.0 that the listing lacks', CREATED,
-     OTHER_V040, UNSUPPORTED()],
     ['a group that also holds a model of version 0.3.0.dev0 whose types are ' +
          'in another project',
      {existing: [{id: 'old', type: modelEntry({}, 'other-types').entryType}]},
@@ -1527,9 +1511,8 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
      `${REFUSED}old, older. ${REMOVE_THEM} ${STORED_IN('older', '0.4.0')}`],
   ])('push writes nothing over %s', async (_, catalog, read, error) => {
     const {docs = DOCS, reads, ...stub} = catalog;
-    // Each catalog stops a dry run too, apart from the one where another
-    // writer creates the model entry, which only a push meets.
-    for (const validateOnly of catalog === CREATED ? [false] : [false, true]) {
+    // Each catalog stops a dry run too.
+    for (const validateOnly of [false, true]) {
       const {lookup, create, update, del, getEntryType, getAspectType} =
           stubClient(stub);
       lookup.mockImplementation(read as any);
@@ -1544,10 +1527,7 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
       // Push stops before it reads any custom type.
       expect(getEntryType).not.toHaveBeenCalled();
       expect(getAspectType).not.toHaveBeenCalled();
-      // Push creates nothing, though it first tries to create the model entry
-      // another writer created.
-      expect(create.mock.calls.map(c => c[3]))
-          .toEqual(catalog === CREATED ? ['sales'] : []);
+      expect(create).not.toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
       expect(del).not.toHaveBeenCalled();
       mock.restore();

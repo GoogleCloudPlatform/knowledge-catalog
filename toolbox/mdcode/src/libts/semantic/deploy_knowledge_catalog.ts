@@ -1112,16 +1112,15 @@ async function readModelEntry(
  * does not support. Returns undefined otherwise.
  *
  * `emitted` is the model entry push writes, and the read uses its name.
- * `stored` is the catalog's entry as a listing or a read gave it, if one did.
- * When `stored` is a model entry, the read names the aspect types of its entry
+ * `stored` is the catalog's entry at that name, as the listing gives it. When
+ * `stored` is a model entry, the read names the aspect types of its entry
  * type. Otherwise it names those of the type of `emitted`.
  */
 async function storedVersionError(
     cat: CatalogClient, opts: KcDeployOptions, emitted: Entry,
-    stored?: Entry): Promise<string|undefined> {
+    stored: Entry): Promise<string|undefined> {
   const model = modelNameOf(emitted);
-  const type = stored && isAnchorEntry(stored) ? stored.entryType :
-                                                  emitted.entryType;
+  const type = isAnchorEntry(stored) ? stored.entryType : emitted.entryType;
   const read = await readModelEntry(cat, opts, emitted, type);
   if (typeof read === 'string' || !isOkStatus(read) || !read.result) {
     return `push could not read the stored model entry of '${
@@ -1165,7 +1164,6 @@ async function writeEmittedModels(
     const entries = await writeEntries(cat, opts, resources.entries, plan);
     counts.created += entries.created;
     counts.updated += entries.updated;
-    if (entries.versionError) return {error: entries.versionError};
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
 
     const {orphanedLinks, staleLinks, foundUnchanged} = plan;
@@ -1668,8 +1666,6 @@ interface EntriesOutcome {
   created: number;
   updated: number;
   error?: string;
-  // The model entry's versionError (see WriteOutcome).
-  versionError?: string;
 }
 
 /**
@@ -1703,9 +1699,8 @@ async function writeEntries(
   if (writes.has(anchor)) {
     const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
     const anchorRes = await write({...anchor, entrySource});
-    if (anchorRes.error || anchorRes.versionError) {
-      const {error, versionError} = anchorRes;
-      return {created: 0, updated: 0, error, versionError};
+    if (anchorRes.error) {
+      return {created: 0, updated: 0, error: anchorRes.error};
     }
     if (anchorRes.updated) {
       updated++;
@@ -1824,9 +1819,6 @@ async function writeEntryLinks(
 interface WriteOutcome {
   updated?: boolean;  // true when the resource already existed and was updated
   error?: string;
-  // The error of the stored-version check. It names the model and the entry
-  // group, so writeEmittedModels reports it without the model prefix.
-  versionError?: string;
 }
 
 interface LinkWriteOutcome {
@@ -2031,9 +2023,7 @@ async function blockedOutcome(
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
  * first. That happens when another writer created the entry after the
- * listing. When `entry` is the model entry, push then checks the stored
- * version as storedVersionError does. When the check fails, push writes
- * nothing to the entry and returns the error as `versionError`.
+ * listing.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
@@ -2048,11 +2038,6 @@ async function writeEntry(
     if (!isOkStatus(read)) {
       return {error: `entry '${id}': reading it before the update: ${
                   errText(read)}`};
-    }
-    if (isAnchorEntry(entry)) {
-      const versionError =
-          await storedVersionError(cat, opts, entry, read.result);
-      if (versionError) return {versionError};
     }
     return updateEntry(cat, opts, entry, read.result?.entrySource);
   }
