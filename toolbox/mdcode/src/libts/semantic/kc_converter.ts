@@ -35,7 +35,7 @@ import {Action, AiContext, Constraint, DATA_TYPES, DataType, Entity, Field, FIEL
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {entryIdOf} from './kc_ids';
-import {DEFAULT_DIALECT, readFieldExpression, sourceToDataSource} from './loader';
+import {DEFAULT_DIALECT, isFormatVersion, readFieldExpression, sourceToDataSource} from './loader';
 import {compact, nonEmpty} from './osi_converter';
 
 export interface ReadResult {
@@ -120,14 +120,12 @@ export function modelsFromCatalogResources(entries: Entry[]): ReadResult {
           (soleAnchor === anchorName && !anchorNames.has(e.parentEntry ?? '')));
 
   const overviews = new Map<string, OverviewSidecar>();
-  const nameOf = (anchor: Entry) =>
-      anchor.entrySource?.displayName ?? idOf(anchor.name);
   // A model whose model entry has no specVersion was pushed with the
   // first-generation types. It is left out rather than rebuilt from them.
   const isFirstGeneration = (anchor: Entry) =>
-      aspectData(anchor, 'semantic-model').specVersion === undefined;
+      storedSpecVersion(anchor) === undefined;
   const firstGeneration = anchors.filter(isFirstGeneration).map(anchor => ({
-    name: nameOf(anchor),
+    name: modelNameOf(anchor),
     entries: [
       anchor,
       ...[entityEntries, metricEntries, actionEntries, constraintEntries]
@@ -140,8 +138,8 @@ export function modelsFromCatalogResources(entries: Entry[]): ReadResult {
         [entityEntries, metricEntries, relationshipEntries].map(children);
     overviewSidecars([anchor, ...entities, ...metrics, ...relationships])
         .forEach((sidecar, id) => overviews.set(id, sidecar));
-    const model =
-        readModelV2(anchor, nameOf(anchor), entities, metrics, relationships);
+    const model = readModelV2(
+        anchor, modelNameOf(anchor), entities, metrics, relationships);
     readActionsAndConstraints(
         model, sortedByName(children(actionEntries)),
         sortedByName(children(constraintEntries)), warnings);
@@ -166,6 +164,58 @@ export function modelsFromCatalogResources(entries: Entry[]): ReadResult {
     ...(models.length ? {overviews} : {}),
     ...(firstGeneration.length ? {firstGeneration} : {}),
   };
+}
+
+
+// The name of the model whose model entry is `anchor`: the entry's display
+// name, or else the last segment of its entry id.
+export function modelNameOf(anchor: Entry): string {
+  return anchor.entrySource?.displayName ?? idOf(anchor.name);
+}
+
+
+// The specVersion the semantic-model aspect of the model entry `anchor`
+// holds. Undefined when it holds none, as when an older kcmd pushed the model
+// with the first-generation types.
+function storedSpecVersion(anchor: Entry): unknown {
+  return aspectData(anchor, 'semantic-model').specVersion;
+}
+
+
+// The specVersion the model entry `anchor` holds when it is neither version
+// this kcmd reads. Undefined when it holds none or one of those.
+function unsupportedSpecVersion(anchor: Entry): string|undefined {
+  const version = storedSpecVersion(anchor);
+  return version === undefined ||
+          typeof version === 'string' && isFormatVersion(version) ?
+      undefined :
+      String(version);
+}
+
+
+// What pull and push each say to do when the catalog holds a model in a
+// version this kcmd does not support.
+const UNSUPPORTED_VERSION_ADVICE = {
+  pull: 'Upgrade kcmd to a version that supports it.',
+  push: 'Upgrade kcmd to a version that supports it, or, if losing that ' +
+      'model is acceptable, delete it in Knowledge Catalog and push again.',
+};
+
+
+// The error that `command` gives when a stored model's version is not one
+// this kcmd reads. `anchor` is the model entry of the model `model` in the
+// entry group `entryGroup`. Returns undefined when the entry holds no
+// specVersion, or one this kcmd reads.
+export function unsupportedVersionMessage(
+    command: 'pull'|'push', model: string, entryGroup: string,
+    anchor: Entry): string|undefined {
+  const version = unsupportedSpecVersion(anchor);
+  return version === undefined ?
+      undefined :
+      `the stored version '${version}' of model '${model}' in entry group ` +
+          `'${entryGroup}' is not supported by this kcmd, so ${
+              command} wrote nothing for it. ${
+              UNSUPPORTED_VERSION_ADVICE[command]}`;
 }
 
 
@@ -216,7 +266,7 @@ function readModelV2(
 
   return compact({
     name,
-    version: data.specVersion,
+    version: storedSpecVersion(anchor) as SemanticModel['version'],
     entities,
     relationships,
     metrics,

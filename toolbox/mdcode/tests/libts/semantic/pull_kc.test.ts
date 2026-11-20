@@ -72,6 +72,15 @@ function entriesFor(model: SemanticModel): Entry[] {
   return generateCatalogResources(model, OPTS).entries;
 }
 
+// Sets `version` as the specVersion of the model entry that comes first in
+// `entries`, and returns `entries`.
+function storeVersion(entries: Entry[], version: string): Entry[] {
+  Object.values(entries[0].aspects!)
+      .find(a => a.aspectType!.endsWith('/semantic-model'))!.data!
+      .specVersion = version;
+  return entries;
+}
+
 function ok<T>(result?: T): ApiResult<T> {
   return {status: 200, result};
 }
@@ -143,14 +152,18 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
           relationships: [],
           metrics: [],
         };
-        const entries = [...entriesFor(SALES), ...entriesFor(other)];
-        stubClient(entries, entries);
+        // Pull refuses the second model before it reads anything, so the
+        // version of the first does not stop it.
+        const entries =
+            [...storeVersion(entriesFor(SALES), '0.4.0'), ...entriesFor(other)];
+        const {lookup} = stubClient(entries, entries);
 
         const cat = new CatalogClient({} as any);
         // An entry group holds exactly one model; two anchors is an unexpected
         // catalog state the pull refuses to guess through, naming both.
         await expect(pullKnowledgeCatalog(cat, OPTS))
             .rejects.toThrow(/holds 2 semantic models.*expected exactly one/i);
+        expect(lookup).not.toHaveBeenCalled();
       });
 
   // A listing of a group that does not exist fails, and pull then gives
@@ -220,6 +233,24 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
         .rejects.toThrow(
             new RegExp(`failed to fetch entry.*${metricEntry.name}`, 'i'));
   });
+
+  // Pull reads the model entry first, so its version stops the pull before a
+  // failed read of another entry does.
+  test('a model stored with version 0.4.0 stops the pull before another ' +
+           'entry\'s read fails',
+       async () => {
+         const entries = storeVersion(entriesFor(SALES), '0.4.0');
+         const metric =
+             entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
+         const {lookup} = stubClient(entries, entries);
+         const serve = lookup.getMockImplementation()!;
+         lookup.mockImplementation((...args: any[]) => args[2] === metric.name ?
+             err(503, 'The service is currently unavailable.') :
+             serve(...args));
+
+         await expect(pullKnowledgeCatalog(new CatalogClient({} as any), OPTS))
+             .rejects.toThrow("the stored version '0.4.0' of model 'sales'");
+       });
 
   test(
       'a child whose parentEntry does not resolve is kept (sole-anchor ' +

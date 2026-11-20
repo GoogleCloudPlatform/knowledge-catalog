@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../src/libts/gcp/spanner';
@@ -1856,6 +1857,63 @@ semantic_model:
                  `${NO_LOAD}${error}${dryRun ? advice : ''}`);
            });
     }
+  }
+
+  // Pull and push stop and write nothing on a model the catalog holds in a
+  // version this kcmd does not support, and so do their dry runs. Push stops
+  // before the line that starts the publish. With --skip-source-check, a
+  // BigQuery source and a deployment, it also stops before any BigQuery or
+  // Spanner call and any DDL under --print.
+  const DEPLOYED = MODEL.replace(
+      '    entities:\n',
+      `    deployments:\n      - { name: g, target: ${
+          TABLES.replace(/tables$/, 'propertyGraphs')}/g, profile: prod }\n` +
+          '    entities:\n');
+  for (const [flavor, files, version, options] of [
+    ['vanilla', {'commerce.yaml': VANILLA}, '0.3.0.dev0', {deployment: false}],
+    ['Google-flavor', BOTH(MODEL), '0.3.0.dev0/google', {deployment: false}],
+    ['deployed Google-flavor', BOTH(DEPLOYED), '0.4.0',
+     {print: true, skipSourceCheck: true}],
+  ] as const) {
+    test(`stops on a ${flavor} model stored with version ${version}`,
+         async () => {
+           const {entries} = await pushed(files);
+           Object.values([...entries.values()].find(
+                             e => entryIdOf(e.name) === 'commerce')!.aspects!)
+               .find(a => a.aspectType!.endsWith('/semantic-model'))!
+               .data!.specVersion = version;
+           const [stored, before] =
+               [structuredClone([...entries]), localFiles()];
+           const B = BigQueryClient.prototype, S = SpannerClient.prototype;
+           const store = [
+             B.getDataset, B.getTable, B.query, S.getDatabase, S.getInstance,
+             S.createSession, S.executeQuery, S.deleteSession,
+           ] as unknown as Mock<any>[];
+           for (const call of store) call.mockClear();
+           const refused = `the stored version '${version}' of model ` +
+               "'commerce' in entry group 'commerce_eg' is not supported by " +
+               'this kcmd, so';
+           const upgrade = 'Upgrade kcmd to a version that supports it';
+           for (const dryRun of [false, true]) {
+             await expect(pull({dryRun})).rejects.toThrow(new Error(
+                 `${refused} pull wrote nothing for it. ${upgrade}.`));
+             const [log, error] = [console.log, console.error].map(
+                 s => (s as Mock<any>).mockClear());
+             expect(await push({...options, validateOnly: dryRun})).toBe(1);
+             expect(messages(error)).toBe(
+                 'Error pushing semantic model to Knowledge Catalog: ' +
+                 `${refused} push wrote nothing for it. ${upgrade}, or, if ` +
+                 'losing that model is acceptable, delete it in Knowledge ' +
+                 'Catalog and push again.');
+             expect(messages(log)).not.toMatch(
+                 /-- BigQuery Graph --|Pushing semantic model \(Knowledge Catalog\)/);
+           }
+           // The source check reads BigQuery unless it is skipped.
+           if ('skipSourceCheck' in options) {
+             for (const call of store) expect(call).not.toHaveBeenCalled();
+           }
+           expect([localFiles(), [...entries]]).toEqual([before, stored]);
+         });
   }
 
   // A local profile file push or the layout would refuse is written from the

@@ -392,7 +392,8 @@ unexpected state, so pull stops and names the anchors rather than guess which to
 keep.
 
 For a model an older `kcmd` pushed, pull writes nothing and warns. Push that
-model again with the current `kcmd`.
+model again with the current `kcmd`. When the model entry holds a version this
+`kcmd` does not support, pull stops and writes nothing.
 
 Pull overwrites a model that already exists locally in place. If the catalog's
 model has a **different name** than the one on disk, writing it would leave the
