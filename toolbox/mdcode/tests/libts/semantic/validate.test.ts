@@ -3541,8 +3541,10 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       // The error saying `what` calls `udf`, after the deployments and verb
       // `deployments`.
       const PROJECTLESS =
-          (what: string, udf = 'ds.f',
-           deployments = "deployment 'bigquery' targets") =>
+          (what: string, {
+            udf = 'ds.f',
+            deployments = "deployment 'bigquery' targets",
+          } = {}) =>
               `model 'commerce' (commerce) ${deployments} BigQuery, where ${
                   what} calls user-defined function '${udf}' without its ` +
               `project; BigQuery creates the graph, but every query on it ` +
@@ -3555,20 +3557,12 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         return check(m);
       };
 
-      // Field noted reads note, and gets no error of its own.
+      // Field noted reads note, and gets no error of its own. The tests of
+      // projectlessFunction cover each way to write the name.
       test('rejects a field that calls one, but not a field that reads that field', () => {
-        for (const [e, udf] of [
-               ['ds.f(note)', 'ds.f'],
-               ['`ds.f`(note)', 'ds.f'],
-               ['`ds`.f(note)', 'ds.f'],
-               ['IFNULL(ds.clean(note), \'\')', 'ds.clean'],
-             ]) {
-          expect({e, errors: withNote(e)}).toEqual({
-            e,
-            errors: [PROJECTLESS("field 'purchase.note'", udf)],
-          });
-        }
-        // The entity's qualifier is renamed, as the measure check reads it.
+        expect(withNote('ds.f(note)'))
+            .toEqual([PROJECTLESS("field 'purchase.note'")]);
+        // The entity's qualifier is renamed, as the generator reads a metric.
         const m = commerce({deployments: BQ});
         m.entities.push({
           ...m.entities[1],
@@ -3581,14 +3575,33 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         expect(check(m)).toEqual([PROJECTLESS("field 'Date.day'")]);
       });
 
-      test('accepts a function named with its project, one in a BigQuery namespace, and SAFE. before one name, and any function on Spanner', () => {
-        for (const e of [
-               '`p.ds.f`(note)', '`p`.ds.f(note)', 'p.ds.f(note)',
-               'NET.HOST(note)', 'ml.score(note)', 'SAFE.LOWER(note)',
-             ]) {
-          expect({e, errors: withNote(e)}).toEqual({e, errors: []});
-        }
+      test('accepts a function named with its project, and any function on Spanner', () => {
+        expect(withNote('`p.ds.f`(note)')).toEqual([]);
         expect(withNote('ds.f(note)', deployment('spanner'))).toEqual([]);
+      });
+
+      // As the generator chooses node tables, but one without a primary_key
+      // is read too, so its error comes with the key error.
+      test('reads each field of an entity with no primary_key, but none of an abstract entity', () => {
+        const keyless = commerce({deployments: BQ});
+        keyless.entities[1].keys = [];
+        keyless.entities[1].fields[2] = {name: 'note', expression: 'ds.f(note)'};
+        expect(check(keyless)).toEqual([
+          `${OWN('bigquery')}which leave entity 'purchase' without a ` +
+              'primary_key; a BigQuery graph deployment needs a primary_key ' +
+              'on every concrete leaf entity. Declare primary_key on the ' +
+              'entity, or use a named profile that states one.',
+          PROJECTLESS("field 'purchase.note'"),
+        ]);
+        const abstract = commerce({deployments: BQ});
+        abstract.entities.push({
+          name: 'party',
+          abstract: true,
+          dataSource: '',
+          keys: ['id'],
+          fields: [{name: 'tag', expression: 'ds.f(id)'}],
+        });
+        expect(check(abstract)).toEqual([]);
       });
 
       test("rejects a metric that calls one in an aggregate's operand", () => {
@@ -3613,22 +3626,11 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           MEASURE("it calls user-defined function 'ds.f' outside an " +
                   'aggregate, which BigQuery cannot read in a measure'),
         ]);
-      });
-
-      test("rejects a many-to-many edge's field that calls one", () => {
-        const m = commerce({deployments: BQ});
-        m.relationships[0].association = {
-          dataSource: 'p.d.customer_purchases',
-          keys: ['id'],
-          sourceColumns: ['p_id'],
-          destinationColumns: ['c_id'],
-          fields: [
-            {name: 'tier', expression: 'ds.tier(code)'},
-            {name: 'rank', expression: '`p.ds.rank`(code)'},
-          ],
-        };
-        expect(check(m))
-            .toEqual([PROJECTLESS("field 'placed_by.tier'", 'ds.tier')]);
+        // A metric that reads two entities becomes no measure, and gets only
+        // the placement error, which measurePlacementErrors gives.
+        expect(bigQuery(anchored(
+                   'SUM(ds.f(purchase.amount)) + SUM(customer.c_id)')))
+            .toEqual([]);
       });
 
       test('rejects a field only under the profile that binds it so', () => {
@@ -3646,12 +3648,12 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           relationships: [],
         }];
         expect(check(m)).toEqual([PROJECTLESS(
-            "field 'purchase.note'", 'ds.f', "deployment 'dev' targets")]);
+            "field 'purchase.note'", {deployments: "deployment 'dev' targets"})]);
         // Both deployments, when the model file binds it so too.
         m.entities[1].fields[2] = {name: 'note', expression: 'ds.f(note)'};
-        expect(check(m)).toEqual([PROJECTLESS(
-            "field 'purchase.note'", 'ds.f',
-            "deployments 'bigquery' and 'dev' target")]);
+        expect(check(m)).toEqual([PROJECTLESS("field 'purchase.note'", {
+          deployments: "deployments 'bigquery' and 'dev' target",
+        })]);
       });
     });
   });

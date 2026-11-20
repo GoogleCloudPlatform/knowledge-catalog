@@ -937,11 +937,12 @@ opens. A `[` or `{` closed by the wrong kind of bracket keeps YAML's position.
   user-defined function must write it with its project, as in
   `` `my-project.ds.f`(amount) ``: BigQuery creates a graph whose property calls
   `ds.f(amount)`, but every query on the graph then fails with "Function not
-  found: ds.f". A name that starts with `AEAD`, `AI`, `HLL_COUNT`, `KEYS`,
-  `KLL_QUANTILES`, `ML`, `NET` or `OBJ`, BigQuery's function namespaces, counts
-  as built-in. A BigQuery or Spanner graph cannot hold an entity and a
-  relationship whose names match ignoring case. The `graphs/<g>` segment of a Spanner
-  target names the graph. Spanner takes a graph name that starts with a
+  found: ds.f". A name that starts with one of BigQuery's function namespaces
+  counts as built-in. The namespaces are `AEAD`, `AI`, `HLL_COUNT`, `KEYS`,
+  `KLL_QUANTILES`, `ML`, `NET` and `OBJ`. Push finds such a call only in SQL
+  that kcmd can read. A BigQuery or Spanner graph cannot hold an entity and a
+  relationship whose names match ignoring case. The `graphs/<g>` segment of a
+  Spanner target names the graph. Spanner takes a graph name that starts with a
   letter, holds only letters, digits and underscores, and is at most 128
   characters long. The name cannot be that of a table the graph reads,
   ignoring case. A BigQuery graph also cannot hold a metric

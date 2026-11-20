@@ -28,7 +28,7 @@ import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, isColumnName, measureAggregates, measureEntities, projectlessFunction, requalified, unusedName} from './sql_expr_utils';
+import {columnsForSource, isColumnName, measureAggregates, measureEntities, projectlessFunction, standInQualified, unusedName} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
 import {movedOffset} from './yaml_update';
@@ -173,6 +173,9 @@ export function validateDeployments(
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
   let referenced: Set<string>|undefined;
+  // The BigQuery rules' messages for the model each profile gives, by profile
+  // name, which every deployment that uses the profile shares.
+  const bigQueryProblems = new Map<string, string[]>();
   for (const d of model.deployments ?? []) {
     // A profile file that does not load is not in `model.profiles`, and is
     // left out; push reports the file.
@@ -271,23 +274,11 @@ export function validateDeployments(
       validateExpressionReferences(
           [{document, model}], false, [], referenced, load);
     }
-    // The metrics reported here or by the reference rules, which the
-    // function check leaves out.
-    const reported = new Set(referenced);
-    for (const m of available) {
-      const problem =
-          !referenced.has(m.name) && measureProblem(bound.model, m);
-      if (problem) {
-        reported.add(m.name);
-        add(d.name,
-            `targets BigQuery, where metric '${m.name}' cannot be a measure: ${
-                problem}.`);
-      }
-    }
-    for (const p of bigQueryOptionProblems(bound.model)) add(d.name, p);
-    for (const p of bigQueryFunctionProblems(bound.model, reported)) {
-      add(d.name, p);
-    }
+    const key = named?.name ?? DEFAULT_PROFILE;
+    const found = bigQueryProblems.get(key) ??
+        bigQueryGraphProblems(bound.model, referenced);
+    bigQueryProblems.set(key, found);
+    for (const p of found) add(d.name, p);
   }
   // The verb that starts each problem agrees with the number of deployments.
   return [...problems].map(([problem, names]) => {
@@ -311,13 +302,42 @@ function profiled(
   }
 }
 
-// Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
-// out a metric that measurePlacementErrors or the inheritance rules report:
-// one that reads several entities or none, or one on an abstract or extended
-// entity. An entity with no primary_key is the entity key check's to report,
-// so a metric on one is judged only on its aggregates.
-function measureProblem(
-    model: SemanticModel, metric: Metric): string|undefined {
+// What the BigQuery graph of `model`, the model a deployment's bindings give,
+// cannot hold, each as the end of a sentence about the deployment: each metric
+// that cannot be a measure, the OPTIONS kcmd writes (see
+// bigQueryOptionProblems), and each property that calls a user-defined
+// function without its project (see bigQueryFunctionProblems). Leaves out each
+// metric in `referenced`, which the reference rules report.
+function bigQueryGraphProblems(
+    model: SemanticModel, referenced: ReadonlySet<string>): string[] {
+  const problems: string[] = [];
+  // The operands of the aggregates of each metric that becomes a measure, by
+  // metric.
+  const operands = new Map<string, string[]>();
+  for (const m of model.metrics ?? []) {
+    const read = !referenced.has(m.name) && bigQueryMeasure(model, m);
+    if (!read) continue;
+    if ('problem' in read) {
+      problems.push(`targets BigQuery, where metric '${
+          m.name}' cannot be a measure: ${read.problem}.`);
+    } else {
+      operands.set(m.name, read.aggregates.map(a => a.operand));
+    }
+  }
+  return [
+    ...problems, ...bigQueryOptionProblems(model),
+    ...bigQueryFunctionProblems(model, operands)
+  ];
+}
+
+// The aggregates of the measure `metric` becomes on `model`'s BigQuery graph,
+// or why it cannot be one (see measureAggregates), or undefined when another
+// check reports it. Leaves out a metric that measurePlacementErrors or the
+// inheritance rules report: one that reads several entities or none, or one
+// on an abstract or extended entity. An entity with no primary_key is the
+// entity key check's to report, so a metric on one is read all the same.
+function bigQueryMeasure(model: SemanticModel, metric: Metric):
+    ReturnType<typeof measureAggregates>|undefined {
   const text = expressionForDialect(metric, 'BIGQUERY');
   if (text === undefined) return undefined;
   const entities = model.entities ?? [];
@@ -329,15 +349,10 @@ function measureProblem(
       entities.some(e => e.extends?.includes(entity.name))) {
     return undefined;
   }
-  // Read as the generator reads it (see bigquery.ts placeMetric), with the
-  // entity's qualifier renamed to a name the SQL parser does not reserve, as
-  // in `SUM(Date.days)`.
-  const written =
-      requalified(text, entity.name, unusedName(text, 'kcmd_entity'));
+  // Read as the generator reads it (see bigquery.ts placeMetric).
+  const {text: written} = standInQualified(text, entity.name);
   if (!columnsForSource(written, 'BIGQUERY')) return undefined;
-  const read = measureAggregates(written, 'BIGQUERY');
-  if ('problem' in read) return read.problem;
-  return undefined;
+  return measureAggregates(written, 'BIGQUERY');
 }
 
 // The BigQuery graph's rules for placing each metric of `model` as a measure
@@ -525,17 +540,23 @@ function primaryKeyMismatch(target: Entity): string {
       `columns.`;
 }
 
+// The entities of `model`, resolved for inheritance, that a graph gives a node
+// table once each has a primary_key, as the generator chooses them (see
+// graph_ddl.ts): each one neither abstract nor extended by another.
+function graphNodeEntities(model: SemanticModel): Entity[] {
+  const entities = resolvedEntities(model);
+  const extended = new Set(entities.flatMap(e => e.extends ?? []));
+  return entities.filter(e => !e.abstract && !extended.has(e.name));
+}
+
 // The fields the model file's own bindings leave without an expression on
 // each concrete leaf entity, counting the fields it inherits, as the end of a
 // deployment's error, or undefined when there are none.
 function unboundGraphFields(model: SemanticModel): string|undefined {
-  const extended =
-      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
-  const fields = resolvedEntities(model)
-                     .filter(e => !e.abstract && !extended.has(e.name))
-                     .flatMap(e => (e.fields ?? [])
-                                       .filter(f => !isFieldBound(f))
-                                       .map(f => `'${e.name}.${f.name}'`));
+  const fields = graphNodeEntities(model).flatMap(
+      e => (e.fields ?? [])
+               .filter(f => !isFieldBound(f))
+               .map(f => `'${e.name}.${f.name}'`));
   if (!fields.length) return undefined;
   const many = fields.length > 1;
   return `which leave ${many ? 'fields' : 'field'} ${
@@ -562,10 +583,7 @@ function graphNameProblems(
         `compared ignoring case; rename one.`);
   }
   if (engine === 'spanner') return problems;
-  const extended =
-      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
-  const tables = resolvedEntities(model).filter(
-      e => e.keys.length > 0 && !extended.has(e.name));
+  const tables = graphNodeEntities(model).filter(e => e.keys.length > 0);
   for (const m of model.metrics ?? []) {
     const owner = m.authoredEntity ?? m.entity;
     for (const e of tables.filter(e => e.name !== owner)) {
@@ -688,11 +706,7 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           check(
               kind, x.name, elementDescription(x.description),
               x.aiContext?.synonyms, aiExtensions(x.aiContext));
-  const extended =
-      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
-  const tables = resolvedEntities(model).filter(
-      e => e.keys.length > 0 && !extended.has(e.name));
-  for (const e of tables) {
+  for (const e of graphNodeEntities(model).filter(e => e.keys.length > 0)) {
     element('entity', e);
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
@@ -719,52 +733,42 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
 
 // One message for each property of `model`'s BigQuery graph that calls a
 // user-defined function by its dataset and name alone, as in `ds.f(amount)`:
-// each field of a node or edge table, and each operand of a metric not in
-// `skipped`. BigQuery creates such a graph, but every query on it then fails
+// each field of a node table (see graphNodeEntities), and each of `operands`,
+// the operands of the aggregates of each metric that becomes a measure, by
+// metric. BigQuery creates such a graph, but every query on it then fails
 // with "Function not found: ds.f" (see projectlessFunction). A field that
-// reads such a field reports nothing of its own.
+// reads such a field reports nothing of its own. An entity with no
+// primary_key is read too, as bigQueryMeasure reads a metric on one, so its
+// message comes with the key check's.
 function bigQueryFunctionProblems(
-    model: SemanticModel, skipped: ReadonlySet<string>): string[] {
+    model: SemanticModel,
+    operands: ReadonlyMap<string, string[]>): string[] {
   const problems: string[] = [];
-  // Adds the message for `what` when `text` calls such a function. Reads it
-  // with each of `qualifiers` renamed to a name the SQL parser does not
-  // reserve, as measureProblem reads a metric.
-  const check =
-      (what: string, text: string|undefined, qualifiers: string[]) => {
-        if (text === undefined) return;
-        for (const q of qualifiers) {
-          text = requalified(text, q, unusedName(text, 'kcmd_entity'));
-        }
-        const udf = projectlessFunction(text, 'BIGQUERY');
-        if (!udf) return;
-        problems.push(
-            `targets BigQuery, where ${what} calls user-defined function '${
-                udf}' without its project; BigQuery creates the graph, but ` +
-            `every query on it then fails with "Function not found: ${
-                udf}". Name the project, for example \`my-project.${udf}\`.`);
-      };
-  const entities = model.entities ?? [];
-  const extended = new Set(entities.flatMap(e => e.extends ?? []));
-  for (const e of resolvedEntities(model)) {
-    if (!e.keys.length || extended.has(e.name)) continue;
+  const add = (what: string, udf: string|undefined) => {
+    if (!udf) return;
+    problems.push(
+        `targets BigQuery, where ${what} calls user-defined function '${
+            udf}' without its project; BigQuery creates the graph, but ` +
+        `every query on it then fails with "Function not found: ${
+            udf}". Name the project, for example \`my-project.${udf}\`.`);
+  };
+  // A text with no dot calls no such function, and is not read.
+  for (const e of graphNodeEntities(model)) {
     for (const f of e.fields) {
-      check(
-          `field '${e.name}.${f.name}'`, expressionForDialect(f, 'BIGQUERY'),
-          [e.name]);
+      const text = expressionForDialect(f, 'BIGQUERY');
+      if (!text?.includes('.')) continue;
+      // Read as the generator reads a metric, with the entity's qualifier
+      // renamed (see standInQualified).
+      add(`field '${e.name}.${f.name}'`,
+          projectlessFunction(
+              standInQualified(text, e.name).text, 'BIGQUERY'));
     }
   }
-  for (const r of model.relationships ?? []) {
-    for (const f of r.association?.fields ?? []) {
-      check(
-          `field '${r.name}.${f.name}'`, expressionForDialect(f, 'BIGQUERY'),
-          [r.name]);
-    }
-  }
-  const names = entities.map(e => e.name);
-  for (const m of model.metrics ?? []) {
-    const text = expressionForDialect(m, 'BIGQUERY');
-    if (text === undefined || skipped.has(m.name)) continue;
-    check(`metric '${m.name}'`, text, measureEntities(text, names, m.entity));
+  for (const [metric, texts] of operands) {
+    add(`metric '${metric}'`,
+        texts.filter(t => t.includes('.'))
+            .map(t => projectlessFunction(t, 'BIGQUERY'))
+            .find(Boolean));
   }
   return problems;
 }

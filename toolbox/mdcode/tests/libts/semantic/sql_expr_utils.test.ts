@@ -634,11 +634,13 @@ describe('measureAggregates', () => {
         ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
         ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
         ['SUM(o.a) / ds.f(1)', 'ds.f'],
-        // BigQuery reads `ml` and `net` here as datasets, and `safe` as a
-        // project.
+        // BigQuery reads `ml` and `net` here as datasets, and `safe.` as the
+        // SAFE prefix, which a name backquoted whole does not hold.
         ['ml.score(SUM(o.amount))', 'ml.score'],
         ['net.score(SUM(o.amount))', 'net.score'],
-        ['safe.ds.f(SUM(o.amount))', 'safe.ds.f'],
+        ['safe.ds.f(SUM(o.amount))', 'ds.f'],
+        ['`safe`.ds.f(SUM(o.amount))', 'ds.f'],
+        ['`SAFE.LOG10`(SUM(o.amount))', 'SAFE.LOG10'],
         // BigQuery cannot read its own ML.BUCKETIZE here either.
         ['ML.BUCKETIZE(SUM(o.a), [0, 10])', 'ML.BUCKETIZE'],
       ].map(([text, udf]): [string, string] => [
@@ -704,7 +706,15 @@ describe('projectlessFunction', () => {
            ['`ds`.f(amount)', 'ds.f'],
            ['ROUND(ds.f(a) * 2, 1)', 'ds.f'],
            ['IF(a > 0, `p.ds.f`(a), ds.g(a))', 'ds.g'],
+           ['`p.ds.f`(ds.g(a))', 'ds.g'],
            ['SUM(ds.f(o.a)) / COUNT(o.id)', 'ds.f'],
+           // BigQuery reads `safe.` as the SAFE prefix, backquoted or not,
+           // but a name backquoted whole as a dataset's function.
+           ['safe.ds.f(amount)', 'ds.f'],
+           ['safe.`ds.f`(amount)', 'ds.f'],
+           ['`safe`.ds.f(amount)', 'ds.f'],
+           ['`SAFE.LOG10`(a)', 'SAFE.LOG10'],
+           ['`safe.f`(a)', 'safe.f'],
          ]) {
       expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
           .toEqual({text, udf});
@@ -715,13 +725,13 @@ describe('projectlessFunction', () => {
     for (const text of [
            '`p.ds.f`(amount)', '`p`.ds.f(amount)', 'p.ds.f(amount)',
            '`p.ds`.f(amount)', '`example.com:p.ds.f`(amount)',
-           // `safe` is a project here.
-           'safe.ds.f(amount)',
            'NET.HOST(url)', 'net.host(url)', 'ML.BUCKETIZE(a, [1, 2])',
            'AEAD.DECRYPT_STRING(k, c, d)', 'AI.SOME_NEW_FUNCTION(a)',
            // Passes, though BigQuery reads `ml` and `net` here as datasets.
-           'ml.score(a)', 'net.score(a)', 'SAFE.LOG10(a)',
+           'ml.score(a)', 'net.score(a)', 'SAFE.LOG10(a)', '`SAFE`.LOG10(a)',
            'safe.safe_divide(a, b)', 'ROUND(a * 2, 1)', 's.field.sub',
+           // A chained call on a struct field.
+           '(orders.addr).city.UPPER()',
            'SUM(o.a)', 'ds.f(', '  ',
          ]) {
       expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
