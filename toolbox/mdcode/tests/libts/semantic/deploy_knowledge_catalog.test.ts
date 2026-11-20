@@ -135,8 +135,7 @@ function stubClient(opts: {
   // Result of getEntry, keyed by entry id. Default: 200 with no entrySource.
   getEntry?: (entryId: string) => ApiResult<any>,
   // Result of lookupEntry, push's read of an entry it is about to write, keyed
-  // by entry id. Default: the listed entry with no aspects, or else an entry
-  // with only its name, as getEntry finds every entry.
+  // by entry id. Default: the listed entry with no aspects, or 404.
   lookup?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
@@ -181,7 +180,7 @@ function stubClient(opts: {
             const id = entryIdOf(name);
             if (opts.lookup) return opts.lookup(id);
             const found = listed.find(e => entryIdOf(e.name) === id);
-            return ok(found ? structuredClone(found) : {name});
+            return found ? ok(structuredClone(found)) : err(404, 'not found');
           });
   const del = spyOn(CatalogClient.prototype, 'deleteEntry')
                   .mockImplementation(
