@@ -1292,8 +1292,9 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `dataplex.entries.list` and `dataplex.entries.get` — push creates or updates
   the model's entries. It deletes orphaned entries. It reads the model entry
   with the aspect types of its own entry type, to check the model's version.
-  It reads each entry the model defines that the catalog already holds, to
-  skip the unchanged ones.
+  When it refuses an entry group that holds another model, it reads that
+  model's entry the same way, to name its version. It reads each entry the
+  model defines that the catalog already holds, to skip the unchanged ones.
   Each read requests every aspect type push writes or removes on that entry.
   It reads the model entry again before it labels the push finished. It also
   looks up the links of each entity entry the group already holds, including
@@ -1328,7 +1329,7 @@ and each aspect type attached, so a push needs, on the destination entry group:
   that they exist.
 
 `--validate-only` writes nothing, so of this list it needs only
-`dataplex.entries.list`, `dataplex.entries.get` for the read of the model entry
+`dataplex.entries.list`, `dataplex.entries.get` for the reads of model entries
 and the link lookups, `dataplex.entryLinks.get` for the link reads, and the
 reads of the custom types above.
 

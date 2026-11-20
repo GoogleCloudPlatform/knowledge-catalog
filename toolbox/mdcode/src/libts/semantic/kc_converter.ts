@@ -184,7 +184,7 @@ function storedSpecVersion(anchor: Entry): unknown {
 
 // The specVersion the model entry `anchor` holds when it is neither version
 // this kcmd reads. Undefined when it holds none or one of those.
-function unsupportedSpecVersion(anchor: Entry): string|undefined {
+export function unsupportedSpecVersion(anchor: Entry): string|undefined {
   const version = storedSpecVersion(anchor);
   return version === undefined ||
           typeof version === 'string' && isFormatVersion(version) ?

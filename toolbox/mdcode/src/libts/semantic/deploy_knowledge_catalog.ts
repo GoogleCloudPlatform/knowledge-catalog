@@ -52,8 +52,10 @@
 //   * A dry run runs the preflight, which reads the stored model entry for
 //     its version, and then `planKnowledgeCatalog`, which makes apply's entry
 //     link lookups, works out what apply would write and remove, and writes
-//     nothing. A dry run skips apply's change-detection reads. Those reads
-//     feed only apply's writes, and a dry run makes none.
+//     nothing. When the preflight refuses other models in the entry group, it
+//     also reads each one's model entry, to name its version. A dry run skips
+//     apply's change-detection reads. Those reads feed only apply's writes,
+//     and a dry run makes none.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -67,7 +69,7 @@ import * as crm from '../gcp/crm';
 import {_typeRefToName, Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {modelNameOf, unsupportedVersionMessage} from './kc_converter';
+import {modelNameOf, unsupportedSpecVersion, unsupportedVersionMessage} from './kc_converter';
 import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
@@ -407,7 +409,8 @@ export async function deployEmittedModels(
  *      and fails when the read fails or the entry holds a specVersion this
  *      kcmd does not support.
  *   4. Validates that the listing contains no foreign models unless
- *      `--force-remove` is set.
+ *      `--force-remove` is set. When it refuses them, it reads each foreign
+ *      model entry to name a version this kcmd does not support.
  *   5. Validates that every custom type used by the model exists in the
  *      target project.
  */
@@ -462,7 +465,8 @@ async function preflightEmittedModels(
   }
 
   // 4. Refuse foreign models unless `--force-remove` is set.
-  const groupValidation = validateEntryGroup(model, existing, opts, result);
+  const groupValidation =
+      await validateEntryGroup(cat, model, existing, opts, result);
   if (!groupValidation.success) return {result: groupValidation};
 
   // 5. Validate that every kcmd-owned custom type used by the model exists in
@@ -553,20 +557,41 @@ export function missingEntryGroupMessage(
  * model was renamed or replaced locally), pushing without removing the old
  * model would leave multiple models in the same entry group. We fail by
  * default unless the caller passes `--force-remove` to delete the old model.
+ *
+ * Before it fails, it reads each foreign model entry with readModelEntry, by
+ * the aspect types of the entry's own type. Each model stored in a version
+ * this kcmd does not support gets a sentence that names the version. The
+ * advice to re-run with `--force-remove` stays only when some foreign model
+ * is not such a model. A read that fails names no version.
  */
-function validateEntryGroup(
-    model: EmittedModel, existing: Entry[], opts: KcDeployOptions,
-    result: ResultBuilder): KcDeployResult {
+async function validateEntryGroup(
+    cat: CatalogClient, model: EmittedModel, existing: Entry[],
+    opts: KcDeployOptions, result: ResultBuilder): Promise<KcDeployResult> {
   const foreignAnchorIds = findForeignAnchorIds(model, existing);
-  if (foreignAnchorIds.length && !opts.forceRemove) {
-    return result(
-        false,
-        `entry group '${opts.entryGroup}' already contains model(s) this ` +
-            `push does not include: ${foreignAnchorIds.join(', ')}. Re-run ` +
-            `with --force-remove to delete them, or add their documents to ` +
-            `this push.`);
+  if (!foreignAnchorIds.length || opts.forceRemove) return result(true);
+  const unsupported: string[] = [];
+  for (const id of foreignAnchorIds) {
+    const entry = existing.find(e => entryId(e) === id)!;
+    const read = await readModelEntry(cat, opts, entry, entry.entryType);
+    const version = typeof read !== 'string' && isOkStatus(read) &&
+            read.result ?
+        unsupportedSpecVersion(read.result) :
+        undefined;
+    if (version === undefined) continue;
+    unsupported.push(
+        `Model '${id}' is stored in version '${version}', which this kcmd ` +
+        `does not support. Upgrade kcmd to a version that supports it, or, ` +
+        `if losing that model is acceptable, re-run with --force-remove to ` +
+        `delete it.`);
   }
-  return result(true);
+  const advice = unsupported.length < foreignAnchorIds.length ?
+      ['Re-run with --force-remove to delete them.'] :
+      [];
+  return result(
+      false,
+      `entry group '${opts.entryGroup}' already contains model(s) this push ` +
+          `does not include: ${foreignAnchorIds.join(', ')}. ${
+              [...advice, ...unsupported].join(' ')}`);
 }
 
 // The largest aspect data Dataplex accepts: 120 KiB of its JSON form, in UTF-8

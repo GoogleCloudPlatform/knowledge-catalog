@@ -1466,6 +1466,16 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
   const OTHER_V040 = serving(modelEntry({specVersion: '0.4.0'}, 'other-types'));
   // As Dataplex words its answers, a reason ends with a period.
   const denied = async () => err(403, 'Permission denied.');
+  // Push reads each other model's entry, by the aspect types of its own type,
+  // to name a version this kcmd does not support when it refuses the group.
+  const REFUSED = "entry group 'eg' already contains model(s) this push does " +
+      'not include: ';
+  const REMOVE_THEM = 'Re-run with --force-remove to delete them.';
+  const STORED_IN = (model: string, version: string) =>
+      `Model '${model}' is stored in version '${version}', which this kcmd ` +
+      'does not support. Upgrade kcmd to a version that supports it, or, if ' +
+      'losing that model is acceptable, re-run with --force-remove to delete ' +
+      'it.';
 
   // Each row gives a name for what the catalog holds, the stub's options, the
   // stub's answer to each read of a model entry, and the error push reports.
@@ -1500,6 +1510,21 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
      UNSUPPORTED('commerce')],
     ['a model entry of version 0.4.0 that the listing lacks', CREATED,
      OTHER_V040, UNSUPPORTED()],
+    ['a group that also holds a model of version 0.3.0.dev0 whose types are ' +
+         'in another project',
+     {existing: [{id: 'old', type: modelEntry({}, 'other-types').entryType}]},
+     serving(modelEntry({specVersion: '0.3.0.dev0'}, 'other-types', 'old')),
+     `${REFUSED}old. ${STORED_IN('old', '0.3.0.dev0')}`],
+    ['a group that also holds a model whose read fails',
+     {existing: [{id: 'old', type: MODEL_TYPE}]}, denied,
+     `${REFUSED}old. ${REMOVE_THEM}`],
+    ['a group that also holds a model of a supported version and one of ' +
+         'version 0.4.0',
+     {existing: ['old', 'older'].map(id => ({id, type: MODEL_TYPE}))},
+     serving(
+         modelEntry({specVersion: '0.2.0.dev0'}, undefined, 'old'),
+         modelEntry({specVersion: '0.4.0'}, undefined, 'older')),
+     `${REFUSED}old, older. ${REMOVE_THEM} ${STORED_IN('older', '0.4.0')}`],
   ])('push writes nothing over %s', async (_, catalog, read, error) => {
     const {docs = DOCS, reads, ...stub} = catalog;
     // Each catalog stops a dry run too, apart from the one where another
