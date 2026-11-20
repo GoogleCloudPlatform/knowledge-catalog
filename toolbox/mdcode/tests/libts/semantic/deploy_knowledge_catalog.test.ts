@@ -1507,7 +1507,8 @@ describe('deployKnowledgeCatalog: stored model versions', () => {
      serving(
          modelEntry({specVersion: '0.2.0.dev0'}, undefined, 'old'),
          modelEntry({specVersion: '0.4.0'}, undefined, 'older')),
-     `${REFUSED}old, older. ${REMOVE_THEM} ${STORED_IN('older', '0.4.0')}`],
+     `${REFUSED}old, older. Re-run with --force-remove to delete old. ${
+         STORED_IN('older', '0.4.0')}`],
   ])('push writes nothing over %s', async (_, catalog, read, error) => {
     const {docs = DOCS, reads, ...stub} = catalog;
     // Each catalog stops a dry run too.

@@ -562,8 +562,9 @@ export function missingEntryGroupMessage(
  * most READ_CONCURRENCY at a time, each by the aspect types of the entry's own
  * type. Each model stored in a version this kcmd does not support gets a
  * sentence that names the version. The advice to re-run with `--force-remove`
- * stays only when some foreign model is not such a model. A read that fails
- * names no version.
+ * covers the foreign models that get no such sentence. It says to delete them
+ * all when no model gets one, and names the models it covers when some do. It
+ * is left out when every model gets one. A read that fails names no version.
  */
 async function validateEntryGroup(
     cat: CatalogClient, model: EmittedModel, existing: Entry[],
@@ -575,20 +576,26 @@ async function validateEntryGroup(
     return readModelEntry(cat, opts, entry, entry.entryType);
   });
   const unsupported: string[] = [];
+  const covered: string[] = [];
   reads.forEach((read, i) => {
     const version = typeof read !== 'string' && isOkStatus(read) &&
             read.result ?
         unsupportedSpecVersion(read.result) :
         undefined;
-    if (version === undefined) return;
+    if (version === undefined) {
+      covered.push(foreignAnchorIds[i]);
+      return;
+    }
     unsupported.push(
         `Model '${foreignAnchorIds[i]}' is stored in version '${version}', ` +
         `which this kcmd does not support. Upgrade kcmd to a version that ` +
         `supports it, or, if losing that model is acceptable, re-run with ` +
         `--force-remove to delete it.`);
   });
-  const advice = unsupported.length < foreignAnchorIds.length ?
+  const advice = !unsupported.length ?
       ['Re-run with --force-remove to delete them.'] :
+      covered.length ?
+      [`Re-run with --force-remove to delete ${covered.join(', ')}.`] :
       [];
   return result(
       false,
