@@ -2255,7 +2255,7 @@ function readVersion(
         `Ossie semantic model. kcmd reads no other Ossie document, such as an ` +
         `ontology or a mapping.`);
   }
-  if (unsupportedVersion(doc) !== undefined) {
+  if (!isFormatVersion(version)) {
     const problem = callVersionUnknown ?
         `unknown version '${version}'` :
         `version '${version}' is not supported by this kcmd`;
@@ -2263,7 +2263,7 @@ function readVersion(
         `Semantic model load error: ${problem}; expected '${OSSIE_VERSION}' ` +
         `or '${GOOGLE_VERSION}'.` + (advice ? ` ${advice}` : ''));
   }
-  return version as FormatVersion;
+  return version;
 }
 
 // The top-level `version` of the model document `doc` when it is a string
