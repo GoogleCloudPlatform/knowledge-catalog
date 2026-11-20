@@ -558,32 +558,35 @@ export function missingEntryGroupMessage(
  * model would leave multiple models in the same entry group. We fail by
  * default unless the caller passes `--force-remove` to delete the old model.
  *
- * Before it fails, it reads each foreign model entry with readModelEntry, by
- * the aspect types of the entry's own type. Each model stored in a version
- * this kcmd does not support gets a sentence that names the version. The
- * advice to re-run with `--force-remove` stays only when some foreign model
- * is not such a model. A read that fails names no version.
+ * Before it fails, it reads the foreign model entries with readModelEntry, at
+ * most READ_CONCURRENCY at a time, each by the aspect types of the entry's own
+ * type. Each model stored in a version this kcmd does not support gets a
+ * sentence that names the version. The advice to re-run with `--force-remove`
+ * stays only when some foreign model is not such a model. A read that fails
+ * names no version.
  */
 async function validateEntryGroup(
     cat: CatalogClient, model: EmittedModel, existing: Entry[],
     opts: KcDeployOptions, result: ResultBuilder): Promise<KcDeployResult> {
   const foreignAnchorIds = findForeignAnchorIds(model, existing);
   if (!foreignAnchorIds.length || opts.forceRemove) return result(true);
-  const unsupported: string[] = [];
-  for (const id of foreignAnchorIds) {
+  const reads = await mapConcurrent(foreignAnchorIds, READ_CONCURRENCY, id => {
     const entry = existing.find(e => entryId(e) === id)!;
-    const read = await readModelEntry(cat, opts, entry, entry.entryType);
+    return readModelEntry(cat, opts, entry, entry.entryType);
+  });
+  const unsupported: string[] = [];
+  reads.forEach((read, i) => {
     const version = typeof read !== 'string' && isOkStatus(read) &&
             read.result ?
         unsupportedSpecVersion(read.result) :
         undefined;
-    if (version === undefined) continue;
+    if (version === undefined) return;
     unsupported.push(
-        `Model '${id}' is stored in version '${version}', which this kcmd ` +
-        `does not support. Upgrade kcmd to a version that supports it, or, ` +
-        `if losing that model is acceptable, re-run with --force-remove to ` +
-        `delete it.`);
-  }
+        `Model '${foreignAnchorIds[i]}' is stored in version '${version}', ` +
+        `which this kcmd does not support. Upgrade kcmd to a version that ` +
+        `supports it, or, if losing that model is acceptable, re-run with ` +
+        `--force-remove to delete it.`);
+  });
   const advice = unsupported.length < foreignAnchorIds.length ?
       ['Re-run with --force-remove to delete them.'] :
       [];
