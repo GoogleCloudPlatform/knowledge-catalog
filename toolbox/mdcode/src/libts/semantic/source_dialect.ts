@@ -23,13 +23,16 @@
 //
 // This is the only place kcmd looks up a source's dialect. A command looks
 // every such source up once, before it loads the model, and passes the
-// dialects to the load (LoadOptions.sourceDialects).
+// dialects to the load (LoadOptions.sourceDialects). Push, kcmd profiles and
+// the runtime commands look up no source of a model file whose version is a
+// string this kcmd does not support, nor of that file's profile files (see
+// labeledFiles).
 
 import * as yaml from 'yaml';
 
 import type {SpannerClient} from '../gcp/spanner';
 
-import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {asResourceName, catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf, unsupportedVersion} from './loader';
 import {dataplexSaid, EntryLookup, EntryRead, lookupSystemEntry, Read, read, Refusal, thrownSaid} from './catalog_entry';
 import {storeMessage} from './parameters';
 import {documentValue, YAML_OPTIONS} from './yaml_options';
@@ -80,15 +83,31 @@ export interface LabeledText {
 
 // Each model file of `docs`, then its profile files, labeled as LabeledText
 // says. `profileFiles` gives a model's profile files. Each comes with the
-// file name push gives it.
+// file name push gives it. A model file whose version the load refuses as one
+// this kcmd does not support is left out with its profile files, so that the
+// load reports the version before any lookup of their sources.
 export function labeledFiles(
     docs: Array<{name: string; text: string}>,
     profileFiles: (model: string) => Array<{fileName: string; text: string}>):
     LabeledText[] {
-  return docs.flatMap(doc => [
+  return docs.filter(doc => !refusedVersion(doc.text)).flatMap(doc => [
     {label: doc.name, text: doc.text},
     ...profileFiles(doc.name).map(f => ({label: f.fileName, text: f.text})),
   ]);
+}
+
+// Whether the load refuses the model file `text` for a version this kcmd does
+// not support (see unsupportedVersion). The text is parsed as the load parses
+// it. A text that does not parse gives false, so its tables keep their
+// lookups: those of its profile files, and those of each of its YAML documents
+// that parses alone. A failed lookup can then stop the command before the load
+// reports the parse error.
+function refusedVersion(text: string): boolean {
+  try {
+    return unsupportedVersion(documentValue(text)) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 // The messages of the failures in `read` whose sources the files `files`
@@ -429,8 +448,8 @@ function databaseOfFqn(fqn: string): string|undefined {
 // name counts as a `source` value in the YAML or in a GOOGLE block's JSON
 // `data`, unless it sits in ai_context, an action parameter's default or
 // another vendor's block. Values are read from the parsed YAML, so a name in a
-// comment is not collected. A file that does not parse collects nothing; the
-// load reports it.
+// comment is not collected. A YAML document that does not parse, or whose
+// values cannot be read, collects nothing.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
   // `key` names the member that holds `value`. `opaque` marks a value whose
@@ -461,7 +480,7 @@ export function sourcesToLookUp(texts: Iterable<string>): string[] {
     }
   };
   for (const text of texts) {
-    // Parsed as the loader parses, so both read the same values.
+    // Parsed with the loader's YAML options, so both read the same values.
     for (const doc of yaml.parseAllDocuments(text, YAML_OPTIONS)) {
       if (doc.errors.length) continue;
       // Reading the values can still fail: on an alias whose anchor is not

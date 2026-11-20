@@ -779,16 +779,19 @@ describe('metrics infer their referenced entities from the expression', () => {
 
 
 describe('document-level handling', () => {
-  test('an unknown version is a hard load error', () => {
+  test.each(['0.3.0.dev0/google', '0.4.0'])('an unknown version %s is a hard load error', version => {
     expect(() => fromDocument({
-      version: '9.9.9',
+      version,
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/a', primary_key: ['id'], fields: [] }] }],
-    })).toThrow(/unknown version '9.9.9'/);
+    })).toThrow(new Error(
+        `Semantic model load error: version '${version}' is not supported by this kcmd; expected ` +
+        "'0.2.0.dev0' or '0.2.0.dev0/google'."));
   });
 
   test.each([
-    ['0.3.0.dev0', "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or '0.2.0.dev0/google'. "],
+    ['0.3.0.dev0', "version '0.3.0.dev0' is not supported by this kcmd; expected '0.2.0.dev0' or " +
+        "'0.2.0.dev0/google'. "],
     ['0.2.0.dev0', "the document: 'semantic_model' is missing; it takes a list\nthe document: unknown keys " +
         "'name' and 'datasets'; it takes 'version' and 'semantic_model'\n"],
   ])('a %s file with its model at the document root is refused with advice to import it', (version, problem) => {

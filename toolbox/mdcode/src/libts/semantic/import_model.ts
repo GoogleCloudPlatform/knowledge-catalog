@@ -1305,7 +1305,11 @@ function parseImportDocument(
       !Array.isArray(parsedDoc.semantic_model) ||
       !isRecord(parsedDoc.semantic_model[0])) {
     try {
-      loadModels(rawYaml, {bindingOptional: true, warnUnacceptedSource: true});
+      loadModels(rawYaml, {
+        bindingOptional: true,
+        warnUnacceptedSource: true,
+        thirdPartyInput: !opts.strict,
+      });
     } catch (err: any) {
       return err?.message ?? String(err);
     }

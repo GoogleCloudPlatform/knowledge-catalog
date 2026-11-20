@@ -1060,6 +1060,40 @@ describe('a profile file that binds a Cloud SQL table', () => {
           `projects/655216118709/locations/global/entryTypes/cloudsql-${engine}-table`]);
     });
   }
+
+  // A model file in a version this kcmd does not support gives the version
+  // error. Push and kcmd profiles look up no table of it or of its profile
+  // files first. Every other model file keeps its lookups.
+  const TABLE = `${CLOUDSQL}/tables/customer`;
+  // The model file with the version line `version`, on TABLE.
+  const onTable = (version: string) =>
+      ROUND_TRIP_MODEL.replace('version: "0.2.0.dev0/google"\n', version)
+          .replace(/source: .*/, `source: ${TABLE}`);
+  test.each([
+    ['of version 0.4.0', onTable('version: "0.4.0"\n'),
+     "version '0.4.0' is not supported by this kcmd"],
+    ['with no version', onTable(''), undefined],
+    ['with an empty version', onTable('version: ""\n'), undefined],
+    ['with a number for its version', onTable('version: 0.4\n'), undefined],
+    ['that does not parse',
+     onTable('version: "0.4.0"\nversion: "0.4.0"\n'), undefined],
+    ['whose top level is a list', '- version: "0.4.0"\n', undefined],
+  ])('a model file %s, on tables whose lookups fail',
+     async (_, model, error) => {
+       writeRoundTripWorkspace(
+           PROD_PROFILE.replace(/source: .*/, `source: ${TABLE}`));
+       fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
+       const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
+                          .mockResolvedValue({status: 403, message: 'denied'});
+       for (const run of [() => push({validateOnly: true}), () => profiles({})]) {
+         (console.error as Mock<any>).mockClear();
+         lookup.mockClear();
+         expect(await run()).toBe(1);
+         if (error) expect(messages(console.error)).toContain(error);
+         if (error) expect(lookup).not.toHaveBeenCalled();
+         else expect(lookup).toHaveBeenCalled();
+       }
+     });
 });
 
 
@@ -1828,8 +1862,8 @@ semantic_model:
   for (const [what, text, error, advice] of [
     ['Ossie model file',
      'version: "0.3.0.dev0"\nname: commerce\ndatasets: []\n',
-     "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or " +
-         "'0.2.0.dev0/google'.",
+     "version '0.3.0.dev0' is not supported by this kcmd; expected " +
+         "'0.2.0.dev0' or '0.2.0.dev0/google'.",
      " Run 'kcmd import <file> --flavor <ossie|google>' to convert it."],
     ['model file with a bare table name',
      MODEL.replace('name: Order\n', 'name: Order\n        source: orders\n'),
