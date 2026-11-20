@@ -23,7 +23,7 @@
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn, PlacedMetrics} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {entitiesWord, listed} from './loader';
-import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, unusedName, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureAggregates, measureEntities, replacedAggregates, requalified, sqlWithoutComments, standInQualified, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteColumnIfReserved, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -327,8 +327,7 @@ function placeMetric(
   // emit DDL BigQuery rejects. The SQL parser finds the aggregates and their
   // operands with the entity's qualifier renamed to a name it does not
   // reserve, since it cannot read one it reserves, as in `SUM(Date.days)`.
-  const stand = unusedName(expression, 'kcmd_entity');
-  const written = requalified(expression, entityName, stand);
+  const {text: written, stand} = standInQualified(expression, entityName);
   const shape = measureAggregates(written, 'BIGQUERY');
   if ('problem' in shape) {
     warnings.push(`metric '${metric.name}' expression '${
@@ -424,9 +423,8 @@ function readOperand(
   // name another column, while a column of the same name may hold something
   // else. The SQL parser reads the entity's qualifier renamed, as placeMetric
   // does, since it cannot read one it reserves, as in `Date.days`.
-  const stand = unusedName(operand, 'kcmd_entity');
-  const column =
-      soleColumn(requalified(operand, entity.name, stand), 'BIGQUERY');
+  const {text, stand} = standInQualified(operand, entity.name);
+  const column = soleColumn(text, 'BIGQUERY');
   const own = column !== undefined &&
       (column.qualifier === undefined ||
        column.qualifier.toLowerCase() === stand);

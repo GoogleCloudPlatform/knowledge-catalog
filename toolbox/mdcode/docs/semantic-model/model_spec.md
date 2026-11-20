@@ -408,6 +408,16 @@ Each rule and its reason:
   measure that calls a user-defined function outside its aggregates, but cannot
   query it.
 
+- **A graph-bound field or metric MUST name the project of a user-defined
+  function it calls.** For a BigQuery target, a field, or an aggregate's operand
+  in a metric, that calls a user-defined function MUST write the function with
+  its project, as in `` `my-project.ds.f`(amount) ``, not `ds.f(amount)`. A
+  name that starts with one of BigQuery's function namespaces, such as
+  `NET.HOST`, counts as built-in. A push that breaks this is rejected when kcmd
+  can read the SQL. *Why:* each becomes a property of the graph. BigQuery
+  creates a graph whose property calls `ds.f`, but every query on the graph
+  then fails with "Function not found: ds.f".
+
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, every relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.

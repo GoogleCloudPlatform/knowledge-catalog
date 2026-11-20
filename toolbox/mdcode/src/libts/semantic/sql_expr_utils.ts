@@ -201,6 +201,17 @@ export function requalified(
   return out + chars.slice(end).join('');
 }
 
+// `expression` with each `<entity>.` qualifier it writes before a column
+// renamed to `stand`, a name the text does not hold and the SQL parser does not
+// reserve, so that the parser can read an entity whose name it reserves, as in
+// `SUM(Date.days)`. The BigQuery generator reads a metric and its operands so
+// (see bigquery.ts placeMetric), and push's checks read them as it does.
+export function standInQualified(
+    expression: string, entity: string): {text: string; stand: string} {
+  const stand = unusedName(expression, 'kcmd_entity');
+  return {text: requalified(expression, entity, stand), stand};
+}
+
 // The entities from `entityNames` whose qualifier a metric's BigQuery SQL
 // `expression` writes before a column (see qualifiersIn), deduplicated in the
 // order written, or else `entity`, the metric's anchor, when given. The
@@ -481,10 +492,13 @@ export function measureAggregates(expression: string, dialect: string):
     };
   }
   // BigQuery accepts a graph whose measure calls a user-defined function
-  // outside its aggregates, but every GRAPH_EXPAND query on that node table
-  // then fails with "Function not found". One inside an aggregate's operand
-  // becomes a property, so it stays allowed.
-  const udf = userDefinedFunction(sqlExpressionTree(rest, dialect));
+  // outside its aggregates, even one named with its project, but every
+  // GRAPH_EXPAND query on that node table then fails with "Function not
+  // found". A built-in such as `ML.BUCKETIZE` fails there too, though
+  // `NET.HOST` works. So every dotted name is refused, rather than keeping a
+  // list of which built-ins work. One inside an aggregate's operand becomes a
+  // property, which projectlessFunction checks.
+  const udf = dottedFunction(sqlExpressionTree(rest, dialect));
   if (udf) {
     return {
       problem: `it calls user-defined function '${udf}' outside an ` +
@@ -494,38 +508,93 @@ export function measureAggregates(expression: string, dialect: string):
   return {aggregates};
 }
 
-// The first user-defined function the parser's tree `node` calls, by its
-// dotted name, such as `ds.f`, or undefined when it calls none: a call whose
-// name has a dot, other than `SAFE.` before one name, as in `SAFE.LOG10`.
-// BigQuery reads `ml.f` or `net.f` as the function of a dataset with that
-// name. The parser reads `` `p.ds.f`(…) `` as a function of that name, and
-// `ds.f(…)` or `p.ds.f(…)` as a method call on a column.
-function userDefinedFunction(node: unknown): string|undefined {
+// The first user-defined function `expression`, read in `dialect`, calls by a
+// dataset and a name alone, as in `ds.f(x)` or `` `ds.f`(x) ``, or undefined
+// when it calls none or the parser cannot read it. BigQuery creates a graph
+// whose property calls one, but every query on the graph then fails with
+// "Function not found: ds.f". One named with its project, as in
+// `` `p.ds.f`(x) ``, works. A name in one of BIGQUERY_NAMESPACES, such as
+// `NET.HOST`, passes, even where `net` is a dataset. So does a call with
+// `SAFE.`, as in `safe.ds.f(x)`, or of a name that starts with SAFE, as in
+// `` `SAFE.LOG10`(x) ``: BigQuery refuses to create a graph that calls one,
+// since it allows `SAFE.` on no user-defined function and has no dataset SAFE.
+export function projectlessFunction(
+    expression: string, dialect: string): string|undefined {
+  return dottedFunction(
+      sqlExpressionTree(expression, dialect), (name, safe) => {
+        const parts = name.split('.');
+        const first = parts[0].toUpperCase();
+        return !safe && parts.length === 2 && first !== 'SAFE' &&
+            !BIGQUERY_NAMESPACES.has(first);
+      });
+}
+
+// The namespaces of BigQuery's built-in functions whose names have a dot, such
+// as `NET` in `NET.HOST`, from its function reference. A new function in one
+// of them needs no change here. `VECTOR_INDEX` is left out: its one function
+// is table-valued, which no field or measure calls, and listing it would pass
+// the functions of a dataset named `vector_index`.
+const BIGQUERY_NAMESPACES: ReadonlySet<string> = new Set(
+    ['AEAD', 'AI', 'HLL_COUNT', 'KEYS', 'KLL_QUANTILES', 'ML', 'NET', 'OBJ']);
+
+// The first function, in the order written, that the parser's tree `node`
+// calls by a dotted name that `accept` takes, such as `ds.f` or `NET.HOST`, or
+// undefined when it calls none. `accept` is also told whether `SAFE.` comes
+// before the name (see calledName). A call inside one that `accept` refuses is
+// still read, since `accept` can refuse `p.ds.f` and take a call in its
+// operand.
+function dottedFunction(
+    node: unknown,
+    accept: (name: string, safe: boolean) => boolean = () => true):
+    string|undefined {
   if (node === null || typeof node !== 'object') return undefined;
   for (const [kind, value] of Object.entries(node)) {
-    const name = kind === 'function' ? String(value.name) :
-        kind === 'method_call' ?
-        [...namePath(value.this), value.method?.name].join('.') :
-        '';
-    const parts = name.split('.');
-    if (parts.length > 1 &&
-        !(parts.length === 2 && parts[0].toUpperCase() === 'SAFE')) {
-      return name;
+    const call = calledName(kind, value);
+    if (call?.name.includes('.') && accept(call.name, call.safe)) {
+      return call.name;
     }
-    const inner = userDefinedFunction(value);
+    const inner = dottedFunction(value, accept);
     if (inner) return inner;
   }
   return undefined;
 }
 
-// The parts of the dotted name the parser's tree `node` reads, such as
-// ['p', 'ds'] for `p.ds`, or none when it reads something else.
-function namePath(node: any): string[] {
+// The name of the function the parser's node `value`, of kind `kind`, calls,
+// and whether `SAFE.` comes before it, or undefined when it calls none. The
+// parser reads `` `p.ds.f`(…) `` as a function of that name, and `ds.f(…)` or
+// `p.ds.f(…)` as a method call on a column. `SAFE.` is left out of the name
+// when it starts it as a part of its own, backquoted or not, as BigQuery
+// reads it: `SAFE.LOG10` and `` `SAFE`.LOG10 `` call LOG10, and `SAFE.ds.f`
+// calls `ds.f`, while `` `SAFE.LOG10` `` names dataset SAFE's function LOG10.
+function calledName(kind: string, value: any):
+    {name: string; safe: boolean}|undefined {
+  if (kind === 'function') {
+    const name = String(value.name);
+    const safe = value.quoted !== true && /^safe\./i.test(name);
+    return {name: safe ? name.slice(5) : name, safe};
+  }
+  if (kind !== 'method_call') return undefined;
+  const path = [...namePath(value.this), value.method];
+  const safe =
+      path.length > 1 && String(path[0].name).toUpperCase() === 'SAFE';
+  return {
+    name: path.slice(safe ? 1 : 0).map(part => part?.name).join('.'),
+    safe
+  };
+}
+
+// The parts of the dotted name the parser's tree `node` reads, such as the
+// identifiers `p` and `ds` of `p.ds`, or none when it reads something else,
+// as `(orders.addr).city` does.
+function namePath(node: any): Array<{name: string; quoted?: boolean}> {
   if (node?.column) {
     const {table, name} = node.column;
-    return table ? [table.name, name.name] : [name.name];
+    return table ? [table, name] : [name];
   }
-  if (node?.dot) return [...namePath(node.dot.this), node.dot.field.name];
+  if (node?.dot) {
+    const inner = namePath(node.dot.this);
+    return inner.length ? [...inner, node.dot.field] : [];
+  }
   return [];
 }
 

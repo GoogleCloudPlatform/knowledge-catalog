@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, columnsWithoutDialect, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, projectlessFunction, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -633,12 +633,17 @@ describe('measureAggregates', () => {
         ['p.ds.f(SUM(o.a), 2)', 'p.ds.f'],
         ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
         ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
+        ['a.b.ds.f(SUM(o.a))', 'a.b.ds.f'],
         ['SUM(o.a) / ds.f(1)', 'ds.f'],
-        // BigQuery reads `ml` and `net` here as datasets, and `safe` as a
-        // project.
+        // BigQuery reads `ml` and `net` here as datasets, and `safe.` as the
+        // SAFE prefix, which a name backquoted whole does not hold.
         ['ml.score(SUM(o.amount))', 'ml.score'],
         ['net.score(SUM(o.amount))', 'net.score'],
-        ['safe.ds.f(SUM(o.amount))', 'safe.ds.f'],
+        ['safe.ds.f(SUM(o.amount))', 'ds.f'],
+        ['`safe`.ds.f(SUM(o.amount))', 'ds.f'],
+        ['`SAFE.LOG10`(SUM(o.amount))', 'SAFE.LOG10'],
+        // BigQuery cannot read its own ML.BUCKETIZE here either.
+        ['ML.BUCKETIZE(SUM(o.a), [0, 10])', 'ML.BUCKETIZE'],
       ].map(([text, udf]): [string, string] => [
         text,
         `it calls user-defined function '${udf}' outside an aggregate, ` +
@@ -690,6 +695,46 @@ describe('measureAggregates', () => {
     ];
     for (const [text, why] of expected) {
       expect(problem(text)).toEqual({text, problem: why});
+    }
+  });
+});
+
+describe('projectlessFunction', () => {
+  test('gives the first user-defined function called by its dataset and name alone', () => {
+    for (const [text, udf] of [
+           ['ds.f(amount)', 'ds.f'],
+           ['`ds.f`(amount)', 'ds.f'],
+           ['`ds`.f(amount)', 'ds.f'],
+           ['ROUND(ds.f(a) * 2, 1)', 'ds.f'],
+           ['IF(a > 0, `p.ds.f`(a), ds.g(a))', 'ds.g'],
+           ['`p.ds.f`(ds.g(a))', 'ds.g'],
+           ['SUM(ds.f(o.a)) / COUNT(o.id)', 'ds.f'],
+         ]) {
+      expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
+          .toEqual({text, udf});
+    }
+  });
+
+  test('passes a function named with its project, one in a BigQuery namespace, and one with SAFE.', () => {
+    for (const text of [
+           '`p.ds.f`(amount)', '`p`.ds.f(amount)', 'p.ds.f(amount)',
+           '`p.ds`.f(amount)', '`example.com:p.ds.f`(amount)',
+           'NET.HOST(url)', 'net.host(url)', 'ML.BUCKETIZE(a, [1, 2])',
+           'AEAD.DECRYPT_STRING(k, c, d)', 'AI.SOME_NEW_FUNCTION(a)',
+           // Passes, though BigQuery reads `ml` and `net` here as datasets.
+           'ml.score(a)', 'net.score(a)', 'SAFE.LOG10(a)', '`SAFE`.LOG10(a)',
+           'safe.safe_divide(a, b)', 'ROUND(a * 2, 1)', 's.field.sub',
+           // BigQuery refuses to create a graph that calls one of these, which
+           // push then reports: it allows `SAFE.` on no user-defined function,
+           // and has no dataset SAFE.
+           'safe.ds.f(amount)', 'safe.`ds.f`(amount)', '`safe`.ds.f(amount)',
+           'SAFE.`p.ds.f`(amount)', '`SAFE.LOG10`(a)', '`safe.f`(a)',
+           // A chained call on a struct field.
+           '(orders.addr).city.UPPER()',
+           'SUM(o.a)', 'ds.f(', '  ',
+         ]) {
+      expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
+          .toEqual({text, udf: undefined});
     }
   });
 });
