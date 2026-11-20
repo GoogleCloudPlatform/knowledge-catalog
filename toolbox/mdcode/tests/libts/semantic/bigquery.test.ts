@@ -617,6 +617,15 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
            ['ds.f(SUM(orders.amount))', 'ds.f(SUM(amount))',
             'it calls user-defined function \'ds.f\' outside an aggregate, ' +
                 'which BigQuery cannot read in a measure'],
+           ...[
+             "SUM(orders.amount) WHERE orders.status = 'x'",
+             "SUM(orders.amount WHERE orders.status = 'x')",
+           ].map(e => [
+             e, e.replace(/orders\./g, ''),
+             'it filters SUM with WHERE, which BigQuery does not allow in a ' +
+                 'measure; filter its operand instead, as in ' +
+                 'SUM(IF(<condition>, <value>, NULL))',
+           ]),
          ]) {
       const {ddl, warnings} = generatePropertyGraph(
           model({name: 'm', expression, entity: 'orders'}), GEN_OPTS);
@@ -627,6 +636,16 @@ describe('a metric that combines aggregates on one entity lowers to one measure'
       });
       expect(ddl).not.toContain('MEASURE(');
     }
+    // The filter that advice gives is a measure over a property.
+    const {ddl, warnings} = generatePropertyGraph(
+        model({
+          name: 'm',
+          expression: "SUM(IF(orders.status = 'x', orders.amount, NULL))",
+        }),
+        GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain("IF(status = 'x', amount, NULL) AS m_input");
+    expect(ddl).toContain('MEASURE(SUM(m_input)) AS m');
   });
 
   test('an operand it cannot read skips the metric before any is exposed', () => {

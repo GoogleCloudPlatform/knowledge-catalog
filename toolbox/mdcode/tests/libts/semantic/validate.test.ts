@@ -3411,6 +3411,20 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
              ['ds.f(SUM(purchase.amount))',
               "it calls user-defined function 'ds.f' outside an aggregate, " +
                   'which BigQuery cannot read in a measure'],
+             // The parser cannot read a WHERE after an aggregate or within
+             // its parentheses, so push says how to filter one.
+             ...[
+               ["SUM(purchase.amount) WHERE purchase.note = 'F'", 'SUM', '<value>'],
+               ["SUM(purchase.amount WHERE purchase.note = 'F')", 'SUM', '<value>'],
+               ["SUM(purchase.amount) FILTER (WHERE purchase.note = 'F')", 'SUM',
+                '<value>'],
+               ["COUNT(*) WHERE purchase.note = 'F'", 'COUNT', '1'],
+             ].map(([e, fn, value]) => [
+               e,
+               `it filters ${fn} with WHERE, which BigQuery does not allow in ` +
+                   `a measure; filter its operand instead, as in ${
+                       fn}(IF(<condition>, ${value}, NULL))`,
+             ]),
            ]) {
         expect({e, errors: bigQuery(anchored(e))})
             .toEqual({e, errors: [MEASURE(why)]});
@@ -3437,6 +3451,11 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
                  'SUM(purchase.amount))',
              'CASE WHEN COUNT(purchase.p_id) = 0 THEN NULL ' +
                  'ELSE SUM(purchase.amount) / COUNT(purchase.p_id) END',
+             // The filters the rejection above advises.
+             "SUM(IF(purchase.note = 'F', purchase.amount, NULL))",
+             "COUNT(IF(purchase.note = 'F', 1, NULL))",
+             // Push only warns about other SQL the parser cannot read.
+             'SUM(purchase.amount) +',
            ]) {
         expect({e, errors: bigQuery(`{ name: m, expression: "${e}" }`)})
             .toEqual({e, errors: []});

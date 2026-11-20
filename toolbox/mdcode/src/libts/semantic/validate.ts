@@ -28,7 +28,7 @@ import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
 import {generateSpannerPropertyGraph} from './spanner';
-import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName} from './sql_expr_utils';
+import {columnsForSource, isColumnName, measureAggregates, measureEntities, requalified, unusedName, whereFilterProblem} from './sql_expr_utils';
 import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
 import {YAML_OPTIONS} from './yaml_options';
 import {movedOffset} from './yaml_update';
@@ -308,7 +308,9 @@ function profiled(
 // out a metric that measurePlacementErrors or the inheritance rules report:
 // one that reads several entities or none, or one on an abstract or extended
 // entity. An entity with no primary_key is the entity key check's to report,
-// so a metric on one is judged only on its aggregates.
+// so a metric on one is judged only on its aggregates. A metric whose SQL the
+// parser cannot read is left to push's warning about it, unless the SQL
+// filters an aggregate with WHERE.
 function measureProblem(
     model: SemanticModel, metric: Metric): string|undefined {
   const text = expressionForDialect(metric, 'BIGQUERY');
@@ -327,7 +329,9 @@ function measureProblem(
   // in `SUM(Date.days)`.
   const written =
       requalified(text, entity.name, unusedName(text, 'kcmd_entity'));
-  if (!columnsForSource(written, 'BIGQUERY')) return undefined;
+  if (!columnsForSource(written, 'BIGQUERY')) {
+    return whereFilterProblem(written, 'BIGQUERY');
+  }
   const read = measureAggregates(written, 'BIGQUERY');
   if ('problem' in read) return read.problem;
   return undefined;

@@ -400,13 +400,15 @@ Each rule and its reason:
   around the aggregates MUST be a BigQuery built-in function whose name has no
   dot, or one with the `SAFE.` prefix; a user-defined function may appear only
   inside an aggregate's operand. No aggregate may hold another, and the metric
-  may hold no window or subquery. A metric that breaks this cannot become a
-  `MEASURE`, and the push is rejected (see
+  may hold no window or subquery. No aggregate may be filtered with `WHERE` or
+  `FILTER (WHERE ...)`; the condition goes in its operand instead, as in
+  `SUM(IF(orders.status = 'SHIPPED', orders.amount, NULL))`. A metric that
+  breaks this cannot become a `MEASURE`, and the push is rejected (see
   [Validation](reference.md#validation)). *Why:* BigQuery allows only these five
-  aggregates in a measure, and a measure aggregates the rows of one node table,
-  so a field outside an aggregate has no single value. BigQuery accepts a
-  measure that calls a user-defined function outside its aggregates, but cannot
-  query it.
+  aggregates in a measure, and no filter on them, and a measure aggregates the
+  rows of one node table, so a field outside an aggregate has no single value.
+  BigQuery accepts a measure that calls a user-defined function outside its
+  aggregates, but cannot query it.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, every relationship MUST supply both `from_columns` and `to_columns`

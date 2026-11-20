@@ -674,8 +674,22 @@ describe('measureAggregates', () => {
       ['SUM(((o.a, o.b)))',
        'it calls SUM with 2 operands, where an aggregate in a measure takes ' +
            'one'],
+      // The parser reads FILTER (WHERE ...), and reads neither WHERE form.
+      ...[
+        ['SUM(o.amount) FILTER (WHERE o.amount > 0)', 'SUM', '<value>'],
+        ["SUM(o.amount) WHERE o.status = 'SHIPPED'", 'SUM', '<value>'],
+        ["sum(o.amount WHERE o.status = 'SHIPPED')", 'SUM', '<value>'],
+        ['SUM(o.a) / COUNT(o.b) WHERE o.b > 0', 'COUNT', '<value>'],
+        ['ROUND(AVG(o.a) WHERE o.b > 0, 2)', 'AVG', '<value>'],
+        ['COUNT(*) FILTER (WHERE o.amount > 0)', 'COUNT', '1'],
+        ['COUNT(*) WHERE o.amount > 0', 'COUNT', '1'],
+      ].map(([text, fn, value]): [string, string] => [
+        text,
+        `it filters ${fn} with WHERE, which BigQuery does not allow in a ` +
+            `measure; filter its operand instead, as in ${fn}(IF(<condition>, ${
+                value}, NULL))`
+      ]),
       ...['SUM(*)', 'COUNT(DISTINCT *)', 'COUNT((*))',
-          'SUM(o.amount) FILTER (WHERE o.amount > 0)',
           'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)']
           .map((text): [string, string] => [
             text,
@@ -687,6 +701,13 @@ describe('measureAggregates', () => {
       ['SUM(', 'the SQL parser cannot read it as one expression'],
       ['  ', 'the SQL parser cannot read it as one expression'],
       ['SUM(o.amount);', 'the SQL parser cannot read it as one expression'],
+      // A WHERE that filters no aggregate: one of a subquery, one after a
+      // scalar function, and one after a function in a namespace.
+      ...['SUM(o.a) / (SELECT MAX(x) FROM t WHERE)',
+          'SUM(o.a) + ABS(o.b) WHERE o.b > 0', 'ds.SUM(o.a) WHERE o.b > 0']
+          .map((text): [string, string] => [
+            text, 'the SQL parser cannot read it as one expression'
+          ]),
     ];
     for (const [text, why] of expected) {
       expect(problem(text)).toEqual({text, problem: why});

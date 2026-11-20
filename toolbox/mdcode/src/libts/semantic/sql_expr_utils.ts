@@ -427,13 +427,20 @@ export function replacedAggregates(
 // calls no user-defined function outside them. Arithmetic, CASE, IF and
 // BigQuery's other built-in scalar functions, and literals, may surround the
 // aggregates, as in `SUM(o.amount) / COUNT(o.id)`. The push checks and the
-// BigQuery generator both read a measure so.
+// BigQuery generator both read a measure so. The parser cannot read an
+// aggregate filtered with WHERE, as in `SUM(o.a) WHERE c` or
+// `SUM(o.a WHERE c)`, so the reason given for one is whereFilterProblem's.
 export function measureAggregates(expression: string, dialect: string):
     {aggregates: MeasureAggregate[]}|{problem: string} {
   const tree = sqlExpressionTree(expression, dialect);
   const tokens = sqlTokens(expression, dialect);
   if (!tree || !tokens || tokens.some(t => t.token_type === 'SEMICOLON')) {
-    return {problem: 'the SQL parser cannot read it as one expression'};
+    const filtered = tokens && whereFilteredAggregate(tokens);
+    return {
+      problem: filtered ?
+          filterProblem(filtered.fn, filtered.star) :
+          'the SQL parser cannot read it as one expression'
+    };
   }
   const {calls, windowOrSubquery} = aggregateCalls(tree);
   if (windowOrSubquery) return {problem: 'it uses a window or a subquery'};
@@ -556,6 +563,7 @@ function aggregateProblem(kind: string, call: any): string|undefined {
   if (!star && nestsAggregateOrSubquery(operand)) {
     return 'it nests an aggregate, a window or a subquery';
   }
+  if (call.filter) return filterProblem(name, star);
   const known = new Set(['this', 'star', 'distinct', 'name', 'original_name']);
   if (kind === 'function' || kind === 'aggregate_function' ||
       (!star && operand.star) ||
@@ -564,6 +572,61 @@ function aggregateProblem(kind: string, call: any): string|undefined {
               v === false || (Array.isArray(v) && v.length === 0))) {
     return `it calls ${name} with something other than one operand and ` +
         `DISTINCT or ALL`;
+  }
+  return undefined;
+}
+
+// Why an aggregate `fn`, filtered with WHERE or FILTER (WHERE ...), cannot be
+// in a BigQuery measure, and how to write it so it can: with the condition in
+// its operand, which an aggregate over IF(..., NULL) skips where the condition
+// does not hold. `star` says the call counts `*`.
+function filterProblem(fn: string, star: boolean): string {
+  return `it filters ${fn} with WHERE, which BigQuery does not allow in a ` +
+      `measure; filter its operand instead, as in ${fn}(IF(<condition>, ${
+             star ? '1' : '<value>'}, NULL))`;
+}
+
+// Why `expression`, read in `dialect`, cannot be a BigQuery measure when it
+// filters an aggregate with WHERE, which the SQL parser cannot read, as in
+// `SUM(o.a) WHERE c` or `SUM(o.a WHERE c)`; else undefined. Push rejects such
+// a metric, though it only warns about other SQL the parser cannot read.
+export function whereFilterProblem(
+    expression: string, dialect: string): string|undefined {
+  const tokens = sqlTokens(expression, dialect);
+  const filtered = tokens && whereFilteredAggregate(tokens);
+  return filtered ? filterProblem(filtered.fn, filtered.star) : undefined;
+}
+
+// The aggregate a WHERE among `tokens` filters, which the SQL parser cannot
+// read: one of SUPPORTED_AGGREGATES whose `)` the WHERE follows, as in
+// `SUM(o.a) WHERE c`, or within whose own parentheses the WHERE stands, as in
+// `SUM(o.a WHERE c)`. Gives its name in upper case and whether it counts `*`,
+// or undefined when no WHERE filters one. A WHERE in a subquery follows a
+// table and stands within the subquery's parentheses, so it filters none.
+function whereFilteredAggregate(tokens: SqlToken[]):
+    {fn: string; star: boolean}|undefined {
+  // The index of each `(` that is open, innermost last, and of the `(` that
+  // the last `)` closed.
+  const open: number[] = [];
+  let closed = -1;
+  for (let i = 0; i < tokens.length; i++) {
+    const type = tokens[i].token_type;
+    if (type === 'L_PAREN') open.push(i);
+    if (type === 'R_PAREN') closed = open.pop() ?? -1;
+    if (type !== 'WHERE') continue;
+    // The `(` of the call whose `)` the WHERE follows, then that of the call
+    // the WHERE stands in.
+    const parens = [
+      tokens[i - 1]?.token_type === 'R_PAREN' ? closed : -1,
+      open[open.length - 1] ?? -1,
+    ];
+    for (const paren of parens) {
+      const fn = paren > 0 ? tokens[paren - 1].text.toUpperCase() : '';
+      if (SUPPORTED_AGGREGATES.includes(fn) &&
+          tokens[paren - 2]?.token_type !== 'DOT') {
+        return {fn, star: tokens[paren + 1].token_type === 'STAR'};
+      }
+    }
   }
   return undefined;
 }

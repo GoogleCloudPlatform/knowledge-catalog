@@ -2437,6 +2437,20 @@ semantic_model:
       expect(await pushResult()).toEqual({code: 1, errors: [spread]});
       expect(await profiles()).toBe(1);
       expect(rejects(section(NO_PROFILES))).toEqual([spread]);
+      // The parser cannot read an aggregate filtered with WHERE, which push
+      // rejects, though it only warns about other SQL the parser cannot read.
+      writeScope({
+        'commerce.yaml': withMetric('{ name: shipped, expression: ' +
+                                    '"SUM(purchase.p_id) WHERE purchase.p_id > 0" }'),
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          `${MEASURE}'shipped' cannot be a measure: it filters SUM with ` +
+          'WHERE, which BigQuery does not allow in a measure; filter its ' +
+          'operand instead, as in SUM(IF(<condition>, <value>, NULL)).',
+        ],
+      });
       const block = (data: object) =>
           `custom_extensions: [{vendor_name: GOOGLE, data: '${
               JSON.stringify(data)}'}]`;
