@@ -340,17 +340,14 @@ function bigQueryMeasure(model: SemanticModel, metric: Metric):
     ReturnType<typeof measureAggregates>|undefined {
   const text = expressionForDialect(metric, 'BIGQUERY');
   if (text === undefined) return undefined;
-  const entities = model.entities ?? [];
-  const placed =
-      measureEntities(text, entities.map(e => e.name), metric.entity);
-  if (placed.length !== 1) return undefined;
-  const entity = entities.find(e => e.name === placed[0]);
-  if (!entity || entity.abstract ||
-      entities.some(e => e.extends?.includes(entity.name))) {
+  const placed = measureEntities(
+      text, (model.entities ?? []).map(e => e.name), metric.entity);
+  if (placed.length !== 1 ||
+      !graphNodeEntities(model).some(e => e.name === placed[0])) {
     return undefined;
   }
   // Read as the generator reads it (see bigquery.ts placeMetric).
-  const {text: written} = standInQualified(text, entity.name);
+  const {text: written} = standInQualified(text, placed[0]);
   if (!columnsForSource(written, 'BIGQUERY')) return undefined;
   return measureAggregates(written, 'BIGQUERY');
 }
@@ -476,12 +473,9 @@ function keylessGraphEntities(
     model: SemanticModel,
     engine: 'bigquery'|'spanner'): string|undefined {
   const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
-  const extended =
-      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
-  const entities =
-      (model.entities ?? [])
-          .filter(e => !e.abstract && !extended.has(e.name) && !e.keys.length)
-          .map(e => `'${e.name}'`);
+  const entities = graphNodeEntities(model)
+                       .filter(e => !e.keys.length)
+                       .map(e => `'${e.name}'`);
   if (!entities.length) return undefined;
   const many = entities.length > 1;
   return `which leave ${many ? 'entities' : 'entity'} ${

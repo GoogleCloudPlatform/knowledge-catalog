@@ -514,14 +514,19 @@ export function measureAggregates(expression: string, dialect: string):
 // whose property calls one, but every query on the graph then fails with
 // "Function not found: ds.f". One named with its project, as in
 // `` `p.ds.f`(x) ``, works. A name in one of BIGQUERY_NAMESPACES, such as
-// `NET.HOST`, passes, even where `net` is a dataset.
+// `NET.HOST`, passes, even where `net` is a dataset. So does a call with
+// `SAFE.`, as in `safe.ds.f(x)`, or of a name that starts with SAFE, as in
+// `` `SAFE.LOG10`(x) ``: BigQuery refuses to create a graph that calls one,
+// since it allows `SAFE.` on no user-defined function and has no dataset SAFE.
 export function projectlessFunction(
     expression: string, dialect: string): string|undefined {
-  return dottedFunction(sqlExpressionTree(expression, dialect), name => {
-    const parts = name.split('.');
-    return parts.length === 2 &&
-        !BIGQUERY_NAMESPACES.has(parts[0].toUpperCase());
-  });
+  return dottedFunction(
+      sqlExpressionTree(expression, dialect), (name, safe) => {
+        const parts = name.split('.');
+        const first = parts[0].toUpperCase();
+        return !safe && parts.length === 2 && first !== 'SAFE' &&
+            !BIGQUERY_NAMESPACES.has(first);
+      });
 }
 
 // The namespaces of BigQuery's built-in functions whose names have a dot, such
@@ -534,16 +539,20 @@ const BIGQUERY_NAMESPACES: ReadonlySet<string> = new Set(
 
 // The first function, in the order written, that the parser's tree `node`
 // calls by a dotted name that `accept` takes, such as `ds.f` or `NET.HOST`, or
-// undefined when it calls none. A call inside one that `accept` refuses is
+// undefined when it calls none. `accept` is also told whether `SAFE.` comes
+// before the name (see calledName). A call inside one that `accept` refuses is
 // still read, since `accept` can refuse `p.ds.f` and take a call in its
 // operand.
 function dottedFunction(
-    node: unknown, accept: (name: string) => boolean = () => true):
+    node: unknown,
+    accept: (name: string, safe: boolean) => boolean = () => true):
     string|undefined {
   if (node === null || typeof node !== 'object') return undefined;
   for (const [kind, value] of Object.entries(node)) {
-    const name = calledName(kind, value);
-    if (name?.includes('.') && accept(name)) return name;
+    const call = calledName(kind, value);
+    if (call?.name.includes('.') && accept(call.name, call.safe)) {
+      return call.name;
+    }
     const inner = dottedFunction(value, accept);
     if (inner) return inner;
   }
@@ -551,23 +560,27 @@ function dottedFunction(
 }
 
 // The name of the function the parser's node `value`, of kind `kind`, calls,
-// or undefined when it calls none. The parser reads `` `p.ds.f`(…) `` as a
-// function of that name, and `ds.f(…)` or `p.ds.f(…)` as a method call on a
-// column. `SAFE.` is left out when it starts the name as a part of its own,
-// backquoted or not, as BigQuery reads it: `SAFE.LOG10` and `` `SAFE`.LOG10 ``
-// call LOG10, and `SAFE.ds.f` calls `ds.f`, while `` `SAFE.LOG10` `` names
-// dataset SAFE's function LOG10.
-function calledName(kind: string, value: any): string|undefined {
+// and whether `SAFE.` comes before it, or undefined when it calls none. The
+// parser reads `` `p.ds.f`(…) `` as a function of that name, and `ds.f(…)` or
+// `p.ds.f(…)` as a method call on a column. `SAFE.` is left out of the name
+// when it starts it as a part of its own, backquoted or not, as BigQuery
+// reads it: `SAFE.LOG10` and `` `SAFE`.LOG10 `` call LOG10, and `SAFE.ds.f`
+// calls `ds.f`, while `` `SAFE.LOG10` `` names dataset SAFE's function LOG10.
+function calledName(kind: string, value: any):
+    {name: string; safe: boolean}|undefined {
   if (kind === 'function') {
     const name = String(value.name);
-    return value.quoted !== true && /^safe\./i.test(name) ? name.slice(5) :
-                                                            name;
+    const safe = value.quoted !== true && /^safe\./i.test(name);
+    return {name: safe ? name.slice(5) : name, safe};
   }
   if (kind !== 'method_call') return undefined;
   const path = [...namePath(value.this), value.method];
   const safe =
       path.length > 1 && String(path[0].name).toUpperCase() === 'SAFE';
-  return path.slice(safe ? 1 : 0).map(part => part?.name).join('.');
+  return {
+    name: path.slice(safe ? 1 : 0).map(part => part?.name).join('.'),
+    safe
+  };
 }
 
 // The parts of the dotted name the parser's tree `node` reads, such as the

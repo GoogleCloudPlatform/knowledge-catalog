@@ -633,6 +633,7 @@ describe('measureAggregates', () => {
         ['p.ds.f(SUM(o.a), 2)', 'p.ds.f'],
         ['`p.ds`.f(SUM(o.a))', 'p.ds.f'],
         ['ROUND(ds.f(SUM(o.a)), 2)', 'ds.f'],
+        ['a.b.ds.f(SUM(o.a))', 'a.b.ds.f'],
         ['SUM(o.a) / ds.f(1)', 'ds.f'],
         // BigQuery reads `ml` and `net` here as datasets, and `safe.` as the
         // SAFE prefix, which a name backquoted whole does not hold.
@@ -708,20 +709,13 @@ describe('projectlessFunction', () => {
            ['IF(a > 0, `p.ds.f`(a), ds.g(a))', 'ds.g'],
            ['`p.ds.f`(ds.g(a))', 'ds.g'],
            ['SUM(ds.f(o.a)) / COUNT(o.id)', 'ds.f'],
-           // BigQuery reads `safe.` as the SAFE prefix, backquoted or not,
-           // but a name backquoted whole as a dataset's function.
-           ['safe.ds.f(amount)', 'ds.f'],
-           ['safe.`ds.f`(amount)', 'ds.f'],
-           ['`safe`.ds.f(amount)', 'ds.f'],
-           ['`SAFE.LOG10`(a)', 'SAFE.LOG10'],
-           ['`safe.f`(a)', 'safe.f'],
          ]) {
       expect({text, udf: projectlessFunction(text, 'BIGQUERY')})
           .toEqual({text, udf});
     }
   });
 
-  test('passes a function named with its project, one in a BigQuery namespace, and SAFE. before one name', () => {
+  test('passes a function named with its project, one in a BigQuery namespace, and one with SAFE.', () => {
     for (const text of [
            '`p.ds.f`(amount)', '`p`.ds.f(amount)', 'p.ds.f(amount)',
            '`p.ds`.f(amount)', '`example.com:p.ds.f`(amount)',
@@ -730,6 +724,11 @@ describe('projectlessFunction', () => {
            // Passes, though BigQuery reads `ml` and `net` here as datasets.
            'ml.score(a)', 'net.score(a)', 'SAFE.LOG10(a)', '`SAFE`.LOG10(a)',
            'safe.safe_divide(a, b)', 'ROUND(a * 2, 1)', 's.field.sub',
+           // BigQuery refuses to create a graph that calls one of these, which
+           // push then reports: it allows `SAFE.` on no user-defined function,
+           // and has no dataset SAFE.
+           'safe.ds.f(amount)', 'safe.`ds.f`(amount)', '`safe`.ds.f(amount)',
+           'SAFE.`p.ds.f`(amount)', '`SAFE.LOG10`(a)', '`safe.f`(a)',
            // A chained call on a struct field.
            '(orders.addr).city.UPPER()',
            'SUM(o.a)', 'ds.f(', '  ',
