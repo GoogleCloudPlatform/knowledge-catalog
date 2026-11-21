@@ -33,9 +33,15 @@ describe('anchor / parent grouping', () => {
               metrics: [],
             },
             OPTS));
+    // A model takes its display name as its name, or else the last segment of
+    // its entry ID.
+    a.entries[0].entrySource!.displayName = 'Model A';
+    const [anchor, entity] = b.entries;
+    anchor.name = entity.parentEntry = anchor.name.replace(/b$/, 'team/b');
+    delete anchor.entrySource!.displayName;
     const {models} = modelsFromCatalogResources([...a.entries, ...b.entries]);
     const byName = new Map(models.map(m => [m.name, m]));
-    expect(byName.get('a')!.entities.map(e => e.name)).toEqual(['ea']);
+    expect(byName.get('Model A')!.entities.map(e => e.name)).toEqual(['ea']);
     expect(byName.get('b')!.entities.map(e => e.name)).toEqual(['eb']);
   });
 });

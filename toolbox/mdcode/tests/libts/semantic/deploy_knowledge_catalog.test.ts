@@ -617,7 +617,9 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          expect(result)
              .toMatchObject({success: true, updated: 0, unchangedEntries: 3});
          expect(updates).toEqual([]);
-         const read = lookup.mock.calls.find(c => c[2] === entryName('sales'))!;
+         // The planning read of the model entry follows its version read.
+         const read =
+             lookup.mock.calls.filter(c => c[2] === entryName('sales')).at(-1)!;
          expect(read[3]!.aspects)
              .toContain(
                  `projects/${types}/locations/global/aspectTypes/` +
@@ -635,12 +637,13 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
          const opts = {...OPTS, systemTypeProject: types};
          const held = await pushed(opts);
          const byNumber = (s: string) => s.replace(types, number);
-         const asked: string[] = [];
+         // The aspect types each read of the model entry names.
+         const asked: string[][] = [];
          spyOn(CatalogClient.prototype, '_get')
              .mockImplementation((async (name: string, params: any) => {
                if (!name.endsWith(':lookupEntry')) return err(404, 'not found');
-               asked.push(...params.aspectTypes);
                const entry = held.get(entryIdOf(params.entry));
+               if (entry === held.get('sales')) asked.push(params.aspectTypes);
                return ok({
                  ...structuredClone(entry),
                  entryType: byNumber(entry.entryType),
@@ -668,12 +671,14 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
              {success: true, created: 0, updated: 0, unchangedEntries: 3});
          expect(create).not.toHaveBeenCalled();
          expect(update).not.toHaveBeenCalled();
-         // The read names each type with the project ID, and comes back with
-         // the number turned into that ID.
-         expect(asked).toContain(
+         // The planning read of the model entry follows its version read. It
+         // names each type with the project ID, and comes back with the number
+         // turned into that ID.
+         expect(asked.at(-1)).toContain(
              `projects/${types}/locations/global/aspectTypes/semantic-model`);
-         const model =
-             (await (read.mock.results[0].value as Promise<any>)).result;
+         const reads = read.mock.calls.map(c => entryIdOf(c[2]));
+         const model = (await (read.mock.results[reads.lastIndexOf('sales')]
+                                   .value as Promise<any>)).result;
          expect(Object.keys(model.aspects))
              .toContain(`${types}.global.semantic-model`);
        });
@@ -699,8 +704,9 @@ describe('deployKnowledgeCatalog: a re-push reads each entry first', () => {
 
          expect(result).toMatchObject(
              {success: true, created: 0, updated: 1, unchangedEntries: 2});
+         // The model entry is also read for its version.
          expect(lookup.mock.calls.map(c => entryIdOf(c[2])).sort())
-             .toEqual(['sales', 'sales/metrics/total_revenue']);
+             .toEqual(['sales', 'sales', 'sales/metrics/total_revenue']);
          expect(create.mock.calls.map(c => c[3])).toEqual([ENTITY]);
          const T = 'dataplex-types.global';
          expect(update.mock.calls.map(
@@ -1364,7 +1370,8 @@ const MAY_NOT_EXIST = ' (or it may not exist)';
 
 describe('deployKnowledgeCatalog: validateOnly', () => {
   test('reads the entry group, writes nothing and returns a plan', async () => {
-    // A dry run skips push's read of each listed entry it would write.
+    // A dry run skips push's read of each listed entry it would write. It
+    // reads only the model entry, for the version the catalog holds.
     const {getGroup, list, lookup, create} =
         stubClient({existing: [{id: 'sales', type: MODEL_TYPE}]});
 
@@ -1375,7 +1382,7 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
     expect(result.created).toBe(0);
     expect(getGroup).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledTimes(1);
-    expect(lookup).not.toHaveBeenCalled();
+    expect(lookup.mock.calls.map(c => entryIdOf(c[2]))).toEqual(['sales']);
     expect(create).not.toHaveBeenCalled();
     expect(result.toRemove).toBeUndefined();
     expect(result.plan.join('\n')).toContain('Knowledge Catalog plan');
@@ -1405,6 +1412,126 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
 
     expect(result.success).toBe(false);
     expect(result.details).toContain(error);
+  });
+});
+
+
+// The model entry `id`, with its types in `project`, whose semantic-model
+// aspect holds `data`.
+function modelEntry(data: object, project = 'dataplex-types', id = 'sales') {
+  const type = (kind: string) =>
+      `projects/${project}/locations/global/${kind}/semantic-model`;
+  const aspect = {aspectType: type('aspectTypes'), data};
+  return {name: entryName(id), entryType: type('entryTypes'),
+          aspects: {[`${project}.global.semantic-model`]: aspect}};
+}
+
+// A read that answers each of `entries` with only the aspects of the types it
+// asks for, as Dataplex does, and any other entry with no aspects.
+function serving(...entries: any[]) {
+  return async (_p: string, _l: string, name: string, o: any = {}) => {
+    const e = entries.find(e => e.name === name) ?? {name, aspects: {}};
+    return ok({...e, aspects: Object.fromEntries(Object.entries(e.aspects)
+        .filter(([, a]: [string, any]) => o.aspects?.includes(a.aspectType)))});
+  };
+}
+
+describe('deployKnowledgeCatalog: stored model versions', () => {
+  const UNREAD = (reason: string) =>
+      "push could not read the stored model entry of 'sales' in entry group " +
+      "'eg', so it cannot check the model's version and wrote nothing for " +
+      `it: ${reason}`;
+  const UNSUPPORTED = (model = 'sales') =>
+      `the stored version '0.4.0' of model '${model}' in entry group 'eg' is ` +
+      'not supported by this kcmd, so push wrote nothing for it. Upgrade kcmd ' +
+      'to a version that supports it, or, if losing that model is ' +
+      'acceptable, delete it in Knowledge Catalog and push again.';
+  const LISTED = (type = MODEL_TYPE) => ({existing: [{id: 'sales', type}]});
+  const V040 = serving(modelEntry({specVersion: '0.4.0'}));
+  const OTHER_V040 = serving(modelEntry({specVersion: '0.4.0'}, 'other-types'));
+  // As Dataplex words its answers, a reason ends with a period.
+  const denied = async () => err(403, 'Permission denied.');
+  // Push reads each other model's entry, by the aspect types of its own type,
+  // to name a version this kcmd does not support when it refuses the group.
+  const REFUSED = "entry group 'eg' already contains model(s) this push does " +
+      'not include: ';
+  const REMOVE_THEM = 'Re-run with --force-remove to delete them.';
+  const STORED_IN = (model: string, version: string) =>
+      `Model '${model}' is stored in version '${version}', which this kcmd ` +
+      'does not support. Upgrade kcmd to a version that supports it, or, if ' +
+      'losing that model is acceptable, re-run with --force-remove to delete ' +
+      'it.';
+
+  // Each row gives a name for what the catalog holds, the stub's options, the
+  // stub's answer to each read of a model entry, and the error push reports.
+  // The options may also set `docs` to push other documents than DOCS, and
+  // `reads` to require that push reads exactly those entries, in that order.
+  test.each<[string,
+             Parameters<typeof stubClient>[0] &
+                 {docs?: typeof DOCS, reads?: string[]},
+             any, string]>([
+    ['a model entry whose read fails', LISTED(), denied,
+     UNREAD('Permission denied.')],
+    ['a model entry deleted after the listing', LISTED(),
+     async () => err(404, 'Entry not found.'), UNREAD('Entry not found.')],
+    ['a model entry whose read throws', LISTED(),
+     () => Promise.reject(new Error('fetch failed')), UNREAD('fetch failed')],
+    ['a model entry of version 0.4.0 whose types are in another project',
+     LISTED(modelEntry({}, 'other-types').entryType), OTHER_V040,
+     UNSUPPORTED()],
+    // The read names the aspect types of the model entry push writes.
+    ['an entry of version 0.4.0 and another type at the model entry\'s name',
+     LISTED(ENTITY_TYPE), V040, UNSUPPORTED()],
+    // Push checks the version of its own model first, and reads no other
+    // model's entry.
+    ['a model entry of version 0.4.0 in a group that also holds another model',
+     {existing: ['old', 'sales'].map(id => ({id, type: MODEL_TYPE})),
+      reads: ['sales']},
+     V040, UNSUPPORTED()],
+    ['a model entry of version 0.4.0 of a model whose custom types are missing',
+     {existing: [{id: 'commerce', type: MODEL_TYPE}],
+      entryType: () => err(404, 'not found'), docs: ACTIONS_DOCS},
+     serving(modelEntry({specVersion: '0.4.0'}, undefined, 'commerce')),
+     UNSUPPORTED('commerce')],
+    ['a group that also holds a model of version 0.3.0.dev0 whose types are ' +
+         'in another project',
+     {existing: [{id: 'old', type: modelEntry({}, 'other-types').entryType}]},
+     serving(modelEntry({specVersion: '0.3.0.dev0'}, 'other-types', 'old')),
+     `${REFUSED}old. ${STORED_IN('old', '0.3.0.dev0')}`],
+    ['a group that also holds a model whose read fails',
+     {existing: [{id: 'old', type: MODEL_TYPE}]}, denied,
+     `${REFUSED}old. ${REMOVE_THEM}`],
+    ['a group that also holds a model of a supported version and one of ' +
+         'version 0.4.0',
+     {existing: ['old', 'older'].map(id => ({id, type: MODEL_TYPE}))},
+     serving(
+         modelEntry({specVersion: '0.2.0.dev0'}, undefined, 'old'),
+         modelEntry({specVersion: '0.4.0'}, undefined, 'older')),
+     `${REFUSED}old, older. Re-run with --force-remove to delete old. ${
+         STORED_IN('older', '0.4.0')}`],
+  ])('push writes nothing over %s', async (_, catalog, read, error) => {
+    const {docs = DOCS, reads, ...stub} = catalog;
+    // Each catalog stops a dry run too.
+    for (const validateOnly of [false, true]) {
+      const {lookup, create, update, del, getEntryType, getAspectType} =
+          stubClient(stub);
+      lookup.mockImplementation(read as any);
+
+      const result = await deployKnowledgeCatalog(
+          models(docs), CTX, {...OPTS, validateOnly});
+
+      expect(result.details).toBe(error);
+      if (reads) {
+        expect(lookup.mock.calls.map(c => entryIdOf(c[2]))).toEqual(reads);
+      }
+      // Push stops before it reads any custom type.
+      expect(getEntryType).not.toHaveBeenCalled();
+      expect(getAspectType).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(del).not.toHaveBeenCalled();
+      mock.restore();
+    }
   });
 });
 

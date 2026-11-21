@@ -7,6 +7,10 @@
 import {ApiResult} from '../gcp/api';
 import {catalogContainer, CatalogClient, Entry, FixOptions} from '../gcp/dataplex';
 
+import {actionAspectTypes} from './kc_actions';
+import {constraintAspectTypes} from './kc_constraints';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID} from './kc_custom_types';
+
 // Upper bound on entry reads in flight.
 export const READ_CONCURRENCY = 8;
 
@@ -135,4 +139,45 @@ export async function mapConcurrent<T, R>(
       Array.from({length: Math.min(limit, items.length)}, () => worker());
   await Promise.all(workers);
   return results;
+}
+
+
+// The aspect types each second-generation entry type is read with.
+const OBJECT_ASPECTS = ['guidelines', 'semantic-extensions', 'overview'];
+const V2_ASPECT_TYPES = new Map([
+  ['semantic-model', ['semantic-model', ...OBJECT_ASPECTS]],
+  [
+    'semantic-entity',
+    ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  [
+    'semantic-metric', ['semantic-metric', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  ['semantic-relationship', ['semantic-relationship', ...OBJECT_ASPECTS]],
+]);
+
+// The aspect types to read for a semantic entry, in its entry type's project
+// and location. Undefined for an entry outside a semantic model.
+export function semanticAspectTypes(entryType: string): string[]|undefined {
+  const marker = '/entryTypes/';
+  const idx = entryType?.indexOf(marker) ?? -1;
+  if (idx < 0) return undefined;
+  const typeBase = entryType.slice(0, idx);
+  const t = entryType.slice(idx + marker.length);
+  const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
+  const v2Types = V2_ASPECT_TYPES.get(t);
+  if (v2Types) return v2Types.map(aspectType);
+  switch (t) {
+    case ACTION_TYPE_ID:
+      // An action's entry type is custom (see kc_custom_types.ts), so it
+      // lives in the destination project rather than under `dataplex-types`;
+      // `typeBase` already points there, and kc_actions.ts names the aspects
+      // to fetch beneath it.
+      return actionAspectTypes(typeBase);
+    case CONSTRAINT_TYPE_ID:
+      // Custom for the same reason, and named through the same `typeBase`.
+      return constraintAspectTypes(typeBase);
+    default:
+      return undefined;
+  }
 }

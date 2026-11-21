@@ -78,6 +78,18 @@ Push runs in two phases:
    stops, and its error says that Knowledge Catalog already holds the new
    model. Fixing the cause and pushing again finishes the deploy.
 
+When the catalog holds the model with a version this kcmd does not support,
+push stops and writes nothing for the model, and a dry run stops the same way.
+The validation phase checks that version after it reads the dialects of the
+sources and runs the source check. The version check comes before the check
+for other models in the entry group, the check of the custom types, the
+checks that read a deployment's store, and any DDL under `--print`.
+To replace that model, delete its model entry in the Google Cloud console or
+with `gcloud dataplex entries delete <model> --entry-group=<entry group>
+--location=<location> --project=<project>`, which also deletes the model's
+other entries and their links. Then push again. Push also stops when it cannot
+read the model entry to check its version.
+
 ### pull
 
 ```bash
@@ -109,6 +121,8 @@ the older `<model>.profiles/` directory and of a profile file with no model file
 beside it. When
 the model entry's `kcmd-push-state` label says the last push stopped partway,
 it writes nothing.
+When the model entry holds a version this kcmd does not support, pull stops and
+writes nothing, and `--dry-run` stops the same way.
 Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 Pull writes and deletes nothing that a link puts outside the entry group
@@ -1284,7 +1298,10 @@ and each aspect type attached, so a push needs, on the destination entry group:
 
 * `dataplex.entries.create`, `dataplex.entries.update`, `dataplex.entries.delete`,
   `dataplex.entries.list` and `dataplex.entries.get` — push creates or updates
-  the model's entries. It deletes orphaned entries. It reads each entry the
+  the model's entries. It deletes orphaned entries. It reads the model entry
+  with the aspect types of its own entry type, to check the model's version.
+  When it refuses an entry group that holds another model, it reads that
+  model's entry the same way, to name its version. It reads each entry the
   model defines that the catalog already holds, to skip the unchanged ones.
   Each read requests every aspect type push writes or removes on that entry.
   It reads the model entry again before it labels the push finished. It also
@@ -1320,9 +1337,9 @@ and each aspect type attached, so a push needs, on the destination entry group:
   that they exist.
 
 `--validate-only` writes nothing, so of this list it needs only
-`dataplex.entries.list`, `dataplex.entries.get` for the link lookups,
-`dataplex.entryLinks.get` for the link reads, and the reads of the custom
-types above.
+`dataplex.entries.list`, `dataplex.entries.get` for the reads of model entries
+and the link lookups, `dataplex.entryLinks.get` for the link reads, and the
+reads of the custom types above.
 
 > The `schema`, `overview` and `guidelines` use-permissions are on Dataplex's
 > [permissions page](https://cloud.google.com/dataplex/docs/iam-permissions).

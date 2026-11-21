@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../src/libts/gcp/spanner';
@@ -1059,6 +1060,40 @@ describe('a profile file that binds a Cloud SQL table', () => {
           `projects/655216118709/locations/global/entryTypes/cloudsql-${engine}-table`]);
     });
   }
+
+  // A model file in a version this kcmd does not support gives the version
+  // error. Push and kcmd profiles look up no table of it or of its profile
+  // files first. Every other model file keeps its lookups.
+  const TABLE = `${CLOUDSQL}/tables/customer`;
+  // The model file with the version line `version`, on TABLE.
+  const onTable = (version: string) =>
+      ROUND_TRIP_MODEL.replace('version: "0.2.0.dev0/google"\n', version)
+          .replace(/source: .*/, `source: ${TABLE}`);
+  test.each([
+    ['of version 0.4.0', onTable('version: "0.4.0"\n'),
+     "version '0.4.0' is not supported by this kcmd"],
+    ['with no version', onTable(''), undefined],
+    ['with an empty version', onTable('version: ""\n'), undefined],
+    ['with a number for its version', onTable('version: 0.4\n'), undefined],
+    ['that does not parse',
+     onTable('version: "0.4.0"\nversion: "0.4.0"\n'), undefined],
+    ['whose top level is a list', '- version: "0.4.0"\n', undefined],
+  ])('a model file %s, on tables whose lookups fail',
+     async (_, model, error) => {
+       writeRoundTripWorkspace(
+           PROD_PROFILE.replace(/source: .*/, `source: ${TABLE}`));
+       fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
+       const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
+                          .mockResolvedValue({status: 403, message: 'denied'});
+       for (const run of [() => push({validateOnly: true}), () => profiles({})]) {
+         (console.error as Mock<any>).mockClear();
+         lookup.mockClear();
+         expect(await run()).toBe(1);
+         if (error) expect(messages(console.error)).toContain(error);
+         if (error) expect(lookup).not.toHaveBeenCalled();
+         else expect(lookup).toHaveBeenCalled();
+       }
+     });
 });
 
 
@@ -1827,8 +1862,8 @@ semantic_model:
   for (const [what, text, error, advice] of [
     ['Ossie model file',
      'version: "0.3.0.dev0"\nname: commerce\ndatasets: []\n',
-     "unknown version '0.3.0.dev0'; expected '0.2.0.dev0' or " +
-         "'0.2.0.dev0/google'.",
+     "version '0.3.0.dev0' is not supported by this kcmd; expected " +
+         "'0.2.0.dev0' or '0.2.0.dev0/google'.",
      " Run 'kcmd import <file> --flavor <ossie|google>' to convert it."],
     ['model file with a bare table name',
      MODEL.replace('name: Order\n', 'name: Order\n        source: orders\n'),
@@ -1856,6 +1891,63 @@ semantic_model:
                  `${NO_LOAD}${error}${dryRun ? advice : ''}`);
            });
     }
+  }
+
+  // Pull and push stop and write nothing on a model the catalog holds in a
+  // version this kcmd does not support, and so do their dry runs. Push stops
+  // before the line that starts the publish. With --skip-source-check, a
+  // BigQuery source and a deployment, it also stops before any BigQuery or
+  // Spanner call and any DDL under --print.
+  const DEPLOYED = MODEL.replace(
+      '    entities:\n',
+      `    deployments:\n      - { name: g, target: ${
+          TABLES.replace(/tables$/, 'propertyGraphs')}/g, profile: prod }\n` +
+          '    entities:\n');
+  for (const [flavor, files, version, options] of [
+    ['vanilla', {'commerce.yaml': VANILLA}, '0.3.0.dev0', {deployment: false}],
+    ['Google-flavor', BOTH(MODEL), '0.3.0.dev0/google', {deployment: false}],
+    ['deployed Google-flavor', BOTH(DEPLOYED), '0.4.0',
+     {print: true, skipSourceCheck: true}],
+  ] as const) {
+    test(`stops on a ${flavor} model stored with version ${version}`,
+         async () => {
+           const {entries} = await pushed(files);
+           Object.values([...entries.values()].find(
+                             e => entryIdOf(e.name) === 'commerce')!.aspects!)
+               .find(a => a.aspectType!.endsWith('/semantic-model'))!
+               .data!.specVersion = version;
+           const [stored, before] =
+               [structuredClone([...entries]), localFiles()];
+           const B = BigQueryClient.prototype, S = SpannerClient.prototype;
+           const store = [
+             B.getDataset, B.getTable, B.query, S.getDatabase, S.getInstance,
+             S.createSession, S.executeQuery, S.deleteSession,
+           ] as unknown as Mock<any>[];
+           for (const call of store) call.mockClear();
+           const refused = `the stored version '${version}' of model ` +
+               "'commerce' in entry group 'commerce_eg' is not supported by " +
+               'this kcmd, so';
+           const upgrade = 'Upgrade kcmd to a version that supports it';
+           for (const dryRun of [false, true]) {
+             await expect(pull({dryRun})).rejects.toThrow(new Error(
+                 `${refused} pull wrote nothing for it. ${upgrade}.`));
+             const [log, error] = [console.log, console.error].map(
+                 s => (s as Mock<any>).mockClear());
+             expect(await push({...options, validateOnly: dryRun})).toBe(1);
+             expect(messages(error)).toBe(
+                 'Error pushing semantic model to Knowledge Catalog: ' +
+                 `${refused} push wrote nothing for it. ${upgrade}, or, if ` +
+                 'losing that model is acceptable, delete it in Knowledge ' +
+                 'Catalog and push again.');
+             expect(messages(log)).not.toMatch(
+                 /-- BigQuery Graph --|Pushing semantic model \(Knowledge Catalog\)/);
+           }
+           // The source check reads BigQuery unless it is skipped.
+           if ('skipSourceCheck' in options) {
+             for (const call of store) expect(call).not.toHaveBeenCalled();
+           }
+           expect([localFiles(), [...entries]]).toEqual([before, stored]);
+         });
   }
 
   // A local profile file push or the layout would refuse is written from the

@@ -1162,6 +1162,10 @@ async function pushInTwoPhases(
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
   const kcOptions = catalogDeployOptions(options, source, overviews);
+  // The catalog preflight refuses a model the catalog holds in a version this
+  // kcmd does not support. It runs after the dialect lookups and the source
+  // check, and before the deployment checks, any DDL under --print and the
+  // publish.
   const preflight =
       await kc.preflightKnowledgeCatalog(kcModels, ctx, kcOptions);
   const preflightWarnings =

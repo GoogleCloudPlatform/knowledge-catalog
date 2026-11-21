@@ -180,9 +180,19 @@ describe('conversion, strict mode, and translation', () => {
       ossieDoc({extra: '        custom_extensions: [{vendor_name: DBT, data: &a {self: *a}}]\n'}), {},
       "Alias '*a' at line 13, column 64 refers to a value that contains it"
     ],
+    // Only an import without --input first-party calls a version unknown.
     [
-      'unsupported version', 'version: "9.9.9"\nsemantic_model: []', {},
-      'version'
+      'unsupported version',
+      'version: "9.9.9"\nsemantic_model: [{name: m, entities: []}]', {},
+      "Semantic model load error: unknown version '9.9.9'; expected '0.2.0.dev0' or " +
+          "'0.2.0.dev0/google'."
+    ],
+    [
+      'unsupported version under --input first-party',
+      'version: "0.3.0.dev0/google"\nsemantic_model: [{name: m, entities: []}]',
+      {strict: true},
+      "Semantic model load error: version '0.3.0.dev0/google' is not supported by this kcmd; " +
+          "expected '0.2.0.dev0' or '0.2.0.dev0/google'."
     ],
     [
       'a model with no name',

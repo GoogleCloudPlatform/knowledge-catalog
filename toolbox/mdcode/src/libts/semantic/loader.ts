@@ -54,6 +54,11 @@ export interface LoadOptions {
   // wrote, unless it writes a GOOGLE block over that file. The load sets
   // SemanticModel.thirdPartyImport on each model.
   thirdPartyImport?: boolean;
+  // Set to word the error for a version this kcmd does not read as "unknown
+  // version '<v>'" in place of "version '<v>' is not supported by this kcmd".
+  // kcmd import sets it for a file another product wrote, without `--input
+  // first-party`.
+  callVersionUnknown?: boolean;
   // The name push's messages give the document the load reads, by which
   // `transpileOutcomes` holds what the import the advice to add a BigQuery
   // text suggests gives for it. Defaults to the model's name.
@@ -1933,7 +1938,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   // Only `kcmd import` reads a model at the document root, so the load error
   // says to run it.
   const advice = rootModelVersion(doc) ? IMPORT_ADVICE : undefined;
-  const version = readVersion(doc, advice);
+  const version = readVersion(doc, advice, opts.callVersionUnknown);
   const extended = version === GOOGLE_VERSION;
   const proto =
       protoMemberError(doc, extended, opts.messageFlavor ?? version);
@@ -2227,10 +2232,13 @@ export function entityAndMetricWarnings(
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
 // error rather than a warning (agreed with Dmitri). An unknown version's error
-// ends with `advice` when given. An Apache Ossie '0.3.0.dev0' document with
-// neither `datasets` nor `semantic_model`, such as an Ossie ontology or mapping
-// document, holds no semantic model, and its error says so.
-function readVersion(doc: unknown, advice?: string): FormatVersion {
+// says this kcmd does not support the version, or with `callVersionUnknown`
+// that the version is unknown, and ends with `advice` when given. An Apache
+// Ossie '0.3.0.dev0' document with neither `datasets` nor `semantic_model`,
+// such as an Ossie ontology or mapping document, holds no semantic model, and
+// its error says so.
+function readVersion(
+    doc: unknown, advice?: string, callVersionUnknown = false): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
   if (typeof version !== 'string' || version.length === 0) {
@@ -2248,12 +2256,25 @@ function readVersion(doc: unknown, advice?: string): FormatVersion {
         `ontology or a mapping.`);
   }
   if (!isFormatVersion(version)) {
+    const problem = callVersionUnknown ?
+        `unknown version '${version}'` :
+        `version '${version}' is not supported by this kcmd`;
     throw new SemanticModelError(
-        `Semantic model load error: unknown version ` +
-        `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.` +
-        (advice ? ` ${advice}` : ''));
+        `Semantic model load error: ${problem}; expected '${OSSIE_VERSION}' ` +
+        `or '${GOOGLE_VERSION}'.` + (advice ? ` ${advice}` : ''));
   }
   return version;
+}
+
+// The top-level `version` of the model document `doc` when it is a string
+// that is not empty and is not a version this kcmd reads. The load refuses
+// such a version (see readVersion). Undefined otherwise.
+export function unsupportedVersion(doc: unknown): string|undefined {
+  const version = isRecord(doc) ? doc.version : undefined;
+  return typeof version === 'string' && version.length > 0 &&
+          !isFormatVersion(version) ?
+      version :
+      undefined;
 }
 
 /**

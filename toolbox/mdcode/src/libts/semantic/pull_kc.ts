@@ -20,12 +20,10 @@
 import {CatalogClient, Entry} from '../gcp/dataplex';
 
 import {missingEntryGroupMessage} from './deploy_knowledge_catalog';
-import {actionAspectTypes} from './kc_actions';
-import {constraintAspectTypes} from './kc_constraints';
-import {FirstGenerationModel, modelsFromCatalogResources, ReadResult} from './kc_converter';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
+import {FirstGenerationModel, modelNameOf, modelsFromCatalogResources, ReadResult, unsupportedVersionMessage} from './kc_converter';
+import {PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf} from './kc_ids';
-import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
+import {mapConcurrent, READ_CONCURRENCY, readEveryAspect, semanticAspectTypes} from './kc_read';
 import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
@@ -41,7 +39,8 @@ export interface KcPullOptions {
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, a fetch error
 // on any entry, or a model entry still labeled as being written -- throw, so
-// the pull aborts rather than write a partial model.
+// the pull aborts rather than write a partial model. A model entry that holds
+// a version this kcmd does not support throws too.
 export async function pullKnowledgeCatalog(
     cat: CatalogClient, opts: KcPullOptions): Promise<ReadResult> {
   await loadSqlEngine();
@@ -85,17 +84,25 @@ export async function pullKnowledgeCatalog(
 
   // Hydrate every semantic entry. A failed fetch means part of the model would
   // be silently missing, so abort rather than reconstruct an incomplete model.
+  // The model entry is read first. A model stored with a version this kcmd
+  // does not support stops the pull before the other entries are read.
+  const [anchorTarget] = anchors;
+  const anchor = anchorTarget &&
+      await fetchEveryAspect(
+          cat, opts, anchorTarget.entry, anchorTarget.aspectTypes);
+  const unsupported = anchor &&
+      unsupportedVersionMessage(
+          'pull', modelNameOf(anchor), opts.entryGroup, anchor);
+  if (unsupported) throw new Error(unsupported);
+  // The hydrated entries keep the order of `targets`.
   const hydrated = await mapConcurrent(
       targets, READ_CONCURRENCY,
-      ({entry, aspectTypes}) =>
-          fetchEveryAspect(cat, opts, entry, aspectTypes));
-
+      async t => t === anchorTarget ?
+          anchor! :
+          fetchEveryAspect(cat, opts, t.entry, t.aspectTypes));
   const read = modelsFromCatalogResources(hydrated);
   // Every push labels the model entry as writing when it writes the model entry
-  // and as finished with its last. The hydrated entries keep the order of
-  // `targets`.
-  const anchor =
-      anchors.length ? hydrated[targets.indexOf(anchors[0])] : undefined;
+  // and as finished with its last.
   const writingReason =
       anchor?.entrySource?.labels?.[PUSH_STATE_LABEL] === PUSH_WRITING ?
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
@@ -103,9 +110,7 @@ export async function pullKnowledgeCatalog(
   if (writingReason) {
     // A model an older kcmd pushed is not in `read.models`, so the model is
     // named from its entry, as the reader names it.
-    throw notFinished(
-        anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
-        writingReason);
+    throw notFinished(modelNameOf(anchor!), writingReason);
   }
   const warnings = [...read.warnings];
   for (const m of read.firstGeneration ?? []) {
@@ -152,45 +157,4 @@ async function fetchEveryAspect(
         res.status}); pull aborted`);
   }
   return res.result;
-}
-
-
-// The aspect types each second-generation entry type is read with.
-const OBJECT_ASPECTS = ['guidelines', 'semantic-extensions', 'overview'];
-const V2_ASPECT_TYPES = new Map([
-  ['semantic-model', ['semantic-model', ...OBJECT_ASPECTS]],
-  [
-    'semantic-entity',
-    ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT_ASPECTS]
-  ],
-  [
-    'semantic-metric', ['semantic-metric', 'sql-expressions', ...OBJECT_ASPECTS]
-  ],
-  ['semantic-relationship', ['semantic-relationship', ...OBJECT_ASPECTS]],
-]);
-
-// The aspect types to read for a semantic entry, in its entry type's project
-// and location. Undefined for an entry outside a semantic model.
-function semanticAspectTypes(entryType: string): string[]|undefined {
-  const marker = '/entryTypes/';
-  const idx = entryType?.indexOf(marker) ?? -1;
-  if (idx < 0) return undefined;
-  const typeBase = entryType.slice(0, idx);
-  const t = entryType.slice(idx + marker.length);
-  const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
-  const v2Types = V2_ASPECT_TYPES.get(t);
-  if (v2Types) return v2Types.map(aspectType);
-  switch (t) {
-    case ACTION_TYPE_ID:
-      // An action's entry type is custom (see kc_custom_types.ts), so it
-      // lives in the destination project rather than under `dataplex-types`;
-      // `typeBase` already points there, and kc_actions.ts names the aspects
-      // to fetch beneath it.
-      return actionAspectTypes(typeBase);
-    case CONSTRAINT_TYPE_ID:
-      // Custom for the same reason, and named through the same `typeBase`.
-      return constraintAspectTypes(typeBase);
-    default:
-      return undefined;
-  }
 }

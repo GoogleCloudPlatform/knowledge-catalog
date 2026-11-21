@@ -317,7 +317,8 @@ longer push, so you can't wipe one out by accident or by pushing from the wrong
 directory; run push again with `--force-remove` to delete its entries and links.
 That push deletes the old model entry first, and Dataplex deletes the model's
 other entries and its links with it. A push that stops partway then leaves the
-whole old model or none of it.
+whole old model or none of it. When the old model is stored in a version this
+`kcmd` does not support, push's refusal names that version.
 Deleting *every* document is the exception: with no models left to push, the run
 reports `No semantic model documents found; nothing to deploy` and touches
 nothing — so remove a model while other models in its group remain, or delete
@@ -392,7 +393,8 @@ unexpected state, so pull stops and names the anchors rather than guess which to
 keep.
 
 For a model an older `kcmd` pushed, pull writes nothing and warns. Push that
-model again with the current `kcmd`.
+model again with the current `kcmd`. When the model entry holds a version this
+`kcmd` does not support, pull stops and writes nothing.
 
 Pull overwrites a model that already exists locally in place. If the catalog's
 model has a **different name** than the one on disk, writing it would leave the

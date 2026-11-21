@@ -19,10 +19,11 @@
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):
 //   * Preflight validates that exactly one model is deployed per entry group,
-//     snapshots the destination entry group to guard against foreign models
-//     (unless `--force-remove` is set), and checks that any required custom
-//     entry/aspect types exist in the target project. It also checks every
-//     aspect's size.
+//     snapshots the destination entry group, reads the model entry the
+//     snapshot holds to check its version, guards against foreign models in
+//     the snapshot (unless `--force-remove` is set), and checks that any
+//     required custom entry/aspect types exist in the target project. It also
+//     checks every aspect's size.
 //   * Apply first reads each emitted entry the listing holds, with the aspect
 //     types its update names, and sends no write for one the update would
 //     leave as stored. It creates or updates the others in dependency order:
@@ -48,10 +49,13 @@
 //     The model's last write, after its orphaned entries are deleted,
 //     relabels the anchor `finished`. A model with nothing to create, update
 //     or delete, whose anchor is labeled `finished`, gets no write.
-//   * A dry run runs the preflight and then `planKnowledgeCatalog`, which
-//     makes apply's entry link lookups, works out what apply would write and
-//     remove, and writes nothing. It skips apply's reads of stored entries.
-//     Those reads feed only apply's writes, and a dry run makes none.
+//   * A dry run runs the preflight, which reads the stored model entry for
+//     its version, and then `planKnowledgeCatalog`, which makes apply's entry
+//     link lookups, works out what apply would write and remove, and writes
+//     nothing. When the preflight refuses other models in the entry group, it
+//     also reads each one's model entry, to name its version. A dry run skips
+//     apply's change-detection reads. Those reads feed only apply's writes,
+//     and a dry run makes none.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -65,10 +69,11 @@ import * as crm from '../gcp/crm';
 import {_typeRefToName, Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
+import {modelNameOf, unsupportedSpecVersion, unsupportedVersionMessage} from './kc_converter';
 import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
-import {mapConcurrent, READ_CONCURRENCY, readEveryAspect} from './kc_read';
+import {mapConcurrent, READ_CONCURRENCY, readEveryAspect, semanticAspectTypes} from './kc_read';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel, plural} from './loader';
 
@@ -247,12 +252,16 @@ async function withPropagationRetry<T>(
  *   1. Translates the IR models into catalog resources.
  *   2. Verifies that exactly one model is being deployed, and builds the plan
  *      that lists the model's entries and links.
- *   3. Fails when the destination entry group does not exist. Lists it and
- *      fails if an unrecognized model's anchor entry is present without
+ *   3. Reads the destination entry group, and stops when the read throws or
+ *      finds no such group. Otherwise it lists the group's entries.
+ *   4. Reads the model entry the listing holds, as storedVersionError does,
+ *      and fails when the read fails or the entry holds a specVersion this
+ *      kcmd does not support.
+ *   5. Fails if an unrecognized model's anchor entry is present without
  *      `--force-remove`.
- *   4. Verifies that every custom entry type and aspect type required by the
+ *   6. Verifies that every custom entry type and aspect type required by the
  *      model exists in the target project.
- *   5. Returns the emitted resources, entry-group listing, warnings, and plan
+ *   7. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
  * Step 2 also checks every aspect's size.
  */
@@ -392,12 +401,17 @@ export async function deployEmittedModels(
  *
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model and that
- *      every aspect size and instance count is within its limit. Builds the
- *      plan that lists the model's entries and links.
- *   2. Validates that the destination entry group exists. Lists it and
- *      validates that it contains no foreign models unless `--force-remove`
- *      is set.
- *   3. Validates that every custom type used by the model exists in the
+ *      every aspect size is within its limit. Builds the plan that lists the
+ *      model's entries and links.
+ *   2. Reads the destination entry group, and stops when the read throws or
+ *      finds no such group. Otherwise it lists the group's entries.
+ *   3. Reads the model entry the listing holds, as storedVersionError does,
+ *      and fails when the read fails or the entry holds a specVersion this
+ *      kcmd does not support.
+ *   4. Validates that the listing contains no foreign models unless
+ *      `--force-remove` is set. When it refuses them, it reads each foreign
+ *      model entry to name a version this kcmd does not support.
+ *   5. Validates that every custom type used by the model exists in the
  *      target project.
  */
 async function preflightEmittedModels(
@@ -425,9 +439,9 @@ async function preflightEmittedModels(
   plan = buildPlan(emitted, opts);
 
   // 2. Snapshot the entry group once, before any write: the same listing feeds
-  //    the foreign-model guard, link reconciliation, and deletion
-  //    reconciliation. A re-emitted entry is never a deletion candidate, so a
-  //    pre-write snapshot is correct for all three.
+  //    the version check, the foreign-model guard, link reconciliation, and
+  //    deletion reconciliation. A re-emitted entry is never a deletion
+  //    candidate, so a pre-write snapshot is correct for all four.
   const cat = new CatalogClient(ctx);
   // The listing reads a missing group as empty, so read the group itself.
   const group =
@@ -442,10 +456,20 @@ async function preflightEmittedModels(
   if (listing.error) return {result: result(false, listing.error)};
   const existing = listing.entries;
 
-  const groupValidation = validateEntryGroup(model, existing, opts, result);
+  // 3. Check the version of the model entry the listing holds.
+  const listedModel = listedModelEntry(model.resources, existing);
+  if (listedModel) {
+    const error = await storedVersionError(
+        cat, opts, model.resources.entries[0], listedModel);
+    if (error) return {result: result(false, error)};
+  }
+
+  // 4. Refuse foreign models unless `--force-remove` is set.
+  const groupValidation =
+      await validateEntryGroup(cat, model, existing, opts, result);
   if (!groupValidation.success) return {result: groupValidation};
 
-  // 3. Validate that every kcmd-owned custom type used by the model exists in
+  // 5. Validate that every kcmd-owned custom type used by the model exists in
   //    the target project.
   const customTypesValidation =
       await validateCustomTypes(cat, model, opts, result);
@@ -467,6 +491,16 @@ function findForeignAnchorIds(
   const modelAnchorId = anchorId(model?.resources.entries[0]);
   return existing.map(anchorId).filter(
       (id): id is string => id !== undefined && id !== modelAnchorId);
+}
+
+/**
+ * Returns the entry the listing `existing` holds at the name of the model
+ * entry of `resources`, if any.
+ */
+function listedModelEntry(
+    resources: kcEmit.KcResources, existing: readonly Entry[]): Entry|undefined {
+  const anchor = resources.entries[0];
+  return anchor && existing.find(e => entryId(e) === entryId(anchor));
 }
 
 /**
@@ -523,20 +557,51 @@ export function missingEntryGroupMessage(
  * model was renamed or replaced locally), pushing without removing the old
  * model would leave multiple models in the same entry group. We fail by
  * default unless the caller passes `--force-remove` to delete the old model.
+ *
+ * Before it fails, it reads the foreign model entries with readModelEntry, at
+ * most READ_CONCURRENCY at a time, each by the aspect types of the entry's own
+ * type. Each model stored in a version this kcmd does not support gets a
+ * sentence that names the version. The advice to re-run with `--force-remove`
+ * covers the foreign models that get no such sentence. It says to delete them
+ * all when no model gets one, and names the models it covers when some do. It
+ * is left out when every model gets one. A read that fails names no version.
  */
-function validateEntryGroup(
-    model: EmittedModel, existing: Entry[], opts: KcDeployOptions,
-    result: ResultBuilder): KcDeployResult {
+async function validateEntryGroup(
+    cat: CatalogClient, model: EmittedModel, existing: Entry[],
+    opts: KcDeployOptions, result: ResultBuilder): Promise<KcDeployResult> {
   const foreignAnchorIds = findForeignAnchorIds(model, existing);
-  if (foreignAnchorIds.length && !opts.forceRemove) {
-    return result(
-        false,
-        `entry group '${opts.entryGroup}' already contains model(s) this ` +
-            `push does not include: ${foreignAnchorIds.join(', ')}. Re-run ` +
-            `with --force-remove to delete them, or add their documents to ` +
-            `this push.`);
-  }
-  return result(true);
+  if (!foreignAnchorIds.length || opts.forceRemove) return result(true);
+  const reads = await mapConcurrent(foreignAnchorIds, READ_CONCURRENCY, id => {
+    const entry = existing.find(e => entryId(e) === id)!;
+    return readModelEntry(cat, opts, entry, entry.entryType);
+  });
+  const unsupported: string[] = [];
+  const covered: string[] = [];
+  reads.forEach((read, i) => {
+    const version = typeof read !== 'string' && isOkStatus(read) &&
+            read.result ?
+        unsupportedSpecVersion(read.result) :
+        undefined;
+    if (version === undefined) {
+      covered.push(foreignAnchorIds[i]);
+      return;
+    }
+    unsupported.push(
+        `Model '${foreignAnchorIds[i]}' is stored in version '${version}', ` +
+        `which this kcmd does not support. Upgrade kcmd to a version that ` +
+        `supports it, or, if losing that model is acceptable, re-run with ` +
+        `--force-remove to delete it.`);
+  });
+  const advice = !unsupported.length ?
+      ['Re-run with --force-remove to delete them.'] :
+      covered.length ?
+      [`Re-run with --force-remove to delete ${covered.join(', ')}.`] :
+      [];
+  return result(
+      false,
+      `entry group '${opts.entryGroup}' already contains model(s) this push ` +
+          `does not include: ${foreignAnchorIds.join(', ')}. ${
+              [...advice, ...unsupported].join(' ')}`);
 }
 
 // The largest aspect data Dataplex accepts: 120 KiB of its JSON form, in UTF-8
@@ -735,8 +800,8 @@ interface WritePlan {
   // lacks, those whose read failed, and those whose stored copy differs from
   // what the update would leave. No label counts as a difference. An emitted
   // entry sets none, and the update carries over every stored label it does
-  // not set. A dry run reads no stored entry, so here it holds every emitted
-  // entry. Only a real push reads it.
+  // not set. A dry run makes none of the reads that sort them out, so here it
+  // holds every emitted entry. Only a real push reads it.
   writes: Entry[];
   // The number of emitted entries the catalog already holds as the update
   // would leave them. A dry run leaves it 0. Only a real push reads it.
@@ -916,6 +981,8 @@ async function planModelWrites(
     resources: kcEmit.KcResources, existing: Entry[],
     isScopeProject: ProjectMatcher): Promise<WritePlan|{error: string}> {
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
+  const anchor = resources.entries[0];
+  const listedModel = listedModelEntry(resources, existing);
   const listed = resources.entries.filter(e => sources.has(entryId(e)));
   const stored = opts.validateOnly ?
       [] :
@@ -928,8 +995,7 @@ async function planModelWrites(
     sources.set(entryId(entry), held.entrySource);
     if (isUnchanged(entry, held, opts)) unchanged.add(entry);
   });
-  const anchor = resources.entries[0];
-  const anchorIndex = anchor ? listed.indexOf(anchor) : -1;
+  const storedAnchor = listedModel && stored[listed.indexOf(anchor)];
 
   // When the pre-write listing contains entity entries this model owns, look
   // up the model's existing links once and share the map between
@@ -989,9 +1055,7 @@ async function planModelWrites(
     writes: resources.entries.filter(e => !unchanged.has(e)),
     unchanged: unchanged.size,
     sources,
-    ...(anchorIndex >= 0 && stored[anchorIndex] ?
-            {storedAnchor: stored[anchorIndex]} :
-            {}),
+    ...(storedAnchor ? {storedAnchor} : {}),
     orphanedLinks,
     staleLinks,
     foundUnchanged,
@@ -1035,6 +1099,46 @@ async function readStored(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Reads the model entry at the name of `entry`. The read names the aspect
+ * types of `entryType`, as pull reads a model entry, and keeps the source
+ * `resource` as stored. A thrown error, such as on a network failure, is
+ * returned as its message.
+ */
+async function readModelEntry(
+    cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
+    entryType: string): Promise<ApiResult<Entry>|string> {
+  return readEveryAspect(
+             cat, opts, entry, semanticAspectTypes(entryType) ?? [],
+             {keepSourceResource: true})
+      .catch((err: any) => thrownMessage(err));
+}
+
+/**
+ * Reads the model entry the catalog holds, and returns the error that stops
+ * the push when the read fails or the entry holds a specVersion this kcmd
+ * does not support. Returns undefined otherwise.
+ *
+ * `emitted` is the model entry push writes, and the read uses its name.
+ * `stored` is the catalog's entry at that name, as the listing gives it. When
+ * `stored` is a model entry, the read names the aspect types of its entry
+ * type. Otherwise it names those of the type of `emitted`.
+ */
+async function storedVersionError(
+    cat: CatalogClient, opts: KcDeployOptions, emitted: Entry,
+    stored: Entry): Promise<string|undefined> {
+  const model = modelNameOf(emitted);
+  const type = isAnchorEntry(stored) ? stored.entryType : emitted.entryType;
+  const read = await readModelEntry(cat, opts, emitted, type);
+  if (typeof read === 'string' || !isOkStatus(read) || !read.result) {
+    return `push could not read the stored model entry of '${
+               model}' in entry group '${opts.entryGroup}', so it cannot ` +
+        `check the model's version and wrote nothing for it: ${
+               typeof read === 'string' ? read : errText(read)}`;
+  }
+  return unsupportedVersionMessage('push', model, opts.entryGroup, read.result);
 }
 
 /**
