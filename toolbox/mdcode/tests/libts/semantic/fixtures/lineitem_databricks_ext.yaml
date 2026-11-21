@@ -15,7 +15,7 @@ semantic_model:
     description: Line item shipping metrics
     datasets:
       - name: lineitem
-        source: samples.tpch.lineitem
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/lineitem
         fields:
           - name: line_number
             expression:
@@ -26,7 +26,7 @@ semantic_model:
               - vendor_name: DATABRICKS
                 data: '{"_v": 1, "format": {"type": "number", "decimal_places": {"type": "exact", "places": 0}}}'
       - name: orders
-        source: samples.tpch.orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         unique_keys:
           - [o_orderkey]
     relationships:

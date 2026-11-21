@@ -24,7 +24,8 @@ import {
   isLinkOwner,
   isMetricEntry,
   isModelEntry,
-  isRelationshipLink,
+  isModelLink,
+  isSemanticObjectEntry,
   KcAnchor,
   linkId,
   linkTypeId,
@@ -44,14 +45,14 @@ const ACTION_TYPE =
     'projects/dest/locations/global/entryTypes/semantic-action';
 const CONSTRAINT_TYPE =
     'projects/dest/locations/global/entryTypes/semantic-constraint';
+const RELATIONSHIP_TYPE =
+    'projects/dataplex-types/locations/global/entryTypes/semantic-relationship';
 
 const SCHEMA_JOIN_LINK_TYPE =
     'projects/dataplex-types/locations/global/entryLinkTypes/schema-join';
-const RELATIONSHIP_LINK_TYPE =
+const SEMANTIC_RELATIONSHIP_LINK_TYPE =
     'projects/dataplex-types/locations/global/entryLinkTypes/' +
     'semantic-relationship';
-const OTHER_LINK_TYPE =
-    'projects/dataplex-types/locations/global/entryLinkTypes/other-link';
 
 function makeEntry(
     id: string, entryType = ENTITY_TYPE,
@@ -99,7 +100,7 @@ describe('entryId, entryTypeId, linkId, and linkTypeId', () => {
 
   test('extracts bare linkId and linkTypeId from an EntryLink', () => {
     const link = makeLink(
-        'sales-orders-to-customer', RELATIONSHIP_LINK_TYPE,
+        'sales-orders-to-customer', SEMANTIC_RELATIONSHIP_LINK_TYPE,
         ['sales/entities/orders', 'sales/entities/customer']);
 
     const extractedLinkId = linkId(link);
@@ -127,11 +128,13 @@ describe('entry and link type predicates, anchorId, and custom types', () => {
         expect(anchorId(undefined)).toBeUndefined();
       });
 
-  test('identifies entity, metric, explore, and dependent entries', () => {
+  test('identifies each entry kind and which entries are dependent', () => {
     const entity = makeEntry('sales/entities/orders', ENTITY_TYPE);
     const metric = makeEntry('sales/metrics/revenue', METRIC_TYPE);
     const explore = makeEntry('sales/explores/orders', EXPLORE_TYPE);
     const action = makeEntry('sales.actions.refund', ACTION_TYPE);
+    const relationship = makeEntry(
+        'sales/relationships/orders_to_customer', RELATIONSHIP_TYPE);
 
     expect(isEntityEntry(entity)).toBe(true);
     expect(isDependentEntry(entity)).toBe(false);
@@ -143,22 +146,29 @@ describe('entry and link type predicates, anchorId, and custom types', () => {
     expect(isDependentEntry(explore)).toBe(true);
 
     expect(isDependentEntry(action)).toBe(false);
+
+    expect(isDependentEntry(relationship)).toBe(false);
+    expect([
+      makeEntry('sales', MODEL_TYPE), entity, metric, relationship, action,
+      makeEntry('sales.constraints.c', CONSTRAINT_TYPE), explore,
+    ].map(isSemanticObjectEntry))
+        .toEqual([true, true, true, true, false, false, false]);
   });
 
-  test('identifies schema-join and semantic-relationship links', () => {
-    const relLink = makeLink(
-        'sales-orders-to-customer', RELATIONSHIP_LINK_TYPE,
+  test('identifies the links push writes for a model', () => {
+    const link = (id: string, type: string) => makeLink(
+        id, `projects/dataplex-types/locations/global/entryLinkTypes/${type}`,
         ['sales/entities/orders', 'sales/entities/customer']);
-    const joinLink = makeLink(
-        'sales-orders-to-customer', SCHEMA_JOIN_LINK_TYPE,
-        ['sales.entities.orders', 'sales.entities.customer']);
-    const otherLink = makeLink(
-        'sales-orders-to-customer', OTHER_LINK_TYPE,
-        ['sales.entities.orders', 'sales.entities.customer']);
-
-    expect(isRelationshipLink(joinLink)).toBe(true);
-    expect(isRelationshipLink(relLink)).toBe(true);
-    expect(isRelationshipLink(otherLink)).toBe(false);
+    expect([
+      link('sales-orders-to-customer', 'schema-join'),
+      link('sales-orders-to-customer', 'semantic-link'),
+      link('semantic-relationship-1', 'reference'),
+      link('semantic-extends-1', 'reference'),
+      link('semantic-link-1', 'reference'),
+      link('sales-orders-to-customer', 'semantic-relationship'),
+      link('sales-orders-to-customer', 'other-link'),
+    ].map(isModelLink))
+        .toEqual([true, true, true, true, false, false, false]);
   });
 
   test(
@@ -317,33 +327,17 @@ describe(
     });
 
 describe('entryAspectKeys', () => {
-  test(
-      'with v2Aspects off, entryAspectKeys returns every emitted key and ' +
-          'entry-level guidelines',
-      () => {
-        const entity = makeEntry('sales.entities.orders', ENTITY_TYPE, {
-          'dataplex-types.global.semantic-entity': {data: {}},
-          'dataplex-types.global.schema': {data: {}},
-          'google.com:acme.global.semantic-action': {data: {}},
-        });
-
-        const keys = entryAspectKeys(entity);
-
-        expect(keys).toEqual(new Set([
-          'dataplex-types.global.semantic-entity',
-          'dataplex-types.global.schema',
-          'google.com:acme.global.semantic-action',
-          'dataplex-types.global.guidelines',
-        ]));
-      });
 
   test(
-      'with v2Aspects on, entryAspectKeys includes sql-expressions on entity ' +
-          'and metric entries and guidelines@* on entity entries',
+      'entryAspectKeys lists the keys of each entry kind, with a field\'s ' +
+          'keys as wildcards',
       () => {
         const entity = makeEntry('sales/entities/orders', ENTITY_TYPE, {
           'dataplex-types.global.semantic-entity': {data: {}},
           'dataplex-types.global.schema': {data: {}},
+          'dataplex-types.global.guidelines@Schema.id': {data: {}},
+          'dataplex-types.global.semantic-extensions@Schema.id': {data: {}},
+          'dataplex-types.global.overview@Schema.id': {data: {}},
         });
         const metric = makeEntry('sales/metrics/revenue', METRIC_TYPE, {
           'dataplex-types.global.semantic-metric': {data: {}},
@@ -351,27 +345,46 @@ describe('entryAspectKeys', () => {
         const model = makeEntry('sales', MODEL_TYPE, {
           'dataplex-types.global.semantic-model': {data: {}},
         });
+        const relationship = makeEntry(
+            'sales/relationships/orders_to_customer', RELATIONSHIP_TYPE, {
+              'dataplex-types.global.semantic-relationship': {data: {}},
+            });
 
-        const entityKeys = entryAspectKeys(entity, {v2Aspects: true});
-        const metricKeys = entryAspectKeys(metric, {v2Aspects: true});
-        const modelKeys = entryAspectKeys(model, {v2Aspects: true});
+        const entityKeys = entryAspectKeys(entity);
+        const metricKeys = entryAspectKeys(metric);
+        const modelKeys = entryAspectKeys(model);
 
         expect(entityKeys).toEqual(new Set([
           'dataplex-types.global.semantic-entity',
           'dataplex-types.global.schema',
           'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
           'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines@*',
+          'dataplex-types.global.semantic-extensions@*',
+          'dataplex-types.global.overview@*',
         ]));
         expect(metricKeys).toEqual(new Set([
           'dataplex-types.global.semantic-metric',
           'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
           'dataplex-types.global.sql-expressions',
         ]));
         expect(modelKeys).toEqual(new Set([
           'dataplex-types.global.semantic-model',
           'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
         ]));
+        expect(entryAspectKeys(relationship))
+            .toEqual(new Set([
+              'dataplex-types.global.semantic-relationship',
+              'dataplex-types.global.guidelines',
+              'dataplex-types.global.semantic-extensions',
+              'dataplex-types.global.overview',
+            ]));
       });
 
   test(
@@ -384,7 +397,6 @@ describe('entryAspectKeys', () => {
         const opts = {
           systemTypeProject: 'staging-types',
           systemTypeLocation: 'us',
-          v2Aspects: true,
         };
 
         const keys = entryAspectKeys(entityEntry, opts);
@@ -392,8 +404,12 @@ describe('entryAspectKeys', () => {
         expect(keys).toEqual(new Set([
           'staging-types.us.semantic-entity',
           'staging-types.us.guidelines',
+          'staging-types.us.semantic-extensions',
+          'staging-types.us.overview',
           'staging-types.us.sql-expressions',
           'staging-types.us.guidelines@*',
+          'staging-types.us.semantic-extensions@*',
+          'staging-types.us.overview@*',
         ]));
       });
 });
@@ -401,7 +417,7 @@ describe('entryAspectKeys', () => {
 describe('sameLinkReferences', () => {
   function linkWithRefs(entryReferences: EntryReference[]): EntryLink {
     return {
-      entryLinkType: RELATIONSHIP_LINK_TYPE,
+      entryLinkType: SEMANTIC_RELATIONSHIP_LINK_TYPE,
       entryReferences,
     };
   }

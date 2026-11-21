@@ -2,10 +2,12 @@
 //
 // READ THIS FIRST IF YOU OWN DATAPLEX TYPES. Everything a semantic model
 // publishes maps to a BUILT-IN system type under
-// `projects/dataplex-types/locations/global`: a model, an entity and a metric
-// each get an entry (`semantic-model` / `semantic-entity` / `semantic-metric`),
-// a relationship becomes a `schema-join` entry link, and the built-in `schema`
-// and `guidelines` aspects carry the rest. The types listed in CUSTOM_TYPES
+// `projects/dataplex-types/locations/global`: a model, an entity, a metric and
+// a relationship each get an entry (`semantic-model` / `semantic-entity` /
+// `semantic-metric` / `semantic-relationship`) with the aspect of the same
+// name, `semantic-link` and `reference` entry links join them, and the
+// built-in `schema`, `guidelines`, `semantic-extensions`, `overview` and
+// `sql-expressions` aspects carry the rest. The types listed in CUSTOM_TYPES
 // below are the exceptions. Dataplex has no built-in equivalent for them, so
 // `kcmd init --semantic-model` creates them in the destination project instead.
 // Each record here is a request: please make this one built-in.
@@ -36,7 +38,8 @@
 // removing an existing field breaks the update for every project that already
 // provisioned the type.
 
-import {AspectType, CatalogClient, Entry, EntryType} from '../gcp/dataplex';
+import {ApiResult} from '../gcp/api';
+import {AspectType, CatalogClient, Entry, EntryType, Operation} from '../gcp/dataplex';
 
 import {AiContext} from './ir';
 import {entryIdOf} from './kc_ids';
@@ -51,9 +54,6 @@ export interface CustomType {
   // The aspect type, including the metadata template that gives the entry its
   // typed, queryable fields.
   aspectType: Omit<AspectType, 'name'>;
-  // Set when every push needs the type, so init fails when it cannot create
-  // it. Absent means the type backs an optional construct.
-  required?: boolean;
 }
 
 
@@ -66,10 +66,9 @@ export interface CustomType {
 // Every element in the format carries the same three-part annotation:
 // instructions, synonyms, examples. A custom aspect carries all three. Carrying
 // a chosen part instead would mean a document that loads cleanly comes back
-// from a pull missing fields it declared. The built-in `guidelines` aspect does
-// have a home for `instructions` alone, and an element routed there loses the
-// other two, but kcmd owns this template and has no reason to inherit that
-// limit.
+// from a pull missing fields it declared. An element of a built-in type splits
+// the annotation across aspects instead (`guidelines`, `overview`, and its own
+// aspect for synonyms); kcmd owns this template, so it keeps the three together.
 //
 // The annotation goes on the custom aspect rather than on a `guidelines` aspect
 // beside it, because a pull hydrates aspect types from the project the ENTRY
@@ -583,87 +582,12 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
-// The id of the file-copy type. A file copy holds the text of one model or
-// profile file as push read it, so a pull can return the file unchanged.
-export const FILE_COPY_TYPE_ID = 'semantic-model-file';
-
-// The entrySource label a push puts on the model entry when it stores file
-// copies. Its value is the push id those copies carry. A model entry whose
-// label names a push the catalog holds no copies of was last written by a
-// push that stopped before storing them. kcmd owns this label and no other.
-export const PUSH_ID_LABEL = 'kcmd-push-id';
-
-// A file copy: one model or profile file's name and text.
-export interface FileCopy {
-  // The file's path relative to the entry group directory, for example
-  // `retail.yaml` or `retail.profile.prod.yaml`.
-  fileName: string;
-  // The file's text, exactly as read.
-  content: string;
-  // The id of the push that stored the copy. Every copy one push stores
-  // carries the same id. Absent on a copy stored before push ids.
-  pushId?: string;
-  // How many copies that push stored. Absent on a copy stored before copy
-  // counts.
-  pushFileCount?: number;
-}
-
-// The aspect that carries a file copy.
-const FILE_COPY_ASPECT_TYPE: Omit<AspectType, 'name'> = {
-  displayName: 'Semantic Model File',
-  description:
-      'The text of one semantic model file or profile file, exactly as ' +
-      'pushed.',
-  metadataTemplate: {
-    name: FILE_COPY_TYPE_ID,
-    type: 'record',
-    recordFields: [
-      {
-        index: 1,
-        name: 'fileName',
-        type: 'string',
-        constraints: {required: true},
-        annotations: {
-          displayName: 'File Name',
-          description:
-              'The file\'s path relative to the entry group directory, for ' +
-              'example `retail.profile.prod.yaml`.',
-        },
-      },
-      {
-        index: 2,
-        name: 'content',
-        type: 'string',
-        constraints: {required: true},
-        annotations: {
-          displayName: 'Content',
-          description: 'The file\'s text, exactly as read.',
-        },
-      },
-      {
-        index: 3,
-        name: 'pushId',
-        type: 'string',
-        annotations: {
-          displayName: 'Push ID',
-          description:
-              'The id of the push that stored this copy. Every copy one push ' +
-              'stores carries the same id.',
-        },
-      },
-      {
-        index: 4,
-        name: 'pushFileCount',
-        type: 'int',
-        annotations: {
-          displayName: 'Push File Count',
-          description: 'How many file copies the push that stored this one ' +
-              'stored in all.',
-        },
-      },
-    ],
-  },
-};
+// The entrySource label every push puts on the model entry: PUSH_WRITING with
+// the model entry's write and PUSH_FINISHED as the push's last write. kcmd
+// owns this label and no other.
+export const PUSH_STATE_LABEL = 'kcmd-push-state';
+export const PUSH_WRITING = 'writing';
+export const PUSH_FINISHED = 'finished';
 
 // Every type kcmd provisions. This list is the whole of what is custom.
 export const CUSTOM_TYPES: readonly CustomType[] = [
@@ -682,16 +606,6 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
       description: 'An invariant a semantic model requires to hold.',
     },
     aspectType: CONSTRAINT_ASPECT_TYPE,
-  },
-  {
-    id: FILE_COPY_TYPE_ID,
-    entryType: {
-      displayName: 'Semantic Model File',
-      description: 'A copy of one semantic model file or profile file.',
-    },
-    aspectType: FILE_COPY_ASPECT_TYPE,
-    // Push stores every model file with it.
-    required: true,
   },
 ];
 
@@ -749,10 +663,9 @@ export function customAspectKey(id: string, dest: {project: string}): string {
 }
 
 // What provisioning produced. `error` is a failure the caller must not ignore.
-// `denied` is the narrower case of lacking permission to create a type that
-// backs an optional construct, which is reported and survived: a project whose
-// models use none of those constructs never needs the type. Lacking permission
-// to create a required type that does not exist is an `error`.
+// `denied` is the narrower case of lacking permission to create a type, which
+// is reported and survived: a project whose models use none of the constructs
+// a custom type backs never needs it.
 export interface ProvisionResult {
   error?: string;
   denied?: string;
@@ -770,9 +683,8 @@ export interface ProvisionResult {
  * template lacks fails with an opaque parsing error. Dataplex rejects a
  * backwards-incompatible change, so the patch only ever adds appended fields.
  *
- * Stops at the first hard failure, which includes a permission refusal for a
- * required type that does not exist. A refusal to patch a type that exists is
- * a warning. A refusal for an optional type does NOT stop it: the refusals
+ * Stops at the first hard failure. A refusal to patch a type that exists is
+ * a warning. A refusal to create a type does NOT stop it: the refusals
  * differ per type and per operation -- patching a type that already exists
  * needs `update`, creating one that does not needs `create` -- so a caller
  * refused one type may well be allowed the next, and giving up early would
@@ -797,6 +709,24 @@ export async function provisionCustomTypes(
   return warnings.length ? {warnings} : {};
 }
 
+// Whether a create's answer `status` means the resource exists: a 409, or a
+// 403 for a resource that `lookup` finds. Dataplex answers 403 to a caller
+// without create permission whether or not the resource exists.
+export async function existsAfterCreate(
+    status: number, lookup: () => Promise<{status: number}>): Promise<boolean> {
+  return status === 409 || (status === 403 && (await lookup()).status === 200);
+}
+
+// The error for a failed create of `what`, whose answer is `res`. A 429 is
+// the write quota, which passes on a later run.
+function createError(what: string, res: {status: number; message?: string}):
+    string {
+  const reason = `${res.message || res.status}`;
+  if (res.status !== 429) return `creating ${what}: ${reason}`;
+  return `creating ${what}: ${reason}${/[.!?]$/.test(reason) ? '' : '.'} ` +
+      `Run this command again in a minute.`;
+}
+
 // One custom type: its aspect type, then the entry type that requires it.
 async function provisionOne(
     cat: CatalogClient, dest: {project: string},
@@ -805,61 +735,47 @@ async function provisionOne(
 
   // Creating a type needs permissions that publishing entries does not. A
   // caller who lacks them can still init, push and pull every model that uses
-  // none of the optional types, so that refusal is reported rather than fatal.
-  // A required type is needed by every push, so its refusal stops init.
+  // none of the custom types, so that refusal is reported rather than fatal.
   const denial = (what: string, status: number, message?: string):
       ProvisionResult|undefined => {
     if (status !== 403) return undefined;
-    const refused = `no permission to create ${what} in project '${
-        home.project}' (${message || status})`;
-    return type.required ?
-        {error: `${refused}; every push needs it, so init cannot finish`} :
-        {
-          denied: `${refused}; models that need it cannot be pushed until ` +
-              `it exists`
-        };
+    return {
+      denied: `no permission to create ${what} in project '${home.project}' (${
+                  message || status}); models that need it cannot be pushed ` +
+          `until it exists`
+    };
   };
-
-  // A caller without create permission may be refused the create of a type
-  // that already exists. For a required type a lookup tells the two apart, so
-  // init fails only when the type is missing.
-  const refusedButExists =
-      async (status: number, lookup: () => Promise<{status: number}>) =>
-          status === 403 && !!type.required && (await lookup()).status === 200;
 
   const warnings: string[] = [];
   const aspectLabel = `aspect type '${type.id}'`;
   const aspect = await cat.createAspectType(
       home.project, home.location, type.id, type.aspectType);
-  if (aspect.status === 409 ||
-      await refusedButExists(
+  if (await existsAfterCreate(
           aspect.status,
           () => cat.getAspectType(home.project, home.location, type.id))) {
     const upd = await cat.updateAspectType(
         home.project, home.location, type.id, type.aspectType,
-        ['description', 'display_name', 'metadata_template']);
-    // Patching an existing type forward is best effort. Dataplex refuses a
-    // template change it judges backwards-incompatible -- removing a field, or
-    // renumbering one -- and the type already there is the one every published
-    // entry depends on. Leaving it alone and saying so beats aborting an init
-    // that has already created the entry group.
-    //
-    // What the warning has to carry is the way OUT, because there is no way
-    // forward: `kcmd` creates and patches aspect types and does not delete
-    // them, so a project holding a template this build cannot patch stays that
-    // way until someone removes it by hand. Naming the resource and the
-    // command is the whole of the fix; a reader who has only "left it
-    // unchanged" has to work out which of several types in which project, and
-    // then that `gcloud dataplex aspect-types` is where it lives.
+        ['description', 'display_name', 'metadata_template'])
+        // A thrown error, such as a network failure, gets the retry warning.
+        .catch((err: any): ApiResult<Operation> =>
+                   ({status: 0, message: String(err?.message || err)}));
+    // Patching an existing type is best effort. Published entries depend on
+    // the type already there, so a failed patch leaves it and init goes on.
     const reason = upd.status !== 200 ?
         `${upd.message || upd.status}` :
-        await cat.awaitOperation(upd.result, `updating ${aspectLabel}`);
+        await cat.awaitOperation(upd.result, 'the update operation')
+            .catch((err: any) => String(err?.message || err));
     if (upd.status === 403) {
       // The type exists, so a refusal to patch it leaves it as it is.
       warnings.push(
           `no permission to update the existing ${aspectLabel} in project ` +
           `'${home.project}' (${reason}); left it unchanged`);
-    } else if (reason) {
+    } else if (reason &&
+               /Backwards incompatible template change/i.test(reason)) {
+      // Dataplex refuses a backwards-incompatible template change with this
+      // message, and the same template gets the same answer on every run.
+      // kcmd never deletes a type, so the warning names the gcloud commands
+      // that do.
       const resource = customAspectTypeName(type.id, dest);
       warnings.push(
           `left the existing ${aspectLabel} unchanged (${reason}). It is ` +
@@ -867,18 +783,25 @@ async function provisionOne(
           `this build states -- a template field that was removed or ` +
           `renumbered is a backwards-incompatible change and is refused. A ` +
           `push will fail wherever the two disagree. To move it forward, ` +
-          `delete it and re-run this command: gcloud dataplex aspect-types ` +
-          `delete ${type.id} --project=${home.project} ` +
-          `--location=${home.location}. Deleting takes the aspects of every ` +
-          `entry already published with this type, so re-push those models ` +
-          `afterwards.`);
+          `delete the entry type and then the aspect type, and re-run this ` +
+          `command: gcloud dataplex entry-types delete ${type.id} ` +
+          `--project=${home.project} --location=${home.location} && gcloud ` +
+          `dataplex aspect-types delete ${type.id} --project=${home.project} ` +
+          `--location=${home.location}. Deleting the entry type also deletes ` +
+          `every entry of that type in the project, so push the models that ` +
+          `had them again afterwards.`);
+    } else if (reason) {
+      // Any other failure, such as a 429 from the write quota, a 5xx, a failed
+      // operation or a network error, can pass on a later run.
+      warnings.push(
+          `could not update the existing ${aspectLabel} in project ` +
+          `'${home.project}' (${reason}). Run this command again in a minute ` +
+          `to retry the update.`);
     }
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);
     if (refused) return refused;
-    return {
-      error: `creating ${aspectLabel}: ${aspect.message || aspect.status}`
-    };
+    return {error: createError(aspectLabel, aspect)};
   } else {
     // The entry type below names this aspect type in its required aspects, and
     // the server rejects that while the create is still in flight, so the wait
@@ -899,8 +822,7 @@ async function provisionOne(
         requiredAspects: [{type: customAspectTypeName(type.id, dest)}],
       });
   const collected = warnings.length ? {warnings} : {};
-  if (entryType.status === 409 ||
-      await refusedButExists(
+  if (await existsAfterCreate(
           entryType.status,
           () => cat.getEntryType(home.project, home.location, type.id))) {
     return collected;
@@ -908,10 +830,7 @@ async function provisionOne(
   const refused = denial(entryLabel, entryType.status, entryType.message);
   if (refused) return {...refused, ...collected};
   if (entryType.status !== 200) {
-    return {
-      ...collected,
-      error: `creating ${entryLabel}: ${entryType.message || entryType.status}`
-    };
+    return {...collected, error: createError(entryLabel, entryType)};
   }
   // A push may follow immediately, and an entry naming a type that is still
   // being created is rejected the same way, so wait here too.

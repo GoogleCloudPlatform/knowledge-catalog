@@ -1,0 +1,195 @@
+// Tests that push refuses a deployment that binds an entity to a table outside
+// the database it targets, and that it probes each BigQuery table in the
+// location of the graph's dataset (src/libts/semantic/validate.ts,
+// localChecks, and src/tool/commands.ts, liveErrors).
+
+import {expect} from 'bun:test';
+
+import {PushOptions} from '../../../src/tool/commands';
+
+import {ALLOYDB, boundAt, bqTable, Case, CUSTOMER, err, has, pushed, REAL, Scope, scenarios, Services, SPANNER, SPANNER_CUSTOMER, spannerGraph} from './harness';
+
+const OTHER_ALLOYDB = 'alloydb.googleapis.com/projects/test-project/' +
+    'locations/us-central1/clusters/c/databases/other/schemas/public/tables/' +
+    'customer';
+const UNSELECTED = "[commerce] deployment 'sp' targets Spanner database " +
+    "'test-project/i/db', but profile 'x' binds entity 'Customer' to a " +
+    'table outside that database. Bind the entity to a table in that ' +
+    "database in profile 'x'.";
+
+const ORDERS = {
+  name: 'Orders', source: bqTable('orders'), primary_key: ['id'],
+  fields: [{name: 'id', expression: 'o_id'}],
+};
+// A profile that binds Customer and Orders to their tables in `database`.
+const both = (database: string) => ({entities: {
+  Customer: {...CUSTOMER, source: `${database}/tables/Customer`},
+  Orders: {...ORDERS, source: `${database}/tables/Orders`},
+}});
+// Push's refusal of Spanner deployment 'sp', whose model file binds Customer
+// and Orders to BigQuery tables, followed by `advice`.
+const onModelFile = (advice: string) =>
+    "[commerce] deployment 'sp' targets Spanner database 'test-project/i/db', " +
+    "but the model file binds entities 'Customer' and 'Orders' to tables " +
+    `outside that database. ${advice}`;
+const TWO_FIT = onModelFile(
+    "Profiles 'ops' and 'Replica' bind these entities to tables in that " +
+    "database. Set the deployment's profile to one of them.");
+// A vanilla model's refusal. It lists the fitting GOOGLE block profiles in
+// name order, whatever order the block gives them. The block gives 'Replica'
+// first, as code-unit order does. Name order, as localeCompare gives it, puts
+// 'ops' first. So the row catches a dropped sort and a switch to a plain
+// .sort().
+const VANILLA_FIT =
+    "[commerce] deployment 'sp' targets Spanner database 'test-project/i/db', " +
+    "but the model file binds dataset 'Customer' to a table outside that " +
+    "database. Profiles 'ops' and 'Replica' bind this dataset to a table in " +
+    "that database. Set the deployment's profile to one of them.";
+
+const fails = (name: string, scope: Scope, error: string,
+               flags: PushOptions = {}): Case => ({
+  name, ...scope, flags, code: 1,
+  errors: [err(error)], called: {preflight: 0}, nothingWritten: true,
+});
+
+// The graph's dataset d is in us-central1. BigQuery finds a table in dataset
+// eu only in europe-west1, and a probe that names no location runs where its
+// table is.
+const TWO_LOCATIONS: Services = {
+  getDataset: {status: 200, result: {location: 'us-central1'}},
+  sources: REAL.sources,
+  query: (_project: string, sql: string, location?: string) => {
+    const where = sql.includes('.eu.') ? 'europe-west1' : 'us-central1';
+    return location && location !== where ?
+        {status: 404, message: `Not found in location ${location}`} :
+        {status: 200, result: {jobReference: {location: where}}};
+  },
+};
+
+scenarios('each deployment\'s tables are in the database it deploys to', [
+  fails(
+      'an AlloyDB deployment fails for a table in another database of its cluster, and nothing is written', {
+        deployments: [{name: 'd1', target: ALLOYDB, profile: 'x'}],
+        profiles: {x: boundAt(OTHER_ALLOYDB)},
+      },
+      "[commerce] deployment 'd1' targets AlloyDB database " +
+          "'test-project/us-central1/c/db', but profile 'x' binds entity " +
+          "'Customer' to a table outside that database. Bind the entity to " +
+          "a table in that database in profile 'x'."),
+  fails(
+      'a deployment that uses the model file\'s bindings on BigQuery and Spanner gets only the model file\'s one-database error',
+      {entities: [CUSTOMER, {
+        ...CUSTOMER, name: 'Orders', source: `${SPANNER}/tables/Orders`,
+      }]},
+      "model 'commerce' (commerce) binds entities in more than one database " +
+          "('Customer', 'Orders'); bind the model file's entities to tables " +
+          'in one database.'),
+  {
+    ...fails(
+        'a deployment the push does not select fails the push the same way, ' +
+            'also under --no-deployment', {
+          deployments:
+              ['g', {name: 'sp', target: spannerGraph('g'), profile: 'x'}],
+          profiles: {x: boundAt(`${SPANNER}2/tables/Customer`)},
+        },
+        UNSELECTED, {deployment: ['g']}),
+    then: [{flags: {deployment: false}, code: 1, errors: [err(UNSELECTED)],
+            nothingWritten: true}],
+    report: {code: 1, rejects: {x: [pushed()]}},
+  },
+  {
+    ...fails(
+        'a deployment on the model file\'s bindings names each profile that binds its entities in its database, also under --print-store',
+        {
+          deployments: [{name: 'sp', target: spannerGraph('g')}],
+          entities: [CUSTOMER, ORDERS],
+          profiles: {
+            ops: both(SPANNER), Replica: both(SPANNER),
+            bq: both('bigquery.googleapis.com/projects/test-project/datasets/other'),
+          },
+        },
+        TWO_FIT),
+    then: [{
+      profiles: {ops: both(SPANNER)}, code: 1, nothingWritten: true,
+      errors: [err(onModelFile(
+          "Profile 'ops' binds these entities to tables in that database. " +
+          "Set the deployment's profile to 'ops'."))],
+    }],
+    report: {flags: {printStore: true}, code: 1,
+             check: (_, errors) => expect(errors).toEqual([err(TWO_FIT)])},
+  },
+  fails(
+      'a model bound only through the profile its deployment names gets one error naming each entity', {
+        deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],
+        entities: [CUSTOMER, ORDERS].map(({source: _, ...e}) => e),
+        profiles: {x: both(`${SPANNER}2`)},
+      },
+      "[commerce] deployment 'sp' targets Spanner database " +
+          "'test-project/i/db', but profile 'x' binds entities 'Customer' " +
+          "and 'Orders' to tables outside that database. Bind each entity " +
+          "to a table in that database in profile 'x'."),
+  {
+    ...fails(
+        'a vanilla model\'s error calls an entity a dataset and lists the fitting GOOGLE block profiles in name order, also under --print-store', {
+          google: {
+            deployments: [{name: 'sp', target: spannerGraph('g')}],
+            profiles: ['Replica', 'ops'].map(name => ({
+              name, entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+            })),
+          },
+        },
+        VANILLA_FIT),
+    report: {flags: {printStore: true}, code: 1,
+             check: (_, errors) => expect(errors).toEqual([err(VANILLA_FIT)])},
+  },
+  {
+    name: 'a profile source in no accepted form gets the profile check\'s error first',
+    deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'x'}],
+    profiles: {x: boundAt(`${SPANNER}/table/Customer`)},
+    code: 1, errors: [has('is not a valid table reference')],
+  },
+  {
+    name: 'a model with an abstract entity, which has no source, passes and deploys to Spanner',
+    deployments: [{name: 'sp', target: spannerGraph('g')}],
+    entities: [
+      {name: 'Party', abstract: true, fields: [{name: 'key'}]},
+      {...CUSTOMER, extends: ['Party'], source: SPANNER_CUSTOMER},
+    ],
+    code: 0,
+    events: ['preflight', 'apply', 'deploy sp'],
+  },
+  {
+    name: 'a BigQuery table outside the graph dataset\'s location fails, naming its location, and passes with a probe that names no location when the dataset\'s location cannot be read; a table in the dataset\'s location passes',
+    entities: [{...CUSTOMER, source: bqTable('customer', 'eu')}],
+    services: TWO_LOCATIONS,
+    code: 1,
+    errors: [err(
+        "[commerce] deployment 'g' targets a BigQuery graph in dataset " +
+        "'test-project.d', which is in location 'us-central1', but entity " +
+        "'Customer' reads table 'test-project.eu.customer', which is in " +
+        "location 'europe-west1'. A property graph can use only tables in " +
+        "its dataset's location.")],
+    nothingWritten: true,
+    check: r => expect(r.fake.query.mock.calls.map(c => c[2] ?? null))
+                    .toEqual(['us-central1', null]),
+    then: [{
+      // No dataset's location can be read. The source check reads table
+      // customer, not its dataset, so it still passes.
+      services: {getDataset: {status: 403, message: 'Access Denied'}},
+      code: 0,
+      check: r => expect(r.fake.query.mock.calls.map(c => c[2] ?? null))
+                      .toEqual([null, null]),
+    }, {
+      entities: [CUSTOMER],
+      code: 0,
+      events: ['preflight', 'apply', 'deploy g'],
+      check: r => expect(r.fake.query.mock.calls
+                             .filter(c => String(c[1]).startsWith('SELECT 1'))
+                             .map(c => c.slice(1, 4)))
+                      .toEqual([[
+                        'SELECT 1 FROM `test-project.d.customer` WHERE FALSE',
+                        'us-central1', true,
+                      ]]),
+    }],
+  },
+], {deployments: ['g']});

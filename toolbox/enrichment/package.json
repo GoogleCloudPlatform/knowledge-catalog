@@ -21,10 +21,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google-cloud/kcmd": "file:../mdcode",
     "@google/adk": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "cac": "^7.0.0",
-    "kcmd": "file:../mdcode"
+    "cac": "^7.0.0"
   },
   "devDependencies": {
     "@google/adk-devtools": "^1.1.0",

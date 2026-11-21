@@ -5,10 +5,11 @@
 // (`vendor_dialects.bigquery.golden.sql`) captures the UN-transpiled output --
 // each field or metric with only vendor SQL omitted with a warning, because
 // the loader left `expression` unset and BigQuery never emits another engine's
-// SQL. This one captures what `kcmd push --transpile` produces instead: the
-// same model after the pass fills each missing target `expression` from its
-// `importedExpression`, so the DDL carries GoogleSQL. Every expression in the
-// golden was dry-run-validated against real BigQuery (see the fixture header).
+// SQL. This one captures what `kcmd import --transpile` produces instead: the
+// same model after the pass adds a target `BIGQUERY` entry to `dialects` from
+// each node's `importedExpression` (or double-quoted `ANSI_SQL` entry), so the
+// DDL carries GoogleSQL. Every expression in the golden was dry-run-validated
+// against real BigQuery (see the fixture header).
 //
 // The engine is bundled (WASM), so this runs everywhere with no external setup.
 //
@@ -31,20 +32,17 @@ const GOLDEN =
 
 // The full artifact: DDL generated from the transpiled model, then every
 // warning as a SQL comment. Mirrors bigquery.e2e's render but inserts the
-// transpile pass and drops the loader's now-stale "needs transpilation" notes,
-// exactly as `kcmd push --transpile` does (see src/tool/commands.ts).
+// transpile pass and drops the loader's warnings that a BigQuery table cannot
+// run a vendor text, which the transpile pass makes stale,
+// as `kcmd import --transpile` writes the BigQuery SQL the graph reads.
 async function render(): Promise<string> {
   const text = fs.readFileSync(path.join(FIXTURES, FIXTURE), 'utf8');
-  const {models, warnings: loadWarnings} = loadModels(text, {
-    defaultProject: 'sqlgen-testing',
-    defaultDataset: 'demo',
-    allowLegacyBareSource: true,
-  });
+  const {models, warnings: loadWarnings} = loadModels(text);
   const {model, warnings: transpileWarnings} = await transpileModel(models[0]);
   const {ddl, warnings: genWarnings} = generatePropertyGraph(
       model, {project: 'sqlgen-testing', dataset: 'demo'});
 
-  const keptLoad = loadWarnings.filter(w => !w.includes('needs transpilation'));
+  const keptLoad = loadWarnings.filter(w => !w.includes('table cannot run its'));
   const warnings = [...keptLoad, ...transpileWarnings, ...genWarnings];
   const warnBlock =
       warnings.length ? warnings.map(w => `-- ${w}`).join('\n') : '-- (none)';

@@ -37,12 +37,7 @@ const CORPUS = [
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(text, {
-    defaultProject: 'sqlgen-testing',
-    defaultDataset: 'demo',
-    allowLegacyBareSource: true,
-    ...load,
-  });
+  return loadModels(text, load);
 }
 
 function build(fixture: string, load: LoadOptions = {}) {
@@ -104,8 +99,9 @@ describe('Spanner Graph drops what it cannot express', () => {
   });
 
   test('no per-element OPTIONS clause is emitted', () => {
-    // BigQuery attaches description/synonyms as OPTIONS on labels/properties;
-    // Spanner Graph has no such clause, so none appears.
+    // BigQuery attaches description, synonyms and AI context extensions as
+    // OPTIONS on labels and properties. Spanner Graph has no such clause, so
+    // none appears.
     const {ddl} = build('star_orders_customer.yaml');
     expect(ddl).not.toContain('OPTIONS(');
   });

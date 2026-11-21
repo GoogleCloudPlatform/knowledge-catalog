@@ -1,41 +1,18 @@
 CREATE OR REPLACE PROPERTY GRAPH `sqlgen-testing.demo.people`
 NODE TABLES (
-  `sqlgen-testing.demo.person` AS Person
-    KEY(id)
-    DEFAULT LABEL
-    PROPERTIES(
-      id,
-      full_name OPTIONS(description="Full Name"),
-      email
-    ),
   `sqlgen-testing.demo.customer` AS Customer
     KEY(id)
     DEFAULT LABEL
     PROPERTIES(
       id,
       loyalty_tier,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Person
     PROPERTIES(
       id,
-      full_name OPTIONS(description="Full Name"),
-      email
-    ),
-  `sqlgen-testing.demo.employee` AS Employee
-    KEY(id)
-    DEFAULT LABEL
-    PROPERTIES(
-      id,
-      department,
-      full_name OPTIONS(description="Full Name"),
-      email
-    )
-    LABEL Person
-    PROPERTIES(
-      id,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     ),
   `sqlgen-testing.demo.manager` AS Manager
@@ -45,20 +22,20 @@ NODE TABLES (
       id,
       team_size,
       department,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Employee
     PROPERTIES(
       id,
       department,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     )
     LABEL Person
     PROPERTIES(
       id,
-      full_name OPTIONS(description="Full Name"),
+      full_name OPTIONS(extensions=[("label", "Full Name")]),
       email
     ),
   `sqlgen-testing.demo.city` AS City
@@ -74,8 +51,8 @@ EDGE TABLES (
     KEY(id)
     SOURCE KEY(id) REFERENCES Customer(id)
     DESTINATION KEY(city_id) REFERENCES City(id)
+    NO PROPERTIES
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
--- entity 'Person' is a supertype in a class hierarchy; its description/synonyms are dropped from the shared 'Person' label (BigQuery forbids OPTIONS on a label bound by multiple tables)
+-- entity 'Person' is a supertype in a class hierarchy; its metadata is dropped (a supertype is only a LABEL on its subtypes, and BigQuery accepts OPTIONS only on a table's DEFAULT LABEL)

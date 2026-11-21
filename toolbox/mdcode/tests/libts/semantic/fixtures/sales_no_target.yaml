@@ -10,7 +10,7 @@ semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey

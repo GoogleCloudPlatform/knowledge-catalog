@@ -84,3 +84,22 @@ export function nameProblem(kind: NameKind, name: string): string|undefined {
 // description may have: the model's, an entity's, a metric's and a
 // relationship's.
 export const MAX_ENTRY_DESCRIPTION = 2000;
+
+// BigQuery's limits on the OPTIONS of a graph label or property.
+export const MAX_BIGQUERY_DESCRIPTION = 1024;
+export const MAX_BIGQUERY_EXTENSION_VALUE = 1024;
+export const MAX_BIGQUERY_SYNONYM_COUNT = 8;
+export const MAX_BIGQUERY_SYNONYM_LENGTH = 300;
+
+// The error for a reference whose qualifier matches one of `entityNames` only
+// when case is ignored, or undefined. `where` names the field or metric.
+export function qualifierCaseError(
+    where: string, col: {qualifier?: string; name: string},
+    entityNames: string[]): string|undefined {
+  const q = col.qualifier;
+  if (q === undefined || entityNames.includes(q)) return undefined;
+  const entity = entityNames.find(n => n.toLowerCase() === q.toLowerCase());
+  return entity &&
+      `${where}: '${q}.${col.name}' uses qualifier '${q}', which differs in ` +
+      `case from entity '${entity}'; entity names are case-sensitive.`;
+}

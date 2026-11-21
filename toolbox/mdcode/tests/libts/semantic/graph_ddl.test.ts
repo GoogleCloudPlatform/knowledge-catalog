@@ -4,185 +4,13 @@
 // The BigQuery goldens (`bigquery.e2e.test.ts`, `bigquery.test.ts`) pin the
 // BigQuery engine's output. This file checks the shared code itself: that each
 // of the four engine differences -- names, measures, element metadata, SQL
-// text -- comes from the engine, and that an engine with Spanner's names, no
-// measures and no metadata gives spanner.ts's graph on the Spanner test
-// fixtures. One difference is known: a subtype that restates a field it
-// inherits from a concrete parent with a different column gets the parent's
-// column, BigQuery's supertype override, where spanner.ts writes the
-// subtype's own.
+// text -- comes from the engine.
 //
 
 import {describe, expect, test} from 'bun:test';
-import * as fs from 'fs';
-import * as path from 'path';
 
-import {spannerTable} from '../../../src/libts/semantic/binding';
 import {generateGraphDdl, GraphEngine} from '../../../src/libts/semantic/graph_ddl';
 import {fieldBinding, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
-import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
-import {fieldBindingWithoutComments} from '../../../src/libts/semantic/sql_expr_utils';
-import {quoteIdentifier} from '../../../src/libts/semantic/sql_identifiers';
-
-const FIXTURES = path.join(__dirname, 'fixtures');
-
-function loadFixture(fixture: string): SemanticModel {
-  const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  const {models} = loadModels(text, {
-    defaultProject: 'sqlgen-testing',
-    defaultDataset: 'demo',
-    allowLegacyBareSource: true,
-  });
-  return models[0];
-}
-
-
-describe('the graph structure is engine-neutral', () => {
-  // Spanner's names, no measures, no metadata, and today's field SQL. This is
-  // not the Spanner engine (that comes later); it is only enough to show that
-  // on the Spanner test fixtures the shared node tables, edge tables, labels,
-  // properties, and key and join columns are the ones spanner.ts writes. The
-  // last test here pins the one known difference.
-  const BARE: GraphEngine = {
-    name: 'Spanner',
-    table: spannerTable,
-    graphName: model => quoteIdentifier(model.name),
-    placeMetrics: () => new Map(),
-    elementOptions: () => undefined,
-    fieldOptions: () => undefined,
-    dialect: 'SPANNER',
-    fieldExpression: fieldBindingWithoutComments,
-  };
-
-  // The Spanner e2e corpus: a star with metrics, a class hierarchy, a fan-out,
-  // and reserved words with and without inheritance.
-  for (const fixture of [
-         'star_orders_customer.yaml',
-         'hierarchy_graph.yaml',
-         'sales_fanout.yaml',
-         'reserved_words.yaml',
-         'reserved_words_inherit.yaml',
-       ]) {
-    test(`${fixture} matches spanner.ts`, () => {
-      const model = loadFixture(fixture);
-      expect(generateGraphDdl(model, BARE).ddl)
-          .toBe(generateSpannerPropertyGraph(model).ddl);
-    });
-  }
-
-  test('an association edge matches spanner.ts', () => {
-    const model: SemanticModel = {
-      name: 'school_graph',
-      entities: [
-        {
-          name: 'students',
-          dataSource: 'students',
-          keys: ['student_id'],
-          fields: [{name: 'student_id', expression: 'students.student_id'}],
-        },
-        {
-          name: 'courses',
-          dataSource: 'courses',
-          keys: ['course_id'],
-          fields: [{name: 'course_id', expression: 'courses.course_id'}],
-        },
-      ],
-      relationships: [{
-        name: 'enrollment',
-        source: {entity: 'students', columns: ['student_id']},
-        destination: {entity: 'courses', columns: ['course_id']},
-        association: {
-          dataSource: 'enrollment',
-          keys: ['enrollment_id'],
-          sourceColumns: ['student_id'],
-          destinationColumns: ['course_id'],
-          fields: [{name: 'grade', expression: 'enrollment.grade'}],
-        },
-      }],
-      metrics: [],
-    };
-    expect(generateGraphDdl(model, BARE).ddl)
-        .toBe(generateSpannerPropertyGraph(model).ddl);
-  });
-
-  test('fields with comments and vendor SQL match spanner.ts', () => {
-    // spanner.ts removes a field's comments, and reads imported vendor SQL in
-    // its own dialect, so a PostgreSQL `#` stays. The key and join columns read
-    // the same SQL.
-    const model: SemanticModel = {
-      name: 'star',
-      entities: [
-        {
-          name: 'orders',
-          dataSource: 'orders',
-          keys: ['id'],
-          fields: [
-            {name: 'id', expression: 'orders.order_id -- the key'},
-            {name: 'cust', expression: 'orders.cust_id /* the customer */'},
-            {
-              name: 'flags',
-              dialects: [{dialect: 'POSTGRES', expression: 'orders.flags # 1'}],
-              importedExpression: 'orders.flags # 1',
-              importedDialect: 'POSTGRES',
-            },
-          ],
-        },
-        {
-          name: 'customers',
-          dataSource: 'customers',
-          keys: ['cid'],
-          fields: [{name: 'cid', expression: 'customers.customer_id # key'}],
-        },
-      ],
-      relationships: [{
-        name: 'placed_by',
-        source: {entity: 'orders', columns: ['cust']},
-        destination: {entity: 'customers', columns: ['cid']},
-      }],
-      metrics: [],
-    };
-    expect(generateGraphDdl(model, BARE).ddl)
-        .toBe(generateSpannerPropertyGraph(model).ddl);
-  });
-
-  // The known difference. BigQuery allows one definition of a property under a
-  // shared label, so the shared code gives a subtype's restated `email` the
-  // parent's column and warns; spanner.ts writes the subtype's own column. A
-  // later change removes the override.
-  test('a subtype that remaps an inherited column differs from spanner.ts',
-       () => {
-         const model: SemanticModel = {
-           name: 'people',
-           entities: [
-             {
-               name: 'Person',
-               dataSource: 'p.d.person',
-               keys: ['id'],
-               fields: [
-                 {name: 'id', expression: 'Person.id'},
-                 {name: 'email', expression: 'Person.email'},
-               ],
-             },
-             {
-               name: 'Customer',
-               dataSource: 'p.d.customer',
-               keys: ['id'],
-               extends: ['Person'],
-               fields: [
-                 {name: 'id', expression: 'Customer.id'},
-                 {name: 'email', expression: 'Customer.contact_email'},
-               ],
-             },
-           ],
-           relationships: [],
-           metrics: [],
-         };
-         const spanner = generateSpannerPropertyGraph(model).ddl;
-         expect(spanner).toContain('contact_email AS email');
-         expect(generateGraphDdl(model, BARE).ddl)
-             .toBe(spanner.replace('contact_email AS email', 'email'));
-       });
-});
 
 
 describe('each engine difference comes from the engine', () => {
@@ -193,17 +21,21 @@ describe('each engine difference comes from the engine', () => {
     table: dataSource => `<table ${dataSource}>`,
     graphName: model => `<graph ${model.name}>`,
     placeMetrics: metrics => new Map([[
-      'orders', ['<derived>', ...metrics.map(m => `<measure ${m.name}>`)]
+      'orders', {
+        operands: ['<derived>'],
+        measures: metrics.map(m => `<measure ${m.name}>`),
+      }
     ]]),
     elementOptions: description =>
         description === undefined ? undefined : `<options ${description}>`,
     fieldOptions: field => field.description === undefined ?
         undefined :
         `<field options ${field.description}>`,
-    // Other SQL than the field's own for the key column and `amount`, and none
-    // for `notes`, so the expected DDL shows every place the graph reads a
-    // field's SQL: properties, key and join columns, and the filter that leaves
-    // out a field the engine has no SQL for.
+    // Other SQL than the field's own for `order_id` and `amount`, and none for
+    // `notes`, so the expected DDL shows every place the graph reads a field's
+    // SQL: properties, and the filter that leaves out a field the engine has no
+    // SQL for. Key and join columns name columns, so they never read it, even
+    // where a field has their name.
     fieldExpression: field => {
       switch (field.name) {
         case 'order_id':
@@ -228,10 +60,10 @@ describe('each engine difference comes from the engine', () => {
         keys: ['order_id'],
         description: 'One row per order',
         fields: [
-          {name: 'order_id', expression: 'orders.order_id'},
-          {name: 'amount', expression: 'orders.amount', description: 'Total'},
-          {name: 'customer_id', expression: 'orders.customer_id'},
-          {name: 'notes', expression: 'orders.notes'},
+          {name: 'order_id', expression: 'order_id'},
+          {name: 'amount', expression: 'amount', description: 'Total'},
+          {name: 'customer_id', expression: 'customer_id'},
+          {name: 'notes', expression: 'notes'},
           {name: 'memo'},
         ],
       },
@@ -285,7 +117,7 @@ describe('each engine difference comes from the engine', () => {
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(id)
+    KEY(order_id)
     <options One row per order>
     PROPERTIES(
       id AS order_id,
@@ -295,21 +127,22 @@ NODE TABLES (
       <measure revenue>
     ),
   <table p.d.customers> AS customers
-    KEY(CAST(id AS STRING))
+    KEY(customer_id)
     PROPERTIES(
       CAST(id AS STRING) AS customer_id
     )
 )
 EDGE TABLES (
   <table p.d.orders> AS placed_by
-    KEY(id)
-    SOURCE KEY(id) REFERENCES orders(id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
-    <options Who placed it>,
+    KEY(order_id)
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
+    <options Who placed it>
+    NO PROPERTIES,
   <table p.d.gifts> AS gifted_to
     KEY(gift_id)
-    SOURCE KEY(order_id) REFERENCES orders(id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
     <options Who received it>
     PROPERTIES(
       card_text AS message <field options Card text>
@@ -317,16 +150,17 @@ EDGE TABLES (
   <table ghost> AS from_ghost
     KEY(customer_id)
     SOURCE KEY(customer_id) REFERENCES ghost(customer_id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
+    NO PROPERTIES
 );
 `);
        });
 
-  // A subtype of a concrete entity shares its label. The supertype's label
-  // loses its OPTIONS, the subtype's remapped `customer_id` gives way to the
-  // supertype's, and the subtype's `LABEL orders` block repeats the
-  // supertype's properties with the engine's SQL and field metadata. Both
-  // warnings name the engine.
+  // A subtype of a concrete entity carries its label. The supertype forms no
+  // node table, the subtype reads its remapped `customer_id` from its own
+  // column, and its `LABEL orders` block lists the supertype's properties, in
+  // the supertype's order, with the engine's SQL and field metadata. The
+  // supertype's own description reaches no element, with a warning.
   test('a class hierarchy takes its metadata and SQL text from the engine',
        () => {
          const model: SemanticModel = {
@@ -338,13 +172,13 @@ EDGE TABLES (
                keys: ['order_id'],
                description: 'One row per order',
                fields: [
-                 {name: 'order_id', expression: 'orders.order_id'},
+                 {name: 'order_id', expression: 'order_id'},
                  {
                    name: 'amount',
-                   expression: 'orders.amount',
+                   expression: 'amount',
                    description: 'Total'
                  },
-                 {name: 'customer_id', expression: 'orders.customer_id'},
+                 {name: 'customer_id', expression: 'customer_id'},
                ],
              },
              {
@@ -366,20 +200,12 @@ EDGE TABLES (
          expect(ddl).toBe(`\
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
-  <table p.d.orders> AS orders
-    KEY(id)
-    DEFAULT LABEL
-    PROPERTIES(
-      id AS order_id,
-      amount_usd AS amount <field options Total>,
-      customer_id
-    ),
   <table p.d.gift_orders> AS gift_orders
-    KEY(id)
+    KEY(order_id)
     DEFAULT LABEL
     <options Orders sent as gifts>
     PROPERTIES(
-      customer_id,
+      buyer_id AS customer_id,
       id AS order_id,
       amount_usd AS amount <field options Total>
     )
@@ -387,29 +213,31 @@ NODE TABLES (
     PROPERTIES(
       id AS order_id,
       amount_usd AS amount <field options Total>,
-      customer_id
+      buyer_id AS customer_id
     )
 );
 `);
          expect(warnings).toEqual([
            `entity 'orders' is a supertype in a class hierarchy; its ` +
-               `description/synonyms are dropped from the shared 'orders' ` +
-               `label (Marked forbids OPTIONS on a label bound by multiple ` +
-               `tables)`,
-           `entity 'gift_orders' remaps inherited property 'customer_id' to ` +
-               `a different column/expression than its supertype; Marked ` +
-               `allows only one definition per property under a shared ` +
-               `label, so the supertype's is used and the subclass's ` +
-               `remapping is dropped`,
+               `metadata is dropped (a supertype is only a LABEL on its ` +
+               `subtypes, and Marked accepts OPTIONS only on a table's ` +
+               `DEFAULT LABEL)`,
          ]);
        });
 
   test('warnings name the engine', () => {
     const {warnings} = generateGraphDdl(MODEL, MARKED);
-    expect(warnings).toContain(
-        `entity 'customers': field 'customer_id' is bound to a non-column ` +
-        `expression (CAST(id AS STRING)); a KEY/REFERENCES site ` +
-        `requires a bare column, so Marked will reject the generated DDL`);
+    // A key named like a field with a computed expression is still a column.
+    expect(warnings.filter(w => w.includes('KEY/REFERENCES'))).toEqual([]);
+    const computedKey = {
+      ...MODEL,
+      entities: [MODEL.entities[0],
+                 {...MODEL.entities[1], keys: ['CAST(id AS STRING)']}],
+    };
+    expect(generateGraphDdl(computedKey, MARKED).warnings).toContain(
+        `entity 'customers': key or join column 'CAST(id AS STRING)' is not ` +
+        `a physical column name; a KEY/REFERENCES site requires a column, so ` +
+        `Marked will reject the generated DDL`);
     expect(warnings).toContain(
         `1 action(s) reach Knowledge Catalog only; the Marked push deploys ` +
         `none of them.`);
@@ -429,7 +257,7 @@ NODE TABLES (
   });
 
   test('placeMetrics sees the graph as the shared code built it', () => {
-    let seen: {skipped: string[]; ancestorsUsed: string[]; entities: string[]}|
+    let seen: {skipped: string[]; parents: string[]; entities: string[]}|
         undefined;
     const model: SemanticModel = {
       ...MODEL,
@@ -440,14 +268,21 @@ NODE TABLES (
           name: 'keyless',
           dataSource: 'p.d.keyless',
           keys: [],
-          fields: [{name: 'x', expression: 'keyless.x'}],
+          fields: [{name: 'x', expression: 'x'}],
+        },
+        // A concrete parent with a KEY still forms no node table.
+        {
+          name: 'member',
+          dataSource: 'p.d.member',
+          keys: ['customer_id'],
+          fields: [{name: 'customer_id', expression: 'member.customer_id'}],
         },
         {
           name: 'vip',
           dataSource: 'p.d.vip',
           keys: ['customer_id'],
-          extends: ['party'],
-          fields: [{name: 'customer_id', expression: 'vip.customer_id'}],
+          extends: ['party', 'member'],
+          fields: [{name: 'customer_id', expression: 'customer_id'}],
         },
       ],
     };
@@ -456,16 +291,16 @@ NODE TABLES (
       placeMetrics: (_metrics, input) => {
         seen = {
           skipped: [...input.skipped].sort(),
-          ancestorsUsed: [...input.ancestorsUsed].sort(),
+          parents: [...input.parents].sort(),
           entities: [...input.entityByName.keys()].sort(),
         };
         return new Map();
       },
     });
     expect(seen).toEqual({
-      skipped: ['keyless', 'party'],
-      ancestorsUsed: ['party'],
-      entities: ['customers', 'keyless', 'orders', 'party', 'vip'],
+      skipped: ['keyless', 'member', 'party'],
+      parents: ['member', 'party'],
+      entities: ['customers', 'keyless', 'member', 'orders', 'party', 'vip'],
     });
   });
 });

@@ -4,7 +4,7 @@ semantic_model:
     description: TPC-DS retail model
     datasets:
       - name: store_sales
-        source: tpcds.public.store_sales
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales
         primary_key:
           - ss_item_sk
           - ss_ticket_number
@@ -63,7 +63,7 @@ semantic_model:
                   expression: ss_net_profit
             description: Net profit from the sale
       - name: customer
-        source: tpcds.public.customer
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
         primary_key:
           - c_customer_sk
         description: Customer dimension with demographic information
@@ -92,7 +92,7 @@ semantic_model:
               is_time: false
             description: Customer last name
       - name: item
-        source: tpcds.public.item
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
         primary_key:
           - i_item_sk
         description: Item/Product dimension
@@ -125,7 +125,7 @@ semantic_model:
                   expression: i_current_price
             description: Current price of the item
       - name: store
-        source: tpcds.public.store
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
         primary_key:
           - s_store_sk
         description: Store dimension with location attributes
@@ -165,7 +165,7 @@ semantic_model:
                   expression: s_number_employees
             description: Number of employees at the store
       - name: date_dim
-        source: sqlgen-testing.demo.date_dim
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim
         primary_key:
           - ss_sold_date_sk
         description: Date dimension with calendar attributes

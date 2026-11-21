@@ -23,15 +23,15 @@ semantic_model:
   - name: lowering
     datasets:
       - name: orders
-        source: orders
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.o_orderkey }]
+              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
           - name: status
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.status }]
+              dialects: [{ dialect: BIGQUERY, expression: status }]
     metrics:
       - name: total_amount
         expression:

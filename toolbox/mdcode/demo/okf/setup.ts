@@ -1,7 +1,7 @@
 import * as cp from 'child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 import { YAML } from 'bun';
 import { manifestFile, parseDemoArgs } from './okf';
 

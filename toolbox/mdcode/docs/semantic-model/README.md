@@ -14,16 +14,14 @@ destination at once:
   AI agents the semantics and business context to work with your data. Governing
   needs no tables or data, so you can publish a purely logical model before it is
   bound, or govern the model together with its bindings — the catalog serves
-  either. `kcmd pull` returns the model files push stored with these entries.
-  It rebuilds the model from the entries only when no copy of the model file is
-  stored.
+  either. `kcmd pull` rebuilds the model files from these entries.
 * **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
   rather than re-deriving joins and formulas per query. The store can be
   **analytical**, such as BigQuery for reporting and conversational-analytics
   agents, or **operational**, such as Spanner for the live state an agent reads
   before it acts. Which store a model deploys to is set by its
-  [deployment target](#where-a-model-deploys-the-deployment-target); the query
+  [deployments](#where-a-model-deploys-deployments); the query
   mechanics are in [Reference](reference.md#what-gets-created-in-bigquery).
 
 Both come from the same source, so a single `push` keeps them in sync and you
@@ -167,37 +165,29 @@ kcmd push --validate-only --print   # preview the entries and links, write nothi
 kcmd push                           # write them
 ```
 
-Push creates one entry per entity and metric, one for the model itself, one
-per model file and profile file holding a copy of that file, and a
-`schema-join` link for each relationship:
+Push creates an entry for the model itself and for each entity, metric and
+relationship. A `semantic-link` joins each pair of related entities, and two
+`reference` links join each relationship's entry to its two entities:
 
 ```
-Wrote 5 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
+Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 3 entry links.
 ```
 
-Some relationships get no link, and push warns about each one before it writes
-to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
-Knowledge Catalog keeps one `schema-join` link between two entries, so when
-several relationships join the same two entities, only the first one that push
-can publish gets a link. Knowledge Catalog does not support a relationship from
-an entity to itself, so push skips it. Pull still returns a skipped
-relationship, because it writes back the stored copy of the model file. Only a
-model file that pull rebuilds from the catalog metadata leaves it out.
+Push rejects a relationship from an entity to itself, and relationships in
+both directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
 gives AI agents the semantics and business context to reason over your data.
-`kcmd pull` returns the model file and profile files stored with them. It
-rebuilds the model document from them only when no copy of the model file is
-stored (see [Pull](#pull)).
+`kcmd pull` rebuilds the model file and profile files from them (see
+[Pull](#pull)).
 Governance works whether the model is purely logical or already bound: govern it
 before it has any physical home, or govern the logical model together with its
-bindings. Every store you bind it to later serves this one definition. (Running
-`--no-kc` on a model with no deployment target is an error — it would have nowhere
-to deploy.)
+bindings. Every store you bind it to later serves this one definition.
 
 > Writing these entries needs the `semantic-model` / `semantic-entity` /
-> `semantic-metric` entry types and write access to the entry group. See
+> `semantic-metric` / `semantic-relationship` entry types and write access to
+> the entry group. See
 > [Permissions](reference.md#permissions).
 
 ## 3. Bind and deploy to a store
@@ -205,84 +195,89 @@ to deploy.)
 To make the model queryable, bind it to a store: name where each entity reads
 from, which column each field maps to, and which store the model deploys to. You
 can put these bindings directly on the model, or keep them in a separate **binding
-profile** so one logical model serves several stores. See
-[Binding profiles](profiles.md); for a runnable end-to-end that binds the same
-model to BigQuery and Spanner and queries each, see the [codelab](codelab.md).
+profile** (`<model>.profile.<name>.yaml`) so one logical model serves several
+stores. See [Binding profiles](profiles.md); for a runnable end-to-end that
+binds the same model to BigQuery and Spanner and queries each, see the
+[codelab](codelab.md).
 
-Once the model is bound, `kcmd push` deploys to the store its target names and to
-Knowledge Catalog. The most common flags:
+Once the model declares `deployments`, `kcmd push` publishes to Knowledge
+Catalog and deploys each selected deployment to the store its `target` names.
+The most common flags:
 
 ```bash
-kcmd push                      # deploy to the store (default binding) + Knowledge Catalog
-kcmd push --no-kc              # deploy only to the store, skip Knowledge Catalog
-kcmd push --no-profile         # publish only to Knowledge Catalog, deploy to no store
-kcmd push --profile analytical # deploy with one binding profile; its target picks the store
-kcmd push --all-profiles       # deploy once per binding profile
-kcmd push --validate-only      # run all checks, write nothing
-kcmd push --print              # also print the generated DDL / entry plan
+kcmd push                         # publish to Knowledge Catalog + deploy every deployment in deployments
+kcmd push --deployment analytical # publish to Knowledge Catalog + deploy only the analytical deployment
+kcmd push --no-deployment         # publish only to Knowledge Catalog, deploy to no store
+kcmd push --validate-only         # run the checks, write nothing
+kcmd push --print                 # also print the generated DDL / entry plan
 ```
 
-A push has two axes. The **binding-profile axis** sets how many profiles the model
-deploys for: the default binding, `--no-profile` (none — catalog only), a single
-`--profile`, or every one with `--all-profiles`. The **Knowledge Catalog axis** is
-`--no-kc` (skip the catalog leg). You never name the store on the command line; the
-model's deployment target — or the [profile](profiles.md) you merge — selects it.
-The store leg deploys first and fails fast, so a rejected model never
-half-deploys; the checks that gate it are in
+You never name the store on the command line; each entry in `deployments` names
+its `target` and optional `profile`. The checks that gate a push are in
 [Validation](reference.md#validation), and the full flag list is in
-[Reference → push](reference.md#push).
+[Reference → push](reference.md#push), with the order of push's checks and writes.
 
-### Where a model deploys (the deployment target)
+### Where a model deploys (`deployments`)
 
-A bound model declares exactly one **deployment target**: where in a store the
-model deploys. The host of the target URI selects the store:
+A bound model declares its **deployments** in `deployments`: each entry names
+where in a store that deployment lands (`target`), written as its GCP resource
+name, and optionally which binding `profile` it uses. The target's host selects
+the store:
 
 ```
 # BigQuery — an analytical store
-//bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
+bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
 
 # Spanner — an operational store
-//spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<name>
+spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/graphs/<name>
+
+# AlloyDB — an operational runtime store (no property-graph DDL deployed on push)
+alloydb.googleapis.com/projects/<project>/locations/<location>/clusters/<cluster>/databases/<database>
 ```
 
 A BigQuery target names the project and dataset the model deploys into; a Spanner
-target names the instance and database. Swapping one target URI for the other
-deploys the same model to the other store — the logical model does not change. The
-target is also recorded on the model's Knowledge Catalog entry. A model with more
-than one deployment target is rejected at push time (see
+target names the instance and database. Swapping one target for the other
+deploys the same model to the other store, and listing both deploys it to both.
+The logical model does not change. The deployments
+are also recorded on the model's Knowledge Catalog entry. Two deployments in the
+same model that name the same target are rejected at load time (see
 [Validation](reference.md#validation)).
 
-For a model that serves more than one store, the target belongs to a
-[binding profile](profiles.md) rather than the model. `deployment_target` is a
-resource URI and a native key under the extended `0.2.0.dev0/google` profile; under
-vanilla Ossie the same target is written inside a `GOOGLE` custom extension instead
-(see [model spec §6](model_spec.md#6-the-extension-mechanism)).
+`deployments:` is a native model key under the extended `0.2.0.dev0/google`
+flavor; under vanilla Ossie (`0.2.0.dev0`) the same list is written inside a
+`GOOGLE` custom extension instead (see
+[model spec §6](model_spec.md#6-the-extension-mechanism)). A vanilla model also
+binds every source, field expression and join column inline.
+[A complete vanilla model](model_spec.md#appendix-a-complete-vanilla-model)
+shows both.
 
 ### Table sources
 
-Each entity's `source` names its backing table, written as a resource URI:
-`//bigquery.googleapis.com/…/tables/<table>` for BigQuery,
-`//spanner.googleapis.com/…/tables/<table>` for Spanner. A
+Each entity's `source` names its backing table, written as its GCP resource name:
+`bigquery.googleapis.com/…/tables/<table>` for BigQuery,
+`spanner.googleapis.com/…/tables/<table>` for Spanner. A
 [binding profile](profiles.md) can move an entity between stores by swapping this
-URI.
+name.
 
-For BigQuery, a shorthand dotted name also works: `dataset.table` (two parts) is
-qualified with the scope's project from `init`, and `project.dataset.table` names
-a table in another project. A name with more than three parts — a four-part
-`catalog.database.schema.table`, say — points at a table in a **federated REST
-catalog**, such as an Apache Iceberg table exposed through BigLake. Validation
-resolves the name the same way the deploy does (see
-[Validation](reference.md#validation)).
+A table in a **federated REST catalog**, such as an Apache Iceberg table exposed
+through BigLake, is written as its BigLake resource name,
+`biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>`.
+A table in a BigLake Hive catalog is written with `databases/<d>` in place of
+`namespaces/<n>`.
+Validation resolves each name the same way the deploy does (see
+[Validation](reference.md#validation)), and [profiles.md](profiles.md#sources)
+lists every accepted store.
 
 ### What push creates
 
 In **BigQuery**, a single `CREATE OR REPLACE PROPERTY GRAPH` per deployment
 target: each entity becomes a node table, each relationship an edge table, each
 metric a measure. In **Spanner**, the same `CREATE OR REPLACE PROPERTY GRAPH` with
-bare table names and no measures — Spanner Graph has no `MEASURE`, so metrics are
-dropped with a warning while the graph structure (nodes, edges, labels,
-inheritance) still deploys. In **Knowledge Catalog**, one entry per model, entity,
-and metric, plus `schema-join` links for relationships. The exact mapping — and
+bare table names and no measures — Spanner has no `MEASURE`, so a Spanner
+deployment uses a profile that excludes every metric, and push rejects one that
+leaves a metric available. In **Knowledge Catalog**, one entry per model, entity,
+metric and relationship, plus the `semantic-link` and `reference` links that
+join them. The exact mapping — and
 the class-hierarchy handling — is in
 [Reference → What gets created](reference.md#what-gets-created-in-bigquery) (and
 [in Spanner](reference.md#what-gets-created-in-spanner)); what of your metadata
@@ -310,6 +305,11 @@ shows `unlinked N orphaned links`). Push reconciles only the links of the model
 it is deploying, and an entry group holds exactly one model, so it never
 disturbs another model's links.
 
+`kcmd push --validate-only --print` lists the entries and links a push would
+remove, so you can check them before you push. Under `--force-remove`, the
+list includes the entries and links of a model you no longer push. Without
+`--print`, it says how many.
+
 **When you remove a whole model** — deleting its document does *not* remove it
 from the catalog. As long as you still push at least one other model in the same
 entry group, push stops and names the model the catalog still has that you no
@@ -317,7 +317,8 @@ longer push, so you can't wipe one out by accident or by pushing from the wrong
 directory; run push again with `--force-remove` to delete its entries and links.
 That push deletes the old model entry first, and Dataplex deletes the model's
 other entries and its links with it. A push that stops partway then leaves the
-whole old model or none of it.
+whole old model or none of it. When the old model is stored in a version this
+`kcmd` does not support, push's refusal names that version.
 Deleting *every* document is the exception: with no models left to push, the run
 reports `No semantic model documents found; nothing to deploy` and touches
 nothing — so remove a model while other models in its group remain, or delete
@@ -327,21 +328,55 @@ Every push prints one line per destination summarizing what it did. For a push
 that deploys to both the store and Knowledge Catalog:
 
 ```
+Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; wrote 3 entry links; unlinked 1 orphaned link.
 Deployed 1 BigQuery Graph(s).
-Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
 
 A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
 BigQuery line.
 
+Push first reads each entry the model defines that the catalog already holds,
+with every aspect type push writes or removes on that entry. It sends no write
+for one whose display name, description, labels, other source fields and
+push-owned aspects already match what push would write. It sends no write
+either for an entry link the catalog holds with the same two entries and the
+same aspect data.
+The summary counts those entries and links in parentheses, so a push that
+changes nothing prints
+`Wrote 0 new and 0 updated Knowledge Catalog entries (6 unchanged); wrote 0 entry links (3 unchanged).`
+An unchanged model entry still gets the `kcmd-push-state` label writes when
+anything else in the model changes, or when its label does not already say
+`finished`. An aspect edited in the console no longer matches, so the next push
+writes that entry again.
+
 ## Pull
 
-`kcmd pull` is the inverse of push's Knowledge Catalog leg: it writes the model
-file and profile files push stored back to
-`catalog/EntryGroups/<entryGroupId>/`. When the catalog holds no copy of the
-model file, it rebuilds `<model>.yaml` from the `semantic-*` entries instead.
-Use it to recover a workspace from a catalog someone else deployed, or to see
-what the catalog actually holds.
+`kcmd pull` is the inverse of push's Knowledge Catalog leg: it rebuilds the
+model file and profile files from the `semantic-*` entries and writes them to
+`catalog/EntryGroups/<entryGroupId>/`. Pull changes a local model or profile
+file only where the catalog differs from it: every other value keeps its text,
+comments, key order and formatting. A changed string keeps its quoting or block
+style, and other changed values are written in pull's form. A changed block
+scalar keeps the indentation of its lines and its indentation indicator. A block
+more than 9 columns deeper than its key that comes to need an indicator is
+double-quoted, since the indicator stops at 9. A double-quoted string whose
+lines would read back as other text, such as a line of one space, is written on
+one line. A string that comes to hold DEL, a C1 control or a line or paragraph
+separator is double-quoted, with those characters written as escapes. When the
+catalog reorders a list whose order counts, such as an entity's fields, an item
+that moves, or an item it moves past, can be written in pull's form too. The
+JSON `data` of a GOOGLE block, which holds a vanilla model's deployments and
+profiles, changes the same way and keeps its layout. DEL, the C1 controls and
+the line and paragraph separators in it are written as JSON escapes, such as
+`\u2028`. When that `data` would then not hold what the catalog holds, it comes
+back as the catalog holds it, and the rest of the file still changes only where
+it differs. A `data` written as a quoted string over several lines that changes
+is written as one line of compact JSON, quoted as kcmd quotes a new block.
+Another vendor's `data` comes back as the catalog holds it. Pull writes a file
+whole when there is no local file, and when it cannot change only those values.
+When a local file does not load, pull warns and writes it from the catalog. Use
+pull to recover a workspace from a catalog someone else deployed, or to see what
+the catalog actually holds.
 
 ```bash
 kcmd pull
@@ -357,31 +392,35 @@ model's files; a group with more than one `semantic-model` anchor is an
 unexpected state, so pull stops and names the anchors rather than guess which to
 keep.
 
+For a model an older `kcmd` pushed, pull writes nothing and warns. Push that
+model again with the current `kcmd`. When the model entry holds a version this
+`kcmd` does not support, pull stops and writes nothing.
+
 Pull overwrites a model that already exists locally in place. If the catalog's
 model has a **different name** than the one on disk, writing it would leave the
 entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
-local model and replace it with the catalog's. Pull never touches the data store.
+local model and replace it with the catalog's. When the local file holds the
+catalog's model under another file name, pull says so. Renaming the file to
+`<model>.yaml`, and each of its profile files to `<model>.profile.<name>.yaml`,
+keeps them with their comments. Pull never touches the data store.
 
-Push also stores a copy of the model file and of each profile file, and pull
-writes those copies back to the paths they came from, byte for byte. A local
-profile file the catalog has no copy of would be stored again by the next push,
-so pull names it in a warning, and `--force-remove` deletes it. Each push marks
-its copies with one id and the number of copies it stored. It also puts that id
-in the `kcmd-push-id` label of the model entry, which it writes before the
-copies. Pull refuses the catalog when the copies come from two pushes, when
-their number differs from that count, or when the label names a push whose
-copies the catalog does not hold. Each of these means the last push stopped
-partway. Pull then writes and deletes nothing and asks you to push again.
+Every push that changes the model sets the `kcmd-push-state` label of the
+model entry to `writing` before it writes the model's other entries, and to
+`finished` with its last write, after it deletes what the model no longer has.
+A push that finds the whole model unchanged and the label `finished` writes
+nothing to the model. Pull
+refuses a model entry still labeled `writing`: it writes and deletes nothing and
+asks you to push again. A model with no such label, such as one an older `kcmd`
+pushed, counts as finished.
 
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.
-After a failed push, push again before you pull.
+With `--force-remove`, a push that stopped while it removed the old model can
+leave no model, and pull then finds nothing to pull. After a failed push, push
+again before you pull.
 
-A model with no label and no stored copies, such as one an older `kcmd` pushed,
-is rebuilt from the catalog metadata. Pull warns that the rebuilt file may differ
-from what was pushed, and keeps every local profile file. Pull also rebuilds the
-model file when no stored copy is named after the model. That rebuild is **not** an identity
+The rebuild is **not** an identity
 — see [What push and pull preserve](fidelity.md) for exactly what comes back,
 what comes back normalized, and what doesn't come back at all.
 

@@ -40,8 +40,9 @@
 // graph").
 
 import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {listed, plural} from '../../loader';
 
-import {OwlModel, OwlOntology} from './model';
+import {AnonymousClass, OwlModel, OwlOntology} from './model';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -209,6 +210,26 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+// How a warning names each kind of anonymous class.
+const ANONYMOUS_CLASS: Record<AnonymousClass, string> = {
+  union: 'a union of classes',
+  intersection: 'an intersection of classes',
+  other: 'an anonymous class',
+};
+
+// The warning for a property with an anonymous class as a domain or range, or
+// undefined when it has none.
+function anonymousWarning(
+    property: string,
+    ends: Array<[string, AnonymousClass | undefined]>): string|undefined {
+  const parts =
+      ends.filter(([, kind]) => kind)
+          .map(([end, kind]) => `${ANONYMOUS_CLASS[kind!]} as its ${end}`);
+  if (!parts.length) return undefined;
+  return `${property} has ${parts.join(' and ')}, which import does not ` +
+      `read; import leaves out the property.`;
+}
+
 // --- Mapping. ---------------------------------------------------------------
 
 /**
@@ -221,6 +242,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
   const classNames = new Set(owl.classes.map(c => c.localName));
+  const classNameOfIri = new Map(owl.classes.map(c => [c.iri, c.localName]));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
@@ -229,6 +251,10 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // silently emitting a duplicate the loader would reject.
   const entitiesByName = new Map<string, Entity>();
   const entities: Entity[] = [];
+  // The owl:hasKey property IRIs of each entity, and the field name written for
+  // each property IRI on it, so a key resolves by full IRI.
+  const keyIris = new Map<Entity, string[]>();
+  const fieldOfIri = new Map<Entity, Map<string, string>>();
   for (const c of owl.classes) {
     if (entitiesByName.has(c.localName)) {
       warnings.push(
@@ -242,7 +268,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       // No source: a class is a logical entity. A binding profile supplies the
       // backing table before a graph deploy; KC push needs none.
       dataSource: '',
-      keys: dedupe(c.keys),  // owl:hasKey -> primary_key (grain)
+      keys: [],  // owl:hasKey -> primary_key (grain), set once fields exist
       description: c.comment,
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms, c.examples),
       fields: [],
@@ -254,12 +280,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // parent (a typo, or a superclass imported from another ontology) cannot be
     // resolved, and the loader hard-fails on an unknown supertype, so it is
     // DROPPED here with a warning rather than emitted into a model that could
-    // not be pushed.
+    // not be pushed. A declared parent that shares its local name with an
+    // earlier class is dropped the same way, with its own warning, since import
+    // writes no entity for it.
     if (c.subClassOf.length) {
       const parents = dedupe(c.subClassOf);
       const known = parents.filter(name => classNames.has(name));
-      const unknown = parents.filter(name => !classNames.has(name));
+      const declared = parents.filter(
+          name => !classNames.has(name) && classNameOfIri.has(name));
+      const unknown = parents.filter(
+          name => !classNames.has(name) && !classNameOfIri.has(name));
       if (known.length) entity.extends = known;
+      for (const iri of declared) {
+        const name = classNameOfIri.get(iri);
+        const also = name === c.localName ? 'also ' : '';
+        warnings.push(
+            `class '${c.localName}' extends another class ${also}named '${
+                name}' (${iri}); import leaves out that superclass, because ` +
+            `a model cannot have two entities with the same name.`);
+      }
       if (unknown.length) {
         warnings.push(
             `class '${c.localName}' declares rdfs:subClassOf a non-class ` +
@@ -270,12 +309,20 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
+    keyIris.set(entity, dedupe(c.keys));
+    fieldOfIri.set(entity, new Map());
   }
 
   // Datatype properties -> fields on each domain's entity. A property with more
   // than one domain appears on each; one with none has nowhere to live.
   let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
+    const anonymous = anonymousWarning(
+        `datatype property '${p.localName}'`, [['domain', p.anonymousDomain]]);
+    if (anonymous) {
+      warnings.push(anonymous);
+      continue;
+    }
     if (!p.domains.length) {
       warnings.push(
           `datatype property '${p.localName}' has no rdfs:domain; skipped ` +
@@ -287,6 +334,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     let produced = false;
     for (const domain of p.domains) {
       const entity = entitiesByName.get(domain);
+      const name = classNameOfIri.get(domain);
+      if (!entity && name !== undefined) {
+        warnings.push(
+            `datatype property '${p.localName}' has domain '${name}' (${
+                domain}), a second class with that name; import leaves out ` +
+            `that class and the field on it, because a model cannot have ` +
+            `two entities with the same name.`);
+        continue;
+      }
       if (!entity) {
         warnings.push(
             `datatype property '${p.localName}' has domain '${domain}', ` +
@@ -313,10 +369,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
       entity.fields.push(field);
+      fieldOfIri.get(entity)!.set(p.iri, p.localName);
       produced = true;
       // An inverse-functional property uniquely identifies its subject -> a
       // unique_keys constraint, unless it is already the primary key.
-      if (p.inverseFunctional && !arraysEqual(entity.keys, [p.localName])) {
+      if (p.inverseFunctional && !arraysEqual(keyIris.get(entity)!, [p.iri])) {
         (entity.uniqueKeys ??= []).push([p.localName]);
       }
     }
@@ -327,27 +384,31 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // corrections are fail-soft (warn, never throw), matching the converter's
   // per-element policy:
   //   1. owl:hasKey may name a property that is not a datatype property on the
-  //      class (undeclared, or declared only on a different domain). That
-  //      column has no field, so it would name a phantom column that only
-  //      errors later at graph generation. Drop the ENTIRE primary_key, not
-  //      just the phantom member -- keeping the survivors would silently narrow
-  //      a composite key to a possibly non-unique one, changing the grain.
+  //      class (undeclared, or declared only on a different domain). A key
+  //      resolves to a field only when its full IRI is the property written as
+  //      that field, so foaf:id never selects the field written for ex:id. An
+  //      unresolved key has no field, so it would name a phantom column that
+  //      only errors later at graph generation. Drop the ENTIRE primary_key,
+  //      not just the phantom member -- keeping the survivors would silently
+  //      narrow a composite key to a possibly non-unique one, changing the
+  //      grain. The warning names an unresolved key by its full IRI.
   //   2. A class with no usable owl:hasKey but exactly one single-column
   //      inverse-functional property still has a natural identifier; promote
-  //      that unique key to the primary_key so the entity is valid for graph
-  //      generation rather than keyless. (Ambiguous cases -- several unique
-  //      keys, or a composite one -- are left alone.)
+  //      that unique key to the primary_key so the entity has a grain.
+  //      (Ambiguous cases -- several unique keys, or a composite one -- are
+  //      left alone.)
   for (const entity of entities) {
-    const fieldNames = new Set(entity.fields.map(f => f.name));
-    const missing = entity.keys.filter(k => !fieldNames.has(k));
-    if (missing.length) {
+    const fields = fieldOfIri.get(entity)!;
+    const missing = keyIris.get(entity)!.filter(k => !fields.has(k));
+    if (!missing.length) {
+      entity.keys = keyIris.get(entity)!.map(k => fields.get(k)!);
+    } else {
       warnings.push(
           `class '${entity.name}' owl:hasKey names ${
               missing.map(m => `'${m}'`).join(', ')} which ${
               missing.length > 1 ? 'are' : 'is'} not a datatype property on ` +
           `the class; dropping the entire primary_key (keeping only the ` +
           `remaining columns would change the entity's grain).`);
-      entity.keys = [];
     }
     if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
         entity.uniqueKeys[0].length === 1) {
@@ -360,18 +421,106 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
   }
 
+  // The direct subclasses of each class, as written to `extends`.
+  const subclasses = new Map<string, string[]>();
+  for (const e of entities) {
+    for (const parent of e.extends ?? []) {
+      subclasses.set(parent, [...(subclasses.get(parent) ?? []), e.name]);
+    }
+  }
+  // The sentence naming the classes under `name` that have no subclasses, in
+  // class order.
+  const leavesSentence = (name: string): string => {
+    const under = new Set<string>();
+    const walk = (c: string) => {
+      for (const s of subclasses.get(c) ?? []) {
+        if (under.has(s)) continue;
+        under.add(s);
+        walk(s);
+      }
+    };
+    walk(name);
+    const leaves = entities.map(e => e.name)
+                       .filter(n => under.has(n) && !subclasses.has(n))
+                       .map(n => `'${n}'`);
+    if (!leaves.length) return `Every class under '${name}' has subclasses.`;
+    return `The ${plural(leaves.length, 'class', 'classes')} under '${
+        name}' with no subclasses ${plural(leaves.length, 'is', 'are')} ${
+        listed(leaves)}.`;
+  };
+
   // Object properties -> relationships (edges). Both endpoints must be known
   // classes. The edge is logical: it carries only its direction (source entity
   // -> destination entity), no join columns. The foreign-key / key columns are
   // added to the model (logical grain, not a binding) before a graph deploy.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
+    const anonymous = anonymousWarning(
+        `object property '${p.localName}'`,
+        [['domain', p.anonymousDomain], ['range', p.anonymousRange]]);
+    if (anonymous) {
+      warnings.push(anonymous);
+      continue;
+    }
     const domain = p.domains[0];
     const range = p.ranges[0];
     if (!domain || !range) {
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
           `rdfs:range; skipped (a relationship needs both endpoints).`);
+      continue;
+    }
+    // An endpoint import leaves out because an earlier class has its name.
+    const leftOut = ([['domain', domain], ['range', range]] as const)
+                        .filter(([, c]) =>
+                                !classNames.has(c) && classNameOfIri.has(c))
+                        .map(([end, c]) => `${end} '${
+                                 classNameOfIri.get(c)}' (${c})`);
+    if (leftOut.length) {
+      warnings.push(
+          `object property '${p.localName}' has ${leftOut.join(' and ')}, ${
+              plural(
+                  leftOut.length, 'a second class',
+                  'each a second class')} with that name; import leaves ` +
+          `out ${plural(leftOut.length, 'that class', 'those classes')} and ` +
+          `the property, because a model cannot have two entities with the ` +
+          `same name.`);
+      continue;
+    }
+    if (!classNames.has(domain) || !classNames.has(range)) {
+      warnings.push(
+          `object property '${p.localName}' references a non-class endpoint ` +
+          `(domain '${domain}', range '${range}'); skipped.`);
+      continue;
+    }
+    if (relationships.some(r => r.name === p.localName)) {
+      warnings.push(
+          `object property '${
+              p.localName}' duplicates an existing relationship ` +
+          `name; skipped (relationship names must be unique).`);
+      continue;
+    }
+    // Leave out, with a warning, a property push rejects as a relationship.
+    const parents = dedupe([domain, range]).filter(c => subclasses.has(c));
+    const back = relationships.find(
+        r => r.source.entity === range && r.destination.entity === domain);
+    let problem: string|undefined;
+    if (parents.length) {
+      problem = `it connects ${listed(parents.map(c => `'${c}'`))}, ${
+                    plural(parents.length, 'which has', 'which have')} ` +
+          `subclasses, and a relationship may connect only classes with no ` +
+          `subclasses. ${parents.map(leavesSentence).join(' ')}`;
+    } else if (domain === range) {
+      problem = `it runs from '${domain}' to itself, and a relationship ` +
+          `must join two different classes.`;
+    } else if (back) {
+      problem = `it runs from '${domain}' to '${range}', and object ` +
+          `property '${back.name}' runs the other way. The relationships ` +
+          `between two classes must run in one direction.`;
+    }
+    if (problem) {
+      warnings.push(
+          `object property '${p.localName}' is not imported: ${problem}`);
       continue;
     }
     // A relationship maps ONE source to ONE destination. Multiple domains or
@@ -388,19 +537,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `(${ignored.join(', ')}); a relationship maps one source to one ` +
           `destination, so only domain '${domain}' -> range '${
               range}' is kept.`);
-    }
-    if (!classNames.has(domain) || !classNames.has(range)) {
-      warnings.push(
-          `object property '${p.localName}' references a non-class endpoint ` +
-          `(domain '${domain}', range '${range}'); skipped.`);
-      continue;
-    }
-    if (relationships.some(r => r.name === p.localName)) {
-      warnings.push(
-          `object property '${
-              p.localName}' duplicates an existing relationship ` +
-          `name; skipped (relationship names must be unique).`);
-      continue;
     }
     const relationship: Relationship = {
       name: p.localName,

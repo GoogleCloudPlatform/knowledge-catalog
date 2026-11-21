@@ -1,9 +1,82 @@
+import {spyOn} from 'bun:test';
+
 import * as gcp from '../../src/libts/gcp';
+import {BigLakeClient} from '../../src/libts/gcp/biglake';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 import * as spanner from '../../src/libts/gcp/spanner';
+import {leadingDmlVerb} from '../../src/libts/semantic/sql_identifiers';
+
+import {entryDenied, REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
 export const TEST_API_CONTEXT = new gcp.ApiContext('test-project', 'test-location', 'test-token');
+
+// The answer Dataplex gives for a Cloud SQL table's entry of type `type`.
+export const cloudSqlEntry = (type: string) => ({
+  status: 200,
+  result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`},
+});
+
+// Stubs the Knowledge Catalog lookup of a Cloud SQL table's entry: it answers
+// with entry type `type`, or with Dataplex's denial of a missing entry when
+// `status` is 403. `mock.restore()` undoes it.
+export function stubCloudSqlEntry(status: 200|403, type?: string) {
+  return spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
+      async (_p, _l, name) =>
+          (status === 200 ? cloudSqlEntry(type!) : entryDenied(name)) as any);
+}
+
+// Makes every Spanner database answer that it is GoogleSQL, as the dialect
+// lookup reads it. `mock.restore()` undoes it.
+export function stubSpannerDialect() {
+  return spyOn(spanner.SpannerClient.prototype, 'getDatabase').mockResolvedValue(
+      {status: 200, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
+}
+
+// Makes push find each graph's dataset or database, and pass each BigQuery dry
+// run and each Spanner graph check.
+export function passGraphChecks(): void {
+  const ok = (result: object) => ({status: 200, result}) as any;
+  spyOn(bigquery.BigQueryClient.prototype, 'getDataset')
+      .mockResolvedValue(ok({location: 'US'}));
+  spyOn(bigquery.BigQueryClient.prototype, 'query').mockResolvedValue(ok({}));
+  spyOn(spanner.SpannerClient.prototype, 'getDatabase')
+      .mockResolvedValue(ok({databaseDialect: 'GOOGLE_STANDARD_SQL'}));
+  // The Spanner graph check: a query finds no row, and a plan gives no row
+  // type.
+  spyOn(spanner.SpannerClient.prototype, 'createSession')
+      .mockResolvedValue(ok({name: 'session'}));
+  spyOn(spanner.SpannerClient.prototype, 'executeQuery')
+      .mockResolvedValue(ok({}));
+  spyOn(spanner.SpannerClient.prototype, 'deleteSession')
+      .mockResolvedValue(ok({}));
+}
+
+// Makes push's source check find a Knowledge Catalog entry for every table, with
+// the answers two_phase/harness.ts gives the source check's reads by default.
+export function passSourceCheck(): void {
+  const ok = (result: object) => ({status: 200, result}) as any;
+  spyOn(bigquery.BigQueryClient.prototype, 'getTable')
+      .mockResolvedValue(ok({location: 'US'}));
+  spyOn(spanner.SpannerClient.prototype, 'getInstance')
+      .mockResolvedValue(ok(REGIONAL_INSTANCE));
+  spyOn(BigLakeClient.prototype, 'getCatalog')
+      .mockResolvedValue(ok(REGIONAL_CATALOG));
+  spyOn(BigLakeClient.prototype, 'getHiveCatalog')
+      .mockResolvedValue(ok(REGIONAL_CATALOG));
+  spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockResolvedValue(ok({}));
+}
+
+// Makes push's Knowledge Catalog preflight, which a dry run runs too, find the
+// destination entry group with no entry in it, and each custom type.
+export function passCatalogPreflight(): void {
+  const ok = (result: object) => ({status: 200, result}) as any;
+  const P = gcp.CatalogClient.prototype;
+  spyOn(P, 'getEntryGroup').mockResolvedValue(ok({}));
+  spyOn(P, 'listEntries').mockImplementation(async function*() {});
+  spyOn(P, 'getEntryType').mockResolvedValue(ok({}));
+  spyOn(P, 'getAspectType').mockResolvedValue(ok({}));
+}
 
 
 export class CatalogClientMock extends gcp.CatalogClient {
@@ -11,9 +84,15 @@ export class CatalogClientMock extends gcp.CatalogClient {
   public mockEntryGroups: Map<string, gcp.EntryGroup> = new Map();
   public mockEntryTypes: Map<string, gcp.EntryType> = new Map();
   public mockAspectTypes: Map<string, gcp.AspectType> = new Map();
+  // The aspect types the last lookupEntry call asked for.
+  public lookupAspectTypes?: string[];
 
   constructor() {
     super(TEST_API_CONTEXT);
+    // A built-in aspect type every Dataplex project can read, and one of the
+    // aspects `kcmd init` lists by default.
+    this.addMockAspectType(
+        {name: 'projects/dataplex-types/locations/global/aspectTypes/overview'} as gcp.AspectType);
   }
 
   setMockEntries(entries: gcp.Entry[]) {
@@ -53,6 +132,10 @@ export class CatalogClientMock extends gcp.CatalogClient {
   async getAspectType(project: string, location: string, id: string): Promise<gcp.ApiResult<gcp.AspectType>> {
     const name = `projects/${project}/locations/${location}/aspectTypes/${id}`;
     const res = this.mockAspectTypes.get(name);
+    // A type marked `refused` answers 403, as Dataplex does for a type whose definition the caller may not read.
+    if (res?.refused) {
+      return { status: 403, message: 'Permission denied' };
+    }
     if (res) {
       return { status: 200, result: res };
     }
@@ -69,12 +152,32 @@ export class CatalogClientMock extends gcp.CatalogClient {
     return { status: 404, message: 'Not found' };
   }
 
-  async lookupEntry(project: string, location: string, name: string, aspects?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
+  async lookupEntry(project: string, location: string, name: string,
+                    opts: gcp.LookupEntryOptions = {}): Promise<gcp.ApiResult<gcp.Entry>> {
+    const aspects = opts.aspects;
+    this.lookupAspectTypes = aspects;
     const entry = this.mockEntries.find(e => e.name == name);
-    if (entry) {
-      return { status: 200, result: entry };
+    if (!entry) {
+      return { status: 404, message: 'Not found' };
     }
-    return { status: 404, message: 'Not found' };
+    if (opts.view === 'ALL') {
+      return { status: 200, result: { ...entry } };
+    }
+    // As Dataplex does: only the aspects of the requested types, none when no type is requested.
+    const kept = Object.entries(entry.aspects ?? {})
+        .filter(([, a]) => aspects?.includes(a.aspectType ?? ''));
+    return { status: 200, result: { ...entry, aspects: Object.fromEntries(kept) } };
+  }
+
+  async lookupEntryAspectTypes(project: string, location: string, name: string): Promise<gcp.ApiResult<string[]>> {
+    const entry = this.mockEntries.find(e => e.name == name);
+    if (!entry) {
+      return { status: 404, message: 'Not found' };
+    }
+    // As Dataplex's FULL view does: it lists every aspect key on the entry,
+    // with data or not, so every aspect type appears, each once.
+    const types = Object.keys(entry.aspects ?? {}).map(k => k.split('@')[0]);
+    return { status: 200, result: [...new Set(types)] };
   }
 
   async modifyEntry(project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
@@ -201,7 +304,7 @@ export class BigQueryClientMock extends bigquery.BigQueryClient {
   async query(project: string, sql: string, location?: string, dryRun?: boolean,
               namedParameterTypes?: Record<string, string>):
       Promise<gcp.ApiResult<bigquery.QueryResponse>> {
-    if (dryRun && /^\s*(INSERT|UPDATE|DELETE|MERGE|TRUNCATE)\b/i.test(sql)) {
+    if (dryRun && (leadingDmlVerb(sql) !== '' || /^\s*TRUNCATE\b/i.test(sql))) {
       this.dryRunDml.push({project, sql, parameterTypes: namedParameterTypes});
       const rejection = mockPlanRejection(sql, this.dmlSchema);
       return rejection ? {status: 400, message: rejection} :
@@ -254,10 +357,13 @@ export function mockSchema(tables: Record<string, string[]>): MockSchema {
 // what the live e2e tests cover.
 export function mockPlanRejection(
     sql: string, schema: MockSchema): string|null {
+  const uncommented =
+      sql.replace(/\/\*[\s\S]*?\*\/|(?:--|#).*$/gm, ' ')
+          .replace(/\b(?:r|b|rb|br)?'(?:\\.|[^'\\])*'/gi, ' ');
   // The written table, with any backtick-quoted qualification stripped to its
   // last part, so `p.d.account` and a bare `account` both look up the same.
   const written =
-      /\b(?:INTO|UPDATE|FROM)\s+`?([A-Za-z_][\w.$-]*)`?/i.exec(sql)?.[1];
+      /\b(?:INTO|UPDATE|FROM)\s+`?([A-Za-z_][\w.$-]*)`?/i.exec(uncommented)?.[1];
   const table = written?.split('.').pop();
   if (!table || !schema.has(table.toLowerCase())) {
     return JSON.stringify({
@@ -271,8 +377,8 @@ export function mockPlanRejection(
   ]);
   // Drop bound parameters and the table reference itself; what is left in
   // identifier position should all be columns.
-  const rest = sql.replace(/@\w+/g, ' ').replace(/`[^`]*`/g, ' ');
-  const bare = written && !sql.includes('`') ? written : '';
+  const rest = uncommented.replace(/@\w+/g, ' ').replace(/`[^`]*`/g, ' ');
+  const bare = written && !uncommented.includes('`') ? written : '';
   for (const m of rest.matchAll(/[A-Za-z_]\w*/g)) {
     const word = m[0].toLowerCase();
     if (keywords.has(word) || word === bare.toLowerCase()) continue;

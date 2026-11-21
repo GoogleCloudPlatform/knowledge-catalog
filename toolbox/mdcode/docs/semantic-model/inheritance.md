@@ -20,8 +20,8 @@ and you want a supertype query to gather every subtype.
 
 Do not use it when the shared fields are a coincidence of naming, or when you
 have one entity whose columns happen to be split across two tables — that is a
-[binding](profiles.md), and modeling it as inheritance produces the double-count
-described below.
+[binding](profiles.md), and modeling it as inheritance leaves the general
+table's rows out of the graph, since a supertype forms no node table.
 
 ## The one rule
 
@@ -102,8 +102,8 @@ store you can bind inline on the model as the `default` profile:
 ```yaml
       - name: Customer
         extends: [Party]
-        primary_key: [id]
-        source: my-project.sales.customer
+        primary_key: [c_custkey]
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,           expression: c_custkey }
           - { name: name,         expression: c_name }   # the inherited field, bound here
@@ -115,7 +115,8 @@ of its definition come from `Party`, and push rejects a redeclaration that
 restates them.
 
 To bind the same hierarchy to more than one store, put each binding in its own
-[profile](profiles.md). A named profile binds every concrete subtype, since
+sibling [profile file](profiles.md) (`<model>.profile.<name>.yaml`). A named
+profile binds every concrete subtype, since
 each one stands for a table the profile's database has to hold. A profile can
 bind a field the
 subtype inherits by naming it under that subtype, with no redeclaration in the
@@ -163,8 +164,8 @@ and each of those is a `Party`:
           - { name: tax_id, datatype: String }
       - name: Employee
         extends: [Person, Taxpayer]
-        primary_key: [id]
-        source: my-project.hr.employee
+        primary_key: [e_id]
+        source: bigquery.googleapis.com/projects/my-project/datasets/hr/tables/employee
         fields:
           - { name: id,         expression: e_id }
           - { name: name,       expression: e_name }
@@ -234,8 +235,8 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
           - { name: founded_year, datatype: Integer }
       - name: Customer
         extends: [Person]
-        primary_key: [id]
-        source: my-project.sales.customer
+        primary_key: [c_id]
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,         expression: c_id }
           - { name: name,       expression: c_name }
@@ -243,8 +244,8 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
           - { name: tier,       datatype: String, expression: c_tier }
       - name: Vendor
         extends: [Organization]
-        primary_key: [id]
-        source: my-project.sales.vendor
+        primary_key: [v_id]
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/vendor
         fields:
           - { name: id,           expression: v_id }
           - { name: name,         expression: v_name }
@@ -289,12 +290,10 @@ every count is exact.
 These shapes deploy because their supertypes are abstract. Each concrete table
 binds every inherited field to its own column, and BigQuery matches a shared
 label by property name, so the subtype tables never have to agree on a physical
-column. A supertype with its own table works too. Then every subtype table must
-carry that supertype's columns under the same names, and a thing present in both
-the supertype table and a subtype table is counted twice under the supertype
-label. Such a supertype still cannot be a relationship endpoint or own a metric,
-because other entities extend it. Keeping supertypes abstract keeps the one rule
-— one real thing, one node — automatic.
+column. A supertype with its own source works too, but forms no node table:
+only a concrete leaf does, so its label rides on its subtypes and its own rows
+are not in the graph. Such a supertype still cannot be a relationship endpoint
+or own a metric, because other entities extend it.
 
 ## Match the shape to how your data is stored
 
@@ -304,8 +303,7 @@ one shape directly, and the other two common layouts are modeled without it:
 - **One table per kind, the parent has none.** Each concrete kind has its own
   complete table; the supertype has no table and survives as a label; a supertype
   query is the union of the kind tables. This is the shape `extends` builds — the
-  hierarchy above. It is correct as long as the kind tables hold disjoint things,
-  which is why the parent is `abstract`.
+  hierarchy above. It is correct as long as the kind tables hold disjoint things.
 - **One table for the whole family, with a kind column.** All parties in one
   table, a `type` column saying which kind each row is. Model this as one entity
   with a dimension field; it holds one row per thing, so it cannot double-count.
@@ -318,23 +316,22 @@ one shape directly, and the other two common layouts are modeled without it:
 If a supertype count or sum comes back larger than the data warrants, the same
 real thing lives in more than one table under the hierarchy. Every table carrying
 the label contributes that thing as its own node. Take three people split across
-a `person` table and a `customer` table that both carry the `Person` label, with
-two of the three present in both. `MATCH (:Person)` returns **five** nodes,
+a `customer` table and an `employee` table that both carry the `Person` label,
+with two of the three present in both. `MATCH (:Person)` returns **five** nodes,
 because no identity link across the two tables tells the graph that the shared
 rows are the same person.
 
-The fix is the one rule. Make the parent `abstract` so no real thing lives in more
-than one table under the hierarchy. When the two tables are instead the general
-and specific halves of one thing, model them as one entity whose binding joins
-them by key.
+The fix is the one rule: no real thing lives in more than one table under the
+hierarchy. When the two tables are instead the general and specific halves of
+one thing, model them as one entity whose binding joins them by key.
 
 ## Relationships and metrics belong on the leaves
 
 A relationship may connect only concrete leaf entities. A leaf is an entity
 that is not abstract and that no other entity extends. An edge stays on the node
 table it is declared on. An abstract `Party` has no table, and a concrete
-supertype's table holds only its own rows, so an edge declared on a supertype
-misses every subtype row. Declare the edge from each leaf that has it instead,
+supertype forms no node table, so an edge declared on a supertype has no node
+to attach to. Declare the edge from each leaf that has it instead,
 for example from `Customer`. A metric may belong only to a leaf as well, because
 a measure cannot sit on a label that several tables share. Push rejects a
 relationship or metric on any other entity, including a push to Knowledge
@@ -343,13 +340,20 @@ Catalog alone.
 ## The rules push enforces
 
 Fields flow down to subtypes. Relationships and keys stay where they are
-declared. Every table under a shared supertype exposes the identical field set,
-so a subtype's table must have a column for every inherited field, or the deploy
-fails. Push also rejects a model that breaks any of these rules:
+declared. Every table under a shared supertype exposes the identical field set
+under its label, the fields every leaf under it binds, so a subtype's table must
+have a column for every inherited field it binds, or the deploy fails. Push also rejects a model that breaks any of these rules:
 
 - A subtype redeclares an inherited field only to bind it to a column. A
   redeclaration with nothing but the name is rejected.
+- A concrete entity restates each field it inherits whose ancestor's
+  expression reads a column. This holds in each named profile, and in the
+  model file when it gives the entity a source. A field whose ancestor's
+  expression reads only other fields carries over.
 - An abstract entity declares no `source`, no keys and no field expressions.
+- When a BigQuery or Spanner deployment uses the model file's own bindings, a
+  concrete leaf entity restates each field it inherits with no expression,
+  such as each field of an abstract supertype.
 - Relationships and metrics attach only to concrete leaf entities.
 - No field is declared or rebound by two supertypes that do not extend each
   other.

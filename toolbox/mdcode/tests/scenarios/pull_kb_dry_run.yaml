@@ -1,0 +1,53 @@
+name: pull_kb_dry_run
+description: pull --dry-run on a Knowledge Base scope (b/576400055) writes no entry file
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/t/locations/u/entryGroups/g
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/generic
+        requiredAspects:
+          - type: projects/dataplex-types/locations/global/aspectTypes/generic
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/generic
+    entries:
+      - name: projects/t/locations/u/entryGroups/g/entries/e0
+        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+        entrySource:
+          displayName: Sample entry
+          description: Sample entry description
+          labels:
+            aaa: bbb
+            xyz: 'true'
+        aspects:
+          dataplex-types.global.generic:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/generic
+            data:
+              system: wiki
+      - name: projects/t/locations/u/entryGroups/g/entries/e1
+        entryType: projects/other/locations/global/entryTypes/unreadable
+      - name: projects/t/locations/u/entryGroups/g/entries/e2
+        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+      - name: projects/t/locations/u/entryGroups/g/entries/e3
+        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+      - name: projects/t/locations/u/entryGroups/g/entries/dir/sub
+        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+      - name: projects/t/locations/u/entryGroups/g/entries/dir/sub.xyz
+        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+
+  fileSystem:
+    catalog.yaml: |
+      scope: kb.t.u.g
+
+actions:
+  - action: pull
+    options:
+      dryRun: true
+
+assert:
+  fileSystem:
+    catalog/e0.md: null
+    catalog/e2.md: null
+    catalog/e3.md: null
+    catalog/dir/sub.md: null
+    catalog/dir/sub.xyz.md: null

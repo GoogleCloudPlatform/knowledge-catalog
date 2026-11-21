@@ -1,0 +1,328 @@
+// Tests that push's advice to add a BigQuery text with `kcmd import
+// --transpile` names the first error that import would stop on, and that
+// following it once that error is fixed clears the advice
+// (src/tool/commands.ts, transpileOutcomes, and
+// src/libts/semantic/resolve_profiles.ts, transpileAdvice).
+
+import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import {ApiContext} from '../../../src/libts/gcp/context';
+import {SpannerClient} from '../../../src/libts/gcp/spanner';
+import * as engine from '../../../src/libts/semantic/import_model';
+import {ImportCommandOptions, importModel, profiles, skillsGenerate} from '../../../src/tool/commands';
+
+import {bqTable, CTX, CUSTOMER, runPush, Scope, SPANNER, SPANNER_CUSTOMER, writeScope} from './harness';
+
+const snowflake = (text: string) =>
+    ({dialects: [{dialect: 'SNOWFLAKE', expression: text}]});
+const bigquery = (text: string) =>
+    ({dialects: [{dialect: 'BIGQUERY', expression: text}]});
+const ORDERS = {
+  name: 'Orders',
+  source: bqTable('orders'),
+  primary_key: ['id'],
+  fields: [{name: 'id', expression: 'o_id'}, {name: 'cust', expression: 'o_cust'}],
+};
+const metric = (text: string, entity?: string) =>
+    ({metrics: [{name: 'm', ...entity ? {entity} : {}, expression: snowflake(text)}]});
+// Customer with field code, whose text import translates, and `more` fields.
+const withCode = (...more: object[]) => ({
+  ...CUSTOMER,
+  fields: [...CUSTOMER.fields, {name: 'code', expression: snowflake('IFF(TRUE, c_key, 0)')},
+           ...more],
+});
+// Profile prod, which binds Customer with `fields` and Orders as the model
+// file does, on tables in dataset prod.
+const prod = (fields: object[]) => ({
+  prod: {
+    entities: {
+      Customer: {...CUSTOMER, source: bqTable('customer', 'prod'), fields},
+      Orders: {...ORDERS, source: bqTable('orders', 'prod')},
+    },
+  },
+});
+const MODEL = "in model 'commerce' (commerce)";
+const PROFILE = "[commerce.profile.prod.yaml] profile 'prod':";
+const COMMAND = "add one with 'kcmd import <file> --input first-party --flavor google " +
+    "--transpile'";
+// The warning that `subject` has no BigQuery text, with advice that ends with
+// `error`.
+const warning = (subject: string, error: string) => `Warning: [commerce] ${
+    subject}: no 'BIGQUERY' or 'ANSI_SQL' dialect, so a BIGQUERY table cannot run its ` +
+    `'SNOWFLAKE' expression; give it one, or ${COMMAND} after fixing this: ${error}`;
+// A profile binding whose only text reads another entity once translated.
+const BINDING_TEXT: Scope = {
+  entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
+                                    {name: 'code', expression: bigquery('c_code')}]},
+             ORDERS],
+  profiles: prod([...CUSTOMER.fields,
+                  {name: 'code', expression: snowflake('IFF(TRUE, Orders.id, 0)')}]),
+};
+const BINDING_TEXT_ERROR = `Error: ${PROFILE} field 'Customer.code' has no expression for ` +
+    "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or " +
+    `${COMMAND} after fixing this: ${PROFILE} field 'Customer.code' reads entity 'Orders'; a ` +
+    'field expression reads only its own entity';
+const unanchored = (reach: string) => `metric 'm': its expression reaches ${reach}; set ` +
+    "'entity' on the metric, or scope its expression to one entity";
+
+let dir = '';
+let cwd = '';
+beforeEach(() => {
+  cwd = process.cwd();
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-transpile-advice-'));
+  process.chdir(dir);
+});
+afterEach(() => {
+  mock.restore();
+  process.chdir(cwd);
+  fs.rmSync(dir, {recursive: true, force: true});
+});
+
+describe('the advice to add a BigQuery text', () => {
+  // [label, the scope, a line push prints, the scope once the error it names
+  // is fixed]
+  test.each([
+    ['a bare column', metric('SUM(IFF(TRUE, key, 0))', 'Customer'),
+     warning("metric 'm'", `metric 'm' ${MODEL}: 'key' must be written as 'entity.field'; ` +
+             'a metric reads fields, never columns'),
+     metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer')],
+    ['an undeclared qualifier', metric('SUM(IFF(TRUE, x.key, 0))', 'Customer'),
+     warning("metric 'm'", `metric 'm' ${MODEL}: 'x.key' has qualifier 'x', which is not ` +
+             "a declared entity in model 'commerce'; write 'entity.field' starting with a " +
+             'declared entity'),
+     metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer')],
+    ['an anchor the SQL contradicts',
+     {entities: [CUSTOMER, ORDERS], ...metric('SUM(IFF(TRUE, Orders.id, 0))', 'Customer')},
+     warning("metric 'm'", `metric 'm' ${MODEL} is anchored to entity 'Customer', but its ` +
+             "expression only references 'Orders'; the anchor contradicts the SQL"),
+     {entities: [CUSTOMER, ORDERS], ...metric('SUM(IFF(TRUE, Orders.id, 0))', 'Orders')}],
+    ['an unanchored metric that reaches no entity', metric('IFF(TRUE, COUNT(*), 0)'),
+     warning("metric 'm'", unanchored('no declared entity')),
+     metric('IFF(TRUE, COUNT(*), 0)', 'Customer')],
+    ['an unanchored metric that reaches two entities',
+     {entities: [CUSTOMER, ORDERS],
+      ...metric('IFF(TRUE, COUNT(Customer.key) + COUNT(Orders.id), 0)')},
+     warning("metric 'm'", unanchored('multiple entities (Customer, Orders)')),
+     {entities: [CUSTOMER, ORDERS],
+      ...metric('IFF(TRUE, COUNT(Customer.key) + COUNT(Orders.id), 0)', 'Customer')}],
+    ['a field another field blocks',
+     {entities: [withCode({name: 'custom', expression: snowflake('MY_UDF(c_key)')})]},
+     warning("field 'Customer.code'", `field 'Customer.custom' ${MODEL} has no expression ` +
+             "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
+             'BIGQUERY source; give it one'),
+     {entities: [withCode({name: 'custom', expression: bigquery('c_key')})]}],
+    ['the first of two errors',
+     {entities: [withCode({name: 'custom', expression: snowflake('MY_UDF(c_key)')})],
+      ...metric('SUM(IFF(TRUE, key, 0))', 'Customer')},
+     warning("field 'Customer.code'", `field 'Customer.custom' ${MODEL} has no expression ` +
+             "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
+             'BIGQUERY source; give it one'),
+     {entities: [withCode({name: 'custom', expression: bigquery('c_key')})],
+      ...metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer')}],
+    ['a relationship key error',
+     {entities: [withCode(), ORDERS], relationships: [{
+       name: 'placed', from: 'Orders', to: 'Customer', from_columns: ['o_cust'],
+       to_columns: ['c_name'],
+     }]},
+     warning("field 'Customer.code'", `relationship 'placed' ${MODEL}: its to_columns ` +
+             `["c_name"] cover no primary or unique key of 'Customer'; join on every ` +
+             "column of one of its keys, and declare that key if 'Customer' has none"),
+     {entities: [withCode(), ORDERS], relationships: [{
+       name: 'placed', from: 'Orders', to: 'Customer', from_columns: ['o_cust'],
+       to_columns: ['key'],
+     }]}],
+    ['a profile binding\'s own text', BINDING_TEXT, BINDING_TEXT_ERROR,
+     {entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
+                                        {name: 'code', expression: bigquery('c_code')}]},
+                 ORDERS],
+      profiles: prod([...CUSTOMER.fields,
+                      {name: 'code', expression: snowflake('IFF(TRUE, c_code, 0)')}])}],
+    ['profile fields left unbound',
+     {entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
+                                        {name: 'note', expression: 'c_note'}]},
+                 ORDERS],
+      ...metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer'),
+      profiles: prod(CUSTOMER.fields)},
+     warning("metric 'm'", `${PROFILE} field 'Customer.note' reads column 'c_note' ` +
+             "through its model file expression; bind it in 'fields' for this profile, or " +
+             "leave it out in 'fields_exclude'"),
+     {entities: [{...CUSTOMER, fields: [...CUSTOMER.fields,
+                                        {name: 'note', expression: 'c_note'}]},
+                 ORDERS],
+      ...metric('SUM(IFF(TRUE, Customer.key, 0))', 'Customer'),
+      profiles: prod([...CUSTOMER.fields, {name: 'note', expression: 'c_note'}])}],
+  ] as Array<[string, Scope, string, Scope]>)('names %s, and works once it is fixed',
+      async (_, scope, line, fixed) => {
+        writeScope(dir, scope);
+        const first = await runPush({}, {validateOnly: true});
+        expect([...first.errors, ...first.warnings]).toContain(line);
+        writeScope(dir, fixed);
+        expect(await importModel('catalog/EntryGroups/commerce_eg/commerce.yaml',
+                                 {flavor: 'google', input: 'first-party', transpile: true}))
+            .toBe(0);
+        const after = await runPush({}, {validateOnly: true});
+        expect(after.code).toBe(0);
+        expect([...after.errors, ...after.warnings].join('\n')).not.toContain(COMMAND);
+      });
+
+  // A vanilla model file in the entry group, whose relationship description
+  // import moves into a GOOGLE block, and whose field code has only
+  // Snowflake SQL. A profile file sits beside it.
+  const VANILLA = 'catalog/EntryGroups/commerce_eg/commerce.yaml';
+  const SIBLING = 'catalog/EntryGroups/commerce_eg/commerce.profile.prod.yaml';
+  const vanilla = () => writeScope(dir, {noModel: true, files: {
+    'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: Customer
+        source: ${bqTable('customer')}
+        primary_key: [key]
+        fields:
+          - {name: key, expression: {dialects: [{dialect: BIGQUERY, expression: c_key}]}}
+          - {name: code, expression: {dialects: [{dialect: SNOWFLAKE, expression: 'IFF(TRUE, c_key, 0)'}]}}
+      - name: Orders
+        source: ${bqTable('orders')}
+        primary_key: [id]
+        fields:
+          - {name: id, expression: {dialects: [{dialect: BIGQUERY, expression: o_id}]}}
+          - {name: cust, expression: {dialects: [{dialect: BIGQUERY, expression: o_cust}]}}
+    relationships:
+      - {name: placed, from: Orders, to: Customer, from_columns: [cust], to_columns: [key], description: d}
+`,
+    'commerce.profile.prod.yaml': 'name: prod\n',
+  }});
+  // A third-party import over its input that stops writes nothing, so its
+  // advice names that import with --transpile. One that writes names the
+  // import of the file it writes, with the profile files beside it, and with
+  // --input first-party when that file has a GOOGLE block. Each runs the
+  // import engine once, and once more for the import its advice suggests.
+  test.each([
+    ['an in-place import a leftover profile file stops', {flavor: 'ossie'}, 1,
+     "'kcmd import <file> --flavor ossie --transpile'",
+     `the import does not write ${SIBLING}, which would stay beside the model; pass --out ` +
+         '<path> to write elsewhere, or first remove any the model no longer uses',
+     {flavor: 'ossie', transpile: true}],
+    ['an import over its input beside a profile file', {flavor: 'ossie', out: VANILLA}, 0,
+     "'kcmd import <file> --input first-party --flavor ossie --transpile'",
+     "Profile file 'commerce.profile.prod.yaml' sits beside 'commerce.yaml', which is a " +
+         '0.2.0.dev0 document; sibling profile files are Google-flavor only, and a ' +
+         '0.2.0.dev0 model keeps its profiles in its GOOGLE block',
+     {flavor: 'ossie', input: 'first-party', transpile: true, out: VANILLA}],
+    ['an import over its input that writes no GOOGLE block', {flavor: 'google', out: VANILLA}, 0,
+     "'kcmd import <file> --flavor google --transpile'",
+     `--out '${VANILLA}' names a file, but the import gives 2 files (commerce.yaml, ` +
+         'commerce.profile.prod.yaml); name a directory instead',
+     {flavor: 'google', transpile: true, out: VANILLA}],
+  ] as Array<[string, ImportCommandOptions, number, string, string, ImportCommandOptions]>)(
+      '%s names the command that works once the error is fixed',
+      async (_, options, code, command, error, suggested) => {
+        vanilla();
+        spyOn(ApiContext, 'default').mockReturnValue(CTX);
+        const warnings: string[] = [];
+        spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+          warnings.push(a.join(' '));
+        });
+        spyOn(console, 'error').mockImplementation(() => {});
+        spyOn(console, 'log').mockImplementation(() => {});
+        const imports = spyOn(engine, 'importSemanticModelYaml');
+        expect(await importModel(VANILLA, options)).toBe(code);
+        expect(imports).toHaveBeenCalledTimes(2);
+        expect(warnings).toContain("Warning: field 'Customer.code': no 'BIGQUERY' or " +
+            "'ANSI_SQL' dialect, so a BIGQUERY table cannot run its 'SNOWFLAKE' expression; " +
+            `give it one, or add one with ${command} after fixing this: ${error}`);
+        fs.rmSync(path.join(dir, SIBLING));
+        expect(await importModel(VANILLA, suggested)).toBe(0);
+        mock.restore();
+        const after = await runPush({}, {validateOnly: true});
+        expect(after.code).toBe(0);
+        expect([...after.errors, ...after.warnings].join('\n')).not.toContain('kcmd import');
+      });
+
+  // An in-place third-party import that stops on a deployment target writes
+  // nothing over its input, so the import its advice suggests reads the
+  // input, and the engine runs once for each.
+  test('an in-place import a deployment target stops runs the engine twice', async () => {
+    writeScope(dir, {deployments: [{name: 'd', target: 'bad'}], entities: [withCode()]});
+    spyOn(ApiContext, 'default').mockReturnValue(CTX);
+    const warnings: string[] = [];
+    spyOn(console, 'warn').mockImplementation((...a: unknown[]) => {
+      warnings.push(a.join(' '));
+    });
+    spyOn(console, 'error').mockImplementation(() => {});
+    const imports = spyOn(engine, 'importSemanticModelYaml');
+    expect(await importModel(VANILLA, {flavor: 'google'})).toBe(1);
+    expect(imports).toHaveBeenCalledTimes(2);
+    expect(warnings).toContainEqual(expect.stringContaining(
+        "add one with 'kcmd import <file> --flavor google --transpile' after fixing " +
+        "this: Model 'commerce': deployment 'd' targets 'bad'"));
+  });
+
+  // Runs `command`, where reading a Spanner database answers `status`. Gives
+  // its exit code, the lines it prints and how many times it ran the import
+  // engine.
+  const report = async (command: () => Promise<number>, status = 200) => {
+    mock.restore();
+    spyOn(ApiContext, 'default').mockReturnValue(CTX);
+    spyOn(SpannerClient.prototype, 'getDatabase').mockResolvedValue(
+        {status, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
+    const imports = spyOn(engine, 'importSemanticModelYaml');
+    const lines: string[] = [];
+    for (const stream of ['error', 'warn', 'log'] as const) {
+      spyOn(console, stream).mockImplementation((...a: unknown[]) => {
+        lines.push(a.join(' '));
+      });
+    }
+    const code = await command();
+    const runs = imports.mock.calls.length;
+    mock.restore();
+    return {code, lines, runs};
+  };
+
+  // --print-store reads on past a Spanner database it cannot read, as the
+  // import does.
+  test.each([
+    ['', BINDING_TEXT, 200],
+    [' beside a Spanner database it cannot read',
+     {...BINDING_TEXT, profiles: {...BINDING_TEXT.profiles, ops: {entities: {
+       Customer: {...CUSTOMER, source: SPANNER_CUSTOMER,
+                  fields: [...CUSTOMER.fields, {name: 'code', expression: 'c_code'}]},
+       Orders: {...ORDERS, source: `${SPANNER}/tables/Orders`},
+     }}}},
+     404],
+  ] as Array<[string, Scope, number]>)(
+      'names the same error in kcmd profiles --print-store%s', async (_, scope, status) => {
+        writeScope(dir, scope);
+        const {code, lines} =
+            await report(() => profiles({printStore: true, profile: 'prod'}), status);
+        expect(code).toBe(1);
+        expect(lines).toContain(BINDING_TEXT_ERROR);
+      });
+
+  // Only a message about a BigQuery table gives the advice, so a command runs
+  // the import only for a model file with a BigQuery table.
+  test.each([
+    ['runs no import for a model file with no BigQuery table',
+     {entities: [{...CUSTOMER, source: SPANNER_CUSTOMER, fields: [{
+       name: 'key', expression: {dialects: [{dialect: 'SPANNER', expression: 'c_key'}]},
+     }]}]},
+     0],
+    ['runs the import once for a model file with a BigQuery table', {entities: [withCode()]}, 1],
+  ] as Array<[string, Scope, number]>)('%s', async (_, scope, runs) => {
+    writeScope(dir, scope);
+    expect((await report(() => profiles({}))).runs).toBe(runs);
+  });
+
+  test('names the same error in skills-generate in a context set', async () => {
+    writeScope(dir, {entities: [withCode({name: 'custom', expression: snowflake('MY_UDF(c_key)')})]});
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'),
+                     'scope: context-set.test-project.us.commerce_eg\n');
+    expect((await report(() => skillsGenerate({}))).lines).toContain(
+        warning("field 'Customer.code'", `field 'Customer.custom' ${MODEL} has no expression ` +
+                "for BIGQUERY or ANSI_SQL, and the model file binds entity 'Customer' to a " +
+                'BIGQUERY source; give it one'));
+  });
+});

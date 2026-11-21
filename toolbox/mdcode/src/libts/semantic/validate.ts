@@ -3,35 +3,39 @@
 // Runs once over the shared, already-parsed models (see loadSemanticModels)
 // before any destination leg, so a real `kcmd push` AND a `--validate-only` dry
 // run enforce the same requirements. Returns one message per violation (an
-// empty array means valid); the caller (commands.ts) prints them and aborts the
-// push. Kept separate from the loader -- which validates a document against the
-// schema -- because these are deployment requirements, not schema rules, and
-// they read the GOOGLE deployment-target extension the BigQuery leg owns.
+// empty array means valid); push prints them and aborts, and `kcmd import`
+// reports them. Kept separate from the loader -- which validates a document
+// against the schema -- because these are deployment requirements, not schema
+// rules.
+
+import * as yaml from 'yaml';
 
 import {BigQueryClient} from '../gcp/bigquery';
-import {SpannerClient} from '../gcp/spanner';
+import {ApiContext} from '../gcp/context';
+import {SpannerClient, SpannerType} from '../gcp/spanner';
 
-import {googleDeploymentTargets} from './deploy_bigquery';
-import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
-import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
-import {bindScalar, sentence, storeCodeFor} from './parameters';
+import {aiExtensions, elementDescription, fieldExtensions} from './bigquery';
+import {boundTable} from './binding';
+import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
+import {deploySpanner} from './deploy_spanner';
+import {alloyDbTargets, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, tablesOutsideTarget} from './deployment_target';
+import {declaredFields, expressionProblems, ifResolvable, inlineDialectProblems, placementProblems} from './expression_checks';
+import {GraphElement} from './graph_ddl';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, matchesKey, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {databaseOf, entityWord, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, listed, LoadedModel, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_EXTENSION_VALUE, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
-import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
-import {SqlColumn, withoutComments} from './sql_parser';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, importHint, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, transpileAdvice, TranspileOutcomes, undeclaredProfileError} from './resolve_profiles';
+import {generateSpannerPropertyGraph} from './spanner';
+import {columnsForSource, isColumnName, measureAggregates, measureEntities, projectlessFunction, standInQualified, unusedName} from './sql_expr_utils';
+import {boundParameter, hashStartsComment, leadingDmlVerb, referencedParameters, SQL_CODE_DIALECTS} from './sql_identifiers';
+import {YAML_OPTIONS} from './yaml_options';
+import {movedOffset} from './yaml_update';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
 // source document so the author can find it.
-//
-// `targetOptional` permits a model with NO deployment target -- the case for a
-// Knowledge-Catalog-only push, which governs the logical model and deploys no
-// graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A KC-only push skips the target count and kind checks,
-// while still rejecting a repeated target URI.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
@@ -42,107 +46,27 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
 //
-// `liftedExclusions` are the fields a binding profile excludes, which a
-// catalog-only push takes off the model so that it publishes every field. The
-// check that each inherited field holds SQL still leaves each one off the
-// entity that excludes it, as applying the profile does.
+// `load` is what the caller read of each table's dialect.
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
-      targetOptional?: boolean;
       fieldsPruned?: boolean;
       warnings?: string[];
-      liftedExclusions?: ReadonlyArray<ProfileExclusion>;
+      load?: DialectLoad;
+      transpileOutcomes?: TranspileOutcomes;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...nameAndDescriptionErrors(model, document));
-    let deployInfo: ReturnType<typeof googleDeploymentTargets>;
-    try {
-      // One pass over the model's GOOGLE extension(s): both checks below read
-      // the same parse rather than re-parsing the JSON per reader.
-      deployInfo = googleDeploymentTargets(model);
-    } catch (err: any) {
-      // Malformed GOOGLE extension JSON: surface it as a validation error here
-      // rather than letting it throw out of a later leg as an uncaught stack.
-      errors.push(`${err.message || err} (${document})`);
-      continue;
-    }
-
-    // A resource name and its URI name the same resource.
-    const seenUris = new Set<string>();
-    for (const uri of deployInfo.uris) {
-      if (seenUris.has(asResourceUri(uri))) {
-        errors.push(
-            `model '${model.name}' (${document}) declares duplicate ` +
-            `deployment target '${uri}'; each deployment must target a ` +
-            `distinct resource.`);
-        break;
-      }
-      seenUris.add(asResourceUri(uri));
-    }
-
-    // A graph push must declare exactly one deployment target -- a single
-    // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
-    // graphs per model). The target's host selects which deploy leg runs.
-    //
-    // An AlloyDB target parses, and is still not one of those two: it names a
-    // database a model RUNS against rather than a graph a push publishes. It
-    // gets its own arm below so it is not reported as a typo.
-    //
-    // A KC-only push (targetOptional) deploys no graph, so its deployment
-    // target count and kind are irrelevant: skip this check (duplicate targets
-    // were already rejected above). Such a push may carry no target (a logical
-    // model), one, or even several backends (whose KC aspect records all of
-    // them) -- none of that affects the Knowledge Catalog write.
-    if (!opts.targetOptional) {
-      // Where the model lists its deployments. A vanilla model with no
-      // `deployments` in its GOOGLE block is told how to declare them instead.
-      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
-          model.deployments?.length ?
-          `under 'deployments' in its GOOGLE custom_extensions block` :
-          undefined;
-      if (deployInfo.malformed.length) {
-        // A target in no accepted form is named, alone or beside others, so
-        // the author knows which entry to fix.
-        errors.push(
-            `model '${model.name}' (${document}) target '${
-                deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
-            `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
-            `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
-            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
-      } else if (deployInfo.uris.length !== 1) {
-        errors.push(
-            `model '${model.name}' (${document}) declares ${
-                deployInfo.uris
-                    .length} deployments; push uses ` +
-            `exactly one deployment for now, with a BigQuery Graph or ` +
-            `Spanner Graph target${
-                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
-      } else if (deployInfo.alloyDb.length) {
-        // Parseable, supported, and for the other command. AlloyDB has no
-        // property-graph DDL, so there is no graph here for a push to deploy
-        // -- which makes this a deployment pointed at the wrong verb rather
-        // than a URI to correct, and the message says which verb it is for.
-        errors.push(
-            `model '${model.name}' (${document}) target '${
-                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
-            `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish. Declare a BigQuery or ` +
-            `Spanner Graph target (${
-                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
-            `deployment for now), or run 'kcmd push --no-profile' to publish ` +
-            `to Knowledge Catalog only.`);
-      }
-    }
+    const deployInfo = googleDeploymentTargets(model);
 
     // A model that targets a graph (BigQuery OR Spanner) must have every
     // relationship's join columns bound. The loader accepts a column-less
     // relationship so a purely logical model (an OWL import) loads and pushes
     // to Knowledge Catalog, but a graph deploy would emit an invalid
     // `DESTINATION KEY () REFERENCES Dest ()` for such an edge -- so reject it
-    // here rather than generate broken DDL. A KC-only push declares no graph
-    // target (both arrays empty), so this is skipped.
+    // here rather than generate broken DDL. A model with no graph target
+    // skips it.
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
@@ -166,9 +90,10 @@ export function validatePushRequirements(
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
-        flaggedMetrics, opts.liftedExclusions));
-    if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
-      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
+        flaggedMetrics, opts.load));
+    if (deployInfo.bigQuery.length > 0) {
+      errors.push(...measurePlacementErrors(
+          model, document, flaggedMetrics, opts.transpileOutcomes));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -177,7 +102,8 @@ export function validatePushRequirements(
     // dispatch it, and each guard must name a constraint the model declares.
     // (The "exactly one executor kind" rule is already guaranteed by the loader
     // schema, so it cannot reach here.)
-    errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
+    errors.push(...validateActions(
+        model, document, !!opts.fieldsPruned, true, opts.load ?? {}));
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
@@ -185,11 +111,11 @@ export function validatePushRequirements(
   return errors;
 }
 
-// Each name in `model` that breaks its kind's pattern or length limit, and each
-// description too long for the Knowledge Catalog entry that stores it. The
-// loader checks names too; this check is for a model built in memory and a
-// profile that reaches `model.profiles` some other way. Description limits are
-// checked at push only.
+// Each name in `model` that breaks its kind's pattern or length limit, and
+// each description too long for the Knowledge Catalog entry that stores it.
+// The loader checks names too; this check is for a model built in memory and
+// a profile that reaches `model.profiles` some other way. Description limits
+// are checked at push only, since only push writes them.
 function nameAndDescriptionErrors(
     model: SemanticModel, document: string): string[] {
   const at = `model '${model.name}' (${document})`;
@@ -229,6 +155,618 @@ function nameAndDescriptionErrors(
   return errors;
 }
 
+// Checks each deployment of `model` against the rules of its engine, under the
+// profile it names in `model.profiles` or the model file's own bindings, and
+// returns one message per problem, naming every deployment it applies to.
+export function validateDeployments(
+    model: SemanticModel, document: string, load: DialectLoad): string[] {
+  // The deployments each problem applies to, keyed by the text that follows
+  // their names in the message.
+  const problems = new Map<string, string[]>();
+  const add = (deployment: string, problem: string) =>
+      problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
+  const baseByName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const unbound = unboundInline(model);
+  const unboundFields = unboundGraphFields(model);
+  // The metrics the reference rules report, which the BigQuery rule leaves to
+  // them.
+  let referenced: Set<string>|undefined;
+  // The BigQuery rules' messages for the model each profile gives, by profile
+  // name, which every deployment that uses the profile shares.
+  const bigQueryProblems = new Map<string, string[]>();
+  for (const d of model.deployments ?? []) {
+    // A profile file that does not load is not in `model.profiles`, and is
+    // left out; push reports the file.
+    const named = model.profiles?.find(p => p.name === d.profile);
+    if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE && !named) continue;
+    const resolved = resolveModelDeployments(model, [d.name]);
+    const parsed = 'error' in resolved ? undefined : resolved.deployments[0];
+    const engine = parsed?.engine;
+    const alloyDb = engine === 'alloydb';
+    // The model the deployment's bindings give, less what they leave
+    // unavailable. The completeness check reports a named profile that does
+    // not apply, and the fields its metrics read.
+    const bound = named ? profiled(model, named, load) : pruneUnavailable(
+        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
+    if (!bound) continue;
+    const available = bound.model.metrics ?? [];
+    if (engine === 'bigquery' || engine === 'spanner') {
+      for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
+    }
+    if (parsed?.engine === 'spanner') {
+      for (const p of spannerGraphProblems(bound.model, parsed.coordinates)) {
+        add(d.name, p);
+      }
+    }
+    if (named) {
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+        // An entity whose model file states primary_key is left to
+        // validateProfileCompleteness.
+        const keyless =
+            (bound.model.entities ?? [])
+                .filter(
+                    e => !e.abstract && !extended.has(e.name) &&
+                        !e.keys.length && !baseByName.get(e.name)?.keys.length)
+                .map(e => `'${e.name}'`);
+        if (keyless.length) {
+          const many = keyless.length > 1;
+          add(d.name,
+              `targets ${target}, and profile '${named.name}' leaves ${
+                  many ? 'entities' : 'entity'} ${
+                  listed(keyless)} without a primary_key; a ${
+                  target} graph deployment needs a primary_key on every ` +
+                  `concrete leaf entity, so state primary_key for ${
+                      many ? 'each entity' : 'the entity'} in profile '${
+                      named.name}'.`);
+        }
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model, named)) {
+            add(d.name, p);
+          }
+        }
+      }
+      if (engine === 'spanner' && available.length) {
+        add(d.name,
+            `targets Spanner, which has no measures, and profile '${
+                named.name}' leaves metric(s) ${
+                listed(available.map(m => `'${m.name}'`))} available; name ` +
+                `them in its 'metrics_exclude', or set it to "*".`);
+      }
+    } else {
+      if (unbound) {
+        add(d.name,
+            `uses the model file's own bindings, which leave ${
+                unbound}; a deployment needs every entity and relationship ` +
+                `bound.`);
+      }
+      if (engine === 'bigquery' || engine === 'spanner') {
+        const keyless = keylessGraphEntities(bound.model, engine);
+        if (keyless) {
+          add(d.name, `uses the model file's own bindings, ${keyless}`);
+        }
+        if (engine === 'bigquery') {
+          for (const p of bigQueryEdgeKeyProblems(bound.model)) add(d.name, p);
+        }
+        if (unboundFields) {
+          add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+        }
+      }
+    }
+    // A Spanner deployment deploys no metric.
+    if (engine === 'spanner') continue;
+    for (const {name, field} of named ? [] : bound.report.droppedMetrics) {
+      if (field === undefined) continue;
+      add(d.name,
+          `uses the model file's own bindings, under which metric '${
+              name}' reads field '${field}', which ${
+              bound.report.unboundFields.includes(field) ?
+                  'has no expression' :
+                  'reads a field with no expression, directly or through ' +
+                      'other fields'}; a deployment needs every field its ` +
+              `metrics read bound.`);
+    }
+    if (engine !== 'bigquery') continue;
+    if (!referenced) {
+      referenced = new Set();
+      validateExpressionReferences(
+          [{document, model}], false, [], referenced, load);
+    }
+    const key = named?.name ?? DEFAULT_PROFILE;
+    const found = bigQueryProblems.get(key) ??
+        bigQueryGraphProblems(bound.model, referenced);
+    bigQueryProblems.set(key, found);
+    for (const p of found) add(d.name, p);
+  }
+  // The verb that starts each problem agrees with the number of deployments.
+  return [...problems].map(([problem, names]) => {
+    const many = names.length > 1;
+    return `model '${model.name}' (${document}) deployment${many ? 's' : ''} ${
+        listed(names.map(n => `'${n}'`))} ${
+        many ? problem.replace(/^(use|target)s /, '$1 ') : problem}`;
+  });
+}
+
+// `model` with `profile` applied and what it leaves unavailable pruned, or
+// undefined when the profile does not apply.
+function profiled(
+    model: SemanticModel, profile: ProfileSpec, load: DialectLoad):
+    ReturnType<typeof pruneUnavailable>|undefined {
+  try {
+    return pruneUnavailable(applyProfile(model, profile, {load}), profile.name);
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return undefined;
+  }
+}
+
+// What the BigQuery graph of `model`, the model a deployment's bindings give,
+// cannot hold, each as the end of a sentence about the deployment: each metric
+// that cannot be a measure, the OPTIONS kcmd writes (see
+// bigQueryOptionProblems), and each property that calls a user-defined
+// function without its project (see bigQueryFunctionProblems). Leaves out each
+// metric in `referenced`, which the reference rules report.
+function bigQueryGraphProblems(
+    model: SemanticModel, referenced: ReadonlySet<string>): string[] {
+  const problems: string[] = [];
+  // The operands of the aggregates of each metric that becomes a measure, by
+  // metric.
+  const operands = new Map<string, string[]>();
+  for (const m of model.metrics ?? []) {
+    const read = !referenced.has(m.name) && bigQueryMeasure(model, m);
+    if (!read) continue;
+    if ('problem' in read) {
+      problems.push(`targets BigQuery, where metric '${
+          m.name}' cannot be a measure: ${read.problem}.`);
+    } else {
+      operands.set(m.name, read.aggregates.map(a => a.operand));
+    }
+  }
+  return [
+    ...problems, ...bigQueryOptionProblems(model),
+    ...bigQueryFunctionProblems(model, operands)
+  ];
+}
+
+// The aggregates of the measure `metric` becomes on `model`'s BigQuery graph,
+// or why it cannot be one (see measureAggregates), or undefined when another
+// check reports it. Leaves out a metric that measurePlacementErrors or the
+// inheritance rules report: one that reads several entities or none, or one
+// on an abstract or extended entity. An entity with no primary_key is the
+// entity key check's to report, so a metric on one is read all the same.
+function bigQueryMeasure(model: SemanticModel, metric: Metric):
+    ReturnType<typeof measureAggregates>|undefined {
+  const text = expressionForDialect(metric, 'BIGQUERY');
+  if (text === undefined) return undefined;
+  const placed = measureEntities(
+      text, (model.entities ?? []).map(e => e.name), metric.entity);
+  if (placed.length !== 1 ||
+      !graphNodeEntities(model).some(e => e.name === placed[0])) {
+    return undefined;
+  }
+  // Read as the generator reads it (see bigquery.ts placeMetric).
+  const {text: written} = standInQualified(text, placed[0]);
+  if (!columnsForSource(written, 'BIGQUERY')) return undefined;
+  return measureAggregates(written, 'BIGQUERY');
+}
+
+// The BigQuery graph's rules for placing each metric of `model` as a measure
+// (see placementProblems), one message per metric that breaks them, skipping
+// each one in `alreadyFlagged`, which validateExpressionReferences has
+// reported.
+function measurePlacementErrors(
+    model: SemanticModel, document: string,
+    alreadyFlagged: ReadonlySet<string>,
+    outcomes?: TranspileOutcomes): string[] {
+  return placementProblems(model, document, alreadyFlagged, metric => {
+           const advice = transpileAdvice(model, document, metric, outcomes);
+           return advice ? `, or ${advice}` : '';
+         }).map(p => p.problem);
+}
+
+// Checks that the model file's tables are all in one database, as a profile's
+// are, and when they are, that each bound field has a text for the dialect of
+// its entity's source (see inlineDialectProblems). Returns one message per
+// problem.
+export function validateInlineDialects(
+    model: SemanticModel, document: string, load: DialectLoad): string[] {
+  return inlineDialectProblems(
+             model, document, load.sourceDatabases,
+             (_, f, dialect) => importHint(
+                 f, dialect, model, document, load.transpileOutcomes))
+      .map(p => p.problem);
+}
+
+// Push's checks of the SQL of each field and metric of `models` (see
+// expressionProblems), one message per problem.
+//
+// deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
+// drops unbound fields and metrics on a graph push. When given,
+// `flaggedMetrics` collects the name of each metric it reports. `load` says
+// how to read an ANSI_SQL text of tables whose dialect no lookup read (see
+// DialectLoad.readWithoutDialect).
+export function validateExpressionReferences(
+    models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
+    flaggedMetrics?: Set<string>, load: DialectLoad = {}): string[] {
+  return models.flatMap(
+      ({document, model}) =>
+          expressionProblems(model, document, fieldsPruned, warnings, load)
+              .map(p => {
+                if (p.item && 'metric' in p.item) {
+                  flaggedMetrics?.add(p.item.metric);
+                }
+                return p.problem;
+              }));
+}
+
+// One message for each field a concrete entity with a source inherits without
+// restating it, when the inherited expression reads a column. Empty when the
+// hierarchy does not resolve, which push reports elsewhere.
+export function validateInheritedColumns(
+    model: SemanticModel, document: string): string[] {
+  if (inheritanceErrorOf(model)) return [];
+  const entities = model.entities ?? [];
+  const dialect = sourcesDialect(model);
+  const errors: string[] = [];
+  for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
+    for (const f of inheritedNamesOf(model, e.name)) {
+      const read = !e.fields.some(x => x.name === f) &&
+          columnBinding(model, e.name, f, dialect);
+      if (!read) continue;
+      errors.push(
+          `entity '${e.name}' in model '${model.name}' (${document}): field '${
+              f}' is inherited from '${read.owner}', whose expression reads ` +
+          `column '${read.column}' of that entity's table; restate it with ` +
+          `an expression for this entity's table.`);
+    }
+  }
+  return errors;
+}
+
+// The warning for a model file whose own bindings are incomplete and that no
+// deployment uses. With `namedProfiles`, it says 'default' is unbound, and
+// otherwise that the model cannot be queried at all.
+export function inlineBindingWarnings(
+    model: SemanticModel, document: string, namedProfiles: boolean): string[] {
+  const unbound = unboundInline(model);
+  const used = (model.deployments ?? []).some(
+      d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE);
+  if (!unbound || used) return [];
+  const where = `model '${model.name}' (${document})`;
+  return [
+    namedProfiles ?
+        `${where} has an unbound 'default' profile: the model file leaves ${
+            unbound}. It cannot be queried through 'default'.` :
+        `${where} is non-executable: the model file leaves ${
+            unbound}, and the model declares no named profile. It cannot be ` +
+            `queried until it is bound.`,
+  ];
+}
+
+// What the model file's own bindings leave unbound, such as "entity 'a'
+// without a source", or '' when nothing is.
+function unboundInline(model: SemanticModel): string {
+  const sourceless = (model.entities ?? [])
+                         .filter(e => !e.abstract && !e.dataSource)
+                         .map(e => e.name);
+  const unjoined =
+      (model.relationships ?? [])
+          .filter(r => !r.association &&
+                      !(r.source.columns.length && r.destination.columns.length))
+          .map(r => r.name);
+  const part = (names: string[], one: string, many: string, without: string) =>
+      names.length ? `${names.length === 1 ? one : many} ${
+                         listed(names.map(n => `'${n}'`))} without ${without}` :
+                     '';
+  return [
+    part(sourceless, 'entity', 'entities', 'a source'),
+    part(unjoined, 'relationship', 'relationships', 'join columns'),
+  ].filter(p => p).join(' and ');
+}
+
+// The concrete leaf entities the model file's own bindings leave without a
+// `primary_key`, as the end of a graph deployment's error on `engine`, or
+// undefined when there are none.
+function keylessGraphEntities(
+    model: SemanticModel,
+    engine: 'bigquery'|'spanner'): string|undefined {
+  const target = engine === 'bigquery' ? 'BigQuery' : 'Spanner';
+  const entities = graphNodeEntities(model)
+                       .filter(e => !e.keys.length)
+                       .map(e => `'${e.name}'`);
+  if (!entities.length) return undefined;
+  const many = entities.length > 1;
+  return `which leave ${many ? 'entities' : 'entity'} ${
+             listed(entities)} without a primary_key; a ${
+             target} graph deployment needs a primary_key on every concrete ` +
+      `leaf entity. Declare primary_key on ${
+             many ? 'each entity' : 'the entity'}, or use a named profile ` +
+      `that states one.`;
+}
+
+// The relationships of `model` whose `to_columns` cover a key of the target
+// but do not match its `primary_key` (see matchesKey): they cover a unique key,
+// or the primary key with extra columns. Each is the end of a sentence about a
+// BigQuery graph deployment. A join that covers no key is left to
+// relationshipKeyErrors or validateProfileConsistency, and a named profile that
+// leaves `to_columns` empty is left to validateProfileCompleteness.
+function bigQueryEdgeKeyProblems(
+    model: SemanticModel, named?: ProfileSpec): string[] {
+  const problems: string[] = [];
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  for (const rel of model.relationships ?? []) {
+    if (rel.association) continue;
+    const join = named?.relationships.find(x => x.name === rel.name);
+    if (named && !join?.toColumns?.length) continue;
+    const to = rel.destination.columns;
+    if (!to.length || !to.every(isColumnName)) continue;
+    const target = byName.get(rel.destination.entity);
+    if (!target || target.abstract || !target.keys.length) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
+    if (!coversKey(to, target.keys, target.uniqueKeys ?? []) ||
+        matchesKey(to, target.keys)) {
+      continue;
+    }
+    const detail = `which ${primaryKeyMismatch(target)}`;
+    problems.push(
+        named ?
+            `targets BigQuery, and profile '${
+                named.name}' joins relationship '${rel.name}' on to_columns ${
+                JSON.stringify(to)}, ${detail}` :
+            `uses the model file's own bindings, under which relationship '${
+                rel.name}' joins on to_columns ${
+                JSON.stringify(to)}, ${detail}`);
+  }
+  return problems;
+}
+
+// The end of an error about a BigQuery graph edge whose `to_columns`, named
+// just before it, do not match the primary key of `target`.
+function primaryKeyMismatch(target: Entity): string {
+  return `do not match primary_key ${JSON.stringify(target.keys)} of '${
+             target.name}'; a BigQuery graph edge must join on its target's ` +
+      `primary_key columns, in any order, and not on a unique key or extra ` +
+      `columns.`;
+}
+
+// The entities of `model`, resolved for inheritance, that a graph gives a node
+// table once each has a primary_key, as the generator chooses them (see
+// graph_ddl.ts): each one neither abstract nor extended by another.
+function graphNodeEntities(model: SemanticModel): Entity[] {
+  const entities = resolvedEntities(model);
+  const extended = new Set(entities.flatMap(e => e.extends ?? []));
+  return entities.filter(e => !e.abstract && !extended.has(e.name));
+}
+
+// The fields the model file's own bindings leave without an expression on
+// each concrete leaf entity, counting the fields it inherits, as the end of a
+// deployment's error, or undefined when there are none.
+function unboundGraphFields(model: SemanticModel): string|undefined {
+  const fields = graphNodeEntities(model).flatMap(
+      e => (e.fields ?? [])
+               .filter(f => !isFieldBound(f))
+               .map(f => `'${e.name}.${f.name}'`));
+  if (!fields.length) return undefined;
+  const many = fields.length > 1;
+  return `which leave ${many ? 'fields' : 'field'} ${
+             listed(fields)} without an expression; a graph deployment ` +
+      `needs every field of a concrete leaf entity bound. Give ${
+             many ? 'each field' : 'the field'} an expression, or use a ` +
+      `named profile that lists ${many ? 'them' : 'it'} in 'fields_exclude'.`;
+}
+
+// The names a graph on `engine` cannot hold in `model`, compared ignoring
+// case, each as the end of a sentence about a deployment. A metric named like
+// a field of its own entity is left to metricFieldCollisionError.
+function graphNameProblems(
+    model: SemanticModel, engine: 'bigquery'|'spanner'): string[] {
+  const at = `targets ${engine === 'bigquery' ? 'BigQuery' : 'Spanner'}, where`;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const problems: string[] = [];
+  for (const r of model.relationships ?? []) {
+    const e = model.entities?.find(e => same(e.name, r.name));
+    if (!e) continue;
+    problems.push(
+        `${at} entity '${e.name}' and relationship '${r.name}' cannot both ` +
+        `name a table: node and edge tables share one set of names, ` +
+        `compared ignoring case; rename one.`);
+  }
+  if (engine === 'spanner') return problems;
+  const tables = graphNodeEntities(model).filter(e => e.keys.length > 0);
+  for (const m of model.metrics ?? []) {
+    const owner = m.authoredEntity ?? m.entity;
+    for (const e of tables.filter(e => e.name !== owner)) {
+      const f = e.fields.find(f => same(f.name, m.name));
+      if (!f) continue;
+      problems.push(
+          `${at} metric '${m.name}' cannot share its name with field '${
+              e.name}.${f.name}': a measure's name must differ from every ` +
+          `property name in the graph, compared ignoring case; rename one.`);
+    }
+  }
+  return problems;
+}
+
+// A Spanner graph name: a letter, then letters, digits and underscores, at most
+// 128 characters in all.
+const SPANNER_GRAPH_NAME = /^[A-Za-z][A-Za-z0-9_]{0,127}$/;
+
+// What Spanner refuses in the graph of `model` that `target` names, each as
+// the end of a sentence about a deployment: a name Spanner does not accept,
+// and the name of a table of the target database that the graph reads. Names
+// compare ignoring case, as Spanner compares them.
+function spannerGraphProblems(
+    model: SemanticModel, target: SpannerGraphTarget): string[] {
+  const graph = target.graphName;
+  const database =
+      `spanner/${target.project}/${target.instance}/${target.database}`;
+  const problems: string[] = [];
+  if (!SPANNER_GRAPH_NAME.test(graph)) {
+    problems.push(
+        `targets Spanner graph '${graph}', but a Spanner graph name starts ` +
+        `with a letter, holds only letters, digits and underscores, and is ` +
+        `at most 128 characters long; rename the graph in the target.`);
+  }
+  let elements: GraphElement[];
+  try {
+    ({elements} = generateSpannerPropertyGraph(model, {graphName: graph}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return problems;
+  }
+  const owner = (e: GraphElement) =>
+      `${e.kind === 'node' ? 'entity' : 'relationship'} '${e.name}'`;
+  const lower = graph.toLowerCase();
+  const named = elements.find(
+      e => databaseOf(e.dataSource) === database &&
+          boundTable(e.dataSource, [], '', t => t).toLowerCase() === lower);
+  if (named) {
+    problems.push(
+        `targets Spanner graph '${graph}', which has the name of table '${
+            boundTable(named.dataSource, [], '', t => t)}' that ${
+            owner(named)} reads; a graph cannot share its name with a table ` +
+        `of its database, compared ignoring case. Rename the graph in the ` +
+        `target.`);
+  }
+  return problems;
+}
+
+// What a BigQuery graph rejects in the OPTIONS kcmd writes for `model`, each
+// as the end of a sentence about a deployment. It reads only the labels and
+// properties the generator writes OPTIONS for.
+function bigQueryOptionProblems(model: SemanticModel): string[] {
+  const problems: string[] = [];
+  const check =
+      (kind: 'entity'|'relationship'|'field'|'metric', name: string,
+       description: string|undefined, synonyms: string[] = [],
+       extensions: Array<[string, string]> = [], owner?: string) => {
+        const what = `${kind} '${owner ? `${owner}.` : ''}${name}'`;
+        // A field or metric is a property of the graph, and an entity or
+        // relationship is a label. Each limit message names that construct.
+        const construct =
+            kind === 'field' || kind === 'metric' ? 'property' : 'label';
+        if (description && description.length > MAX_BIGQUERY_DESCRIPTION) {
+          problems.push(
+              `the description kcmd writes for ${what} is ${
+                  description.length} characters long; a ${construct}'s ` +
+              `description holds at most ${MAX_BIGQUERY_DESCRIPTION}.`);
+        }
+        if (synonyms.length > MAX_BIGQUERY_SYNONYM_COUNT) {
+          problems.push(
+              `${what} has ${synonyms.length} synonyms; a ${construct} ` +
+              `holds at most ${MAX_BIGQUERY_SYNONYM_COUNT}.`);
+        }
+        const firstByLower = new Map<string, string>();
+        for (const s of synonyms) {
+          const lower = s.toLowerCase();
+          if (!s) problems.push(`${what} has an empty synonym; remove it.`);
+          if (s.length > MAX_BIGQUERY_SYNONYM_LENGTH) {
+            problems.push(
+                `a synonym of ${what} is ${s.length} characters long; a ` +
+                `synonym holds at most ${MAX_BIGQUERY_SYNONYM_LENGTH}.`);
+          }
+          if (lower === name.toLowerCase()) {
+            problems.push(
+                `${what} has the synonym '${s}', which BigQuery treats as ` +
+                `the ${kind}'s own name; remove it.`);
+          }
+          const first = firstByLower.get(lower);
+          if (first === undefined) {
+            firstByLower.set(lower, s);
+          } else {
+            problems.push(
+                `${what} has the synonyms '${first}' and '${s}', which ` +
+                `BigQuery treats as one; remove one.`);
+          }
+        }
+        for (const [key, value] of extensions) {
+          if (value.length <= MAX_BIGQUERY_EXTENSION_VALUE) continue;
+          problems.push(
+              `the ${key} kcmd writes for ${what}${
+                  key === 'examples' ? ', as a JSON array,' : ''} is ${
+                  value.length} characters long; a ${
+                  construct}'s extension value holds at most ${
+                  MAX_BIGQUERY_EXTENSION_VALUE}.`);
+        }
+      };
+  const element =
+      (kind: 'entity'|'relationship'|'metric',
+       x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
+          check(
+              kind, x.name, elementDescription(x.description),
+              x.aiContext?.synonyms, aiExtensions(x.aiContext));
+  for (const e of graphNodeEntities(model).filter(e => e.keys.length > 0)) {
+    element('entity', e);
+    for (const f of e.fields) {
+      if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
+      check(
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), e.name);
+    }
+  }
+  for (const r of model.relationships ?? []) {
+    element('relationship', r);
+    for (const f of r.association?.fields ?? []) {
+      if (isFieldBound(f) &&
+          expressionForDialect(f, 'BIGQUERY') === undefined) {
+        continue;
+      }
+      check(
+          'field', f.name, elementDescription(f.description),
+          f.aiContext?.synonyms, fieldExtensions(f), r.name);
+    }
+  }
+  for (const m of model.metrics ?? []) element('metric', m);
+  return problems.map(p => `targets BigQuery, where ${p}`);
+}
+
+// One message for each property of `model`'s BigQuery graph that calls a
+// user-defined function by its dataset and name alone, as in `ds.f(amount)`:
+// each field of a node table (see graphNodeEntities), and each of `operands`,
+// the operands of the aggregates of each metric that becomes a measure, by
+// metric. BigQuery creates such a graph, but every query on it then fails
+// with "Function not found: ds.f" (see projectlessFunction). A field that
+// reads such a field reports nothing of its own. An entity with no
+// primary_key is read too, as bigQueryMeasure reads a metric on one, so its
+// message comes with the key check's.
+function bigQueryFunctionProblems(
+    model: SemanticModel,
+    operands: ReadonlyMap<string, string[]>): string[] {
+  const problems: string[] = [];
+  const add = (what: string, udf: string|undefined) => {
+    if (!udf) return;
+    problems.push(
+        `targets BigQuery, where ${what} calls user-defined function '${
+            udf}' without its project; BigQuery creates the graph, but ` +
+        `every query on it then fails with "Function not found: ${
+            udf}". Name the project, for example \`my-project.${udf}\`.`);
+  };
+  // A text with no dot calls no such function, and is not read.
+  for (const e of graphNodeEntities(model)) {
+    for (const f of e.fields) {
+      const text = expressionForDialect(f, 'BIGQUERY');
+      if (!text?.includes('.')) continue;
+      // Read as the generator reads a metric, with the entity's qualifier
+      // renamed (see standInQualified).
+      add(`field '${e.name}.${f.name}'`,
+          projectlessFunction(
+              standInQualified(text, e.name).text, 'BIGQUERY'));
+    }
+  }
+  for (const [metric, texts] of operands) {
+    add(`metric '${metric}'`,
+        texts.filter(t => t.includes('.'))
+            .map(t => projectlessFunction(t, 'BIGQUERY'))
+            .find(Boolean));
+  }
+  return problems;
+}
+
 // Static, target-independent checks for a model's actions. Returns one message
 // per violation. What can be statically wrong once the model has parsed:
 //   - a parameter projects from a concept the model does not declare, or a
@@ -250,9 +788,9 @@ function nameAndDescriptionErrors(
 // entry that names nothing real leaves a reader believing the blast radius is
 // described when it is not, and a consumer routing on it would route on a
 // concept that does not exist.
-function validateActions(
+export function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean,
-    checkDescriptions: boolean): string[] {
+    checkDescriptions: boolean, load: DialectLoad = {}): string[] {
   const errors: string[] = [];
   const actions = model.actions ?? [];
   if (!actions.length) return errors;
@@ -283,6 +821,11 @@ function validateActions(
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
+  // A deployment that applies a profile refuses a sql executor in the model
+  // file, and reads the profile's own statements in its tables' dialect.
+  const dialects = actions.some(a => a.executor?.kind === 'sql') ?
+      modelStatementDialects(model, load) :
+      [];
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
@@ -386,9 +929,77 @@ function validateActions(
       }
     }
     errors.push(...affectedConceptErrors(action, where, concepts));
-    errors.push(...sqlExecutorErrors(action, where));
+    errors.push(...sqlExecutorErrors(action, where, dialects));
+    // BigQuery and Spanner match parameter names without regard to case, so
+    // they read two declared names that differ only in case as one. With no
+    // dialect known, each deployment's check reports these.
+    if (executor?.kind === 'sql') {
+      const declared = action.parameters.map(p => p.name);
+      declared.forEach((second, i) => {
+        for (const first of declared.slice(0, i)) {
+          if (!dialects.some(
+                  d => boundParameter(second, [first], d) === first)) {
+            continue;
+          }
+          errors.push(
+              `${where} declares parameters '${first}' and '${second}', ` +
+              `which BigQuery and Spanner read as one name. Rename one.`);
+        }
+      });
+    }
   }
   return errors;
+}
+
+// The dialect the statements of `model` are read in: that of its tables, or
+// else ALLOYDB for a model with an AlloyDB target. Null when neither gives
+// one: when no lookup read the tables' dialect, as in pull, and when the
+// model file binds no table.
+function statementsDialect(model: SemanticModel): string|null {
+  return sourcesDialect(model) ??
+      (alloyDbTargets(model).targets.length ? 'ALLOYDB' : null);
+}
+
+// The dialects the statements written in the model file of `model` are read
+// in: statementsDialect's, when it gives one. A model file that binds no
+// table runs its statements through its named profiles, so they are then
+// read in the dialect each profile gives (see profileDialect). Empty when no
+// dialect is known, as when no lookup read the tables' dialect, as in pull.
+function modelStatementDialects(
+    model: SemanticModel, load: DialectLoad): string[] {
+  const own = statementsDialect(model);
+  if (own) return [own];
+  if (sourcesDialect(model) !== undefined) return [];
+  return [...new Set((model.profiles ?? []).flatMap(spec => {
+    const dialect = profileDialect(model, spec, load);
+    return dialect ? [dialect] : [];
+  }))];
+}
+
+// The dialect the statements of profile `spec` of `model` are read in:
+// statementsDialect's, with the profile's tables, looked up as `load` gives
+// them, and the deployments that use the profile. Null when that gives none
+// or the profile does not apply, which localChecks reports. Only the
+// profile's tables matter, so the model's actions, which a profile may not
+// apply to, are left out.
+function profileDialect(
+    model: SemanticModel, spec: ProfileSpec, load: DialectLoad): string|null {
+  const resolved = resolveModelDeployments(model);
+  const names = 'error' in resolved ?
+      [] :
+      resolved.deployments.filter(d => d.profile === spec.name)
+          .map(d => d.name);
+  try {
+    const bound = applyProfile({...model, actions: []}, spec, {load});
+    return statementsDialect({
+      ...bound,
+      deployments:
+          (model.deployments ?? []).filter(d => names.includes(d.name)),
+    });
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return null;
+  }
 }
 
 // The errors in a SQL executor's statements. Nothing here for the other three
@@ -408,56 +1019,412 @@ function validateActions(
 //   - Every `@parameter` is declared. This is the load-bearing one: it is what
 //     lets the runtime BIND every value instead of interpolating it, so no
 //     argument can reach the store as SQL.
-function sqlExecutorErrors(action: Action, where: string): string[] {
+//
+// The statements are read in each of `dialects`, the databases they run on,
+// and each error any of them gives is reported. With no dialect, the
+// statements' dialect is not known, as when no lookup read the dialect of the
+// model's tables. A statement is then refused when every dialect in
+// SQL_CODE_DIALECTS refuses it: for each rule they all find it breaks, in the
+// first one's words, or else for what the first one finds. A check that knows
+// the dialect reports the others.
+function sqlExecutorErrors(
+    action: Action, where: string, dialects: readonly string[]): string[] {
   if (action.executor?.kind !== 'sql') return [];
-  const executor = action.executor;
-  const errors: string[] = [];
-  const bindable = new Set(action.parameters.map(p => p.name));
-  executor.sql.statements.forEach((stmt, i) => {
+  const declared = action.parameters.map(p => p.name);
+  return action.executor.sql.statements.flatMap((stmt, i) => {
     const at = `${where} has a sql executor whose statement ${i + 1}`;
-    const text = stmt.trim();
-    if (!text) {
-      errors.push(`${at} is blank.`);
-      return;
+    if (dialects.length) {
+      return [...new Set(dialects.flatMap(
+          d => statementErrors(action, at, stmt, declared, d)
+                   .map(([, error]) => error)))];
     }
-    // The same reader the runtime uses, deliberately: what a model may
-    // PUBLISH and what the runtime will EXECUTE have to agree about where a
-    // statement's verb is. A naive first-word read disagreed -- the runtime
-    // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
-    // tests, while this rejected them at push time, so the library accepted an
-    // authored executor `kcmd` refused. Sharing the scanner does not widen
-    // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
-    // does not list, so a MERGE is still refused here.
-    const verb = leadingDmlVerb(text);
-    if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
-      // Name what the author wrote, not merely that nothing was found. The
-      // scanner reads DML verbs only, so a SELECT executor -- the likeliest
-      // mistake here -- comes back empty, and 'has no readable DML verb' would
-      // describe a query the author can see perfectly well. When the statement
-      // does not plainly open with a word, the first token is a comment marker
-      // and names nothing, so report the absence instead.
-      const first = text.split(/\s/, 1)[0].toUpperCase();
-      const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
-      errors.push(
-          `${at} ${
-              wrote ? `starts with '${wrote}'` :
-                      'has no readable DML verb'}, but a statement must be ` +
-          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`);
+    const readings = SQL_CODE_DIALECTS.map(
+        d => statementErrors(action, at, stmt, declared, d));
+    if (readings.some(r => !r.length)) return [];
+    const [first, ...rest] = readings;
+    const shared = first.filter(
+        ([rule]) => rest.every(r => r.some(([other]) => other === rule)));
+    return (shared.length ? shared : first).map(([, error]) => error);
+  });
+}
+
+// The errors in the statement `stmt` of `action`, at `at`, read in `dialect`,
+// each with the rule it breaks: 'blank', 'verb', ';', or the parameter it
+// binds.
+function statementErrors(
+    action: Action, at: string, stmt: string, declared: string[],
+    dialect?: string): Array<[string, string]> {
+  const text = stmt.trim();
+  if (!text) return [['blank', `${at} is blank.`]];
+  const errors: Array<[string, string]> = [];
+  // The same reader the runtime uses, deliberately: what a model may
+  // PUBLISH and what the runtime will EXECUTE have to agree about where a
+  // statement's verb is. A naive first-word read disagreed -- the runtime
+  // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
+  // tests, while this rejected them at push time, so the library accepted an
+  // authored executor `kcmd` refused. Sharing the scanner does not widen
+  // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
+  // does not list, so a MERGE is still refused here.
+  const verb = leadingDmlVerb(text, dialect);
+  if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
+    // Name what the author wrote, not merely that nothing was found. The
+    // scanner reads DML verbs only, so a SELECT executor -- the likeliest
+    // mistake here -- comes back empty, and 'has no readable DML verb' would
+    // describe a query the author can see perfectly well. When the statement
+    // does not plainly open with a word, the first token is a comment marker
+    // and names nothing, so report the absence instead.
+    const first = text.split(/\s/, 1)[0].toUpperCase();
+    const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
+    errors.push(['verb',
+      `${at} ${
+          wrote ? `starts with '${wrote}'` :
+                  'has no readable DML verb'}, but a statement must be ` +
+          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`]);
+  }
+  if (text.slice(0, -1).includes(';')) {
+    errors.push([';',
+      `${at} contains ';'. Each statement runs on its own, so write ` +
+          `one statement per list entry.`]);
+  }
+  for (const name of referencedParameters(text, dialect)) {
+    if (!boundParameter(name, declared, dialect)) {
+      errors.push([`@${name}`,
+        `${at} binds '@${name}', but action '${action.name}' ` +
+            `declares no parameter of that name.`]);
     }
-    if (text.slice(0, -1).includes(';')) {
-      errors.push(
-          `${at} contains ';'. Each statement runs on its own, so write ` +
-          `one statement per list entry.`);
-    }
-    for (const name of referencedParameters(text)) {
-      if (!bindable.has(name)) {
+  }
+  return errors;
+}
+
+// The errors for each `sql` executor statement that YAML reads differently
+// from how it is written, in the model file `text` of `base` and in each of
+// its profile files:
+//   1. An unquoted statement with a comment on the same line. YAML ends an
+//      unquoted value at ` #`, so the statement it reads is shorter than the
+//      one written.
+//   2. An unquoted statement followed, after any blank lines, by a comment
+//      line: in a block list one indented past the list's '-', in a block
+//      mapping one indented past its keys, and in a flow list any before the
+//      next ',' or ']'. YAML ends the statement there too.
+//   3. A statement in which a SQL comment, as YAML reads the statement, runs
+//      on into text from a later line. YAML joins the lines of every style
+//      but '|', so a comment there also covers the lines after it.
+export function yamlChangedStatementErrors(
+    base: LoadedModel, text: string, profileDocs: ProfileFiles,
+    load: DialectLoad): string[] {
+  const {document} = base;
+  // The model with the profiles of its profile files, whose tables give the
+  // dialects of the statements.
+  const withFiles = withProfileFiles(base, profileDocs);
+  const model = 'errors' in withFiles ? base.model : withFiles.model;
+  // What to do with `what` when it belongs to the statement and when it is a
+  // YAML comment, where `holder` holds the statement. A flow list has no '-'
+  // column and cannot hold a block scalar.
+  const advice = (what: string, holder?: Holder) =>
+      holder?.kind === 'flow list' ?
+      `If ${what} is part of the statement, write the statements as a block ` +
+          `list, with this one as a block scalar with '|'. If it is a YAML ` +
+          `comment, move it after the ',' or ']' that follows the statement.` :
+      `If ${what} is part of the statement, write it as a block scalar with ` +
+          `'|'. If it is a YAML comment, move it to the ${
+              holder?.kind === 'block mapping' ? `column of '${holder.key}'` :
+                                                 "'-' column"}.`;
+  const errors: string[] = [];
+  // The model file holds the inline bindings and goes by its document name,
+  // as in the other action messages.
+  for (const file of [
+         {name: DEFAULT_PROFILE, text, fileName: document},
+         ...profileDocs(document),
+       ]) {
+    const dialects = statementDialects(model, file.name, load);
+    const statements = writtenStatements(file.text);
+    const markers = joinedLineMarkers(statements, file.text, dialects);
+    for (const written of statements) {
+      const {action, index, statement, anchor, holder} = written;
+      // An alias names its anchor, which is where the author edits.
+      const at = `action '${action}' in model '${model.name}' (${
+          file.fileName}) has a sql executor whose statement ${index + 1}${
+          anchor ? `, written at '&${anchor}',` : ''}`;
+      const flow = holder?.kind === 'flow list';
+      const cut = commentCut(file.text, written);
+      const marker = markers.get(statement);
+      if (cut === 'same line') {
         errors.push(
-            `${at} binds '@${name}', but action '${action.name}' ` +
-            `declares no parameter of that name.`);
+            `${at} has a comment on the same line, so YAML reads the ` +
+            `statement as '${statement.value}'. ${
+                advice("the text after ' #'", holder)}`);
+      } else if (cut === 'line under') {
+        errors.push(
+            `${at} is followed by a comment line ${
+                flow ? `before the next ',' or ']'` : 'indented under it'}, ` +
+            `so YAML reads the statement as '${statement.value}'. ${
+                advice('the comment line', holder)}`);
+      } else if (marker) {
+        errors.push(
+            `${at} has '${marker}' on a line YAML joins to the next one, so ` +
+            `a SQL comment it starts would also cover the lines after it. ${
+                flow ? 'Write the statements as a block list, with this one ' +
+                        "as a block scalar with '|'" :
+                       "Write it as a block scalar with '|'"}, which keeps ` +
+            `its line breaks.`);
       }
     }
-  });
+  }
   return errors;
+}
+
+// Where a YAML comment ends the plain statement `written` of `text`: on its
+// line, or on a line under it, past blank lines, that is indented past its
+// holder's '-' or keys or is anywhere in a flow list. Undefined when no
+// comment ends it.
+function commentCut(text: string, {statement, holder}: WrittenStatement):
+    'same line'|'line under'|undefined {
+  if (statement.type !== 'PLAIN') return undefined;
+  const after = text.slice(statement.range![1]);
+  if (/^[ \t]+#/.test(after)) return 'same line';
+  // YAML counts only spaces as indent.
+  const indent = /^(?:[ \t]*\r?\n)+( *)[ \t]*#/.exec(after)?.[1].length ?? -1;
+  return holder && indent > (holder.kind === 'flow list' ? -1 : holder.column) ?
+      'line under' :
+      undefined;
+}
+
+// The statements of `text`, a model or profile file that `edits` made from
+// `before`, that a comment ends. A statement that a comment ended in `before`
+// and that no edit touched is left out, since its text is the local file's.
+// Each edit replaces the text from one offset to another of `before`. An
+// alias and its anchor share one statement.
+export function cutStatements(
+    text: string, before: string,
+    edits: ReadonlyArray<readonly [number, number, string]>): yaml.Scalar[] {
+  // Where each such statement of `before` is in `text`.
+  const kept = new Set(
+      writtenStatements(before)
+          .filter(s => commentCut(before, s))
+          .flatMap(({statement}) => {
+            const [a, b] = statement.range!;
+            if (edits.some(([p, q]) => p < b && q > a)) return [];
+            return [movedOffset(edits, a)];
+          }));
+  return [...new Set(
+      writtenStatements(text)
+          .filter(s => commentCut(text, s) && !kept.has(s.statement.range![0]))
+          .map(s => s.statement))];
+}
+
+// The collection a statement is written in: a block list with the column of
+// its '-', a block mapping with the column of its keys and what the
+// statement's key line holds from that column to the key's end, or a flow
+// list.
+type Holder = {kind: 'block list'; column: number}|
+    {kind: 'block mapping'; column: number; key: string}|{kind: 'flow list'};
+
+// One `sql` executor statement in a model or profile file.
+interface WrittenStatement {
+  action: string;
+  // 0-based position in the executor's `statements` list.
+  index: number;
+  statement: yaml.Scalar;
+  // The name of the anchor the list item is an alias of.
+  anchor?: string;
+  // Where `statement` is written, which for an alias is where its anchor is.
+  // Undefined anywhere else, such as in a flow mapping.
+  holder?: Holder;
+}
+
+// Each `sql` executor statement in the model or profile file `text`. A model
+// file lists actions under each model, and a profile file at its top level.
+// Empty for text with a YAML error, which the load reports.
+function writtenStatements(text: string): WrittenStatement[] {
+  const doc = yaml.parseDocument(text, {...YAML_OPTIONS, keepSourceTokens: true});
+  if (doc.errors.length) return [];
+  const resolved = (n: unknown) => yaml.isAlias(n) ? n.resolve(doc) : n;
+  // The node at `path` under `n`, following aliases.
+  const nodeAt = (n: unknown, ...path: string[]) =>
+      resolved(path.reduce((at: unknown, key) => {
+        const map = resolved(at);
+        return yaml.isMap(map) ? map.get(key, true) : undefined;
+      }, n));
+  // The items of the list at `path` under `n`.
+  const listAt = (n: unknown, ...path: string[]) => {
+    const seq = nodeAt(n, ...path);
+    return yaml.isSeq(seq) ? seq.items : [];
+  };
+  const actions = [
+    ...listAt(doc.contents, 'semantic_model')
+        .flatMap(m => listAt(m, 'actions')),
+    ...listAt(doc.contents, 'actions'),
+  ];
+  // The collection that holds each node. A block collection's column is its
+  // indent as the yaml library reads it, which an anchor or tag on its first
+  // item does not move.
+  const holders = new Map<unknown, Holder>();
+  const column = (node: yaml.YAMLMap|yaml.YAMLSeq) =>
+      (node.srcToken as yaml.CST.BlockMap|yaml.CST.BlockSequence).indent;
+  yaml.visit(doc, {
+    Seq(_, seq) {
+      const holder: Holder = seq.flow ? {kind: 'flow list'} :
+                                        {kind: 'block list', column: column(seq)};
+      for (const item of seq.items) holders.set(item, holder);
+    },
+    Map(_, map) {
+      if (map.flow) return;
+      for (const pair of map.items) {
+        // What the key's line holds from that column to the key's end, with
+        // the key's anchor or tag.
+        const key = yaml.isNode(pair.key) ? pair.key.range! : undefined;
+        holders.set(pair.value, {
+          kind: 'block mapping',
+          column: column(map),
+          key: key ? text.slice(
+                         text.lastIndexOf('\n', key[0] - 1) + 1 + column(map),
+                         key[1]) :
+                     '',
+        });
+      }
+    },
+  });
+  return actions.flatMap(action => {
+    const statements = nodeAt(action, 'executor', 'sql', 'statements');
+    if (!yaml.isSeq(statements)) return [];
+    const name = nodeAt(action, 'name');
+    return statements.items.flatMap((item, index) => {
+      const statement = resolved(item);
+      return yaml.isScalar(statement) ? [{
+        action: yaml.isScalar(name) ? String(name.value) : '',
+        index,
+        statement,
+        anchor: yaml.isAlias(item) ? item.source : undefined,
+        holder: holders.get(statement),
+      }] : [];
+    });
+  });
+}
+
+// The dialects in which the statements of binding profile `profile` of
+// `model` run, as validateActions reads them: for the model file, those
+// modelStatementDialects gives with the deployments that use the model file's
+// own bindings, and for a profile file, the one profileDialect gives. `model`
+// holds the profiles its profile files declare, and `load` is what the caller
+// read of each table's dialect.
+function statementDialects(
+    model: SemanticModel, profile: string, load: DialectLoad): string[] {
+  if (profile === DEFAULT_PROFILE) {
+    const resolved = resolveModelDeployments(model);
+    const own = 'error' in resolved ?
+        [] :
+        resolved.deployments.filter(d => d.profile === DEFAULT_PROFILE);
+    const deployments = (model.deployments ?? [])
+                            .filter(d => own.some(r => r.name === d.name));
+    return modelStatementDialects({...model, deployments}, load);
+  }
+  const spec = (model.profiles ?? []).find(p => p.name === profile);
+  const dialect = spec && profileDialect(model, spec, load);
+  return dialect ? [dialect] : [];
+}
+
+// For each of `statements` in the model or profile file `text`, the first SQL
+// comment marker that one of `dialects` reads in the statement YAML reads,
+// when the comment it starts runs on into text from a later line of the
+// statement. A statement with no such marker is left out. A marker counts
+// anywhere in the statement, inside a string or a quoted name too, and a
+// comment runs to the next line break of the statement. `--` and `/*` are
+// markers in every dialect, and `#` in each one where hashStartsComment says
+// it starts a comment. With no dialect, `#` is not a marker. The yaml library
+// decides which lines it joins: each line with text of a statement, except
+// the last line of a plain or quoted one, gets a character at its end that
+// neither `text` nor any statement holds, and the text is parsed again. A
+// comment runs on into a later line when one of those characters inside it
+// is followed by more of the comment.
+function joinedLineMarkers(statements: WrittenStatement[], text: string,
+                           dialects: string[]): Map<yaml.Scalar, string> {
+  const marker = dialects.some(d => hashStartsComment(d)) ?
+      /--|\/\*|#/ :
+      /--|\/\*/;
+  // A '|' block keeps every line break, so a comment in it covers no later
+  // line.
+  const checked = statements.map(
+      ({statement}) => statement.type !== 'BLOCK_LITERAL' &&
+          marker.test(String(statement.value)));
+  // Empty when the text and the statements hold every private-use character,
+  // which leaves each statement accepted.
+  const end = unusedPrivateUseCharacter(
+      text + statements.map(s => String(s.statement.value)).join(''));
+  const inserts: number[] = [];
+  statements.forEach(({statement}, i) => {
+    if (!checked[i]) return;
+    const [start, stop] = statement.range!;
+    // A '>' block's text starts on the line after its header.
+    for (let from = statement.type === 'BLOCK_FOLDED' ?
+             text.indexOf('\n', start) + 1 :
+             start,
+             to = text.indexOf('\n', from);
+         to >= 0 && to < stop; from = to + 1, to = text.indexOf('\n', from)) {
+      const line = text.slice(from, to).replace(/\r$/, '');
+      // The character goes after the line's last character other than a space
+      // or tab. In a double-quoted statement, an odd number of backslashes
+      // there escapes the blank after them, or the line break when no blank
+      // follows, so it goes before the last backslash. A line with no text
+      // gets none, since one there would change how YAML reads the line.
+      const body = line.slice(0, /[ \t]*$/.exec(line)!.index);
+      const escaped = statement.type === 'QUOTE_DOUBLE' &&
+          /\\*$/.exec(body)![0].length % 2 === 1;
+      const at = body.length - (escaped ? 1 : 0);
+      if (/[^ \t]/.test(line.slice(0, at))) inserts.push(from + at);
+    }
+  });
+  const joined = new Map<yaml.Scalar, string>();
+  if (!inserts.length) return joined;
+  let changed = '';
+  let copied = 0;
+  for (const at of inserts.sort((a, b) => a - b)) {
+    changed += text.slice(copied, at) + end;
+    copied = at;
+  }
+  changed += text.slice(copied);
+  // The changed text holds the same statements in the same order.
+  const reread = writtenStatements(changed);
+  statements.forEach(({statement}, i) => {
+    if (!checked[i]) return;
+    // The statement as YAML reads it, and where each line but its last ends
+    // in it.
+    let value = '';
+    const ends: number[] = [];
+    for (const c of String(reread[i]?.statement.value ?? '')) {
+      if (c === end) ends.push(value.length);
+      else value += c;
+    }
+    let lineStart = 0;
+    for (const line of value.split('\n')) {
+      const found = marker.exec(line);
+      if (found) {
+        const from = lineStart + found.index;
+        const after = from + found[0].length;
+        const lineEnd = lineStart + line.length;
+        if (ends.some(e => e > from &&
+                          /[^ \t]/.test(value.slice(Math.max(e, after), lineEnd)))) {
+          joined.set(statement, found[0]);
+          return;
+        }
+      }
+      lineStart += line.length + 1;
+    }
+  });
+  return joined;
+}
+
+// The first private-use character, from U+E000 upward, that `text` does not
+// hold, or '' when it holds every one.
+function unusedPrivateUseCharacter(text: string): string {
+  const held = new Set(text);
+  for (const [first, last] of
+           [[0xe000, 0xf8ff], [0xf0000, 0xffffd], [0x100000, 0x10fffd]]) {
+    for (let point = first; point <= last; point++) {
+      const character = String.fromCodePoint(point);
+      if (!held.has(character)) return character;
+    }
+  }
+  return '';
 }
 
 // The errors in one action's `affects`. Split out because the checks chain: a
@@ -751,29 +1718,6 @@ function unknownFieldRefs(
   return errors;
 }
 
-// What `build` returns, or nothing when the model's inheritance does not
-// resolve.
-//
-// `declaredFields` and `declaredConcepts` both resolve inheritance, and
-// resolving THROWS on an `extends` naming an entity the model does not declare,
-// on a cycle, and on an ambiguously inherited field, rather than reporting it.
-// The loader accepts such a model, a
-// Knowledge-Catalog-only push reaches no graph leg to catch it, and a profile
-// push can create one by pruning a supertype whole. A validation gate reports;
-// it does not stack-trace, so every caller that resolves inheritance to answer
-// a question comes through here and stands its own check down when the answer
-// is unavailable. That is the same thing a pruned profile does. Standing down
-// is not silence: validatePushRequirements reports the resolution failure once
-// per model, so the larger problem is named and only the checks that depend on
-// the resolved model go quiet.
-function ifResolvable<T>(build: () => T): T|undefined {
-  try {
-    return build();
-  } catch {
-    return undefined;
-  }
-}
-
 // Why resolving the model's inheritance fails, or nothing when it succeeds.
 //
 // Reported rather than thrown, and reported once for the model rather than once
@@ -804,8 +1748,9 @@ const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
 
 /**
  * Returns one message per broken inheritance or concrete-leaf rule, or an
- * empty list: a cycle, an unknown parent, or a field
- * inherited from two unrelated ancestors; a redeclared inherited field; an
+ * empty list: a cycle, an unknown parent, a field inherited from two
+ * unrelated ancestors, or two fields of one entity whose names differ only in
+ * case; a redeclared inherited field; an
  * abstract entity with a table; and a relationship or metric on an entity that
  * is not a concrete leaf. Pruning can remove the field a rule is about, so a
  * push that prunes runs this on the model before pruning as well as after.
@@ -814,8 +1759,9 @@ export function validateInheritance(models: LoadedModel[]): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     // Resolving inheritance throws on an `extends` naming an entity the model
-    // does not declare, on a cycle, and on a field inherited from two unrelated
-    // ancestors, and the checks below stand down rather than stack-trace on
+    // does not declare, on a cycle, on a field inherited from two unrelated
+    // ancestors, and on two fields of one entity whose names differ only in
+    // case, and the checks below stand down rather than stack-trace on
     // one. Standing down has to mean reporting somewhere or it means
     // publishing a broken model in silence: the loader accepts such a model,
     // and a Knowledge-Catalog-only push reaches no graph leg that would resolve
@@ -873,9 +1819,10 @@ function inheritanceRuleErrors(
               `${where(entity.name)}: field '${field.name}' is inherited, so ` +
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
-        } else if (!isFieldBound(field)) {
-          // A redeclaration sets `expression` and nothing else, so a line with
-          // only the name is not one.
+        }
+        if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else, so a line
+          // with no `expression` is not one.
           const from = (ancestorsOf.get(entity.name) ?? [])
                            .find(a => ownNames.get(a)?.has(field.name));
           errors.push(
@@ -976,7 +1923,9 @@ function invalidColumnNameError(
 // `from_columns` and `to_columns`. Also checks that every relationship's
 // endpoints name entities the model declares, and that its two join column
 // lists have equal length. The loader checks endpoints and lengths for a model
-// it reads, and this repeats them for a model built in memory. Push runs this
+// it reads, and this repeats them for a model built in memory. A relationship
+// from an entity to itself is rejected, and so are relationships in both
+// directions between two entities. Push runs this
 // on the model with its profile applied, so it also checks the key and join
 // columns a profile file supplies. An abstract entity's keys and an
 // association's direct join columns are not checked.
@@ -984,6 +1933,9 @@ function validateColumnsAndRelationships(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   const entityNames = new Set((model.entities ?? []).map(e => e.name));
+  const word = entityWord(model.version);
+  // The first relationship from each entity to each other entity.
+  const firstFrom = new Map<string, string>();
 
   for (const entity of model.entities ?? []) {
     if (entity.abstract) continue;
@@ -1008,12 +1960,27 @@ function validateColumnsAndRelationships(
     const owner = `relationship '${rel.name}'`;
     const at = `${owner} in model '${model.name}' (${document})`;
     if (!entityNames.has(rel.source.entity)) {
-      errors.push(
-          `${at}: ${undefinedEndpointProblem('from', rel.source.entity)}.`);
+      errors.push(`${at}: ${
+          undefinedEndpointProblem('from', rel.source.entity, word)}.`);
     }
     if (!entityNames.has(rel.destination.entity)) {
+      errors.push(`${at}: ${
+          undefinedEndpointProblem('to', rel.destination.entity, word)}.`);
+    }
+    const [from, to] = [rel.source.entity, rel.destination.entity];
+    const back = firstFrom.get(`${to}\0${from}`);
+    if (from === to) {
       errors.push(
-          `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
+          `${at} runs from '${from}' to itself; a relationship joins two ` +
+          `different entities.`);
+    } else if (back !== undefined) {
+      errors.push(
+          `${at} runs from '${from}' to '${to}', and relationship '${back}' ` +
+          `runs the other way; keep the relationships between two entities ` +
+          `in one direction.`);
+    }
+    if (!firstFrom.has(`${from}\0${to}`)) {
+      firstFrom.set(`${from}\0${to}`, rel.name);
     }
     if (rel.association) continue;
     const fromCount = rel.source.columns.length;
@@ -1041,25 +2008,21 @@ function validateColumnsAndRelationships(
 }
 
 // A relationship's `to_columns` must cover a primary or unique key of the `to`
-// entity. A relationship is many-to-one or one-to-one, and the key its
-// `to_columns` cover decides which, so a join that covers no key is invalid in
+// entity. A relationship is many-to-one or one-to-one only when its
+// `to_columns` cover a key, so a join that covers no key is invalid in
 // every model, whatever it deploys to. The check runs on every push, a
 // catalog-only push included. A superset of a key covers it (see
-// keysCoveredBy). Keys and join columns are compared as the physical
-// columns they name, and a key that names a field with no column yet cannot be
-// judged until a binding gives it one. Skipped here when the check's own inputs
-// are absent or already invalid (reported by their own checks): an association
-// (junction-table) relationship, an empty `to_columns` list, a non-column entry
-// in `to_columns`, an undeclared or abstract `to` entity, or a non-column entry
-// in the `to` entity's `primary_key` or `unique_keys`.
+// coversKey). Keys and join columns are physical columns, so they are compared
+// as written, never read through a field of the same name. Skipped here when
+// the check's own inputs are absent or already invalid (reported by their own
+// checks): an association (junction-table) relationship, an empty `to_columns`
+// list, a non-column entry in `to_columns`, an undeclared or abstract `to`
+// entity, or a non-column entry in the `to` entity's `primary_key` or
+// `unique_keys`.
 function relationshipKeyErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
-  const entities = (model.entities ?? []).some(e => e.extends?.length) ?
-      ifResolvable(() => resolveInheritance(model).model.entities) ??
-          model.entities :
-      model.entities ?? [];
-  const byName = new Map(entities.map(e => [e.name, e]));
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   for (const rel of model.relationships ?? []) {
     const to = rel.destination.columns;
     if (rel.association || !to.length) continue;
@@ -1070,9 +2033,7 @@ function relationshipKeyErrors(
         !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
       continue;
     }
-    const covered = keysCoveredByColumns(
-        target, to, target.keys, target.uniqueKeys ?? []);
-    if (covered && !covered.length) {
+    if (!coversKey(to, target.keys, target.uniqueKeys ?? [])) {
       errors.push(
           `relationship '${rel.name}' in model '${model.name}' (${
               document}): its to_columns ${
@@ -1082,366 +2043,6 @@ function relationshipKeyErrors(
     }
   }
   return errors;
-}
-
-// Why each field of `model` holds no SQL, in the loader's words. Each field
-// is read on the entity that declares it, and each field an entity inherits
-// is read on that entity, as the loader does, less each field in
-// `liftedExclusions` on the entity that excludes it. An association's field
-// is an edge property, read on its relationship.
-function fieldNoSqlErrors(
-    model: SemanticModel, document: string,
-    liftedExclusions: ReadonlyArray<ProfileExclusion> = []): string[] {
-  const where = `in model '${model.name}' (${document})`;
-  const errors: string[] = [];
-  for (const e of model.entities ?? []) {
-    for (const f of e.fields ?? []) {
-      const problem = noSqlProblemOf(f, e.name);
-      if (problem) {
-        errors.push(
-            `field '${e.name}.${f.name}' ${where}: ${problem}; write the ` +
-            `field's SQL, or remove 'expression' to leave the field unbound.`);
-      }
-    }
-  }
-  if ((model.entities ?? []).some(e => e.extends?.length)) {
-    const marked = applyProfileExclusions(model, liftedExclusions);
-    const concepts = ifResolvable(() => declaredConcepts(marked));
-    const inherited = concepts ?
-        inheritedNoSqlProblems(marked.entities ?? [], concepts, noSqlProblemOf) :
-        [];
-    for (const problem of inherited) {
-      errors.push(`model '${model.name}' (${document}): ${problem}.`);
-    }
-  }
-  for (const rel of model.relationships ?? []) {
-    for (const f of rel.association?.fields ?? []) {
-      const problem = noSqlProblemOf(f, rel.name);
-      if (problem) {
-        errors.push(
-            `relationship '${rel.name}' field '${f.name}' ${where}: ${
-                problem}; write the field's SQL.`);
-      }
-    }
-  }
-  return errors;
-}
-
-// The error for a metric with no SQL, or undefined. A metric is rejected when
-// none of its texts holds SQL, with or without an anchor, since the graph
-// would drop it. It is also rejected when any one of its texts holds none, as
-// the loader rejects it, since a model built in memory skips the loader.
-function metricNoSqlError(
-    metric: Metric, model: SemanticModel, document: string): string|undefined {
-  const where = `metric '${metric.name}' in model '${model.name}' (${document})`;
-  const readable = expressionSources(metric).filter(
-      s => noSqlReason(s.text, s.dialect) === undefined);
-  if (!readable.length) {
-    return `${where} has no SQL in 'expression'; write the metric's SQL.`;
-  }
-  const problem = noSqlProblemOf(metric);
-  return problem && `${where}: ${problem}; write the metric's SQL.`;
-}
-
-// Validates field and metric expressions:
-//   - Reject a field or a metric with no SQL, as the loader does, since a
-//     model built in memory skips the loader (see fieldNoSqlErrors and
-//     metricNoSqlError).
-// The rules below run when inheritance resolved cleanly:
-//   - For each metric:
-//     1. Unless it has no SQL, reject a metric with no `authoredEntity` when
-//        its expressions, read together, reach no entity or more than one.
-//     2. Reject when `authoredEntity ?? entity` does not name a declared
-//        entity (runs on every push).
-//     3. When `authoredEntity` is set and the expressions reference at least
-//        one entity, at least one of those must be `authoredEntity`.
-//     4. For every referenced entity, every field it is referenced with must
-//        be declared or inherited on that entity (gated on `!fieldsPruned`,
-//        and run before pruning).
-//     5. Reject a column reference with no entity qualifier, or a qualified
-//        reference whose qualifier is not a declared entity (including when it
-//        differs in case from a declared entity), in a metric expression.
-//   - For each field on each entity E:
-//     1. Reject any reference to an entity other than E.
-//     2. For references to E itself, every field named must be declared or
-//        inherited on E (gated on `!fieldsPruned`, and run before pruning).
-//
-// Exported so `commands.ts` can also run it on the unpruned model before
-// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
-// given, `flaggedMetrics` collects the name of each metric it reports.
-// `liftedExclusions` is as validatePushRequirements takes it.
-export function validateExpressionReferences(
-    models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>,
-    liftedExclusions?: ReadonlyArray<ProfileExclusion>): string[] {
-  const errors: string[] = [];
-  for (const {document, model} of models) {
-    errors.push(...fieldNoSqlErrors(model, document, liftedExclusions));
-    const fieldsByEntity = ifResolvable(() => declaredFields(model));
-    if (!fieldsByEntity) {
-      for (const metric of model.metrics ?? []) {
-        const noSql = metricNoSqlError(metric, model, document);
-        if (!noSql) continue;
-        errors.push(noSql);
-        flaggedMetrics?.add(metric.name);
-      }
-      continue;
-    }
-    const entityNames = [...fieldsByEntity.keys()];
-    const impliedDialect = sourcesDialect(model);
-    const addUnreadableWarning =
-        (what: string, total: number, unreadDialects: string[]) => {
-          if (!unreadDialects.length) return;
-          if (unreadDialects.length === total) {
-            warnings.push(
-                `${what} in model '${model.name}' (${document}): kcmd could ` +
-                `not read its SQL, so the fields it reads were not checked.`);
-          } else {
-            const listed = unreadDialects.map(d => `'${d}'`).join(', ');
-            const entryText = unreadDialects.length === 1 ?
-                'that entry reads' :
-                'those entries read';
-            warnings.push(
-                `${what} in model '${model.name}' (${document}): kcmd could ` +
-                `not read its ${listed} SQL, so the fields ${entryText} were ` +
-                `not checked.`);
-          }
-        };
-
-    for (const entity of model.entities ?? []) {
-      const others = entityNames.filter(n => n !== entity.name);
-      const knownFields = fieldsByEntity.get(entity.name)!;
-      for (const field of entity.fields ?? []) {
-        // A text with no SQL has nothing to read, so it gets no warning.
-        const sources = expressionSources(field).filter(
-            s => noSqlReason(s.text, s.dialect, entity.name) === undefined);
-        const allColumns: SqlColumn[] = [];
-        const unreadDialects: string[] = [];
-        for (const {text, dialect} of sources) {
-          const columns = columnsForSource(text, dialect, impliedDialect);
-          if (!columns) {
-            unreadDialects.push(dialect);
-            continue;
-          }
-          allColumns.push(...columns);
-        }
-        addUnreadableWarning(
-            `field '${entity.name}.${field.name}'`, sources.length,
-            unreadDialects);
-        for (const other of others) {
-          const refs = fieldsReadOn(allColumns, other);
-          if (refs.length) {
-            errors.push(
-                `field '${entity.name}.${field.name}' in model '${
-                    model.name}' (${document}) references entity '${
-                    other}' ('${other}.${
-                    refs[0]}'); a field expression may only reference its ` +
-                `own entity '${
-                    entity.name}' or unqualified columns of its backing ` +
-                `table.`);
-          }
-        }
-        if (!fieldsPruned) {
-          for (const ref of fieldsReadOn(allColumns, entity.name)) {
-            if (!knownFields.has(ref)) {
-              errors.push(
-                  `field '${entity.name}.${field.name}' in model '${
-                      model.name}' (${document}) references '${
-                      entity.name}.${ref}', which is not a declared or ` +
-                  `inherited field of '${entity.name}'.`);
-            }
-          }
-        }
-      }
-    }
-
-    for (const metric of model.metrics ?? []) {
-      const before = errors.length;
-      const sources = expressionSources(metric);
-      // A text with no SQL has nothing to read, so it gets no warning.
-      const readable =
-          sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
-      const allColumns: SqlColumn[] = [];
-      const unreadDialects: string[] = [];
-      for (const {text, dialect} of readable) {
-        const columns = columnsForSource(text, dialect, impliedDialect);
-        if (!columns) {
-          unreadDialects.push(dialect);
-          continue;
-        }
-        allColumns.push(...columns);
-      }
-      addUnreadableWarning(
-          `metric '${metric.name}'`, readable.length, unreadDialects);
-
-      const authored = metric.authoredEntity;
-      const anchor = authored ?? metric.entity;
-      const reached = entitiesReached(allColumns, entityNames);
-
-      // An anchor does not make up for missing SQL: the graph would drop the
-      // metric.
-      const noSql = metricNoSqlError(metric, model, document);
-      if (noSql) {
-        errors.push(noSql);
-      } else if (
-          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
-          !authored && reached.length > 1) {
-        const fixHint = model.version === '0.2.0.dev0' ?
-            `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
-            `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
-            `metric) or scope its expression to one entity.` :
-            `set 'entity' on the metric or scope its expression to one entity.`;
-        errors.push(
-            `metric '${metric.name}' in model '${model.name}' (${
-                document}) has no 'entity' anchor and its expression${
-                reached.length === 0 ?
-                    ' reaches no declared entity' :
-                    ` reaches multiple entities (${reached.join(', ')})`}, ` +
-            `so it does not resolve to a single entity; ${fixHint}`);
-      }
-
-      if (anchor !== undefined && !fieldsByEntity.has(anchor)) {
-        errors.push(
-            `metric '${metric.name}' in model '${model.name}' (${
-                document}): entity '${
-                anchor}' is not declared in the model.`);
-      }
-
-      if (authored !== undefined && fieldsByEntity.has(authored) &&
-          reached.length > 0 && !reached.includes(authored)) {
-        errors.push(
-            `metric '${metric.name}' in model '${model.name}' (${
-                document}) is anchored to entity '${
-                authored}', but its expression only references ${
-                reached.map(e => `'${e}'`).join(', ')}; the anchor ` +
-            `contradicts the SQL.`);
-      }
-
-      if (!fieldsPruned) {
-        for (const entityName of reached) {
-          const knownFields = fieldsByEntity.get(entityName)!;
-          for (const ref of fieldsReadOn(allColumns, entityName)) {
-            if (!knownFields.has(ref)) {
-              errors.push(
-                  `metric '${metric.name}' in model '${model.name}' (${
-                      document}): expression references '${entityName}.${
-                      ref}', but entity '${entityName}' has no field '${
-                      ref}'; metric expressions must reference declared ` +
-                  `fields, not physical columns.`);
-            }
-          }
-        }
-      }
-
-      const seenUnqualified = new Set<string>();
-      for (const col of allColumns) {
-        if (col.qualifier !== undefined &&
-            (fieldsByEntity.has(col.qualifier) || col.qualifier === anchor)) {
-          continue;
-        }
-        const token = col.qualifier !== undefined ?
-            `${col.qualifier}.${col.name}` :
-            col.name;
-        if (seenUnqualified.has(token)) continue;
-        seenUnqualified.add(token);
-        if (col.qualifier === undefined) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}): '${token}' must be written as ` +
-              `'entity.field'; a metric reads fields, never columns.`);
-        } else {
-          const sameNameOtherCase = entityNames.find(
-              n => n.toLowerCase() === col.qualifier!.toLowerCase());
-          if (sameNameOtherCase) {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' uses qualifier '${
-                    col.qualifier}', which differs in case from entity '${
-                    sameNameOtherCase}'; entity names are case-sensitive.`);
-          } else {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' has qualifier '${
-                    col.qualifier}', which is not a declared entity in ` +
-                `model '${model.name}'; write 'entity.field' starting with ` +
-                `a declared entity.`);
-          }
-        }
-      }
-      if (errors.length > before) flaggedMetrics?.add(metric.name);
-    }
-  }
-  return errors;
-}
-
-// Temporary BigQuery-only metric check, until the BigQuery generator places
-// measures with the SQL parser. Rejects a metric that the generator
-// (`bigquery.ts`) would skip: one with only another engine's SQL, which the
-// generator does not emit, or one it drops because its regex
-// (`referencedEntityNames`) disagrees with the parser or because
-// `metric.entity` is unset. Reports only metrics that
-// `validateExpressionReferences` has not already flagged.
-function validateBigQueryMetrics(
-    model: SemanticModel, document: string,
-    alreadyFlagged: ReadonlySet<string>): string[] {
-  const errors: string[] = [];
-  const entityNames = (model.entities ?? []).map(e => e.name);
-  for (const metric of model.metrics ?? []) {
-    if (alreadyFlagged.has(metric.name)) continue;
-    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    if (metric.expression === undefined &&
-        metric.importedExpression !== undefined) {
-      errors.push(
-          `${prefix} targets a BigQuery graph with only a '${
-              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
-      continue;
-    }
-    // The generator reads the expression with its comments removed.
-    const expr = withoutComments(
-        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
-    let referenced = referencedEntityNames(expr, entityNames);
-    if (referenced.length === 0 && metric.entity) {
-      referenced = [metric.entity];
-    }
-    if (referenced.length > 1) {
-      errors.push(
-          `${prefix} targets a BigQuery graph and references multiple ` +
-          `entities (${referenced.join(', ')}); the BigQuery generator ` +
-          `reads every '<entity>.' outside comments as a qualifier, ` +
-          `including a function namespace such as 'NET.', so remove the ` +
-          `extra '<entity>.' match or scope its expression to one entity.`);
-    } else if (referenced.length === 0) {
-      const anchor = model.version === OSSIE_VERSION ?
-          `'entity' in a GOOGLE custom_extensions block on the metric` :
-          `top-level 'entity'`;
-      errors.push(
-          `${prefix} targets a BigQuery graph but does not resolve to a ` +
-          `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or ${anchor}.`);
-    }
-  }
-  return errors;
-}
-
-// Every field each entity has, inherited and profile-excluded ones included so
-// an unpruned check before `pruneUnavailable` does not report a profile-excluded
-// inherited field as undeclared. Inheritance is resolved through the same pass
-// the graph legs use rather than by walking `extends` here, so the two can
-// never disagree about what a subtype has. The pass clones, so it is skipped
-// for a model that declares no inheritance.
-function declaredFields(model: SemanticModel): Map<string, Set<string>> {
-  const inherits = (model.entities ?? []).some(e => e.extends?.length);
-  const entities =
-      (inherits ? resolveInheritance(model).model : model).entities ?? [];
-  return new Map(entities.map(
-      e => [
-        e.name,
-        new Set([
-          ...(e.fields ?? []).map(f => f.name),
-          ...(e.excludedFields ?? []),
-        ]),
-      ]));
 }
 
 // The executor coordinate fields that are absent or blank. An executor with no
@@ -1467,6 +2068,353 @@ function missingExecutorFields(ex: Executor): string[] {
 }
 
 
+// The error for `deployment` when it binds entities to tables outside the
+// database it deploys to, or none. Sources come from the deployment's profile
+// in `model.profiles`, or from the model file for `default`.
+export function deploymentTableErrors(
+    document: string, model: SemanticModel,
+    deployment: ResolvedDeployment): string[] {
+  return tablesOutsideTarget(
+      document, model, deployment, e => e.authoredSource,
+      model.profiles ?? []);
+}
+
+// The error for a Spanner `deployment` on the model file's own bindings when
+// `model` declares metrics, which a Spanner graph cannot hold.
+export function spannerMetricsErrors(
+    document: string, model: SemanticModel,
+    deployment: ResolvedDeployment): string[] {
+  if (deployment.engine !== 'spanner' ||
+      deployment.profile !== DEFAULT_PROFILE || !model.metrics?.length) {
+    return [];
+  }
+  return [
+    `[${document}] deployment '${deployment.name}' targets a Spanner graph ` +
+    `and uses the model file's own bindings, but the model declares ` +
+    `metrics, which a Spanner graph cannot hold; name a profile with ` +
+    `metrics_exclude: "*".`,
+  ];
+}
+
+// What localChecks reads. `loaded` is the load of `docs` with the dialects in
+// `load`, and `models` holds each loaded model after withProfileFiles.
+export interface LocalCheckScope {
+  docs: Array<{name: string; text: string}>;
+  loaded: {models: LoadedModel[]; warnings: string[]};
+  models: LoadedModel[];
+  profileDocs: ProfileFiles;
+  declaredBy: DeclaredProfiles;
+  load: DialectLoad;
+}
+
+// One selected deployment, its message prefix, the model it deploys and what
+// pruning leaves out of it. A BigQuery or Spanner deployment also holds its
+// generated DDL and warnings.
+export interface DeploymentPlan {
+  deployment: ResolvedDeployment;
+  at: string;
+  model: LoadedModel;
+  report: AvailabilityReport;
+  generated?: {ddl: string[]; warnings: string[]};
+}
+
+// Adds the profile files of the model in `base` to `model.profiles`, without
+// their actions. Returns the error of the first profile file that breaks a
+// file rule. A profile file that does not load is left out, for
+// namedProfileErrors to report.
+export function withProfileFiles(base: LoadedModel, profileDocs: ProfileFiles):
+    LoadedModel|{errors: LocalCheckError[]} {
+  const {document, model} = base;
+  const profiles = [...(model.profiles ?? [])];
+  let files: ReturnType<ProfileFiles>;
+  try {
+    files = profileDocs(document);
+  } catch (err: any) {
+    return {errors: [{error: err.message || String(err), document}]};
+  }
+  const reserved = reservedProfileNameError(document, files);
+  if (reserved) return {errors: [{error: reserved, document}]};
+  for (const p of files) {
+    try {
+      profiles.push(loadProfileFile(p.text, p.name, {skipActions: true}));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+    }
+  }
+  return {document, model: profiles.length ? {...model, profiles} : model};
+}
+
+// Runs push's offline checks that follow withProfileFiles and the UTF-8 and
+// sidecar checks, through the graph generation. Returns the errors of the
+// first stage that finds any, or else a plan for each deployment `selected`
+// names, or for every deployment when it is unset.
+export async function localChecks(
+    scope: LocalCheckScope, warn: (w: string) => void, selected?: string[]):
+    Promise<{plans: DeploymentPlan[]}|{errors: LocalCheckError[]}> {
+  const {docs, loaded, models, profileDocs, declaredBy, load} = scope;
+  const stop = (errors: LocalCheckError[]) => ({errors});
+  const ofModel = (document: string, ...errors: string[]) =>
+      errors.map(error => ({error, document}));
+  const ofProfile = (document: string, profile: string, ...errors: string[]) =>
+      errors.map(error => ({error, document, profile}));
+  const declaredNames = (document: string) =>
+      declaredBy(docs.find(d => d.name === document)!).map(p => p.name);
+
+  // Every deployment's target must be in an accepted form, and its profile one
+  // the model declares, whether or not this push selects the deployment.
+  const selectedByDoc = new Map<string, ResolvedDeployment[]>();
+  const everyByDoc = new Map<string, ResolvedDeployment[]>();
+  for (const {document, model} of models) {
+    const every = resolveModelDeployments(model);
+    if ('error' in every) return stop(ofModel(document, every.error));
+    const resolved = resolveModelDeployments(model, selected);
+    if ('error' in resolved) return stop(ofModel(document, resolved.error));
+    const undeclared = undeclaredProfileError(
+        document, model, declaredNames(document));
+    if (undeclared) return stop(ofModel(document, undeclared));
+    everyByDoc.set(document, every.deployments);
+    selectedByDoc.set(document, resolved.deployments);
+  }
+
+  // Every named profile is checked on its own against the model file, and so
+  // are the model file's own bindings and each deployment. The catalog's model
+  // is checked as a model that deploys nowhere. Each deployment's own checks
+  // run only after these pass, so these give every error and every warning
+  // about SQL kcmd cannot read.
+  const profileWarnings: string[] = [];
+  const profileErrors = namedProfileErrors(
+      docs, new Map(loaded.models.map(m => [m.document, m.model])),
+      profileDocs, declaredBy, profileWarnings, load);
+  for (const {document, model} of models) {
+    profileErrors.push(
+        ...ofProfile(
+            document, DEFAULT_PROFILE,
+            ...validateInlineDialects(model, document, load),
+            ...validateInheritedColumns(model, document)),
+        // One call per profile, so each error carries its deployments' profile.
+        ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(
+            profile => ofProfile(document, profile, ...validateDeployments({
+              ...model,
+              deployments: model.deployments!.filter(
+                  d => (d.profile ?? DEFAULT_PROFILE) === profile),
+            }, document, load))));
+    const doc = docs.find(d => d.name === document)!;
+    const declared = declaredBy(doc);
+    const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
+    profileWarnings.push(...inlineBindingWarnings(model, document, named));
+    // A profile that no selected deployment applies still goes to Knowledge
+    // Catalog, so its load warnings print here, less those the model file's
+    // load gave, unless a check above recorded an error for that profile. A
+    // selected deployment prints its own profile's warnings.
+    const applied = selectedByDoc.get(document)!.map(d => d.profile);
+    for (const {name} of declared) {
+      if (applied.includes(name)) continue;
+      if (profileErrors.some(
+              e => e.document === document && e.profile === name)) {
+        continue;
+      }
+      profileWarnings.push(
+          ...appliedProfileWarnings(doc, declared, name, loaded.warnings, load));
+    }
+  }
+  const kcWarnings: string[] = [];
+  const kcErrors = models.flatMap(m => {
+    const inlineAlloyDb = (m.model.deployments ?? []).filter(
+        d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE &&
+            everyByDoc.get(m.document)!.some(
+                r => r.name === d.name && r.engine === 'alloydb'));
+    return ofModel(
+        m.document,
+        ...validatePushRequirements(
+            [{...m, model: {...m.model, deployments: inlineAlloyDb}}],
+            {warnings: kcWarnings, load}));
+  });
+  for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
+  if (profileErrors.length || kcErrors.length) {
+    return stop([...profileErrors, ...kcErrors]);
+  }
+  // Each deployment's tables must be in the database it deploys to, whether
+  // or not this push selects the deployment.
+  const tableErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(
+          d => ofProfile(
+              document, d.profile,
+              ...deploymentTableErrors(document, model, d))));
+  if (tableErrors.length) return stop(tableErrors);
+  // A Spanner graph holds no metric, and Spanner creates no property graph in
+  // a PostgreSQL-dialect database, which the dialect already read shows. Both
+  // apply to every Spanner deployment, whether or not this push selects it.
+  const spannerErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(d => {
+        if (d.engine !== 'spanner') return [];
+        const {project, instance, database} = d.coordinates;
+        const key = `spanner.googleapis.com/projects/${project}/instances/${
+            instance}/databases/${database}`;
+        return ofProfile(
+            document, d.profile, ...spannerMetricsErrors(document, model, d),
+            ...load.sourceDialects?.get(key) !== 'POSTGRES' ? [] : [
+              `[${document}] deployment '${d.name}': database ${project}/${
+                  instance}/${database} has the PostgreSQL dialect, and ` +
+                  `Spanner creates no property graph in a PostgreSQL-dialect ` +
+                  `database. Remove the deployment; push still publishes the ` +
+                  `model to Knowledge Catalog.`,
+            ]);
+      }));
+  if (spannerErrors.length) return stop(spannerErrors);
+
+  // Every deployment gets the checks of a selected one, whether or not this
+  // push selects it. An unselected deployment's profile warnings print above.
+  const plans: DeploymentPlan[] = [];
+  for (const base of models) {
+    const chosen = selectedByDoc.get(base.document) ?? [];
+    const others = (everyByDoc.get(base.document) ?? [])
+                       .filter(d => !chosen.some(c => c.name === d.name));
+    for (const deployment of [...chosen, ...others]) {
+      const isChosen = chosen.includes(deployment);
+      const plan = await deploymentPlan(
+          base, profileDocs(base.document), deployment, load,
+          isChosen ? warn : () => {});
+      if ('errors' in plan) {
+        return stop(
+            ofProfile(base.document, deployment.profile, ...plan.errors));
+      }
+      if (isChosen) plans.push(plan);
+    }
+  }
+  return {plans};
+}
+
+// Builds and checks the model `deployment` deploys from `base`, reading its
+// profile file in `files` again with its actions, and generates its DDL
+// offline. The profile applies with the source dialects in `load`. Returns
+// the plan, or the errors that stop the push.
+async function deploymentPlan(
+    base: LoadedModel, files: ReturnType<ProfileFiles>,
+    deployment: ResolvedDeployment, load: DialectLoad,
+    warn: (w: string) => void): Promise<DeploymentPlan|{errors: string[]}> {
+  const {document, model} = base;
+  const at = `[${document}] deployment '${deployment.name}'`;
+  const fail = (...errors: string[]) => ({errors});
+  let applied = model;
+  // The profile's warnings, which print only once every check below passes.
+  const warnings: string[] = [];
+  if (deployment.profile !== DEFAULT_PROFILE) {
+    // localChecks has checked that the model declares the profile and that
+    // its file loads, so `model.profiles` holds it.
+    let spec = model.profiles!.find(p => p.name === deployment.profile)!;
+    const file = files.find(p => p.name === deployment.profile);
+    try {
+      // A profile in a GOOGLE block has no file and applies as loaded.
+      if (file) spec = loadProfileFile(file.text, file.name);
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`[${file!.fileName}] ${err.message}`);
+    }
+    try {
+      applied = applyProfile(model, spec, {load, warnings});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`${at}: ${err.message}`);
+    }
+  }
+  // Messages name the deployment.
+  const label = `${document}, deployment '${deployment.name}'`;
+  const checked: LoadedModel = {document: label, model: applied};
+  // Pruning can remove the field these rules are about, so they run first.
+  // localChecks has already warned about the SQL they cannot read.
+  const unprunedErrors = [
+    ...validateInheritance([checked]),
+    ...validateExpressionReferences([checked], false, [], undefined, load),
+  ];
+  const {model: pruned, report} =
+      pruneUnavailable(checked.model, deployment.profile);
+  // Keeps only this deployment, so every reader sees its target alone.
+  const narrowed: LoadedModel = {
+    document: checked.document,
+    model: {
+      ...pruned,
+      deployments:
+          (model.deployments ?? []).filter(d => d.name === deployment.name),
+    },
+  };
+  // The advice to add a BigQuery text names the model file's import outcome.
+  const outcome = load.transpileOutcomes?.get(document);
+  const errors = [
+    ...unprunedErrors,
+    ...validatePushRequirements([narrowed], {
+      fieldsPruned: true,
+      load,
+      transpileOutcomes: outcome === undefined ?
+          undefined :
+          new Map([[narrowed.document, outcome]]),
+    }),
+  ];
+  if (errors.length) return {errors};
+  // An AlloyDB database holds no graph.
+  const generated = deployment.engine === 'alloydb' ?
+      undefined :
+      await generateOffline(
+          deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
+          [narrowed]);
+  if (typeof generated === 'string') return fail(`${at}: ${generated}`);
+  for (const w of warnings) {
+    warn(`profile '${deployment.profile}': [${document}] ${w}`);
+  }
+  return {deployment, at, model: narrowed, report, generated};
+}
+
+// The warnings and the note push prints on what pruning leaves out of the
+// model `plan` deploys. Each line names the model, and the document and the
+// deployment.
+export function pruningLines({deployment, model, report: r}: DeploymentPlan):
+    string[] {
+  const where = `model '${model.model.name}' (${model.document})`;
+  // What becomes of a field left out. An AlloyDB database holds no graph.
+  const outcome = deployment.engine === 'alloydb' ? 'it is unavailable there' :
+                                                    'the graph omits it';
+  const excluded = new Set(r.excludedFields);
+  const omits = (field: string, why: string) =>
+      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
+  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
+  const named = (kind: string, names: string[]) => names.length ?
+      `${plural(names.length, kind, `${kind}s`)} ${
+          listed(names.map(n => `'${n}'`))}` :
+      '';
+  const unavailable = [
+    named('metric', r.droppedMetrics.map(m => m.name)),
+    named('action', r.droppedActions.map(a => a.name)),
+  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
+  const note = [
+    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
+    unavailable && `leaves ${unavailable} unavailable.`,
+  ].filter(p => p).join(' It ');
+  return [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+    ...note ? [`Note: ${where} ${note}`] : [],
+  ];
+}
+
+
+// A validate-only deploy builds the DDL and calls no service, so it needs no
+// project or token.
+const NO_SERVICE = new ApiContext('', '', '');
+
+// Generates a graph leg's DDL without calling a service, or gives why it
+// cannot be generated.
+async function generateOffline(
+    deployLeg: typeof deployBigQuery,
+    models: LoadedModel[]): Promise<DeployResult|string> {
+  try {
+    const result = await deployLeg(models, NO_SERVICE, {validateOnly: true});
+    if (result.success) return result;
+    return result.details ?? 'the graph could not be generated';
+  } catch (err: any) {
+    return err.message || String(err);
+  }
+}
+
 // Live pre-flight over the BigQuery-targeting models: confirms every entity's
 // BigQuery source table is reachable BEFORE any destination leg runs, so a push
 // fails fast when the model could not deploy, rather than surfacing a missing
@@ -1487,9 +2435,15 @@ function missingExecutorFields(ex: Executor): string[] {
 // the deploy runs against), falling back to `defaultProject`. Each distinct
 // (billing project, reference) pair is probed once. Returns one message per
 // unreachable table (empty when all pass).
+//
+// With `graph`, each probe runs in `graph.location`, the location of dataset
+// `graph.dataset`, and a probe that fails there runs again with no location.
+// When that run finds the table in another location, the error says so,
+// starting with `graph.at`, which names the deployment.
 export async function validateBigQueryDataSources(
-    models: LoadedModel[], bq: BigQueryClient,
-    defaultProject: string): Promise<string[]> {
+    models: LoadedModel[], bq: BigQueryClient, defaultProject: string,
+    graph?: {at: string; dataset: string; location: string}):
+    Promise<string[]> {
   // Dedup by billing project + reference so a table shared across
   // entities/models is probed once; keep the first reference for a locatable
   // error message.
@@ -1521,9 +2475,22 @@ export async function validateBigQueryDataSources(
 
   const errors: string[] = [];
   for (const {project, ref, document, model, entity} of refs.values()) {
-    const res = await bq.query(
-        project, `SELECT 1 FROM \`${ref}\` WHERE FALSE`, undefined, true);
+    const sql = `SELECT 1 FROM \`${ref}\` WHERE FALSE`;
+    const res = await bq.query(project, sql, graph?.location, true);
     if (res.status === 200) continue;
+    if (graph) {
+      const anywhere = await bq.query(project, sql, undefined, true);
+      const found = anywhere.result?.jobReference?.location;
+      if (found && found !== graph.location) {
+        errors.push(
+            `${graph.at} targets a BigQuery graph in dataset ` +
+            `'${graph.dataset}', which is in location '${graph.location}', ` +
+            `but entity '${entity}' reads table '${ref}', which is in ` +
+            `location '${found}'. A property graph can use only tables in ` +
+            `its dataset's location.`);
+        continue;
+      }
+    }
     const msg = res.message?.trim() || `HTTP ${res.status}`;
     const why = /not found/i.test(msg) ?
         'does not exist' :
@@ -1545,15 +2512,8 @@ export async function validateBigQueryDataSources(
 // bills to: the project of the model's first BigQuery Graph deployment target
 // (where the CREATE PROPERTY GRAPH runs), falling back to the scope's default
 // project when the model declares no parseable BigQuery Graph target.
-// googleDeploymentTargets is safe here: validatePushRequirements ran first and
-// already rejected a malformed GOOGLE extension.
 function billingProject(model: SemanticModel, defaultProject: string): string {
-  try {
-    return googleDeploymentTargets(model).bigQuery[0]?.project ??
-        defaultProject;
-  } catch {
-    return defaultProject;
-  }
+  return googleDeploymentTargets(model).bigQuery[0]?.project ?? defaultProject;
 }
 
 
@@ -1573,6 +2533,238 @@ function probeableRef(dataSource: string|undefined): string|null {
     return null;
   }
   return trimmed;
+}
+
+
+// The schema objects of a Spanner database's default schema, other than
+// property graphs, and the database's roles, whose name matches @graph
+// ignoring case: each row gives the kind of object and its name. A graph
+// cannot share a name with any of them. The constraints Spanner names for a
+// primary key or a NOT NULL column are left out, since a graph can take their
+// names.
+const SPANNER_NAMES_SQL = `SELECT kind, name FROM (
+  SELECT IF(TABLE_TYPE = 'VIEW', 'view', 'table') AS kind, TABLE_NAME AS name
+    FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ''
+  UNION ALL SELECT 'index', INDEX_NAME FROM INFORMATION_SCHEMA.INDEXES
+    WHERE TABLE_SCHEMA = '' AND INDEX_TYPE != 'PRIMARY_KEY'
+  UNION ALL SELECT 'sequence', NAME FROM INFORMATION_SCHEMA.SEQUENCES
+    WHERE SCHEMA = ''
+  UNION ALL SELECT 'change stream', CHANGE_STREAM_NAME
+    FROM INFORMATION_SCHEMA.CHANGE_STREAMS WHERE CHANGE_STREAM_SCHEMA = ''
+  UNION ALL SELECT 'schema', SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA
+    WHERE SCHEMA_NAME NOT IN ('', 'INFORMATION_SCHEMA', 'SPANNER_SYS')
+  UNION ALL SELECT 'role', ROLE_NAME FROM INFORMATION_SCHEMA.ROLES
+  UNION ALL SELECT 'constraint', CONSTRAINT_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = '' AND CONSTRAINT_TYPE IN ('FOREIGN KEY', 'CHECK')
+      AND NOT STARTS_WITH(CONSTRAINT_NAME, 'CK_IS_NOT_NULL_')
+  UNION ALL SELECT 'model', MODEL_NAME FROM INFORMATION_SCHEMA.MODELS
+    WHERE MODEL_SCHEMA = ''
+) WHERE LOWER(name) = LOWER(@graph)`;
+
+// The key columns of each primary key and unique index on the tables whose
+// lower-case names @tables lists: each row gives the table's schema, its name,
+// the index's name and one column.
+const SPANNER_UNIQUE_KEYS_SQL = `SELECT i.TABLE_SCHEMA, i.TABLE_NAME,
+    i.INDEX_NAME, c.COLUMN_NAME
+  FROM INFORMATION_SCHEMA.INDEXES AS i
+  JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS c
+    ON c.TABLE_CATALOG = i.TABLE_CATALOG AND c.TABLE_SCHEMA = i.TABLE_SCHEMA
+    AND c.TABLE_NAME = i.TABLE_NAME AND c.INDEX_NAME = i.INDEX_NAME
+    AND c.INDEX_TYPE = i.INDEX_TYPE
+  WHERE i.IS_UNIQUE AND c.ORDINAL_POSITION IS NOT NULL
+    AND LOWER(i.TABLE_NAME) IN UNNEST(@tables)`;
+
+// A Spanner type as Spanner writes it, such as `INT64` or `ARRAY<STRING>`.
+function spannerTypeName(type: SpannerType|undefined): string {
+  if (!type) return 'an unknown type';
+  return type.code === 'ARRAY' ?
+      `ARRAY<${spannerTypeName(type.arrayElementType)}>` :
+      type.code;
+}
+
+// A column or name as Spanner stores it, without its backticks, in lower case,
+// since Spanner compares names ignoring case.
+const storedName = (name: string) => name.replace(/^`|`$/g, '').toLowerCase();
+
+// The live check of the graph that `model` deploys to `target`, before any
+// write. It reads the database's schema, and plans a query of what each node
+// and edge table of the graph reads, so Spanner reports a column the table
+// lacks and SQL it cannot run. It finds a graph named like another object of
+// its database, a key that no primary key or unique index of its table backs,
+// a property that two tables give different types, and an edge's join column
+// whose type differs from the column it references. It changes nothing. `at`
+// names the deployment. Returns one message per problem.
+export async function validateSpannerGraph(
+    at: string, model: SemanticModel, target: SpannerGraphTarget,
+    spanner: SpannerClient): Promise<string[]> {
+  let elements: GraphElement[];
+  try {
+    ({elements} =
+         generateSpannerPropertyGraph(model, {graphName: target.graphName}));
+  } catch {
+    // Push reports why the graph cannot be generated.
+    return [];
+  }
+  const name = `${target.project}/${target.instance}/${target.database}`;
+  // Each table of the target database the graph reads, which push has
+  // checked are all its tables.
+  const tables =
+      elements.filter(e => databaseOf(e.dataSource) === `spanner/${name}`);
+  const failed = (what: string, res: {message?: string; status: number}) =>
+      `${at}: could not ${what} Spanner database ${name} to check the graph ` +
+      `before anything is written: ${storeMessage(res.message, res.status)}`;
+  const opened = await spanner.createSession(
+      target.project, target.instance, target.database);
+  const session = opened.result?.name;
+  if (!session) return [failed('open a session on', opened)];
+  const label = (e: GraphElement) => e.kind === 'node' ?
+      `the node table of entity '${e.name}'` :
+      `the edge table of relationship '${e.name}'`;
+  const errors: string[] = [];
+  try {
+    const named = await spanner.executeQuery(session, SPANNER_NAMES_SQL, {
+      params: {graph: target.graphName},
+      paramTypes: {graph: {code: 'STRING'}},
+    });
+    if (named.status !== 200) return [failed('read the schema of', named)];
+    for (const [kind, found] of named.result?.rows ?? []) {
+      errors.push(
+          `${at}: Spanner database ${name} already has ${
+              kind === 'index' ? 'an' : 'a'} ${kind} named '${found}', and ` +
+          `a graph cannot share its name with another object of its ` +
+          `database, compared ignoring case; rename the graph in the target.`);
+    }
+
+    // The table each element reads as written, its name, and its schema and
+    // name, in lower case.
+    const tableOf = (e: GraphElement) => {
+      const written = boundTable(e.dataSource, [], '', t => t);
+      const parts = written.split('.').map(storedName);
+      const table = parts[parts.length - 1];
+      const key = `${parts.length > 1 ? parts[0] : ''}.${table}`;
+      return {written, name: table, key};
+    };
+    const keys = await spanner.executeQuery(session, SPANNER_UNIQUE_KEYS_SQL, {
+      params: {tables: [...new Set(tables.map(e => tableOf(e).name))]},
+      paramTypes: {tables: {code: 'ARRAY', arrayElementType: {code: 'STRING'}}},
+    });
+    if (keys.status !== 200) return [failed('read the schema of', keys)];
+    // The columns of each unique index, by table and index.
+    const unique = new Map<string, Map<string, Set<string>>>();
+    for (const [schema, table, index, column] of keys.result?.rows ?? []) {
+      const key = `${storedName(String(schema))}.${storedName(String(table))}`;
+      const indexes = unique.get(key) ?? new Map<string, Set<string>>();
+      const columns = indexes.get(String(index)) ?? new Set<string>();
+      indexes.set(String(index), columns.add(storedName(String(column))));
+      unique.set(key, indexes);
+    }
+    // An edge of a foreign key has the key of its source's node table, so
+    // each table and key is reported once.
+    const keyChecked = new Set<string>();
+    for (const e of tables) {
+      const table = tableOf(e);
+      const indexes = unique.get(table.key);
+      const columns = e.key.map(storedName);
+      const checked = `${table.key}\u0000${columns.join('\u0000')}`;
+      if (!indexes || keyChecked.has(checked)) continue;
+      keyChecked.add(checked);
+      const backed = [...indexes.values()].some(
+          index => [...index].every(c => columns.includes(c)));
+      if (backed) continue;
+      const written = `(${e.key.join(', ')})`;
+      errors.push(
+          `${at}: ${label(e)} is keyed by ${written}, but neither the ` +
+          `primary key of table ${table.written} nor a unique index on it ` +
+          `is made of those columns, so Spanner cannot prove the key ` +
+          `unique. Key it by columns that hold the table's primary key, or ` +
+          `create a unique index on ${written}.`);
+    }
+
+    // The type Spanner gives each property, by its name in lower case.
+    const typed = new Map<string, Array<{where: string; type: SpannerType}>>();
+    // Plans a query of `read` on `table`, and gives the type Spanner gives
+    // each text it reads, or undefined when Spanner refuses the query.
+    const plan = async (what: string, table: string, read: string[]) => {
+      // The table gets an alias the query does not name, since a name that
+      // matches the table's own reads as its row and not as a column, as
+      // `order` does in table `Order`.
+      const texts = [...new Set(read)];
+      const list = texts.join(', ');
+      const sql = `SELECT ${list} FROM ${table} AS ${
+          unusedName(list, 'kcmd_table')}`;
+      const res = await spanner.executeQuery(session, sql, {plan: true});
+      if (res.status !== 200) {
+        errors.push(
+            `${at}: Spanner cannot read ${what} from table ${table}: ${
+                storeMessage(res.message, res.status)} kcmd asked Spanner ` +
+            `to plan: ${sql}`);
+        return undefined;
+      }
+      const fields = res.result?.metadata?.rowType?.fields ?? [];
+      return new Map(texts.map((t, i) => [t, fields[i]?.type]));
+    };
+    const planned = new Map<GraphElement, Map<string, SpannerType|undefined>>();
+    for (const e of tables) {
+      const types = await plan(label(e), e.table, [
+        ...e.properties.map(p => p.text), ...e.key,
+        ...e.references.flatMap(r => r.from),
+      ]);
+      if (!types) continue;
+      planned.set(e, types);
+      for (const p of e.properties) {
+        const type = types.get(p.text);
+        if (!type) continue;
+        const key = p.name.toLowerCase();
+        typed.set(key, [...typed.get(key) ?? [], {where: label(e), type}]);
+      }
+      // Each SOURCE KEY and DESTINATION KEY column of an edge has the type of
+      // the column it references, read by that node's own query when it can.
+      for (const {entity, from: joined, columns} of e.references) {
+        const node = tables.find(n => n.kind === 'node' && n.name === entity);
+        if (!node) continue;
+        const own = planned.get(node);
+        const refTypes = own && columns.every(c => own.has(c)) ? own :
+            await plan(
+                `the columns relationship '${e.name}' references in entity '${
+                    entity}'`,
+                node.table, columns);
+        columns.forEach((ref, i) => {
+          const from = types.get(joined[i]);
+          const to = refTypes?.get(ref);
+          if (!from || !to || JSON.stringify(from) === JSON.stringify(to)) {
+            return;
+          }
+          errors.push(
+              `${at}: relationship '${e.name}' joins column ${joined[i]} of ` +
+              `table ${e.table}, of type ${spannerTypeName(from)}, to column ${
+                  ref} of entity '${entity}', of type ${
+                  spannerTypeName(to)}; Spanner needs each join column to ` +
+              `have the type of the column it references. Join on columns ` +
+              `of one type.`);
+        });
+      }
+    }
+    for (const [key, found] of typed) {
+      if (new Set(found.map(f => JSON.stringify(f.type))).size < 2) continue;
+      const property = elements.flatMap(e => e.properties)
+                           .find(p => p.name.toLowerCase() === key)!.name;
+      errors.push(
+          `${at}: property '${property}' has ${
+              listed(found.map(
+                  f => `type ${spannerTypeName(f.type)} in ${f.where}`))}, ` +
+          `but a Spanner graph gives a property one type. Cast the ` +
+          `expressions to one type, or rename the fields.`);
+    }
+    return errors;
+  } finally {
+    // A leaked session expires on its own, so a failed delete is not reported.
+    try {
+      await spanner.deleteSession(session);
+    } catch {
+      // Nothing to report.
+    }
+  }
 }
 
 
@@ -1633,29 +2825,41 @@ function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
 
 
 // The parameter types to send with one statement's pre-flight request, keyed by
-// `@name`.
+// the name each parameter is declared with.
 //
-// Only the parameters the statement actually references are sent, and only
-// those whose declared type maps to a store type we can state. An `Opaque` type
-// is exactly the case we cannot: it means the model does not know the type, so
-// asserting one would invent a constraint the author never wrote. Those are
-// left out and the store resolves them from context, which both backends do.
+// `names` are the parameters the statement reads. Each binds a declared
+// parameter as BigQuery and Spanner match names, without regard to case. Only
+// those whose declared type maps to a store type we can state are sent. An
+// `Opaque` type is exactly the case we cannot: it means the model does not
+// know the type, so asserting one would invent a constraint the author never
+// wrote. Those are left out and the store resolves them from context.
 //
 // Sending the types at all is optional -- a statement with no parameter types
-// passes either backend's dry run. It is worth doing because it turns the
-// action's DECLARED parameter types into a claim checked against the real
-// column types, so a model that says `Float` where the column is a STRING fails
-// here rather than on the first call.
+// passes either backend's dry run, except that BigQuery types a parameter
+// selected bare in INSERT ... SELECT as INT64. It is worth doing because it
+// turns the action's DECLARED parameter types into a claim checked against the
+// real column types, so a model that says `Float` where the column is a STRING
+// fails here rather than on the first call. `codeFor` gives the store's type
+// for a declared type.
 function statementParameterTypes(
-    action: Action, sql: string): Record<string, string> {
+    action: Action, names: string[],
+    codeFor = storeCodeFor): Record<string, string> {
   const declared = new Map(action.parameters.map(p => [p.name, p.type]));
   const types: Record<string, string> = {};
-  for (const name of referencedParameters(sql)) {
-    const type = declared.get(name);
+  for (const name of names) {
+    const parameter = boundParameter(name, [...declared.keys()]);
+    const type = parameter && declared.get(parameter);
     if (!type || type === 'Opaque') continue;
-    types[name] = storeCodeFor(type);
+    types[parameter] = codeFor(type);
   }
   return types;
+}
+
+// BigQuery's type for a declared parameter type. BigQuery has DATETIME, a date
+// and time with no time zone, for `DateTime`. Spanner has no such type and
+// takes TIMESTAMP for it, as storeCodeFor gives.
+function bigQueryCodeFor(type: string): string {
+  return type === 'DateTime' ? 'DATETIME' : storeCodeFor(type);
 }
 
 
@@ -1668,54 +2872,6 @@ function rejectedStatement(
              pending.index + 1} of its sql executor was rejected by ${store}: ${
              detail} Statements reach the store exactly as written, so every ` +
       `table and column has to be the name the database uses.`;
-}
-
-
-// The first line of a multi-line diagnosis. The lines after it echo the
-// statement and point a caret at the offending token, which is worth nothing
-// here: the author has the statement open in the profile, the position in
-// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
-// place once the message is embedded in a longer sentence.
-//
-// `\n` is matched in both its forms because Spanner's top-level `error.message`
-// arrives with its newlines ESCAPED -- a literal backslash and an n survive
-// JSON.parse -- while every other message uses real ones.
-function firstLine(message: string): string {
-  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
-}
-
-
-// An error body reduced to the sentence worth showing. Both backends return a
-// google.rpc-shaped JSON whose message already reads as a diagnosis
-// ("Unrecognized name: accountId; Did you mean account_id? [at 1:54]"), so pull
-// that out when it parses and fall back to the raw text when it does not.
-//
-// A LocalizedMessage detail is preferred over the top-level `error.message`
-// because Spanner escapes the latter: a statement it quotes back comes through
-// as `Unexpected \"$1\"`, where the detail says `Unexpected "$1"`. BigQuery
-// sends no such detail, so the fallback is the normal path there, not an
-// unusual one.
-function storeMessage(body: string|undefined, status: number): string {
-  const raw = (body ?? '').trim();
-  if (!raw) return `HTTP ${status}.`;
-  try {
-    const error = JSON.parse(raw)?.error;
-    const details: unknown[] =
-        Array.isArray(error?.details) ? error.details : [];
-    for (const detail of details) {
-      const d = detail as {'@type'?: string, message?: unknown};
-      if (!d?.['@type']?.endsWith('LocalizedMessage')) continue;
-      if (typeof d.message === 'string' && d.message.trim()) {
-        return sentence(firstLine(d.message));
-      }
-    }
-    if (typeof error?.message === 'string' && error.message.trim()) {
-      return sentence(firstLine(error.message));
-    }
-  } catch {
-    // Not JSON (an HTML error page from a proxy, say): show what came back.
-  }
-  return sentence(firstLine(raw));
 }
 
 
@@ -1734,14 +2890,8 @@ export async function validateSpannerActionStatements(
     if (!statements.length) continue;
     // The database an action writes to is the one this profile deploys its
     // graph to: on Spanner the published graph and the operational rows live in
-    // the same database. A model with no parseable Spanner target contributes
-    // nothing -- validatePushRequirements has already reported that.
-    let target: SpannerGraphTarget|undefined;
-    try {
-      target = spannerGraphTargets(loaded.model).targets[0];
-    } catch {
-      continue;
-    }
+    // the same database. A model with no Spanner target contributes nothing.
+    const target = spannerGraphTargets(loaded.model).targets[0];
     if (!target) continue;
     const key = `${target.project}/${target.instance}/${target.database}`;
     const entry = byDatabase.get(key) ?? {target, statements: []};
@@ -1769,7 +2919,8 @@ export async function validateSpannerActionStatements(
     }
     try {
       for (const pending of statements) {
-        const types = statementParameterTypes(pending.action, pending.sql);
+        const types = statementParameterTypes(
+            pending.action, referencedParameters(pending.sql));
         const params: Record<string, null> = {};
         const paramTypes: Record<string, {code: string}> = {};
         for (const [name, code] of Object.entries(types)) {
@@ -1817,9 +2968,18 @@ export async function validateBigQueryActionStatements(
     const project = billingProject(loaded.model, defaultProject);
     const store = `BigQuery (project '${project}')`;
     for (const pending of statements) {
+      // BigQuery infers parameter types only when the request declares none,
+      // so a statement that reads an untyped parameter declares none.
+      const names = referencedParameters(pending.sql);
+      const types =
+          statementParameterTypes(pending.action, names, bigQueryCodeFor);
+      const declared = pending.action.parameters.map(p => p.name);
+      const untyped = names.some(name => {
+        const parameter = boundParameter(name, declared);
+        return !parameter || !Object.hasOwn(types, parameter);
+      });
       const res = await bq.query(
-          project, pending.sql, undefined, true,
-          statementParameterTypes(pending.action, pending.sql));
+          project, pending.sql, undefined, true, untyped ? {} : types);
       if (res.status === 200) continue;
       errors.push(rejectedStatement(
           pending, store, storeMessage(res.message, res.status)));

@@ -13,22 +13,52 @@
 //   2. Measures. Which metrics become properties (BigQuery lowers each to a
 //      `MEASURE(...)`; Spanner Graph has none).
 //   3. Element metadata. The per-element `OPTIONS` clause carrying
-//      descriptions and synonyms (BigQuery has one; Spanner has none).
+//      descriptions, synonyms, and AI context extensions (BigQuery has one;
+//      Spanner has none).
 //   4. SQL text. Which SQL a field binds to: the engine's own dialect entry
-//      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one.
+//      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one. A field
+//      that names a sibling field reads that sibling's SQL in its place (see
+//      fieldSql).
 //
-// ./bigquery supplies the BigQuery engine; spanner.ts still writes its own
-// graph.
+// ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {fieldBindingWithoutComments, stripQualifier} from './sql_expr_utils';
-import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {isColumnName, qualifiedColumns, selfReferenceMessage, withSiblingsSpliced} from './sql_expr_utils';
+import {quoteColumnIfReserved, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {sqlExpressionTree} from './sql_parser';
 
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
   warnings: string[];  // skipped metrics, unresolved table refs, etc.
+  // Each node table, then each edge table, in the order the DDL writes them.
+  elements: GraphElement[];
+}
+
+// One node or edge table of the graph. Each column and property text is
+// written as the DDL writes it.
+export interface GraphElement {
+  // A node table belongs to the entity `name` names, and an edge table to the
+  // relationship. The table is read from `dataSource`.
+  kind: 'node'|'edge';
+  name: string;
+  dataSource: string;
+  table: string;
+  // The KEY columns.
+  key: string[];
+  // An edge's SOURCE KEY and then DESTINATION KEY clause: the node it
+  // references, the edge table's columns, and the node table's columns they
+  // reference. Empty for a node table.
+  references: Array<{entity: string; from: string[]; columns: string[]}>;
+  // Each field property the table lists under any of its labels, once, with
+  // the text the DDL writes for it, such as `dept AS code`, and the SQL it
+  // reads in the table, such as `dept`.
+  properties: Array<{name: string; text: string; sql: string}>;
+  // Each measure the node table lists, as the DDL writes it, such as
+  // `MEASURE(SUM(amount)) AS total`. Empty for an edge table, and on an engine
+  // with no measures.
+  measures: string[];
 }
 
 // What the generator knows about the graph when it hands the model's metrics
@@ -36,10 +66,30 @@ export interface GenerateResult {
 export interface MetricPlacementInput {
   // Every entity of the inheritance-resolved model, abstract and skipped too.
   entityByName: ReadonlyMap<string, Entity>;
-  // Entities that form no node table (abstract, no KEY).
+  // Entities that form no node table (abstract, extended by another entity,
+  // or no KEY).
   skipped: ReadonlySet<string>;
-  // Entities some node-forming entity extends.
-  ancestorsUsed: ReadonlySet<string>;
+  // Entities another entity extends. None of them forms a node table.
+  parents: ReadonlySet<string>;
+  // The SQL `field` of `entity` renders from on the node table (see fieldSql).
+  // When it has none there, `reads` is what a warning says it reads, as in
+  // "field 'net', which reads field 'gross', which has no 'BIGQUERY' or
+  // 'ANSI_SQL' expression".
+  renderedFieldSql(entity: Entity, field: Field): {sql: string}|{reads: string};
+  // `sql`, written on `entity`'s table, as that table reads it: each field of
+  // `entity` it names as `<entity>.<field>` reads as that field's own SQL, as
+  // in a field expression (see fieldSql), and other columns lose the
+  // `<entity>.` qualifier. When a field it names has no SQL, `reads` is as for
+  // renderedFieldSql.
+  localSql(entity: Entity, sql: string): {sql: string}|{reads: string};
+}
+
+// The properties an engine's measure placement adds to one node table after
+// its fields, each as the DDL writes it: the operand properties the measures
+// aggregate, then the measures.
+export interface PlacedMetrics {
+  operands: string[];
+  measures: string[];
 }
 
 // The engine's name, and the four ways the engines differ (see the header).
@@ -56,12 +106,11 @@ export interface GraphEngine {
 
   // 2. Measures. Places the model's metrics on node tables, keyed by entity
   // name, warning for each metric it skips. Each entry is the properties the
-  // entity's node table lists after its fields: the operand properties the
-  // measures aggregate, then the measures. An entity absent from the result
-  // carries no measures.
+  // entity's node table lists after its fields. An entity absent from the
+  // result carries no measures.
   placeMetrics(
       metrics: Metric[], input: MetricPlacementInput,
-      warnings: string[]): Map<string, string[]>;
+      warnings: string[]): Map<string, PlacedMetrics>;
 
   // 3. Element metadata. The trailing metadata clause for a label (from an
   // entity's or relationship's description and AI context) and for a field
@@ -83,9 +132,11 @@ export interface GraphEngine {
  * does not create them. Returns the DDL plus any warnings collected while
  * mapping the IR (e.g. metrics that could not be placed on a single table).
  *
- * Throws when the model yields no valid node table -- it declares no entities,
- * or every entity lacks a KEY -- since a property graph with an empty NODE
- * TABLES block is invalid DDL that the engine would reject.
+ * Only a concrete leaf, an entity that is not abstract and that no other entity
+ * extends, forms a node table. Throws when the model yields no valid node table
+ * -- it declares no entities, every entity is abstract or extended by another,
+ * or every leaf lacks a KEY -- since a property graph with an empty NODE TABLES
+ * block is invalid DDL that the engine would reject.
  */
 export function generateGraphDdl(
     model: SemanticModel, engine: GraphEngine): GenerateResult {
@@ -95,8 +146,10 @@ export function generateGraphDdl(
   // flattens each subclass's inherited fields down and expands `extends` to the
   // full transitive ancestor set, so labels and property signatures can be read
   // straight off the resolved model. Only the graph legs run this; the KC push
-  // consumes the raw model, so its output is unaffected.
-  const resolved = resolveInheritance(model);
+  // consumes the raw model, so its output is unaffected. An inherited field
+  // that names a field of its ancestor names the subtype's field of that name,
+  // and renders from its SQL (see fieldSql).
+  const resolved = resolveInheritance(model, undefined, {requalify: true});
   warnings.push(...resolved.warnings);
 
   // The IR requires entities/relationships/metrics, but be defensive against a
@@ -123,28 +176,31 @@ export function generateGraphDdl(
         `the ${engine.name} push deploys none of them.`);
   }
 
-  // An abstract entity is conceptual: it has no physical table and produces no
-  // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
-  // node tables carry its flattened fields). Collect the abstract names so the
-  // node-table filter drops them while label emission still sees them.
+  // Only a concrete leaf forms a node table: an entity that is not abstract
+  // and that no other entity extends. An abstract entity has no table. A
+  // parent's label already reaches every row of its descendants' tables, so a
+  // node table of its own would add its rows to that label as well. Either
+  // kind survives only as a LABEL on its descendants' node tables, which carry
+  // its flattened fields. resolveInheritance expanded each `extends` to the
+  // full ancestor set, so the parents are exactly the names some `extends`
+  // lists.
   const abstractNames =
       new Set(entities.filter(e => e.abstract).map(e => e.name));
+  const parentNames = new Set(entities.flatMap(e => e.extends ?? []));
 
-
-  // A graph node table requires a non-empty KEY. An entity whose primary key is
-  // empty cannot form a valid node, so skip it (and, below, any edge that
-  // references it) rather than emit `KEY()` — invalid DDL. The loader already
-  // warns about the missing key; this records the resulting structural drop.
+  // A graph node table requires a non-empty KEY: the entity's primary key
+  // (nodeKey). An entity without one cannot form a valid node, so skip it and,
+  // below, any edge that references it rather than emit `KEY()`, which is
+  // invalid DDL.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
-    // An abstract entity is intentionally table-less: skip its node table (it
-    // still contributes LABELs to descendants) without warning -- unlike a
-    // missing KEY, this is by design, not a defect.
-    if (abstractNames.has(entity.name)) {
+    // An abstract entity or a parent has no node table by design, not for a
+    // defect, so skip it without a warning. A parent needs no KEY.
+    if (abstractNames.has(entity.name) || parentNames.has(entity.name)) {
       skipped.add(entity.name);
       return false;
     }
-    if (entity.keys && entity.keys.length) return true;
+    if (nodeKey(entity).length) return true;
     warnings.push(
         `entity '${
             entity.name}': empty KEY (no primary key); node table skipped, ` +
@@ -153,34 +209,45 @@ export function generateGraphDdl(
     return false;
   });
 
-  // The ancestors carried by a table-emitting entity. Two uses. First, measure
-  // placement: an engine's measure may be allowed only on a LEAF type -- one
-  // that no *table-emitting* entity extends (see the BigQuery engine).
-  // Building this from validEntities (not all entities) is deliberate: an
-  // abstract or empty-KEY subtype emits no table, so it does not duplicate its
-  // parent's label and must not mark the parent non-leaf. Second, the orphan
-  // check below: an abstract class that is no concrete entity's ancestor
-  // produces no graph element at all, so warn and drop it rather than let it
-  // vanish silently.
-  const ancestorsUsed = new Set<string>();
-  for (const entity of validEntities) {
-    for (const a of entity.extends ?? []) ancestorsUsed.add(a);
-  }
-  for (const name of abstractNames) {
-    if (!ancestorsUsed.has(name)) {
+  const entityByName = new Map(entities.map(e => [e.name, e]));
+
+  // The ancestors some node table carries as labels. An abstract entity or a
+  // parent that none of them carries produces no graph element at all, so warn
+  // rather than let it vanish silently: its only descendants are abstract or
+  // were skipped for an empty KEY. One that a node table carries survives only
+  // as a LABEL on its descendants, and only a table's DEFAULT LABEL may carry
+  // OPTIONS, so its own description and AI context reach no element. Warn
+  // whenever the engine would have written a clause for it.
+  const labelled = new Set(validEntities.flatMap(e => e.extends ?? []));
+  for (const entity of entities) {
+    const {name} = entity;
+    if (labelled.has(name)) {
+      if (engine.elementOptions(entity.description, entity.aiContext)) {
+        warnings.push(
+            `entity '${name}' is a supertype in a class hierarchy; its ` +
+            `metadata is dropped (a supertype is only a LABEL on its ` +
+            `subtypes, and ${engine.name} accepts OPTIONS only on a table's ` +
+            `DEFAULT LABEL)`);
+      }
+    } else if (abstractNames.has(name)) {
       warnings.push(
-          `abstract entity '${name}' is not a supertype of any concrete ` +
-          `entity; it has no table and no descendant to label, so it produces ` +
+          `abstract entity '${name}' has no table, and no entity with a node ` +
+          `table extends it, so it produces no graph element`);
+    } else if (parentNames.has(name)) {
+      warnings.push(
+          `entity '${name}' is extended by another entity, so it has no node ` +
+          `table, and no entity with a node table extends it, so it produces ` +
           `no graph element`);
     }
   }
 
   // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
   // ()` block is invalid DDL under any circumstance. When no entity can form a
-  // node — the model declares none, every one is abstract (a table-less
-  // supertype forms no node), or every one was skipped for an empty KEY — fail
-  // loudly rather than emit a graph the engine would reject. The collected skip
-  // reasons ride along in the error so the caller sees why each entity dropped.
+  // node — the model declares none, every one is abstract or extended by
+  // another (neither forms a node), or every leaf was skipped for an empty KEY
+  // — fail loudly rather than emit a graph the engine would reject. The
+  // collected skip reasons ride along in the error so the caller sees why each
+  // entity dropped.
   if (!validEntities.length) {
     let reason: string;
     if (!entities.length) {
@@ -188,9 +255,15 @@ export function generateGraphDdl(
     } else if (entities.every(e => e.abstract)) {
       reason =
           'every entity is abstract (a table-less supertype forms no node table)';
+    } else if (entities.every(
+                   e => abstractNames.has(e.name) || parentNames.has(e.name))) {
+      reason = 'every entity is abstract or extended by another entity (only ' +
+          'a concrete leaf forms a node table)';
     } else {
-      reason =
-          'every entity was skipped because it has no primary key (a graph node requires a KEY)';
+      const leaf =
+          parentNames.size || abstractNames.size ? 'concrete leaf ' : '';
+      reason = `every ${leaf}entity was skipped because it has no primary ` +
+          'key (a graph node requires a KEY)';
     }
     throw new Error(
         `cannot generate a property graph: ${reason}; a graph requires at ` +
@@ -201,41 +274,62 @@ export function generateGraphDdl(
   // Metrics are model-level; the engine places each on a node table (or skips
   // it). The result is keyed by entity name; entries on a skipped entity simply
   // never render.
-  const entityByName = new Map(entities.map(e => [e.name, e]));
+  // The SQL `sql` gives, or, when a field on the way has none, what a warning
+  // says it reads: each field on `through`, then those `sql` went through.
+  const readOf = (entity: Entity, sql: FieldSql, through: string[]) =>
+      'sql' in sql ? {sql: sql.sql} : {
+        reads: missingSibling(
+            'through' in sql ? [...through, ...sql.through] : through, entity,
+            engine)
+      };
   const measurePropertiesByEntity = engine.placeMetrics(
-      metrics, {entityByName, skipped, ancestorsUsed}, warnings);
+      metrics, {
+        entityByName,
+        skipped,
+        parents: parentNames,
+        renderedFieldSql: (entity, field) =>
+            readOf(entity, fieldSql(field, entity, engine), [field.name]),
+        localSql: (entity, sql) => readOf(
+            entity,
+            siblingsRead(
+                sql, entity,
+                name => fieldSql(
+                    entity.fields.find(f => f.name === name)!, entity,
+                    engine)),
+            []),
+      },
+      warnings);
 
-  // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
-  // signature, so the label renderer must reach every LABEL CARRIER by name:
-  // node-forming entities plus abstract (table-less) supertypes, which have no
-  // node table but still contribute a label signature. A concrete entity
-  // dropped for an empty KEY is deliberately excluded -- it was reported as a
-  // structural defect, so it must not silently reappear as a shared label on a
-  // subclass (which would contradict the drop and expose a half-defined class);
-  // a subclass extending it drops that LABEL with a warning (see
-  // renderNodeTable).
-  const labelByName =
-      new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
-                  .map(e => [e.name, e]));
-
-  // A field one node table leaves out because this engine has no SQL for it
-  // is left out of each abstract ancestor's label on every table too, so the
-  // label lists the same properties everywhere it appears.
-  const leftOutUnder = new Map<string, Set<string>>();
-  for (const e of validEntities) {
-    for (const f of e.fields) {
-      if (!isFieldBound(f) || engine.fieldExpression(f) !== undefined) continue;
-      for (const a of e.extends ?? []) {
-        leftOutUnder.set(a, (leftOutUnder.get(a) ?? new Set()).add(f.name));
-      }
-    }
+  // The properties under each ancestor's label: of the fields the ancestor
+  // declares or inherits, those that every node table below it binds with SQL
+  // for this engine. Every table that carries a label must declare the same
+  // properties under it, by name and type, so a field that one leaf leaves out
+  // (its profile excludes it, or this engine has no SQL for it) is left out of
+  // that label on every leaf, while each leaf's DEFAULT LABEL keeps all it
+  // binds. Each leaf reads the properties from its own binding: the engines
+  // match a shared label by property name and type, not by column. The type is
+  // that of each leaf's column, so the engine rejects a graph whose leaves bind
+  // one property to columns of different types.
+  const ancestorProperties = new Map<string, string[]>();
+  for (const name of labelled) {
+    const leaves = validEntities.filter(e => e.extends?.includes(name));
+    ancestorProperties.set(
+        name,
+        declaredOrInherited(name, model, entityByName)
+            .filter(
+                field => leaves.every(
+                    leaf => leaf.fields.some(
+                        f => f.name === field &&
+                            'sql' in fieldSql(f, leaf, engine)))));
   }
 
+  const elements: GraphElement[] = [];
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
-          entity, measurePropertiesByEntity.get(entity.name) ?? [],
-          labelByName, leftOutUnder, ancestorsUsed.has(entity.name), engine,
-          warnings));
+          entity,
+          measurePropertiesByEntity.get(entity.name) ??
+              {operands: [], measures: []},
+          ancestorProperties, engine, warnings, elements));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -251,7 +345,8 @@ export function generateGraphDdl(
                 `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
             return false;
           })
-          .map(rel => renderEdgeTable(rel, entitiesByName, engine, warnings));
+          .map(rel => renderEdgeTable(
+                   rel, entitiesByName, engine, warnings, elements));
 
   const graphName = engine.graphName(resolved.model);
 
@@ -267,82 +362,37 @@ export function generateGraphDdl(
   // entry (see knowledge_catalog.ts), not the graph; bigquery.ts's
   // optionsClause says why.
 
-  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
+  return {
+    ddl: blocks.join('\n') + ';\n',
+    warnings: dedupe(warnings),
+    elements,
+  };
+}
+
+// The names of the fields entity `name` declares or inherits: its own, then
+// each ancestor's, nearest first, as resolveInheritance orders them. They are
+// read from the model as declared, before resolution, because resolution
+// leaves off the fields a profile excludes on the entity itself, and an
+// exclusion on an entity with no node table excludes nothing from the graph.
+function declaredOrInherited(
+    name: string, declared: SemanticModel,
+    resolvedByName: ReadonlyMap<string, Entity>): string[] {
+  const own = new Map((declared.entities ?? []).map(e => [e.name, e.fields]));
+  const names = new Set<string>();
+  for (const e of [name, ...(resolvedByName.get(name)?.extends ?? [])]) {
+    for (const f of own.get(e) ?? []) names.add(f.name);
+  }
+  return [...names];
 }
 
 
+// Renders an entity's node table, and adds its record to `elements`.
 function renderNodeTable(
-    entity: Entity, measureProperties: string[],
-    labelByName: Map<string, Entity>,
-    leftOutUnder: Map<string, Set<string>>, isSupertype: boolean,
-    engine: GraphEngine, warnings: string[]): string {
+    entity: Entity, placed: PlacedMetrics,
+    ancestorProperties: Map<string, string[]>, engine: GraphEngine,
+    warnings: string[], elements: GraphElement[]): string {
   const table =
       engine.table(entity.dataSource, warnings, `entity '${entity.name}'`);
-
-  // Canonical rendering of every inherited property: its supertype's OWN
-  // definition, keyed by property name (nearest ancestor wins, matching field
-  // flattening). A property that appears under a label shared across element
-  // tables must have one identical definition everywhere it appears, so the
-  // supertype is authoritative -- both this node's DEFAULT LABEL and its
-  // `LABEL <ancestor>` blocks render an inherited property exactly as the
-  // supertype's node table does. resolveInheritance localizes the inherited
-  // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
-  // no-op; the map's real job is to catch and neutralize a genuine override.
-  const inheritedRender = new Map<string, string>();
-  const inheritedCore = new Map<string, string>();
-  for (const ancestorName of entity.extends ?? []) {
-    const ancestor = labelByName.get(ancestorName);
-    // Skip an ABSTRACT ancestor: it has no table and no binding of its own, so
-    // it cannot be authoritative for an inherited property's rendering. This
-    // subtype's own binding is the canonical one (e.g. `c_name AS name`), so we
-    // leave the inherited names out of this map and let `renderOwn` render them
-    // straight from this table. A concrete ancestor keeps its authority.
-    if (!ancestor || ancestor.abstract) continue;
-    for (const f of ancestor.fields) {
-      // The ancestor's node table leaves out a field this engine has no SQL
-      // for, so there is no rendering to defer to.
-      if (engine.fieldExpression(f) === undefined) continue;
-      if (!inheritedRender.has(f.name)) {
-        inheritedRender.set(
-            f.name, renderFieldProperty(f, ancestor.name, engine));
-        inheritedCore.set(
-            f.name, renderFieldPropertyCore(f, ancestor.name, engine));
-      }
-    }
-  }
-  // Renders one of this entity's own fields, deferring to the supertype's
-  // canonical definition for any inherited name. A subclass CANNOT give an
-  // inherited property a different definition -- BigQuery requires one
-  // definition per property under a shared label -- so a divergent override is
-  // warned and dropped in favor of the supertype's, keeping the DDL valid. The
-  // warning distinguishes a STRUCTURAL remap (a different column/expression --
-  // the property is genuinely rebound) from a METADATA-only refinement (same
-  // column, different description/synonyms) so it states precisely what the
-  // subclass loses, rather than mislabeling an added description as a redefined
-  // column.
-  const renderOwn = (f: Field): string => {
-    const own = renderFieldProperty(f, entity.name, engine);
-    const canonical = inheritedRender.get(f.name);
-    if (canonical === undefined) return own;  // not inherited: render as-is
-    if (canonical === own) return canonical;  // identical: nothing to warn
-    if (renderFieldPropertyCore(f, entity.name, engine) !==
-        inheritedCore.get(f.name)) {
-      warnings.push(
-          `entity '${entity.name}' remaps inherited property '${
-              f.name}' to a different column/expression than its supertype; ` +
-          `${engine.name} allows only one definition per property under a ` +
-          `shared label, so the supertype's is used and the subclass's ` +
-          `remapping is dropped`);
-    } else {
-      warnings.push(
-          `entity '${entity.name}' overrides the description/synonyms of ` +
-          `inherited property '${
-              f.name}'; under a shared label every binding ` +
-          `must declare it identically, so the supertype's metadata is used ` +
-          `and the subclass's is dropped`);
-    }
-    return canonical;
-  };
 
   // Order: declared fields, then the engine's measure properties (any operand
   // properties synthesized for measures, then the measures themselves, which
@@ -355,218 +405,265 @@ function renderNodeTable(
   // pruning normally strips it before generation, but a caller that generates
   // DDL straight from a bindingOptional load without pruning could still reach
   // here with one, such as a purely logical field. Skip it too rather than emit
-  // `<name>` as a phantom bare column the source table does not have.
+  // `<name>` as a phantom bare column the source table does not have. A field
+  // that names a sibling the engine has no SQL for has none either, so it is
+  // skipped with a warning naming that sibling.
   const boundFields = entity.fields.filter(f => {
-    if (engine.fieldExpression(f) !== undefined) return true;
+    const sql = fieldSql(f, entity, engine);
+    if ('sql' in sql) return true;
     warnings.push(
-        isFieldBound(f) ?
+        'through' in sql ?
+            `entity '${entity.name}': field '${f.name}' reads ${
+                missingSibling(sql.through, entity, engine)}; omitted from ` +
+                `the node table` :
+            isFieldBound(f) ?
             `entity '${entity.name}': field '${f.name}' has no '${
                 engine.dialect}' or 'ANSI_SQL' expression; omitted from the ` +
-                (inheritedRender.has(f.name) ?
-                     `node table's own label, and the supertype's label keeps ` +
-                         `the supertype's definition` :
-                     `node table`) :
+                `node table` :
             `entity '${entity.name}': field '${f.name}' has no column under ` +
                 `this binding; omitted from the node table (bind it, or ` +
                 `govern the logical model in Knowledge Catalog instead)`);
     return false;
   });
-  const properties = [...boundFields.map(renderOwn), ...measureProperties];
+  // Each field renders from this entity's own binding, keyed by name, and the
+  // DEFAULT LABEL and every `LABEL <ancestor>` block read that one rendering. A
+  // field this entity restates reads its own column; one it does not restate
+  // carries the binding of the nearest ancestor that gives one, which
+  // resolveInheritance localized to this table.
+  const rendered = new Map(
+      boundFields.map(f => [f.name, renderFieldProperty(f, entity, engine)]));
+  const properties =
+      [...rendered.values(), ...placed.operands, ...placed.measures];
 
+  const key = physicalColumns(
+      nodeKey(entity), engine, warnings, `entity '${entity.name}'`);
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
-    line(
-        2,
-        `KEY(${
-            physicalColumns(
-                entity, entity.keys, engine, warnings,
-                `entity '${entity.name}'`)
-                .join(', ')})`),
+    line(2, `KEY(${key.join(', ')})`),
   ];
-  // Element-table description and synonyms attach to the node's DEFAULT LABEL
-  // -- UNLESS this entity is a supertype whose label is shared by subclass
-  // tables. BigQuery forbids a label that carries an OPTIONS clause from being
-  // bound to more than one element table (verified live -- "the label ... is
-  // defined with OPTIONS clause in one of the element tables and cannot be
-  // bound to another element table"), so a shared supertype label must be
-  // options-free; its description/synonyms are dropped (with a warning). The
-  // rule is BigQuery's, but it applies to any engine whose elementOptions
-  // returns a clause.
-  let labelOpts = engine.elementOptions(entity.description, entity.aiContext);
-  if (isSupertype && labelOpts) {
-    warnings.push(
-        `entity '${entity.name}' is a supertype in a class hierarchy; its ` +
-        `description/synonyms are dropped from the shared '${entity.name}' ` +
-        `label (${
-            engine.name} forbids OPTIONS on a label bound by multiple tables)`);
-    labelOpts = undefined;
-  }
-  // A node participating in the hierarchy -- as a subclass (it declares
-  // ancestor LABELs) or as a shared supertype (a subclass binds its label) --
-  // must use an EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit
-  // default) PROPERTIES clause immediately followed by explicit LABEL clauses
-  // (verified live -- "Expected \")\" ... but got keyword LABEL"), and the
-  // validated shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node
-  // outside any hierarchy keeps the implicit form so existing output is
-  // byte-for-byte unchanged.
-  const hasAncestors = !!(entity.extends && entity.extends.length);
-  if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
+  // A node that declares ancestor LABELs must use an EXPLICIT `DEFAULT LABEL`:
+  // BigQuery rejects a bare (implicit default) PROPERTIES clause immediately
+  // followed by explicit LABEL clauses (verified live -- "Expected \")\" ...
+  // but got keyword LABEL"), and the validated shared-label shape is `DEFAULT
+  // LABEL PROPERTIES(...)`. A node outside any hierarchy keeps the implicit
+  // form. Only a leaf has a node table, so no other table shares this node's
+  // own label, and its description and synonyms stay on it.
+  if (entity.extends?.length) lines.push(line(2, 'DEFAULT LABEL'));
+  const labelOpts = engine.elementOptions(entity.description, entity.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
-  // Omit the PROPERTIES block when there is nothing to list, rather than emit
-  // an empty `PROPERTIES()` (a node table may declare just its KEY).
-  if (properties.length) lines.push(propertiesBlock(properties));
+  lines.push(propertiesClause(properties));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
-  // expanded `extends` to the full ancestor set), each re-listing that
-  // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
-  // node. The block is rendered straight from the ANCESTOR's own fields with
-  // the ancestor as qualifier, so it is byte-for-byte identical to the
-  // ancestor's own DEFAULT LABEL -- the exact match BigQuery requires for a
-  // property shared across the element tables that bind a label ("same set of
-  // property declarations under the same label"). This node's DEFAULT LABEL
-  // renders the same inherited names via `renderOwn`, which also defers to the
-  // ancestor, so the label is consistent within this table too.
+  // expanded `extends` to the full ancestor set), so `MATCH (:Ancestor)` also
+  // matches this node. Each lists the properties every leaf under that
+  // ancestor binds (see generateGraphDdl), read from this table's renderings.
+  // When the leaves share none, the label lists NO PROPERTIES, since a label
+  // with no properties clause exposes every column of its table.
   for (const ancestorName of entity.extends ?? []) {
-    const ancestor = labelByName.get(ancestorName);
-    if (!ancestor) {
-      // The ancestor exists in the model (an unknown parent hard-fails in
-      // resolveInheritance, so it never reaches here) but is not a label
-      // carrier -- it was dropped for an
-      // empty KEY. Its fields still flattened onto this node (they render as
-      // own properties above); it just forms no queryable label, so omit the
-      // LABEL and say so rather than reference a class reported as gone.
-      warnings.push(
-          `entity '${entity.name}' extends '${ancestorName}', which has no ` +
-          `node table and is not abstract (it was dropped, e.g. for an empty ` +
-          `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
-      continue;
-    }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
-    let signature: string[];
-    if (ancestor.abstract) {
-      // Render each inherited field from THIS subtype's own binding, keyed by
-      // the abstract ancestor's field names. Skip any the subtype leaves
-      // unbound so the block matches the DEFAULT LABEL (which lists only bound
-      // fields); a profile that binds the subtype but not an inherited field
-      // simply does not expose that property under the shared label.
-      signature = [];
-      let leftOut = false;
-      for (const af of ancestor.fields) {
-        if (leftOutUnder.get(ancestorName)?.has(af.name)) {
-          leftOut = true;
-          continue;
-        }
-        const child = boundFields.find(cf => cf.name === af.name);
-        if (child) {
-          signature.push(renderFieldProperty(child, entity.name, engine));
-        }
-      }
-      // A bare LABEL exposes every column of its table, so a label that a
-      // left-out field empties lists no properties instead.
-      if (!signature.length && leftOut) {
-        lines.push(line(2, 'NO PROPERTIES'));
-        continue;
-      }
-    } else {
-      // Only the fields the ancestor's own node table lists.
-      signature =
-          ancestor.fields.filter(f => engine.fieldExpression(f) !== undefined)
-              .map(f => renderFieldProperty(f, ancestor.name, engine));
-    }
-    if (signature.length) lines.push(propertiesBlock(signature));
+    const signature = (ancestorProperties.get(ancestorName) ?? [])
+                          .map(name => rendered.get(name)!);
+    lines.push(propertiesClause(signature));
   }
+  elements.push({
+    kind: 'node',
+    name: entity.name,
+    dataSource: entity.dataSource,
+    table,
+    key,
+    references: [],
+    properties: boundFields.map(f => propertyOf(f, entity, engine)),
+    measures: placed.measures,
+  });
   return lines.join('\n');
+}
+
+// The properties clause of a node table, label or edge. An empty list gives NO
+// PROPERTIES: BigQuery and Spanner read a missing clause as PROPERTIES ARE ALL
+// COLUMNS, which would expose every column of the table, including one a
+// profile leaves out.
+function propertiesClause(properties: string[]): string {
+  return properties.length ? propertiesBlock(properties) :
+                             line(2, 'NO PROPERTIES');
+}
+
+// The fields a field expression may name as `<name>.<field>`: an entity's,
+// or a relationship's association table's under the relationship's name.
+type FieldOwner = Pick<Entity, 'name'|'fields'>;
+
+// What a field renders from on one engine: its SQL, local to its table; or
+// `noSql` when the engine has no SQL for it; or, when it names a sibling the
+// engine has no SQL for, the chain of siblings it reads through, from the one
+// it names to the one with no SQL.
+type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
+
+// The SQL `field` of `owner` renders from on `engine`. The text is the
+// engine's (fieldExpression), and a field may name a sibling field in it as
+// `<owner>.<field>`. Each sibling it names is replaced with that sibling's
+// own SQL for the engine, in parentheses unless that SQL is a lone column,
+// TRUE, FALSE or NULL, or already in parentheses, and every other column
+// loses the owner's qualifier; the rest of the text stays as written. Both engines' SQL is read as BigQuery's.
+// Throws when the field names itself, directly or through its siblings, since
+// no SQL can render it; push validation rejects such a model first
+// (validateExpressionReferences).
+function fieldSql(
+    field: Field, owner: FieldOwner, engine: GraphEngine,
+    path: readonly string[] = []): FieldSql {
+  const expr = engine.fieldExpression(field);
+  if (expr === undefined) return {noSql: true};
+  const chain = [...path, field.name];
+  return siblingsRead(expr, owner, name => {
+    if (chain.includes(name)) {
+      throw new Error(
+          selfReferenceMessage(owner.name, chain.slice(chain.indexOf(name))));
+    }
+    return fieldSql(
+        owner.fields.find(f => f.name === name)!, owner, engine, chain);
+  });
+}
+
+// `expr`, SQL on `owner`'s table, local to that table, with each sibling it
+// names as `<owner>.<field>` replaced with what `read` gives for that sibling
+// (see fieldSql). When a sibling has no SQL, `through` runs from it to the
+// sibling with none.
+function siblingsRead(
+    expr: string, owner: FieldOwner,
+    read: (name: string) => FieldSql): {sql: string}|{through: string[]} {
+  const named = new Set((qualifiedColumns(expr, owner.name) ?? [])
+                            .filter(c => owner.fields.some(f => f.name === c)));
+  const replacements = new Map<string, string>();
+  for (const name of named) {
+    const sibling = read(name);
+    if ('noSql' in sibling) return {through: [name]};
+    if ('through' in sibling) return {through: [name, ...sibling.through]};
+    // A sibling bound to a reserved column, such as `order`, reads it quoted,
+    // and one bound to TRUE, FALSE or NULL reads that value. One bound to the
+    // column of its own name reads the same either way.
+    const sql = quoteColumnIfReserved(sibling.sql);
+    if (sql !== name) replacements.set(name, parenthesized(sql));
+  }
+  return {sql: withSiblingsSpliced(expr, owner.name, replacements)};
+}
+
+// `sql` in parentheses, unless it is a lone column, TRUE, FALSE or NULL, or
+// already in them.
+function parenthesized(sql: string): string {
+  const tree = sqlExpressionTree(sql, 'BIGQUERY');
+  const kind = tree && Object.keys(tree).length === 1 ?
+      Object.keys(tree)[0] :
+      undefined;
+  return kind === 'column' || kind === 'boolean' || kind === 'null' ||
+          kind === 'paren' ?
+      sql :
+      `(${sql})`;
+}
+
+// What a warning says a field reads when it names a sibling the engine has no
+// SQL for: each sibling on `through`, and what the last one lacks.
+function missingSibling(
+    through: string[], owner: FieldOwner, engine: GraphEngine): string {
+  const last = owner.fields.find(f => f.name === through[through.length - 1]);
+  const lacks = last && isFieldBound(last) ?
+      `has no '${engine.dialect}' or 'ANSI_SQL' expression` :
+      `has no column under this binding`;
+  return `${through.map(n => `field '${n}'`).join(', which reads ')}, ` +
+      `which ${lacks}`;
 }
 
 // Renders a field as a graph property: a bare column when the expression is
 // just the column, else `<expr> AS <name>`. Attaches the engine's metadata
-// clause (label, temporal role, description, AI-first annotations) after it
-// per the `derived_property` rule. A field with no expression is exposed as a
-// bare column under its name.
+// clause (description, AI context, label and time role) after it per the
+// `derived_property` rule. A node table leaves out a field with no
+// expression, with a warning. An association edge exposes it as a bare column
+// under its name.
 function renderFieldProperty(
-    field: Field, entity: string, engine: GraphEngine): string {
-  const core = renderFieldPropertyCore(field, entity, engine);
+    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+  const core = renderFieldPropertyCore(field, owner, engine);
   const opts = engine.fieldOptions(field);
   return opts ? `${core} ${opts}` : core;
 }
 
 // Renders just the STRUCTURAL core of a field property -- the bare column, or
 // `<expr> AS <name>` when the field maps a non-trivial expression -- with no
-// trailing OPTIONS. This is the part BigQuery requires to be byte-for-byte
-// identical across every element table binding a shared label; metadata
-// (OPTIONS) is compared separately so a subclass's metadata-only refinement is
-// reported distinctly from a structural remap (see renderNodeTable's
-// renderOwn). This is also the single place a field expression is lowered to
+// trailing OPTIONS. This is the single place a field expression is lowered to
 // its table-local form: the resolve-inheritance pass first rewrites an
 // inherited field's expression into the child's frame (localizeInheritedField),
-// then this strips the entity's own qualifier -- one normalization, in one
+// then fieldSql strips the entity's own qualifier and reads each sibling the
+// expression names through that sibling's SQL -- one normalization, in one
 // place, applied to own and inherited fields alike.
 function renderFieldPropertyCore(
-    field: Field, entity: string, engine: GraphEngine): string {
-  const expr = engine.fieldExpression(field);
-  const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
+    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+  const sql = fieldSql(field, owner, engine);
   const alias = quoteIfReserved(field.name);
-  return local === field.name ? alias :
-                                `${quoteIfReserved(local)} AS ${alias}`;
+  if (!('sql' in sql)) return alias;
+  // A field bound to the column of its name, such as `order` bound to `order`
+  // or `` `order` ``, is that column. One named `null` and bound to NULL holds
+  // the value.
+  const local = quoteColumnIfReserved(sql.sql);
+  return local === alias ? alias : `${local} AS ${alias}`;
+}
+
+// A field property as GraphElement lists it. A field with no SQL reads the
+// column of its name.
+function propertyOf(field: Field, owner: FieldOwner, engine: GraphEngine) {
+  const sql = fieldSql(field, owner, engine);
+  return {
+    name: field.name,
+    text: renderFieldPropertyCore(field, owner, engine),
+    sql: 'sql' in sql ? sql.sql : field.name,
+  };
 }
 
 
-// Resolves a logical field name to the physical column it binds to on
-// `entity`'s table. A structural key reference -- node KEY, edge KEY, SOURCE
-// KEY, DESTINATION KEY, and each REFERENCES target -- must name a real column,
-// never the property alias exposed under the field's name: BigQuery rejects an
-// alias there ("Column '<alias>' not found"). A profile that binds a field to a
-// differently named column makes name != column common. Falls back to the name
-// itself when it is not a declared field (already a raw column) or the entity is
-// unknown.
-function physicalColumn(
-    entity: Entity|undefined, fieldName: string, engine: GraphEngine): string {
-  const field = entity?.fields.find(f => f.name === fieldName);
-  if (entity === undefined || field === undefined) return fieldName;
-  // A key or join column names a column, and a bare column name reads the same
-  // in every dialect, so a field with no SQL for this engine still gives it.
-  const expr =
-      engine.fieldExpression(field) ?? fieldBindingWithoutComments(field);
-  return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
+// The key an entity's node is keyed by: its primary key. Empty when the entity
+// states none, and then it gets no node table.
+export function nodeKey(entity: Pick<Entity, 'keys'>): string[] {
+  return entity.keys ?? [];
 }
 
+// Writes a key or join column as the column it names. An unquoted name is
+// backtick-quoted when it is reserved or is not a simple identifier, and a
+// backtick-quoted name is written as it is.
+export function physicalColumn(column: string): string {
+  return /^`[^`]+`$/.test(column) ? column : quoteIdentifier(column);
+}
+
+// Writes each key or join column with physicalColumn. A value isColumnName
+// rejects is an expression rather than a column; push rejects it, and a caller
+// that generates without validating gets it as written, with a warning naming
+// it, rather than opaque DDL the engine rejects at deploy.
 function physicalColumns(
-    entity: Entity|undefined, fieldNames: string[], engine: GraphEngine,
-    warnings: string[], context: string): string[] {
-  return fieldNames.map(n => {
-    const col = physicalColumn(entity, n, engine);
-    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
-    // name a bare column. A field bound to a computed expression resolves to
-    // SQL, not a column, which the engine rejects at deploy; warn here so the
-    // problem is named statically rather than surfacing as opaque DDL.
-    if (!isSimpleIdentifier(col)) {
-      warnings.push(
-          `${context}: field '${n}' is bound to a non-column expression (${
-              col}); a KEY/REFERENCES site requires a bare column, so ${
-              engine.name} will reject the generated DDL`);
-    }
-    return quoteIfReserved(col);
+    columns: string[], engine: GraphEngine, warnings: string[],
+    context: string): string[] {
+  return columns.map(c => {
+    if (isColumnName(c)) return physicalColumn(c);
+    warnings.push(
+        `${context}: key or join column '${c}' is not a physical column ` +
+        `name; a KEY/REFERENCES site requires a column, so ${
+            engine.name} will reject the generated DDL`);
+    return c;
   });
 }
 
 
+// Renders a relationship's edge table, and adds its record to `elements`.
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
-    engine: GraphEngine, warnings: string[]): string {
+    engine: GraphEngine, warnings: string[],
+    elements: GraphElement[]): string {
   // A many-to-many relationship is backed by its own association table rather
   // than a source entity's foreign key; render it from that block.
   if (rel.association) {
     return renderAssociationEdge(
-        rel, rel.association, entitiesByName, engine, warnings);
+        rel, rel.association, entitiesByName, engine, warnings, elements);
   }
   // A relationship is a direct foreign key: the SOURCE entity's own base table
   // backs the edge (one edge row per source row). Its FK columns
   // (`rel.source.columns`) reference the destination's key columns
   // (`rel.destination.columns`); the edge is keyed by, and references its
-  // source node through, the source entity's own key (looked up here rather
-  // than duplicated onto the relationship).
+  // source node through, the key of the source entity's node (nodeKey, looked up
+  // here rather than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
-  const destEntity = entitiesByName.get(rel.destination.entity);
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
   let sourceKey: string[];
@@ -580,22 +677,34 @@ function renderEdgeTable(
     sourceKey = rel.source.columns;
   } else {
     backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
-    sourceKey = sourceEntity.keys;
+    sourceKey = nodeKey(sourceEntity);
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
-  // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
-  // against the source entity, while the destination REFERENCES resolves against
-  // the destination entity's key.
-  const key = physicalColumns(sourceEntity, sourceKey, engine, warnings, relCtx)
-                  .join(', ');
-  const destFk = physicalColumns(
-                     sourceEntity, rel.source.columns, engine, warnings, relCtx)
-                     .join(', ');
-  const destRef =
-      physicalColumns(
-          destEntity, rel.destination.columns, engine, warnings, relCtx)
-          .join(', ');
+  // table, so its KEY and SOURCE KEY are the source node's key, and its
+  // DESTINATION KEY is the FK, the relationship's `from_columns`, referencing
+  // the destination's `to_columns`.
+  const keyColumns = physicalColumns(sourceKey, engine, warnings, relCtx);
+  const fkColumns =
+      physicalColumns(rel.source.columns, engine, warnings, relCtx);
+  const refColumns =
+      physicalColumns(rel.destination.columns, engine, warnings, relCtx);
+  const key = keyColumns.join(', ');
+  const destFk = fkColumns.join(', ');
+  const destRef = refColumns.join(', ');
+  elements.push({
+    kind: 'edge',
+    name: rel.name,
+    dataSource: sourceEntity?.dataSource ?? rel.source.entity,
+    table: backing,
+    key: keyColumns,
+    references: [
+      {entity: rel.source.entity, from: keyColumns, columns: keyColumns},
+      {entity: rel.destination.entity, from: fkColumns, columns: refColumns},
+    ],
+    properties: [],
+    measures: [],
+  });
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
@@ -609,10 +718,15 @@ function renderEdgeTable(
             quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
 
-  // Edge description and synonyms attach to the DEFAULT LABEL: after the
-  // SOURCE/DESTINATION clauses (grammar: element_table_definition).
+  // Edge metadata attaches to the DEFAULT LABEL: after the
+  // SOURCE/DESTINATION clauses, before the properties clause (grammar:
+  // element_table_definition).
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
+
+  // A foreign-key relationship declares no fields of its own, so its edge
+  // lists none.
+  lines.push(propertiesClause([]));
 
   return lines.join('\n');
 }
@@ -620,71 +734,97 @@ function renderEdgeTable(
 
 // Renders a many-to-many edge backed by an association (junction) table. Unlike
 // a direct FK, the edge has its OWN backing table and KEY, each endpoint's
-// SOURCE/DESTINATION KEY names the junction columns referencing that entity's
-// declared key, and the junction's own `fields` become edge PROPERTIES.
+// SOURCE/DESTINATION KEY names the junction columns referencing the key of
+// that entity's node, and the junction's own `fields` become edge PROPERTIES.
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
-    engine: GraphEngine, warnings: string[]): string {
-  const backing = engine.table(
-      assoc.dataSource, warnings, `relationship '${rel.name}'`);
+    engine: GraphEngine, warnings: string[],
+    elements: GraphElement[]): string {
+  const relCtx = `relationship '${rel.name}'`;
+  const backing = engine.table(assoc.dataSource, warnings, relCtx);
   if (!assoc.keys?.length) {
     warnings.push(
         `relationship '${rel.name}': association table has no KEY; the edge ` +
         `table will be invalid (an edge requires a KEY)`);
   }
 
-  // The REFERENCES target is each endpoint entity's declared key; fall back to
+  // The REFERENCES target is the key of each endpoint's node; fall back to
   // the endpoint's own columns (and warn) when the entity cannot be resolved.
-  const refColumns = (end: {entity: string; columns: string[]}): string => {
+  const refColumns = (end: {entity: string; columns: string[]}): string[] => {
     const entity = entitiesByName.get(end.entity);
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.map(quoteIfReserved).join(', ');
     }
     return physicalColumns(
-               entity, entity.keys, engine, warnings,
-               `relationship '${rel.name}'`)
-        .join(', ');
+        entity ? nodeKey(entity) : end.columns, engine, warnings, relCtx);
   };
+  // The junction table's own key and join columns.
+  const columns = (names: string[]): string[] =>
+      physicalColumns(names, engine, warnings, relCtx);
+  // In the order the DDL writes them, so their warnings come in that order.
+  const key = columns(assoc.keys);
+  const sourceColumns = columns(assoc.sourceColumns);
+  const sourceRef = refColumns(rel.source);
+  const destinationColumns = columns(assoc.destinationColumns);
+  const destinationRef = refColumns(rel.destination);
 
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
-    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
+    line(2, `KEY(${key.join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+        `SOURCE KEY(${sourceColumns.join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-                refColumns(rel.source)})`),
+                sourceRef.join(', ')})`),
     line(
         2,
-        `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+        `DESTINATION KEY(${destinationColumns.join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
-                refColumns(rel.destination)})`),
+                destinationRef.join(', ')})`),
   ];
 
-  // Edge description and synonyms attach to the DEFAULT LABEL: after the
+  // Edge metadata attaches to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
   // element_table_definition).
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
 
-  // The junction's own non-key fields are the edge's properties.
-  const properties =
-      (assoc.fields ?? [])
+  // The junction's own non-key fields are the edge's properties. They name
+  // each other under the relationship's name.
+  const owner: FieldOwner = {name: rel.name, fields: assoc.fields ?? []};
+  const listed =
+      owner.fields
           .filter(f => {
-            if (engine.fieldExpression(f) !== undefined || !isFieldBound(f)) {
-              return true;
-            }
+            const sql = fieldSql(f, owner, engine);
+            if ('sql' in sql || !isFieldBound(f)) return true;
             warnings.push(
-                `relationship '${rel.name}': field '${f.name}' has no '${
-                    engine.dialect}' or 'ANSI_SQL' expression; omitted from ` +
-                `the edge table`);
+                `relationship '${rel.name}': field '${f.name}' ` +
+                ('through' in sql ?
+                     `reads ${missingSibling(sql.through, owner, engine)}` :
+                     `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
+                `; omitted from the edge table`);
             return false;
-          })
-          .map(f => renderFieldProperty(f, rel.name, engine));
-  if (properties.length) lines.push(propertiesBlock(properties));
+          });
+  lines.push(propertiesClause(
+      listed.map(f => renderFieldProperty(f, owner, engine))));
+  elements.push({
+    kind: 'edge',
+    name: rel.name,
+    dataSource: assoc.dataSource,
+    table: backing,
+    key,
+    references: [
+      {entity: rel.source.entity, from: sourceColumns, columns: sourceRef},
+      {
+        entity: rel.destination.entity,
+        from: destinationColumns,
+        columns: destinationRef,
+      },
+    ],
+    properties: listed.map(f => propertyOf(f, owner, engine)),
+    measures: [],
+  });
 
   return lines.join('\n');
 }

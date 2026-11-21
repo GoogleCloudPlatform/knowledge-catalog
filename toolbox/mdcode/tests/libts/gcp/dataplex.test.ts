@@ -8,7 +8,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
-import {_fixEntry, CatalogClient, Entry, EntryLink, FixOptions} from '../../../src/libts/gcp/dataplex';
+import {_fixEntry, _typeRefToName, CatalogClient, createContextSet, createEntryGroupAndWait, Entry, EntryLink, FixOptions, isOperation} from '../../../src/libts/gcp/dataplex';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SCHEMA_JOIN =
@@ -79,15 +79,12 @@ describe('CatalogClient.lookupEntryLinks', () => {
 
   test('a non-200 page aborts and is returned as-is', async () => {
     const client = new CatalogClient(CTX);
-    const get =
-        spyOn(client as any, '_get')
-            .mockImplementation(async () => ({status: 403, message: 'denied'}));
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    const get = spyOn(client as any, '_get').mockResolvedValue(failed);
 
     const res = await client.lookupEntryLinks('proj', 'us', {entry: ENTRY});
 
-    expect(res.status).toBe(403);
-    expect(res.message).toBe('denied');
-    expect(res.result).toBeUndefined();
+    expect(res).toEqual(failed);
     expect(get).toHaveBeenCalledTimes(1);
   });
 
@@ -246,6 +243,97 @@ describe('_fixEntry removed aspects', () => {
 });
 
 
+describe('CatalogClient.lookupEntryAspectTypes', () => {
+  test('reads the FULL view and names each aspect type once, with a project ID',
+       async () => {
+         const client = new CatalogClient(CTX);
+         const get = spyOn(client as any, '_get').mockImplementation(async () => ({
+           status: 200,
+           result: {
+             name: ENTRY,
+             aspects: {
+               // A FULL read gives no data to an aspect the type does not require.
+               'dataplex-types.global.overview': {},
+               '655216118709.global.guidelines@Schema.order_id': {},
+               'dataplex-types.global.guidelines@Schema.customer_id': {},
+             },
+           },
+         }));
+
+         const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+         expect(get.mock.calls[0].slice(0, 2)).toEqual(
+             ['projects/proj/locations/us:lookupEntry', {entry: ENTRY, view: 'FULL'}]);
+         expect(res).toEqual({
+           status: 200,
+           result: ['dataplex-types.global.overview', 'dataplex-types.global.guidelines'],
+         });
+       });
+
+  test('looks up an unreadable project once per aspect type', async () => {
+    const client = new CatalogClient(CTX);
+    spyOn(client as any, '_get').mockImplementation(async () => ({
+      status: 200,
+      result: {
+        name: ENTRY,
+        aspects: {
+          '111.global.guidelines@Schema.order_id': {},
+          '111.global.guidelines@Schema.customer_id': {},
+        },
+      },
+    }));
+    // Resource Manager cannot read the project, and crm caches only the
+    // projects it can read.
+    const lookup = spyOn(ResourceManagerClient.prototype, 'getProject')
+                       .mockResolvedValue({status: 403} as any);
+
+    const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+    expect(res.result).toEqual(['111.global.guidelines']);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    lookup.mockRestore();
+  });
+
+  test('a failed read is returned as-is', async () => {
+    const client = new CatalogClient(CTX);
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    spyOn(client as any, '_get').mockResolvedValue(failed);
+
+    expect(await client.lookupEntryAspectTypes('proj', 'us', ENTRY))
+        .toEqual(failed);
+  });
+});
+
+
+test('CatalogClient.lookupEntry sends each path as a paths parameter',
+     async () => {
+       const client = new CatalogClient(CTX);
+       const get = spyOn(client as any, '_get')
+                       .mockImplementation(async () => ({status: 404}));
+       await client.lookupEntry('proj', 'us', ENTRY, {
+         aspects: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
+       expect(get.mock.calls[0][1]).toEqual({
+         entry: ENTRY,
+         view: 'CUSTOM',
+         aspectTypes: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
+     });
+
+test('CatalogClient.lookupEntry supports {view: "ALL"}', async () => {
+  const client = new CatalogClient(CTX);
+  const get = spyOn(client as any, '_get')
+                  .mockImplementation(async () => ({status: 404}));
+  await client.lookupEntry('proj', 'us', ENTRY, {view: 'ALL'});
+  expect(get.mock.calls[0][1]).toEqual({
+    entry: ENTRY,
+    view: 'ALL',
+  });
+});
+
+
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
 // unless deleteMissingAspects is set, so a caller that means to remove one has
 // to send it.
@@ -347,4 +435,242 @@ describe('entrySource.resource on a read', () => {
          expect(await got({keepSourceResource: true})).toBe(RESOURCE);
          lookup.mockRestore();
        });
+});
+
+// With GCP_LOG set, a request is logged as its method and URL, with its body
+// on the next line.
+test('GCP_LOG logs each request as its method and URL, with any body on ' +
+         'the next line',
+     async () => {
+       const client = new CatalogClient(CTX);
+       spyOn(client as any, '_requestCore')
+           .mockImplementation(async () => new Response('{}'));
+       const log = spyOn(console, 'log').mockImplementation(() => {});
+       process.env.GCP_LOG = '1';
+       await client.getEntryGroup('proj', 'us', 'g');
+       await (client as any)._post('projects/proj/x', {a: 1});
+       delete process.env.GCP_LOG;
+       // mockRestore empties log.mock.calls, so copy them first.
+       const calls = [...log.mock.calls];
+       log.mockRestore();
+       const endpoint =
+           process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com';
+       const v1 = `${endpoint}/v1/projects/proj`;
+       // Each request line is followed by its response's.
+       expect(calls.filter((_, i) => i % 2 === 0)).toEqual([
+         [`[GCP_LOG] GET ${v1}/locations/us/entryGroups/g`, ''],
+         [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
+       ]);
+     });
+
+
+describe('_typeRefToName', () => {
+  // A domain-scoped project ID holds a dot.
+  test('reads a project ID that holds a dot', () => {
+    expect(_typeRefToName('google.com:types.global.overview', 'aspect'))
+        .toBe('projects/google.com:types/locations/global/aspectTypes/overview');
+  });
+
+  for (const [what, ref] of [
+    ['an aspect key with its path', 'dataplex-types.global.guidelines@Schema.id'],
+    ['an empty part in the project', 'google.com..global.overview'],
+    ['an empty project', '.global.guidelines'],
+    ['a resource name',
+     'projects/corp.google.com:types/locations/global/aspectTypes/overview'],
+    ['a type ID with a dot', 'dataplex-types.global.semantic.model'],
+    ['a dot after the colon', 'google.com:my.types.global.overview'],
+    ['an empty project after the colon', 'google.com:.global.overview'],
+    ['an empty domain', ':types.global.overview'],
+  ]) {
+    test(`refuses ${what}`, () => {
+      expect(() => _typeRefToName(ref, 'aspect'))
+          .toThrow(`Invalid type reference: ${ref}`);
+    });
+  }
+});
+
+
+describe('isOperation', () => {
+  test('is true for a long-running operation only', () => {
+    expect(isOperation({name: 'projects/p/locations/l/operations/x'}))
+        .toBe(true);
+    expect(isOperation({name: 'projects/p/locations/l/entryGroups/g'}))
+        .toBe(false);
+    expect(isOperation(undefined)).toBe(false);
+    expect(isOperation(null)).toBe(false);
+    expect(isOperation({})).toBe(false);
+    expect(isOperation({name: 7})).toBe(false);
+  });
+});
+
+
+// A client whose create answers `create`, whose group reads answer `lookups`
+// in turn (the last one repeats), and whose operation poll answers `poll`.
+function creatingClient(
+    create: {status: number; result?: unknown; message?: string},
+    lookups: Array<{status: number; result?: unknown; message?: string}> =
+        [{status: 404, message: 'not found'}],
+    poll: {operation?: unknown; error?: string; unreadable?: boolean} = {}) {
+  const c = new CatalogClient(CTX);
+  const createSpy = spyOn(c, 'createEntryGroup')
+                        .mockImplementation(async () => create as any);
+  let read = 0;
+  const lookupSpy = spyOn(c, 'getEntryGroup')
+                        .mockImplementation(
+                            async () => lookups[Math.min(read++, lookups.length - 1)] as any);
+  const pollSpy =
+      spyOn(c, 'pollOperation').mockImplementation(async () => poll as any);
+  return {c, createSpy, lookupSpy, pollSpy};
+}
+
+const OP = 'projects/p/locations/us/operations/op-1';
+const UNREADABLE = {
+  error: `creating entry group 'p.us.g': reading ${OP}: permission denied`,
+  unreadable: true,
+};
+
+
+describe('createEntryGroupAndWait', () => {
+  test('creates a plain group and waits for the operation', async () => {
+    const {c, createSpy, pollSpy} =
+        creatingClient({status: 200, result: {name: OP}});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(createSpy.mock.calls[0]).toEqual(['p', 'us', 'g', undefined]);
+    expect(pollSpy.mock.calls[0])
+        .toEqual([{name: OP}, 'creating entry group \'p.us.g\'', 120000]);
+  });
+
+  test('a create whose operation fails returns the operation\'s error once',
+       async () => {
+         const {c} = creatingClient(
+             {status: 200, result: {name: OP}}, undefined,
+             {error: 'creating entry group \'p.us.g\': boom'});
+         expect(await createEntryGroupAndWait(c, 'p', 'us', 'g')).toEqual({
+           created: false,
+           error: 'creating entry group \'p.us.g\': boom',
+         });
+       });
+
+  test('an unreadable operation falls back to reading the group', async () => {
+    const {c, lookupSpy} = creatingClient(
+        {status: 200, result: {name: OP}},
+        [{status: 404, message: 'not found'}, {status: 200, result: {name: 'g'}}],
+        UNREADABLE);
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(lookupSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('a group that never shows up within the time is an error', async () => {
+    const {c} = creatingClient(
+        {status: 200, result: {name: OP}}, undefined, UNREADABLE);
+    expect(await createEntryGroupAndWait(
+               c, 'p', 'us', 'g', undefined, undefined, 100))
+        .toEqual({
+          created: false,
+          error: `${UNREADABLE.error}; the entry group was not ready within ` +
+              '100ms either',
+        });
+  });
+
+  test('a group that exists is success without a lookup', async () => {
+    const {c, lookupSpy} = creatingClient({status: 409});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: false});
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  test('a refused create is success only for a group the caller can read',
+       async () => {
+         const group = {name: 'g'};
+         expect(await createEntryGroupAndWait(
+                    creatingClient({status: 403, message: 'denied'},
+                                   [{status: 200, result: group}]).c,
+                    'p', 'us', 'g'))
+             .toEqual({created: false, existing: group});
+         expect(await createEntryGroupAndWait(
+                    creatingClient({status: 403, message: 'denied'}).c, 'p',
+                    'us', 'g'))
+             .toEqual({
+               created: false,
+               error: 'creating entry group \'p.us.g\': denied',
+             });
+       });
+
+  test('a result that is not an operation is not waited on', async () => {
+    const {c, pollSpy} = creatingClient({status: 200, result: {name: 'g'}});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(pollSpy).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('createContextSet', () => {
+  test('creates the group typed context-set, with the metadata, and waits',
+       async () => {
+         const {c, createSpy, pollSpy} =
+             creatingClient({status: 200, result: {name: OP}});
+         expect(await createContextSet(
+                    c, 'p', 'us', 'g', {displayName: 'Sales', description: 'd'}))
+             .toEqual({created: true});
+         expect(createSpy.mock.calls[0]).toEqual([
+           'p', 'us', 'g',
+           {
+             type: 'context-set',
+             displayName: 'Sales',
+             description: 'd',
+           },
+         ]);
+         expect(pollSpy.mock.calls[0][1])
+             .toBe('creating context set \'p.us.g\'');
+       });
+
+  test('an unreadable operation waits until the group reads back typed',
+       async () => {
+         const {c, lookupSpy} = creatingClient(
+             {status: 200, result: {name: OP}},
+             [
+               {status: 200, result: {name: 'g'}},
+               {status: 200, result: {name: 'g', type: 'context-set'}},
+             ],
+             UNREADABLE);
+         expect(await createContextSet(c, 'p', 'us', 'g'))
+             .toEqual({created: true});
+         expect(lookupSpy).toHaveBeenCalledTimes(2);
+       });
+
+  test('an existing context set is success, and is returned', async () => {
+    const group = {name: 'g', type: 'context-set'};
+    expect(await createContextSet(
+               creatingClient({status: 409}, [{status: 200, result: group}]).c,
+               'p', 'us', 'g'))
+        .toEqual({created: false, existing: group});
+  });
+
+  test('an existing group of another type is an error', async () => {
+    const group = {name: 'g'};
+    expect(await createContextSet(
+               creatingClient({status: 409}, [{status: 200, result: group}]).c,
+               'p', 'us', 'g'))
+        .toEqual({
+          created: false,
+          existing: group,
+          error: 'entry group \'p.us.g\' exists but is not a context set, ' +
+              'and an entry group\'s type cannot be changed; use a new ' +
+              'context set ID.',
+        });
+  });
+
+  test('a denied create returns Dataplex\'s error as it is', async () => {
+    const denied = 'Permission \'dataplex.entryGroups.createContextSet\' denied';
+    expect(await createContextSet(
+               creatingClient({status: 403, message: denied}).c, 'p', 'us',
+               'g'))
+        .toEqual({
+          created: false,
+          error: `creating context set 'p.us.g': ${denied}`,
+        });
+  });
 });

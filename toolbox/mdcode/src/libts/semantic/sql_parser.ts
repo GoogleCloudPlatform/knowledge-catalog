@@ -1,5 +1,7 @@
 // The SQL engine kcmd reads and translates expressions with: the
-// @polyglot-sql/sdk Rust/WASM engine, bundled into the tool.
+// @polyglot-sql/sdk Rust/WASM engine, bundled into the tool. The readers here
+// read an OSSIE_SQL_2026 text with ossie_parser.ts instead, and never hand it
+// to the engine.
 //
 // Loading the engine is asynchronous and happens once per process, through
 // `loadSqlEngine`. Parsing is synchronous after that, so the validators that
@@ -7,6 +9,9 @@
 // first, and so does a test.
 
 import {readFileSync} from 'node:fs';
+
+import {OSSIE_SQL} from './ir';
+import {ossieReferences, ossieSoleReference, ossieTree, tokenizeOssie} from './ossie_parser';
 
 // The subset of the @polyglot-sql/sdk `/manual` surface kcmd uses. Declared
 // locally because the package's `/manual` subpath does not re-export its named
@@ -18,39 +23,54 @@ export interface PolyglotEngine {
       {success: boolean; sql?: string[]; error?: string};
   parse(sql: string, dialect: string):
       {success: boolean; ast?: unknown[]; error?: string};
+  // Writes each tree in `ast` as SQL in `dialect`. A tree is a statement
+  // from `parse` or an expression from `sqlExpressionTree`.
+  generate(ast: unknown[], dialect: string):
+      {success: boolean; sql?: string[]; error?: string};
+  // On failure, `errorStart` is where the text the engine cannot read starts.
+  // It counts Unicode code points, as a token's `span` does, though the SDK's
+  // type declarations call both byte offsets. The MySQL comment row with an
+  // emoji in transpile.polyglot.test.ts checks it.
   tokenize(sql: string, dialect: string):
-      {success: boolean; tokens?: SqlToken[]; error?: string};
+      {success: boolean; tokens?: SqlToken[]; error?: string; errorStart?: number};
 }
 
-// A token the engine reads, as the engine returns it. `span` counts Unicode
-// code points from the start of the text, end exclusive. The comments the
-// tokenizer skipped are attached to the token after them or before them.
-interface SqlToken {
+// A token the engine reads, as the engine returns it. `token_type` is the
+// engine's kind, such as `VAR`, `QUOTED_IDENTIFIER`, `DOT` or `STRING`. `text`
+// is the token as written, except that a quoted identifier or a string literal
+// gives what is inside its quotes. `span` counts Unicode code points from the
+// start of the text, end exclusive. The comments the tokenizer skipped are
+// attached to the token after them or before them.
+export interface SqlToken {
+  token_type: string;
   text: string;
   span: {start: number; end: number};
   comments: string[];
   trailing_comments: string[];
 }
 
-// The engine, initialized once and shared process-wide. The Rust/WASM blob is
-// embedded into the standalone binary via bun's `import(... , {with: {type:
-// 'file'}})` (statically analyzable, so bundled) and handed to `init()` as
-// bytes -- the package's default loader reads the blob from disk at runtime,
-// which fails inside a `bun --compile` binary, so we use the `/manual` entry
-// instead.
+// The engine, initialized once and shared process-wide. Under Bun, the
+// Rust/WASM blob is embedded into the standalone binary via `import(...,
+// {with: {type: 'file'}})` (statically analyzable, so bundled); under Node.js,
+// it is resolved from `node_modules` via `require.resolve(...)`. In both
+// cases the bytes are handed to `init()` via the `/manual` entry so the same
+// loader works inside a `bun --compile` binary and a standard npm install.
 let enginePromise: Promise<PolyglotEngine>|undefined;
 let loadedEngine: PolyglotEngine|undefined;
 
 export function loadSqlEngine(): Promise<PolyglotEngine> {
   if (!enginePromise) {
     enginePromise = (async () => {
-      const {default: wasmPath} = await import(
-          '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}});
+      const wasmPath = 'Bun' in globalThis ?
+          (await import(
+               '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}}))
+              .default :
+          require.resolve('@polyglot-sql/sdk/polyglot_sql.wasm');
       const engine =
           await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
       await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
-      loadedEngine = engine;
-      return engine;
+      loadedEngine = guardedEngine(engine);
+      return loadedEngine;
     })().catch(err => {
       // Don't cache the failure: a transient init error (e.g. a failed read)
       // must not permanently disable the engine for a long-lived process.
@@ -60,6 +80,59 @@ export function loadSqlEngine(): Promise<PolyglotEngine> {
     });
   }
   return enginePromise;
+}
+
+// The engine loadSqlEngine has loaded, or undefined before it has.
+export function loadedSqlEngine(): PolyglotEngine|undefined {
+  return loadedEngine;
+}
+
+// `engine` as kcmd calls it. The engine prints a message to the console when
+// it panics on a text, and then reports the text unread; no call lets that
+// message through. Parse and transpile report a text the engine's parser
+// cannot take (see parserTakes) unread without handing it to the engine.
+function guardedEngine(engine: PolyglotEngine): PolyglotEngine {
+  const refused = {success: false, error: "kcmd's SQL parser cannot read the text"};
+  return {
+    init: opts => engine.init(opts),
+    transpile: (sql, read, write) => withoutEngineMessages(
+        () => parserTakes(engine, sql, read) ? engine.transpile(sql, read, write) : refused),
+    parse: (sql, dialect) => withoutEngineMessages(
+        () => parserTakes(engine, sql, dialect) ? engine.parse(sql, dialect) : refused),
+    generate: (ast, dialect) => withoutEngineMessages(() => engine.generate(ast, dialect)),
+    tokenize: (sql, dialect) => withoutEngineMessages(() => engine.tokenize(sql, dialect)),
+  };
+}
+
+// Whether the engine's parser takes `sql`, a text in the engine's dialect
+// `dialect`, by the engine's tokens, so outside strings, quoted names and
+// comments. The parser never returns on a type it does not know followed by a
+// parenthesis the text leaves open, as in `CAST(amount AS BIGNUMERIC(40, 10`,
+// so it takes no text whose parentheses do not pair. The T-SQL parser panics on
+// a bare IF before a parenthesis, as in `IF(a, b, c)`, and each panic damages
+// the engine. T-SQL has no IF function, so it takes no such T-SQL text. True
+// when the engine cannot tokenize `sql`, since its parser then stops there too.
+function parserTakes(engine: PolyglotEngine, sql: string, dialect: string): boolean {
+  const tokens = engine.tokenize(sql, dialect).tokens ?? [];
+  let depth = 0;
+  for (const [i, t] of tokens.entries()) {
+    if (dialect === 'tsql' && t.token_type === 'IF' && tokens[i + 1]?.token_type === 'L_PAREN') return false;
+    if (t.token_type === 'L_PAREN') depth++;
+    else if (t.token_type === 'R_PAREN' && --depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+// Runs `read` and drops the message the engine prints to the console when it
+// panics on a text.
+function withoutEngineMessages<T>(read: () => T): T {
+  const error = console.error;
+  console.error = () => {};
+  try {
+    return read();
+  } finally {
+    console.error = error;
+  }
 }
 
 // The engine's dialect for each kcmd dialect. The engine has no Spanner
@@ -90,26 +163,197 @@ export interface SqlColumn {
 // qualified by `orders`. A function namespace such as `NET` in
 // `NET.HOST(orders.url)` is not a column, and the expression a chained call
 // applies to, such as `(orders.name)` in `(orders.name).UPPER()`, is read.
-// Throws when the engine is not loaded.
+// Throws when the engine is not loaded, except for an OSSIE_SQL_2026 text,
+// which the Ossie parser reads.
 export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
     undefined {
+  if (isOssie(dialect)) {
+    if (!expression.trim()) return [];
+    const tree = ossieTree(expression);
+    return tree ? ossieReferences(tree).map(([first, second]) => second ?
+        {qualifier: first.name, name: second.name} : {name: first.name}) :
+                  undefined;
+  }
+  const tree = sqlExpressionTree(expression, dialect);
+  if (!expression.trim()) return [];
+  if (!tree) return undefined;
+  const columns: SqlColumn[] = [];
+  collectColumns(tree, columns, new Set(),
+                 PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic');
+  return columns;
+}
+
+// The column `expression` is, read in `dialect`, when it is one column and
+// nothing else, perhaps in parentheses: `orders.amount`, `` (`order`) `` or
+// `amount`, but not a struct path such as `orders.address.city` or any other
+// expression. Undefined otherwise, or when the engine cannot read it. Throws
+// when the engine is not loaded, except for an OSSIE_SQL_2026 text, which the
+// Ossie parser reads.
+export function soleColumn(expression: string, dialect: string): SqlColumn|
+    undefined {
+  if (isOssie(dialect)) {
+    const parts = ossieSoleReference(ossieTree(expression));
+    if (!parts) return undefined;
+    const [first, second] = parts;
+    return second ? {qualifier: first.name, name: second.name} : {name: first.name};
+  }
+  let tree = sqlExpressionTree(expression, dialect);
+  const kind = (node: any) =>
+      node && Object.keys(node).length === 1 ? Object.keys(node)[0] : undefined;
+  while (kind(tree) === 'paren') tree = tree.paren.this;
+  if (kind(tree) !== 'column') return undefined;
+  const columns = sqlColumns(expression, dialect);
+  return columns?.length === 1 ? columns[0] : undefined;
+}
+
+// The engine's tree of `expression` read as one expression in `dialect`, or
+// undefined when it cannot be read so or is empty. A text that starts with a
+// keyword, such as `Order.amount`, is read again inside parentheses on lines
+// of their own, so a trailing `--` comment stays inside. A MySQL text is read
+// with its comments as MySQL reads them, as mysqlForEngine writes it. An
+// OSSIE_SQL_2026 text has no engine tree, so it gives undefined.
+export function sqlExpressionTree(expression: string, dialect: string): any {
+  if (isOssie(dialect)) return undefined;
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
-  if (!expression.trim()) return [];
+  if (!expression.trim()) return undefined;
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  // Read as written first. A text that starts with a keyword, such as the
-  // entity name in `Order.amount - Order.discount`, reads as a clause there,
-  // so it is read again inside parentheses. Either way the text must parse as
-  // one expression and nothing more. The line breaks keep a trailing `--`
-  // comment from swallowing the closing parenthesis.
-  const ast = oneExpression(engineDialect, `SELECT ${expression}`) ??
-      oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
-  if (!ast) return undefined;
-  const columns: SqlColumn[] = [];
-  collectColumns(ast, columns, new Set(), engineDialect);
-  return columns;
+  const text = engineDialect === 'mysql' ? mysqlForEngine(expression) : expression;
+  const ast: any = oneExpression(engineDialect, `SELECT ${text}`) ??
+      oneExpression(engineDialect, `SELECT (\n${text}\n)`, 'paren');
+  return ast?.select.expressions[0];
+}
+
+// `sql`, a MySQL text, with each comment marker written so that the engine
+// reads it as MySQL does. Throws when the engine is not loaded.
+export function mysqlForEngine(sql: string): string {
+  return mysqlForEngineAt(sql).text;
+}
+
+// Returns `text`, which is `sql`, a MySQL text, as mysqlForEngine writes it.
+// `from[i]` is the index in `sql` of code point i of `text`. `tokens` holds the
+// engine's tokens of `text` when one call to tokenize read all of it. Each
+// change can turn the rest of the text into code or into a comment, so the
+// first one goes first. The engine then reads again from the start of the gap
+// or token that held the marker, up to the end of the line of the next marker.
+// When a string or a comment is still open there, which a token placed after
+// the line shows, the engine reads to the end of the text.
+function mysqlForEngineAt(sql: string):
+    {text: string; from: number[]; tokens?: SqlToken[]} {
+  if (!loadedEngine) {
+    throw new Error(
+        'the SQL parser is not loaded; call loadSqlEngine() first');
+  }
+  const chars = [...sql];
+  const from = chars.map((_, i) => i);
+  // No string or comment is open at `start`, and every marker before it is
+  // written as MySQL reads it.
+  let start = 0;
+  let end = lineOfMarker(chars, start);
+  while (end !== undefined) {
+    const probe = end < chars.length ? '\n1' : '';
+    let res = loadedEngine.tokenize(chars.slice(start, end).join('') + probe, 'mysql');
+    // When the engine cannot tokenize the text, such as at an unclosed quote in
+    // a # comment, it reads the text before the point where it stopped.
+    let read = end;
+    let open = false;
+    if (!res.success && res.errorStart !== undefined) {
+      read = Math.min(end, start + res.errorStart);
+      res = loadedEngine.tokenize(chars.slice(start, read).join(''), 'mysql');
+    } else if (res.success && probe) {
+      open = res.tokens?.at(-1)?.span.start !== end - start + 1;
+      if (!open) res.tokens!.pop();
+    }
+    if (!res.success) break;
+    const tokens = (res.tokens ?? []).map(t => ({
+      ...t, span: {...t.span, start: t.span.start + start, end: t.span.end + start},
+    }));
+    const fix = mysqlMisreadComment(chars, tokens, start, read);
+    if (fix === 'open' || (!fix && (read < end || open))) {
+      // A string or a comment runs past `end`, or the text cannot be read.
+      if (end === chars.length) break;
+      end = chars.length;
+    } else if (!fix) {
+      if (start === 0 && end === chars.length) {
+        return {text: chars.join(''), from, tokens};
+      }
+      start = end;
+      end = lineOfMarker(chars, start);
+    } else {
+      // Each part takes the place of one code point.
+      const written = fix.parts.flatMap(
+          (part, k) => [...part].map(c => ({c, at: from[fix.at + k]})));
+      chars.splice(fix.at, fix.parts.length, ...written.map(w => w.c));
+      from.splice(fix.at, fix.parts.length, ...written.map(w => w.at));
+      start = fix.restart;
+      end = lineOfMarker(chars, fix.at);
+    }
+  }
+  return {text: chars.join(''), from};
+}
+
+// The end of the line that holds the first #, -- or /* in `chars` at or after
+// `start`, or undefined when there is none. Only these can start a comment
+// the engine reads another way than MySQL.
+function lineOfMarker(chars: string[], start: number): number|undefined {
+  for (let i = start; i < chars.length; i++) {
+    const two = chars[i] + chars[i + 1];
+    if (chars[i] === '#' || two === '--' || two === '/*') {
+      const n = chars.indexOf('\n', i);
+      return n < 0 ? chars.length : n;
+    }
+  }
+  return undefined;
+}
+
+// The first comment marker in `chars` between `start` and `read` that the
+// engine reads another way than MySQL, given the engine's `tokens` of that
+// text, the parts written in place of its code points, and the start of the
+// gap or token that holds it, where the engine has nothing open. 'open' when a
+// comment is still open at `read`, and undefined when there is neither. MySQL
+// starts a -- comment only before whitespace, so `3--1` is 3 - -1, and starts
+// one at a # outside a string or a quoted name. MySQL ends a block comment at
+// the first */, where the engine nests block comments, so a /* inside a block
+// comment is written as `/ *`. The gaps between the tokens hold the engine's
+// comments.
+function mysqlMisreadComment(
+    chars: string[], tokens: SqlToken[], start: number,
+    read: number): {at: number; parts: string[]; restart: number}|'open'|undefined {
+  const quoted = (type: string) =>
+      type.endsWith('STRING') || type === 'QUOTED_IDENTIFIER' || type === 'HINT';
+  // Whether `chars[i]` is whitespace or past the end, as MySQL needs after
+  // the dashes of a -- comment.
+  const spaced = (i: number) => (chars[i] ?? '').trim() === '';
+  for (const t of [...tokens, undefined]) {
+    const end = t?.span.start ?? read;
+    for (let i = start; i < end; i++) {
+      const two = chars[i] + (chars[i + 1] ?? '');
+      if (two === '/*') {
+        i += 2;
+        while (i < end && chars[i] + chars[i + 1] !== '*/') {
+          if (chars[i] + chars[i + 1] === '/*') return {at: i, parts: ['/', ' *'], restart: start};
+          i++;
+        }
+        if (i >= end) return 'open';
+        i++;
+      } else if (two === '--' && !spaced(i + 2)) {
+        return {at: i, parts: [' -', ' -'], restart: start};
+      } else if (two === '--') {
+        const n = chars.indexOf('\n', i);
+        i = n < 0 || n > end ? end : n;
+      }
+    }
+    if (!t) return undefined;
+    const hash = chars.slice(t.span.start, t.span.end).indexOf('#');
+    if (hash >= 0 && !quoted(t.token_type)) {
+      const at = t.span.start + hash;
+      return {at, parts: [spaced(at + 1) ? ' --' : ' -- '], restart: t.span.start};
+    }
+    start = t.span.end;
+  }
+  return undefined;
 }
 
 // The parsed statement when `sql` is a `SELECT` of exactly one expression and
@@ -155,12 +399,13 @@ const LEADING_DATE_PART_FUNCTIONS = new Set([
 const BIGQUERY_TRAILING_UNIT_FUNCTIONS =
     new Set(['DATE_ADD', 'DATE_BUCKET', 'DATE_DIFF']);
 
-// BigQuery functions whose last argument is a date part, as in
-// `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the `SAFE.`
-// prefix the engine reads that date part as a column.
-const BIGQUERY_DATE_PART_FUNCTIONS = new Set([
-  'DATE_DIFF', 'DATETIME_DIFF', 'TIMESTAMP_DIFF', 'TIME_DIFF', 'DATE_TRUNC',
-  'DATETIME_TRUNC', 'TIMESTAMP_TRUNC', 'TIME_TRUNC', 'LAST_DAY',
+// BigQuery functions that take a date part, with the date part's argument, as
+// in `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the
+// `SAFE.` prefix the engine reads that date part as a column.
+const BIGQUERY_DATE_PART_ARGUMENTS = new Map([
+  ['DATE_DIFF', 2], ['DATETIME_DIFF', 2], ['TIMESTAMP_DIFF', 2],
+  ['TIME_DIFF', 2], ['DATE_TRUNC', 1], ['DATETIME_TRUNC', 1],
+  ['TIMESTAMP_TRUNC', 1], ['TIME_TRUNC', 1], ['LAST_DAY', 1],
 ]);
 
 const DATE_PART_KEYWORDS = new Set([
@@ -193,7 +438,9 @@ function collectColumns(
       typeof obj.column?.name?.name === 'string') {
     const qualifier = obj.column.table?.name;
     const name = obj.column.name.name;
-    if (typeof qualifier === 'string' ? bound.has(qualifier) : bound.has(name)) {
+    if (bound.has(typeof qualifier === 'string' ?
+                      boundKey(obj.column.table, dialect, true) :
+                      boundKey(obj.column.name, dialect))) {
       return;
     }
     out.push({
@@ -215,11 +462,11 @@ function collectColumns(
     if (typeof column?.name?.name === 'string') {
       const qualifier = column.table?.name;
       if (typeof qualifier === 'string') {
-        if (!bound.has(qualifier)) {
+        if (!bound.has(boundKey(column.table, dialect, true))) {
           out.push({qualifier, name: column.name.name});
         }
       } else if (typeof inner.field?.name === 'string') {
-        if (!bound.has(column.name.name)) {
+        if (!bound.has(boundKey(column.name, dialect, true))) {
           out.push({qualifier: column.name.name, name: inner.field.name});
         }
       }
@@ -260,17 +507,22 @@ function collectColumns(
       }
       return;
     }
-    if (bigQuery && fnName.startsWith('SAFE.') &&
-        BIGQUERY_DATE_PART_FUNCTIONS.has(fnName.slice('SAFE.'.length)) &&
-        args.length >= 2 && isDatePart(args[args.length - 1])) {
-      collectColumns(args.slice(0, -1), out, bound, dialect);
+    const part = bigQuery && fnName.startsWith('SAFE.') ?
+        BIGQUERY_DATE_PART_ARGUMENTS.get(fnName.slice('SAFE.'.length)) :
+        undefined;
+    if (part !== undefined && isDatePart(args[part])) {
+      collectColumns(args.filter((_, i) => i !== part), out, bound, dialect);
       return;
     }
   }
   if (keys.length === 1 && keys[0] === 'lambda') {
     const next = new Set(bound);
+    // The engine marks a quoted lambda parameter unquoted, so a parameter
+    // binds its name both as written and as its database folds it.
     for (const p of obj.lambda?.parameters ?? []) {
-      if (typeof p?.name === 'string') next.add(p.name);
+      if (typeof p?.name === 'string') {
+        next.add(boundKey(p, dialect)).add(boundKey({...p, quoted: true}, dialect));
+      }
     }
     collectColumns(obj.lambda?.body, out, next, dialect);
     return;
@@ -279,12 +531,12 @@ function collectColumns(
     const select = obj.select;
     const next = new Set(bound);
     for (const cte of select?.with?.ctes ?? []) {
-      if (typeof cte?.alias?.name === 'string') next.add(cte.alias.name);
+      if (typeof cte?.alias?.name === 'string') next.add(boundKey(cte.alias, dialect, true));
       collectColumns(cte?.this, out, next, dialect);
     }
     for (const expr of select?.from?.expressions ?? []) {
       collectColumns(expr, out, next, dialect);
-      addSourceAliases(expr, next);
+      addSourceAliases(expr, next, dialect);
     }
     // Inside a subquery with its own `FROM` clause, a bare identifier in the
     // remaining clauses may come from that `FROM` source (e.g. a derived
@@ -292,12 +544,12 @@ function collectColumns(
     // references outside `next` are kept.
     const target: SqlColumn[] = select?.from ? [] : out;
     for (const join of select?.joins ?? []) {
-      addSourceAliases(join?.this, next);
+      addSourceAliases(join?.this, next, dialect);
       collectColumns(join, target, next, dialect);
     }
     for (const item of select?.expressions ?? []) {
       if (typeof item?.alias?.alias?.name === 'string') {
-        next.add(item.alias.alias.name);
+        next.add(boundKey(item.alias.alias, dialect));
       }
     }
     for (const [k, v] of Object.entries(select ?? {})) {
@@ -327,18 +579,34 @@ function isDatePart(node: any): boolean {
   return String(node?.function?.name ?? '').toUpperCase() === 'WEEK';
 }
 
-function addSourceAliases(source: any, bound: Set<string>): void {
+function addSourceAliases(source: any, bound: Set<string>, dialect: string): void {
   if (typeof source?.alias?.alias?.name === 'string') {
-    bound.add(source.alias.alias.name);
+    bound.add(boundKey(source.alias.alias, dialect, true));
   }
   const inner = source?.alias?.this ?? source;
   for (const kind of ['unnest', 'table', 'subquery']) {
     const node = inner?.[kind];
-    if (typeof node?.alias?.name === 'string') bound.add(node.alias.name);
+    if (typeof node?.alias?.name === 'string') bound.add(boundKey(node.alias, dialect, true));
     if (typeof node?.offset_alias?.name === 'string') {
-      bound.add(node.offset_alias.name);
+      bound.add(boundKey(node.offset_alias, dialect));
     }
   }
+}
+
+// `id`, the parser's tree of a name in a text of the engine's `dialect`, in the
+// form two names share when the dialect's database reads them as one name.
+// PostgreSQL folds a name written without quotes to lower case, and Snowflake
+// and standard SQL fold it to upper case; each keeps a quoted name as
+// written. MySQL matches a table's alias or a CTE's name (`table`) in the case
+// written. The other databases match a name in any case.
+function boundKey(id: any, dialect: string, table = false): string {
+  const name = String(id.name);
+  if (dialect === 'mysql' && table) return name;
+  if (dialect === 'postgresql') return id.quoted ? name : name.toLowerCase();
+  if (dialect === 'snowflake' || dialect === 'generic') {
+    return id.quoted ? name : name.toUpperCase();
+  }
+  return name.toLowerCase();
 }
 
 // Whether `node` is a name or a dotted run of names, such as `NET` or
@@ -353,20 +621,91 @@ function isNamePath(node: unknown): boolean {
 }
 
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
-// tokenize it. Throws when the engine is not loaded.
-function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+// tokenize it. A MySQL text is read with its comments as MySQL reads them, and
+// each span still counts from the start of `expression`. Throws when the
+// engine is not loaded, except for an OSSIE_SQL_2026 text, which the Ossie
+// parser reads.
+export function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+  if (isOssie(dialect)) return ossieTokens(expression);
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  const res = loadedEngine.tokenize(expression, engineDialect);
-  return res.success ? res.tokens ?? [] : undefined;
+  if (engineDialect !== 'mysql') {
+    const res = loadedEngine.tokenize(expression, engineDialect);
+    return res.success ? res.tokens ?? [] : undefined;
+  }
+  const at = mysqlForEngineAt(expression);
+  const res = at.tokens ? {success: true, tokens: at.tokens} :
+                          loadedEngine.tokenize(at.text, engineDialect);
+  return res.success ? (res.tokens ?? []).map(t => ({
+    ...t,
+    span: {...t.span, start: at.from[t.span.start], end: at.from[t.span.end - 1] + 1},
+  })) : undefined;
+}
+
+// Whether `dialect` is OSSIE_SQL_2026, which ossie_parser.ts reads.
+function isOssie(dialect: string): boolean {
+  return dialect.toUpperCase() === OSSIE_SQL;
+}
+
+// The engine's kind of each symbol of an OSSIE_SQL_2026 text.
+const OSSIE_SYMBOL_TYPES: Readonly<Record<string, string>> = {
+  '(': 'L_PAREN', ')': 'R_PAREN', '.': 'DOT', ',': 'COMMA', '+': 'PLUS',
+  '-': 'DASH', '*': 'STAR', '/': 'SLASH', '%': 'PERCENT', '=': 'EQ',
+  '<>': 'NEQ', '<': 'LT', '<=': 'LTE', '>': 'GT', '>=': 'GTE', '||': 'D_PIPE',
+};
+
+// The tokens of `expression`, an OSSIE_SQL_2026 text, as tokenizeOssie reads
+// them, in the form the engine gives: a name is a `VAR`, a keyword is its own
+// kind, and each comment is attached to the token after it, or to the last
+// token when none follows. Undefined when a character starts no token, or
+// when a `/*` has no `*/` after it, which tokenizeOssie reads as the tokens
+// `/` and `*` followed by the words of the comment.
+function ossieTokens(expression: string): SqlToken[]|undefined {
+  const read = tokenizeOssie(expression);
+  if ('error' in read ||
+      read.tokens.some(t => t.written === '/' && expression[t.end] === '*')) {
+    return undefined;
+  }
+  // The offset in code points of each code unit. Each unit adds one code
+  // point, except the first unit of a surrogate pair, where codePointAt reads
+  // a code point above U+FFFF.
+  const points: number[] = [];
+  let point = 0;
+  for (let i = 0; i < expression.length; i++) {
+    points.push(point);
+    if (expression.codePointAt(i)! <= 0xffff) point++;
+  }
+  points.push(point);
+  let next = 0;
+  const tokens = read.tokens.map(t => {
+    const before: string[] = [];
+    while (next < read.comments.length && read.comments[next].end <= t.start) {
+      before.push(read.comments[next++].written);
+    }
+    return {
+      token_type: t.type === 'name'   ? 'VAR' :
+          t.type === 'quoted'         ? 'QUOTED_IDENTIFIER' :
+          t.type === 'string'         ? 'STRING' :
+          t.type === 'number'         ? 'NUMBER' :
+          t.type === 'keyword'        ? t.value :
+                                        OSSIE_SYMBOL_TYPES[t.value],
+      text: t.type === 'quoted' || t.type === 'string' ? t.value : t.written,
+      span: {start: points[t.start], end: points[t.end]},
+      comments: before,
+      trailing_comments: [] as string[],
+    };
+  });
+  tokens.at(-1)?.trailing_comments.push(...read.comments.slice(next).map(c => c.written));
+  return tokens;
 }
 
 // Whether `expression` holds no SQL in `dialect`: it is empty, only whitespace
 // or only comments. False when the engine cannot read it. Throws when the
-// engine is not loaded.
+// engine is not loaded, except for an OSSIE_SQL_2026 text, which the Ossie
+// parser reads.
 export function holdsNoSql(expression: string, dialect: string): boolean {
   return sqlTokens(expression, dialect)?.length === 0;
 }
@@ -377,7 +716,8 @@ export function holdsNoSql(expression: string, dialect: string): boolean {
 // Comments before the first token or after the last are dropped. The rest of
 // the text stays as written. Returns `expression` itself when it has no
 // comment, holds nothing but comments, or the engine cannot read it. Throws
-// when the engine is not loaded.
+// when the engine is not loaded, except for an OSSIE_SQL_2026 text, which the
+// Ossie parser reads.
 export function withoutComments(expression: string, dialect: string): string {
   const tokens = sqlTokens(expression, dialect);
   if (!tokens?.some(t => t.comments.length || t.trailing_comments.length)) {

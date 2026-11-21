@@ -52,8 +52,16 @@ export interface OwlCommonAnnotations {
   versionInfo?: string;
 }
 
-/** An `owl:Class` -- becomes an OSI dataset (entity). */
+/**
+ * An anonymous class, a blank node used as a domain or range: a union of
+ * classes, an intersection of classes, or any other class expression.
+ */
+export type AnonymousClass = 'union'|'intersection'|'other';
+
+/** A named `owl:Class` -- becomes an OSI dataset (entity). */
 export interface OwlClass extends OwlCommonAnnotations {
+  // The class's full IRI.
+  iri: string;
   // The term's local name (the part after the namespace `#`/`/`), used as the
   // OSI entity name, e.g. `Customer`.
   localName: string;
@@ -68,12 +76,14 @@ export interface OwlClass extends OwlCommonAnnotations {
   synonyms: string[];
   // skos:example values -> ai_context.examples.
   examples: string[];
-  // Local names of the properties named by owl:hasKey -> the entity's
+  // Full IRIs of the properties named by owl:hasKey -> the entity's
   // primary_key (grain). Empty when the class declares no key.
   keys: string[];
-  // Local names of `rdfs:subClassOf` superclasses, in document order -> the
-  // entity's `extends` (entity-level inheritance). Named superclasses only;
-  // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
+  // `rdfs:subClassOf` superclasses, in document order -> the entity's
+  // `extends` (entity-level inheritance). A superclass import writes as an
+  // entity is kept by local name, and any other as its full IRI. Named
+  // superclasses only; blank-node axioms (owl:Restriction, ...) and the class
+  // itself are not recorded. Empty when none.
   subClassOf: string[];
   // Referent IRIs of `owl:equivalentClass` classes, in document order. No
   // native OSI home (a class is one entity; equivalence is a fact ABOUT it, not
@@ -104,12 +114,18 @@ export interface OwlClass extends OwlCommonAnnotations {
  * An `owl:DatatypeProperty` -- becomes a field on its domain class's dataset.
  */
 export interface OwlDatatypeProperty extends OwlCommonAnnotations {
+  // The property's full IRI.
+  iri: string;
   localName: string;
-  // Local names of every rdfs:domain class this property hangs off; the field
-  // is added to each. A property may declare more than one domain (it then
+  // Every named rdfs:domain class this property hangs off; the field is added
+  // to each. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A property may declare more than one domain (it then
   // appears on each entity). Empty when no domain is declared (skipped with a
   // warning -- an unattached field has nowhere to live).
   domains: string[];
+  // The kind of the first anonymous rdfs:domain class. Set only if a domain is
+  // a blank node.
+  anonymousDomain?: AnonymousClass;
   // The rdfs:range IRI (e.g. the xsd:string IRI), mapped to an OSI datatype by
   // the mapper. Undefined when no range is declared (-> Opaque).
   rangeIri?: string;
@@ -147,14 +163,19 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
  */
 export interface OwlObjectProperty extends OwlCommonAnnotations {
   localName: string;
-  // Local names of the rdfs:domain (edge source) and rdfs:range (edge
-  // destination) classes. A relationship maps a single source to a single
+  // The named rdfs:domain (edge source) and rdfs:range (edge destination)
+  // classes. A class import writes as an entity is kept by local name, and any
+  // other by its full IRI. A relationship maps a single source to a single
   // destination, so the mapper uses the first of each and warns when more are
   // declared (multiple domains/ranges mean an intersection in OWL, which has no
   // clean single-edge shape). Empty when none is declared (skipped with a
   // warning: an edge needs both endpoints).
   domains: string[];
   ranges: string[];
+  // The kind of the first anonymous rdfs:domain and rdfs:range class. Each is
+  // set only if that endpoint has a blank node.
+  anonymousDomain?: AnonymousClass;
+  anonymousRange?: AnonymousClass;
   label?: string;
   comment?: string;
   synonyms: string[];

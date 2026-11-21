@@ -20,9 +20,9 @@ EDGE TABLES (
     KEY(o_orderkey)
     SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
     DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey)
+    NO PROPERTIES
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- metric 'total_revenue' is not emitted: Spanner Graph has no MEASURE, so model-level metrics have no home in it
 -- metric 'order_count' is not emitted: Spanner Graph has no MEASURE, so model-level metrics have no home in it

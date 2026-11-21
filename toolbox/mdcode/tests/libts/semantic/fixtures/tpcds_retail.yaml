@@ -18,7 +18,7 @@ semantic_model:
     datasets:
       # Fact table: store sales transactions
       - name: store_sales
-        source: tpcds.public.store_sales
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales
         primary_key: [ss_item_sk, ss_ticket_number]  # composite primary key
         unique_keys:
           - [ss_item_sk, ss_ticket_number]
@@ -121,7 +121,7 @@ semantic_model:
 
       # Dimension table: date
       - name: date_dim
-        source: tpcds.public.date_dim
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/date_dim
         primary_key: [d_date_sk]
         unique_keys:
           - [d_date_sk]
@@ -189,7 +189,7 @@ semantic_model:
 
       # Dimension table: customer
       - name: customer
-        source: tpcds.public.customer
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
         primary_key: [c_customer_sk]
         unique_keys:
           - [c_customer_sk]
@@ -263,7 +263,7 @@ semantic_model:
 
       # Dimension table: item (product)
       - name: item
-        source: tpcds.public.item
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
         primary_key: [i_item_sk]
         unique_keys:
           - [i_item_sk]
@@ -346,7 +346,7 @@ semantic_model:
 
       # Dimension table: store
       - name: store
-        source: tpcds.public.store
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
         primary_key: [s_store_sk]
         unique_keys:
           - [s_store_id]

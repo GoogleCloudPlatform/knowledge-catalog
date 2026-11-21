@@ -1,0 +1,48 @@
+name: pull_left_out
+description: An entry group pulled with a catalog.yaml that lists no aspects leaves out the aspects it does not list and warns once for each aspect type
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test/locations/us/entryGroups/g1
+    entryTypes:
+      - name: projects/test/locations/global/entryTypes/et1
+    aspectTypes:
+      - name: projects/test/locations/global/aspectTypes/extra
+    entries:
+      - name: projects/test/locations/us/entryGroups/g1/entries/e1
+        entryType: projects/test/locations/global/entryTypes/et1
+        aspects:
+          test.global.extra:
+            aspectType: projects/test/locations/global/aspectTypes/extra
+            data:
+              note: on e1
+          dataplex-types.global.overview:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+            data:
+              content: Text in Knowledge Catalog.
+      - name: projects/test/locations/us/entryGroups/g1/entries/e2
+        entryType: projects/test/locations/global/entryTypes/et1
+        aspects:
+          test.global.extra:
+            aspectType: projects/test/locations/global/aspectTypes/extra
+            data:
+              note: on e2
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.test.us.g1
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/e1.yaml:
+      - contains: "name: e1"
+      - notContains: "note: on e1"
+      - notContains: "Text in Knowledge Catalog."
+    catalog/e2.yaml:
+      - notContains: "note: on e2"
+  warnings:
+    - "Warning: pull left out aspect type 'test.global.extra' on 2 entries; list it under snapshot.aspects in catalog.yaml to pull it."
+    - "Warning: pull left out aspect type 'dataplex-types.global.overview' on 1 entry; list it under snapshot.aspects in catalog.yaml to pull it."

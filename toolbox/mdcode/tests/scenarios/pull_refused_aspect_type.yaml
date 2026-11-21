@@ -1,0 +1,36 @@
+name: pull_refused_aspect_type
+description: A listed aspect type whose definition Dataplex refuses is registered by name with one warning, and its aspect is pulled
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test/locations/us/entryGroups/g1
+    entryTypes:
+      - name: projects/test/locations/global/entryTypes/et1
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/guidelines
+        refused: true
+    entries:
+      - name: projects/test/locations/us/entryGroups/g1/entries/e1
+        entryType: projects/test/locations/global/entryTypes/et1
+        aspects:
+          dataplex-types.global.guidelines:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/guidelines
+            data:
+              content: Use for reporting
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.test.us.g1
+      snapshot:
+        aspects:
+          - dataplex-types.global.guidelines
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/e1.yaml:
+      - contains: "content: Use for reporting"
+  warnings:
+    - "Warning: Permission denied reading the definition of aspect type dataplex-types.global.guidelines. Its aspects are still pulled and pushed. If none are pulled, check the type name."

@@ -8,6 +8,7 @@ import * as crm from './crm';
 
 export interface EntryGroup {
   name: string;
+  type?: string;
   [key: string]: any;
 }
 
@@ -29,6 +30,48 @@ export interface Operation {
   name?: string;
   done?: boolean;
   error?: { code?: number; message?: string; };
+  // BatchChangeMetadata reports per-change failures keyed by the change's
+  // 0-based index in the request.
+  metadata?: {
+    failedRequests?: Record<string, { code?: number; message?: string; }>;
+  };
+}
+
+// Whether `value`, such as the result of a create, is a long-running
+// operation rather than the created resource.
+export function isOperation(value: unknown): value is Operation {
+  return typeof value === 'object' && value !== null &&
+      typeof (value as {name?: unknown}).name === 'string' &&
+      (value as {name: string}).name.includes('/operations/');
+}
+
+// One element of a BatchChangeMetadata request. Exactly one arm is set.
+export interface MetadataChange {
+  createEntryRequest?: { parent: string; entryId: string; entry: Entry; };
+  updateEntryRequest?: {
+    entry: Entry;
+    updateMask: string;
+    aspectKeys: string[];
+    deleteMissingAspects: boolean;
+  };
+  deleteEntryRequest?: { name: string; };
+  createEntryLinkRequest?: {
+    parent: string;
+    entryLinkId: string;
+    entryLink: EntryLink;
+  };
+  updateEntryLinkRequest?: {
+    entryLink: EntryLink;
+    allowMissing?: boolean;
+    aspectKeys?: string[];
+  };
+  deleteEntryLinkRequest?: { name: string; };
+}
+
+export interface LookupEntryOptions {
+  aspects?: string[];
+  paths?: string[];
+  view?: 'BASIC' | 'CUSTOM' | 'ALL';
 }
 
 // Renders a finished operation's failure as a message, or returns undefined
@@ -48,6 +91,7 @@ export interface Entry {
   name: string;
   entryType: string;
   parentEntry?: string;
+  fullyQualifiedName?: string;
   createTime?: string;
   updateTime?: string;
   entrySource?: {
@@ -148,21 +192,50 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  // With `opts.aspects`, `opts.paths` keeps only the aspects at those paths.
+  // The path '' is the entry itself, and `Schema.<field>` is a field. Passing
+  // `{view: 'ALL'}` reads every aspect without naming aspect types.
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async lookupEntry(project: string, location: string, name: string,
-                    aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                    opts: LookupEntryOptions = {},
+                    fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
-    const params: Record<string, any> = { entry: name, view: 'BASIC' };
-    if (aspects && aspects.length) {
+    const params: Record<string, any> = { entry: name, view: opts.view ?? 'BASIC' };
+    if (opts.view !== 'ALL' && opts.aspects && opts.aspects.length) {
       params.view = 'CUSTOM';
-      params.aspectTypes = aspects;
+      params.aspectTypes = opts.aspects;
+      params.paths = opts.paths;
     }
 
     const res = await this._get<Entry>(container, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
+  }
+
+  // The type of every aspect on an entry, as project.location.type, each
+  // once. A FULL read lists every aspect but gives data only to those the
+  // entry's type requires, so this reads the keys alone, which lookupEntry
+  // would drop.
+  async lookupEntryAspectTypes(project: string, location: string,
+                               name: string): Promise<api.ApiResult<string[]>> {
+    const container = `${catalogContainer(project, location)}:lookupEntry`;
+    const res = await this._get<Entry>(container, { entry: name, view: 'FULL' });
+    if (res.status != 200 || !res.result) {
+      return { status: res.status, message: res.message, body: res.body };
+    }
+    // Each type is resolved once: crm caches only the projects it can read,
+    // so several field-path keys of one unreadable type would each look it up.
+    const typeRefs = new Set(Object.keys(res.result.aspects ?? {})
+                                 .map(key => key.split('@')[0]));
+    const types = new Set<string>();
+    for (const typeRef of typeRefs) {
+      const { aspectType } = await _aspectTypeOfKey(typeRef, this.context);
+      types.add(_nameToTypeRef(aspectType));
+    }
+    return { status: 200, result: [...types] };
   }
 
   async modifyEntry(project: string, location: string, entry: Entry,
@@ -259,8 +332,19 @@ export class CatalogClient extends api.ApiClient {
     return await this._delete<Entry>(name);
   }
 
+  // Applies up to 250 entry changes to one entry group in a single call, and
+  // returns the LRO to poll. Per-change failures arrive in the operation's
+  // metadata rather than as a non-200.
+  async batchChangeMetadata(project: string, location: string,
+                            entryGroup: string, changes: MetadataChange[]):
+      Promise<api.ApiResult<Operation>> {
+    const name = catalogContainer(project, location, entryGroup);
+    return await this._post<Operation>(`${name}:batchChangeMetadata`,
+                                       { name, changes });
+  }
+
   async createEntryGroup(project: string, location: string, 
-                         entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
+                         entryGroupId: string, entryGroup?: Omit<EntryGroup, 'name'>): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
     const resourceName = `${parent}/entryGroups`;
 
@@ -269,6 +353,19 @@ export class CatalogClient extends api.ApiClient {
     const res = await this._post<EntryGroup>(resourceName, entryGroup, params);
 
     return res;
+  }
+
+  async updateEntryGroup(project: string, location: string,
+                         entryGroupId: string, entryGroup: Partial<EntryGroup>,
+                         updateMask?: string[]): Promise<api.ApiResult<Operation>> {
+    const name = catalogContainer(project, location, entryGroupId);
+
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+
+    return await this._patch<Operation>(name, entryGroup, params);
   }
 
   // Creates a custom aspect type. `aspectType` carries the display name,
@@ -308,22 +405,19 @@ export class CatalogClient extends api.ApiClient {
   }
 
   // Fetches a long-running operation by the resource name the call that started
-  // it returned.
+  // it returned. Disables per-call _get retry so poll loops control backoff.
   async getOperation(operationName: string): Promise<api.ApiResult<Operation>> {
-    return await this._get<Operation>(operationName);
+    return await this._get<Operation>(operationName, undefined, { retry: false });
   }
 
-  // Polls a long-running operation until it finishes, and returns a message
-  // describing the failure when it fails or does not finish in time. Creating a
-  // type is asynchronous, so a caller that skips this races the server: an
-  // entry type that names an aspect type the server cannot see yet is rejected
-  // with `The following aspect types do not exist`.
-  async awaitOperation(op: Operation|undefined, what: string,
-                       timeoutMs = 120000): Promise<string|undefined> {
-    // A response that carries no operation name is already the final resource,
-    // which is what a synchronous implementation of the same call returns.
-    if (!op || !op.name) return undefined;
-    if (op.done) return operationFailure(op, what);
+  // Polls a long-running operation until it finishes, returning both the final
+  // operation (for callers that inspect `metadata.failedRequests`) and any
+  // failure message.
+  async pollOperation(op: Operation|undefined, what: string,
+                      timeoutMs = 120000):
+      Promise<{ operation?: Operation; error?: string; unreadable?: boolean }> {
+    if (!op || !op.name) return { operation: op };
+    if (op.done) return { operation: op, error: operationFailure(op, what) };
 
     const deadline = Date.now() + timeoutMs;
     let delayMs = 500;
@@ -337,12 +431,30 @@ export class CatalogClient extends api.ApiClient {
       // a throttle is worth another attempt.
       if (polled.status >= 400 && polled.status < 500 &&
           polled.status !== 429) {
-        return `${what}: reading ${op.name}: ${polled.message || polled.status}`;
+        return {
+          error: `${what}: reading ${op.name}: ${polled.message || polled.status}`,
+          unreadable: true,
+        };
       }
       if (polled.status !== 200 || !polled.result) continue;
-      if (polled.result.done) return operationFailure(polled.result, what);
+      if (polled.result.done) {
+        return {
+          operation: polled.result,
+          error: operationFailure(polled.result, what)
+        };
+      }
     }
-    return `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}`;
+    return { error: `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}` };
+  }
+
+  // Polls a long-running operation until it finishes, and returns a message
+  // describing the failure when it fails or does not finish in time. Creating a
+  // type is asynchronous, so a caller that skips this races the server: an
+  // entry type that names an aspect type the server cannot see yet is rejected
+  // with `The following aspect types do not exist`.
+  async awaitOperation(op: Operation|undefined, what: string,
+                       timeoutMs = 120000): Promise<string|undefined> {
+    return (await this.pollOperation(op, what, timeoutMs)).error;
   }
 
   async createEntryLink(project: string, location: string, entryGroup: string,
@@ -408,7 +520,7 @@ export class CatalogClient extends api.ApiClient {
       };
       const res = await this._get<EntryLinkList>(container, params);
       if (res.status != 200) {
-        return { status: res.status, message: res.message };
+        return { status: res.status, message: res.message, body: res.body };
       }
       for (const link of res.result?.entryLinks ?? []) {
         links.push(link);
@@ -445,12 +557,7 @@ export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
       if (!aspectValue || !Object.keys(aspectValue).length) continue;
-      const atIdx = aspectKey.indexOf('@');
-      const typeRef = atIdx === -1 ? aspectKey : aspectKey.slice(0, atIdx);
-      const keyPath = atIdx === -1 ? undefined : aspectKey.slice(atIdx + 1);
-
-      const aspectType =
-          await crm.fixProject(_typeRefToName(typeRef, 'aspect'), ctx);
+      const { aspectType, keyPath } = await _aspectTypeOfKey(aspectKey, ctx);
 
       const path = aspectValue.path || keyPath;
       const baseKey = _nameToTypeRef(aspectType);
@@ -466,6 +573,18 @@ export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
   }
 }
 
+// The aspect type an aspect key names, as a resource name with a project ID,
+// and the key's `@<path>` part, if any.
+async function _aspectTypeOfKey(key: string, ctx: context.ApiContext):
+    Promise<{ aspectType: string; keyPath?: string }> {
+  const atIdx = key.indexOf('@');
+  const typeRef = atIdx === -1 ? key : key.slice(0, atIdx);
+  return {
+    aspectType: await crm.fixProject(_typeRefToName(typeRef, 'aspect'), ctx),
+    keyPath: atIdx === -1 ? undefined : key.slice(atIdx + 1),
+  };
+}
+
 // Constructs canonical names for catalog container resources, identified by project, location and
 // optionally, depending on use-case, the entry group.
 export function catalogContainer(project: string, location: string, entryGroup: string=''): string {
@@ -477,13 +596,19 @@ export function catalogContainer(project: string, location: string, entryGroup: 
   return container;
 }
 
+// A type reference, project.location.type. Only a domain-scoped project ID,
+// domain:project, holds dots, and only in its domain. No part is empty or holds
+// an '@' or a '/', and the location and the type hold no dot and no colon.
+const TYPE_REF = /^((?:[^.:@/]+(?:\.[^.:@/]+)*:)?[^.:@/]+)\.([^.:@/]+)\.([^.:@/]+)$/;
+
 // Converts project.location.type to projects/${project}/locations/${location}/typeTypes/${type}
 export function _typeRefToName(ref: string, type: string): string {
-  const refParts = ref.split('.');
-  if (refParts.length !== 3) {
+  const m = TYPE_REF.exec(ref);
+  if (!m) {
     throw new Error(`Invalid type reference: ${ref}`);
   }
-  return `projects/${refParts[0]}/locations/${refParts[1]}/${type}Types/${refParts[2]}`;
+  const [, project, location, typeId] = m;
+  return `projects/${project}/locations/${location}/${type}Types/${typeId}`;
 }
 
 // Converts projects/${project}/locations/${location}/typeTypes/${type} -> project.location.type
@@ -493,4 +618,114 @@ export function _nameToTypeRef(name: string): string {
     throw new Error(`Invalid type name: ${name}`);
   }
   return `${nameParts[1]}.${nameParts[3]}.${nameParts[5]}`;
+}
+
+
+// What an entry-group create did: whether it created the group, the group
+// that already existed when it was read back, and why it failed.
+export interface EntryGroupCreation {
+  created: boolean;
+  existing?: EntryGroup;
+  error?: string;
+}
+
+// How long an entry-group create is waited for.
+const ENTRY_GROUP_CREATE_TIMEOUT_MS = 120000;
+
+
+// Creates entry group `entryGroup` with `body` (undefined for a plain group)
+// and waits for the create to finish: the operation can fail after the
+// request is accepted. Errors start with `label`. An entry group that already
+// exists (409) is success, with `created` false, and is left as it is. So is
+// a create refused (403) for a group the caller can read, since a caller
+// without create permission may be refused the create of one that exists;
+// that group is returned.
+//
+// A caller may create a group but not read the create's operation (it lacks
+// `dataplex.operations.get`, as `roles/dataplex.contentCreator` and
+// `roles/datacatalog.entryGroupCreator` do). Then the wait reads the group
+// instead, within the same time, until it exists and has `body`'s type: a
+// group reads back without its type until the create finishes.
+export async function createEntryGroupAndWait(
+    catalog: CatalogClient, project: string, location: string,
+    entryGroup: string, body?: Omit<EntryGroup, 'name'>,
+    label = `creating entry group '${project}.${location}.${entryGroup}'`,
+    timeoutMs = ENTRY_GROUP_CREATE_TIMEOUT_MS): Promise<EntryGroupCreation> {
+  const deadline = Date.now() + timeoutMs;
+  const failed = (why: unknown) => ({created: false, error: `${label}: ${why}`});
+  const res =
+      await catalog.createEntryGroup(project, location, entryGroup, body);
+  if (res.status === 409) return {created: false};
+  if (res.status === 403) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status === 200) return {created: false, existing: found.result};
+  }
+  if (res.status !== 200) return failed(res.message || res.status);
+  if (!isOperation(res.result)) return {created: true};
+  const polled = await catalog.pollOperation(res.result, label, timeoutMs);
+  if (!polled.unreadable) {
+    return polled.error ? {created: false, error: polled.error} :
+                          {created: true};
+  }
+  // The operation cannot be read: wait for the group itself.
+  let delayMs = 500;
+  while (Date.now() < deadline) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status === 200 &&
+        (body?.type === undefined || found.result?.type === body.type)) {
+      return {created: true};
+    }
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+    delayMs = Math.min(delayMs * 2, 5000);
+  }
+  return {
+    created: false,
+    error: `${polled.error}; the entry group was not ready within ${
+        timeoutMs}ms either`,
+  };
+}
+
+
+// The entry-group type of a context set.
+export const CONTEXT_SET_TYPE = 'context-set';
+
+
+// Creates entry group `entryGroup` as a context set (type `context-set`),
+// with `metadata`'s display name and description, and waits for the create
+// to finish. An existing context set is success, with `created` false, and
+// is left as it is. An existing group of another type is an error: a group's
+// type cannot be changed, so it can never become a context set.
+export async function createContextSet(
+    catalog: CatalogClient, project: string, location: string,
+    entryGroup: string,
+    metadata: {displayName?: string; description?: string} = {},
+    timeoutMs = ENTRY_GROUP_CREATE_TIMEOUT_MS): Promise<EntryGroupCreation> {
+  const name = `${project}.${location}.${entryGroup}`;
+  const result = await createEntryGroupAndWait(
+      catalog, project, location, entryGroup,
+      {type: CONTEXT_SET_TYPE, ...metadata},
+      `creating context set '${name}'`,
+      timeoutMs);
+  if (result.error || result.created) return result;
+  let existing = result.existing;
+  if (!existing) {
+    const found = await catalog.getEntryGroup(project, location, entryGroup);
+    if (found.status !== 200) {
+      return {
+        created: false,
+        error: `reading entry group '${name}': ${
+            found.message || found.status}`,
+      };
+    }
+    existing = found.result;
+  }
+  if (existing?.type !== CONTEXT_SET_TYPE) {
+    return {
+      created: false,
+      existing,
+      error: `entry group '${name}' exists but is not a context set, and an ` +
+          `entry group's type cannot be changed; use a new context set ID.`,
+    };
+  }
+  return {created: false, existing};
 }

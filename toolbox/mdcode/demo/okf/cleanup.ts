@@ -1,5 +1,5 @@
 import * as cp from 'child_process';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 import { manifestEntryGroup, rejectArgs } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();

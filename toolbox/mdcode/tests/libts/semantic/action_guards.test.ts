@@ -22,7 +22,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
 };
 
 const MCP_EXECUTOR = {
@@ -40,7 +40,7 @@ function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -63,8 +63,7 @@ function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
           ],
           constraints,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 // One entity, one action, and whatever constraints a test needs. `guards` is
@@ -79,7 +78,7 @@ function withGuards(
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -95,8 +94,7 @@ function withGuards(
           }],
           constraints,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 
@@ -133,7 +131,7 @@ describe('loader parses an action\'s guards', () => {
                     name: 'm',
                     datasets: [{
                       name: 'c',
-                      source: 'p.d.c',
+                      source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
                       primary_key: ['id'],
                       fields: [{
                         name: 'balance',
@@ -148,21 +146,15 @@ describe('loader parses an action\'s guards', () => {
                       guards: ['C'],
                     }],
                   }],
-                },
-                {allowLegacyBareSource: true}))
+                }))
             .toThrow(/actions/);
       });
 });
 
 
 describe('validatePushRequirements resolves every guard', () => {
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({
-      deploymentTargets:
-          ['//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
-    }),
-  };
+  const target =
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   function loaded(guards: string[], constraintNames: string[]): LoadedModel {
     const model: SemanticModel = {
@@ -187,7 +179,7 @@ describe('validatePushRequirements resolves every guard', () => {
                                              'The customer.balance must not go below zero.',
                                          onViolation: 'reject' as const,
                                        })),
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -225,7 +217,7 @@ describe('guards survive every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text, {allowLegacyBareSource: true}).models[0];
+    return loadModels(text).models[0];
   })();
 
   test(
@@ -240,9 +232,7 @@ describe('guards survive every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(
-        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].guards)
-        .toEqual([
+    expect(loadModels(yaml).models[0].actions![0].guards).toEqual([
           'OrderWithinCustomerCredit'
         ]);
   });

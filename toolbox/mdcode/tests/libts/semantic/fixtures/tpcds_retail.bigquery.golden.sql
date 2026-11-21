@@ -21,10 +21,10 @@ NODE TABLES (
     OPTIONS(description="Date dimension with calendar attributes", synonyms=["calendar", "dates", "time periods"])
     PROPERTIES(
       d_date_sk OPTIONS(description="Surrogate key for date"),
-      d_date OPTIONS(description="Time dimension.\n\nActual date value", synonyms=["date", "calendar date"]),
-      d_year OPTIONS(description="Time dimension.\n\nYear", synonyms=["year"]),
-      d_quarter_name OPTIONS(description="Time dimension.\n\nQuarter name (e.g., 2024Q1)", synonyms=["quarter", "fiscal quarter"]),
-      d_month_name OPTIONS(description="Time dimension.\n\nMonth name", synonyms=["month"])
+      d_date OPTIONS(description="Actual date value", synonyms=["date", "calendar date"], extensions=[("is_time", "true")]),
+      d_year OPTIONS(description="Year", synonyms=["year"], extensions=[("is_time", "true")]),
+      d_quarter_name OPTIONS(description="Quarter name (e.g., 2024Q1)", synonyms=["quarter", "fiscal quarter"], extensions=[("is_time", "true")]),
+      d_month_name OPTIONS(description="Month name", synonyms=["month"], extensions=[("is_time", "true")])
     ),
   `tpcds.public.customer` AS customer
     KEY(c_customer_sk)
@@ -65,25 +65,28 @@ EDGE TABLES (
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_sold_date_sk) REFERENCES date_dim(d_date_sk)
-    OPTIONS(synonyms=["sales date relationship", "when sale occurred"]),
+    OPTIONS(synonyms=["sales date relationship", "when sale occurred"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_customer
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_customer_sk) REFERENCES customer(c_customer_sk)
-    OPTIONS(synonyms=["customer purchase relationship", "who bought"]),
+    OPTIONS(synonyms=["customer purchase relationship", "who bought"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_item
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_item_sk) REFERENCES item(i_item_sk)
-    OPTIONS(synonyms=["product sold relationship", "what was sold"]),
+    OPTIONS(synonyms=["product sold relationship", "what was sold"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_store
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_store_sk) REFERENCES store(s_store_sk)
     OPTIONS(synonyms=["store location relationship", "where sale occurred"])
+    NO PROPERTIES
 );
 
 -- warnings --
--- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
 -- metric 'customer_lifetime_value' spans multiple tables (store_sales, customer); skipped (cannot be a single MEASURE)
 -- metric 'store_productivity' spans multiple tables (store_sales, store); skipped (cannot be a single MEASURE)

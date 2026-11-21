@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Entity, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {entryIdOf, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, slug} from '../../../src/libts/semantic/kc_ids';
+import {entryIdOf, Namer, NamerOptions, ownedEntryIdPrefixes, semanticLinkId, slug} from '../../../src/libts/semantic/kc_ids';
 
 const BASE_OPTS: NamerOptions = {
   project: 'p',
@@ -36,44 +36,41 @@ const REL: Relationship = {
   destination: {entity: 'customers', columns: ['id']},
 };
 
-describe('Namer entry and link IDs under v2Aspects flag states', () => {
-  test('flag off (default / false) emits dotted entry IDs', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.modelId(MODEL)).toBe('retail_sales');
-    expect(names.entityId(MODEL, ENTITY))
-        .toBe('retail_sales.entities.store_orders');
-    expect(names.metricId(MODEL, METRIC))
-        .toBe('retail_sales.metrics.total_revenue');
-    expect(names.linkId(MODEL, REL)).toBe('retail-sales-order-customer');
-    expect(names.entry(names.entityId(MODEL, ENTITY)))
-        .toBe(
-            'projects/p/locations/us/entryGroups/default/entries/' +
-            'retail_sales.entities.store_orders');
-    expect(names.entryLink(names.linkId(MODEL, REL)))
-        .toBe(
-            'projects/p/locations/us/entryGroups/default/entryLinks/' +
-            'retail-sales-order-customer');
-  });
-
+describe('Namer entry IDs', () => {
   test(
-      'flag on (v2Aspects: true) emits slash-separated entry IDs and same linkId',
+      'are slash-separated, keeping a relationship\'s authored name',
       () => {
-        const names = new Namer({...BASE_OPTS, v2Aspects: true});
+        const names = new Namer(BASE_OPTS);
         expect(names.modelId(MODEL)).toBe('retail_sales');
         expect(names.entityId(MODEL, ENTITY))
             .toBe('retail_sales/entities/store_orders');
         expect(names.metricId(MODEL, METRIC))
             .toBe('retail_sales/metrics/total_revenue');
-        expect(names.linkId(MODEL, REL)).toBe('retail-sales-order-customer');
+        expect(names.relationshipId(MODEL, REL))
+            .toBe('retail_sales/relationships/order_customer');
+        expect(names.relationshipId(MODEL, {...REL, name: 'Order_Customer'}))
+            .toBe('retail_sales/relationships/Order_Customer');
         expect(names.entry(names.entityId(MODEL, ENTITY)))
             .toBe(
                 'projects/p/locations/us/entryGroups/default/entries/' +
                 'retail_sales/entities/store_orders');
-        expect(names.entryLink(names.linkId(MODEL, REL)))
-            .toBe(
-                'projects/p/locations/us/entryGroups/default/entryLinks/' +
-                'retail-sales-order-customer');
       });
+});
+
+describe('semanticLinkId', () => {
+  test('is semantic-<kind>- and the first 32 hex characters of the SHA-256 ' +
+           'of the parts joined by /',
+       () => {
+         expect([
+           semanticLinkId('link', 'sales', 'orders', 'customers'),
+           semanticLinkId('relationship', 'sales', 'placed_by', 'source'),
+           semanticLinkId('extends', 'sales', 'vips', 'customers'),
+         ]).toEqual([
+           'semantic-link-e6b1c3bb1665161a428c2cd13a1cb443',
+           'semantic-relationship-7d24245079e3654a7a01f88f89d599a9',
+           'semantic-extends-22fb71a480680b1a4d779ce39187b845',
+         ]);
+       });
 });
 
 describe('Namer.typeName and Namer.aspectRef', () => {
@@ -107,23 +104,10 @@ describe('Namer.typeName and Namer.aspectRef', () => {
   });
 });
 
-describe('Namer.fileEntryId', () => {
-  test('plain model file', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.fileEntryId('retail_sales', 'retail_sales.yaml'))
-        .toBe('retail_sales.files.retail_sales.yaml');
-  });
-
-  test('profile file keeps its dots and repeats the model name', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(names.fileEntryId('retail_sales', 'retail_sales.profile.prod.yaml'))
-        .toBe('retail_sales.files.retail_sales.profile.prod.yaml');
-  });
-});
-
 describe('ownedEntryIdPrefixes', () => {
   test(
-      'returns seven prefixes with no slash form for actions, constraints or files',
+      'returns eight prefixes with no slash form for actions, constraints or ' +
+          'files, and no dotted form for relationships',
       () => {
         const prefixes = ownedEntryIdPrefixes('retail_sales');
         expect(prefixes).toEqual([
@@ -134,6 +118,7 @@ describe('ownedEntryIdPrefixes', () => {
           'retail_sales.files.',
           'retail_sales/entities/',
           'retail_sales/metrics/',
+          'retail_sales/relationships/',
         ]);
       });
 });
@@ -184,54 +169,11 @@ describe('entryIdOf', () => {
   });
 });
 
-describe('relationshipLinkId', () => {
-  test('matches Namer.linkId', () => {
-    const names = new Namer(BASE_OPTS);
-    expect(relationshipLinkId(MODEL.name, REL.name))
-        .toBe(names.linkId(MODEL, REL));
-  });
-
-  test(
-      'collapses two distinct relationship names that normalize to the same link ID',
-      () => {
-        expect(relationshipLinkId('retail_sales', 'order_customer'))
-            .toBe(relationshipLinkId('retail_sales', 'order__customer'));
-      });
-});
-
-describe('slug and linkSlug', () => {
+describe('slug', () => {
   test(
       'slug preserves letters, digits, underscores, dots and hyphens, mapping others to _',
       () => {
         expect(slug('retail_sales.v1-test/name with spaces'))
             .toBe('retail_sales.v1-test_name_with_spaces');
       });
-
-  test('linkSlug maps characters outside [a-z0-9-] to hyphens', () => {
-    expect(linkSlug('a_b.c/d:e@f')).toBe('a-b-c-d-e-f');
-  });
-
-  test('linkSlug lowercases and collapses runs of hyphens', () => {
-    expect(linkSlug('Retail___Sales---Order')).toBe('retail-sales-order');
-  });
-
-  test('linkSlug strips leading non-letters and edge hyphens', () => {
-    expect(linkSlug('123-_-order_customer---')).toBe('order-customer');
-  });
-
-  test(
-      'linkSlug truncates at 63 chars and strips any trailing hyphen exposed by truncation',
-      () => {
-        // 62 'a's + '_' + 'b' -> 62nd index (63rd char) is '-', which must be
-        // stripped after slicing to 63 chars.
-        const input = `${'a'.repeat(62)}_b`;
-        const result = linkSlug(input);
-        expect(result.length).toBe(62);
-        expect(result).toBe('a'.repeat(62));
-      });
-
-  test('linkSlug falls back to "link" when no usable letters remain', () => {
-    expect(linkSlug('12345___---...')).toBe('link');
-    expect(linkSlug('')).toBe('link');
-  });
 });

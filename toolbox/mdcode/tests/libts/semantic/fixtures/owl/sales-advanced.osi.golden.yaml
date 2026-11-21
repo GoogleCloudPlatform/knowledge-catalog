@@ -58,8 +58,3 @@ semantic_model:
         to: Customer
         ai_context:
           instructions: Links an order to the customer who placed it.
-      - name: referredBy
-        from: Customer
-        to: Customer
-        ai_context:
-          instructions: The customer who referred this one.

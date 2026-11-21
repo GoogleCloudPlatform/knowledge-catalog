@@ -10,12 +10,14 @@
       "aspects": {
         "dataplex-types.global.semantic-model": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
-          "data": {}
+          "data": {
+            "specVersion": "0.2.0.dev0"
+          }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
       "entrySource": {
@@ -27,8 +29,12 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales"
+              "resource": "bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales"
+            },
+            "primaryKey": {
+              "fields": [
+                "ss_item_sk",
+                "ss_ticket_number"
               ]
             }
           }
@@ -39,61 +45,118 @@
             "fields": [
               {
                 "name": "ss_item_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "ss_ticket_number",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "ss_customer_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "ss_store_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "ss_quantity",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Quantity of items sold"
+                "description": "Quantity of items sold",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               },
               {
                 "name": "ss_sales_price",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Sales price per unit"
+                "description": "Sales price per unit",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               },
               {
                 "name": "ss_ext_sales_price",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Extended sales price (quantity * price)"
+                "description": "Extended sales price (quantity * price)",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               },
               {
                 "name": "ss_net_profit",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Net profit from the sale"
+                "description": "Net profit from the sale",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               }
-            ],
-            "primaryKey": {
-              "fields": [
-                "ss_item_sk",
-                "ss_ticket_number"
-              ]
-            }
+            ]
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "fieldExpressions": [
+              {
+                "name": "ss_item_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_item_sk"
+              },
+              {
+                "name": "ss_ticket_number",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_ticket_number"
+              },
+              {
+                "name": "ss_customer_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_customer_sk"
+              },
+              {
+                "name": "ss_store_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_store_sk"
+              },
+              {
+                "name": "ss_quantity",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_quantity"
+              },
+              {
+                "name": "ss_sales_price",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_sales_price"
+              },
+              {
+                "name": "ss_ext_sales_price",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_ext_sales_price"
+              },
+              {
+                "name": "ss_net_profit",
+                "dialect": "ANSI_SQL",
+                "sql": "ss_net_profit"
+              }
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.customer",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/customer",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
       "entrySource": {
@@ -105,8 +168,11 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer"
+              "resource": "bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer"
+            },
+            "primaryKey": {
+              "fields": [
+                "c_customer_sk"
               ]
             }
           }
@@ -117,33 +183,62 @@
             "fields": [
               {
                 "name": "c_customer_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "c_first_name",
-                "dataType": "STRING",
+                "description": "Customer first name",
+                "dataType": "Opaque",
                 "metadataType": "OTHER",
-                "description": "Customer first name"
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "c_last_name",
-                "dataType": "STRING",
+                "description": "Customer last name",
+                "dataType": "Opaque",
                 "metadataType": "OTHER",
-                "description": "Customer last name"
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               }
-            ],
-            "primaryKey": {
-              "fields": [
-                "c_customer_sk"
-              ]
-            }
+            ]
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "fieldExpressions": [
+              {
+                "name": "c_customer_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "c_customer_sk"
+              },
+              {
+                "name": "c_first_name",
+                "dialect": "ANSI_SQL",
+                "sql": "c_first_name"
+              },
+              {
+                "name": "c_last_name",
+                "dialect": "ANSI_SQL",
+                "sql": "c_last_name"
+              }
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.item",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/item",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
       "entrySource": {
@@ -155,8 +250,11 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item"
+              "resource": "bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item"
+            },
+            "primaryKey": {
+              "fields": [
+                "i_item_sk"
               ]
             }
           }
@@ -167,37 +265,71 @@
             "fields": [
               {
                 "name": "i_item_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "i_brand",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "i_category",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "i_current_price",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Current price of the item"
+                "description": "Current price of the item",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               }
-            ],
-            "primaryKey": {
-              "fields": [
-                "i_item_sk"
-              ]
-            }
+            ]
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "fieldExpressions": [
+              {
+                "name": "i_item_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "i_item_sk"
+              },
+              {
+                "name": "i_brand",
+                "dialect": "ANSI_SQL",
+                "sql": "i_brand"
+              },
+              {
+                "name": "i_category",
+                "dialect": "ANSI_SQL",
+                "sql": "i_category"
+              },
+              {
+                "name": "i_current_price",
+                "dialect": "ANSI_SQL",
+                "sql": "i_current_price"
+              }
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
       "entrySource": {
@@ -209,8 +341,11 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store"
+              "resource": "bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store"
+            },
+            "primaryKey": {
+              "fields": [
+                "s_store_sk"
               ]
             }
           }
@@ -221,42 +356,85 @@
             "fields": [
               {
                 "name": "s_store_sk",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "s_store_name",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "s_city",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "s_state",
-                "dataType": "STRING",
-                "metadataType": "OTHER"
+                "dataType": "Opaque",
+                "metadataType": "OTHER",
+                "semantic": "DIMENSION",
+                "annotations": {
+                  "is_time": "false"
+                }
               },
               {
                 "name": "s_number_employees",
-                "dataType": "STRING",
-                "metadataType": "OTHER",
-                "description": "Number of employees at the store"
+                "description": "Number of employees at the store",
+                "dataType": "Opaque",
+                "metadataType": "OTHER"
               }
-            ],
-            "primaryKey": {
-              "fields": [
-                "s_store_sk"
-              ]
-            }
+            ]
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "fieldExpressions": [
+              {
+                "name": "s_store_sk",
+                "dialect": "ANSI_SQL",
+                "sql": "s_store_sk"
+              },
+              {
+                "name": "s_store_name",
+                "dialect": "ANSI_SQL",
+                "sql": "s_store_name"
+              },
+              {
+                "name": "s_city",
+                "dialect": "ANSI_SQL",
+                "sql": "s_city"
+              },
+              {
+                "name": "s_state",
+                "dialect": "ANSI_SQL",
+                "sql": "s_state"
+              },
+              {
+                "name": "s_number_employees",
+                "dialect": "ANSI_SQL",
+                "sql": "s_number_employees"
+              }
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.date_dim",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/date_dim",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
       "entrySource": {
@@ -268,8 +446,11 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim"
+              "resource": "bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim"
+            },
+            "primaryKey": {
+              "fields": [
+                "ss_sold_date_sk"
               ]
             }
           }
@@ -277,10 +458,124 @@
         "dataplex-types.global.schema": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
           "data": {
-            "fields": [],
-            "primaryKey": {
+            "fields": []
+          }
+        },
+        "dataplex-types.global.semantic-extensions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-extensions",
+          "data": {
+            "customExtensions": [
+              {
+                "vendorName": "GOODDATA",
+                "data": "{\"date_dimension\": true, \"granularities\": [\"DAY\", \"WEEK\", \"MONTH\", \"QUARTER\", \"YEAR\"]}"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_date_dim",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_date_dim"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-relationship": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "source": {
+              "name": "store_sales",
               "fields": [
                 "ss_sold_date_sk"
+              ]
+            },
+            "target": {
+              "name": "date_dim",
+              "fields": [
+                "ss_sold_date_sk"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-relationship": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "source": {
+              "name": "store_sales",
+              "fields": [
+                "ss_customer_sk"
+              ]
+            },
+            "target": {
+              "name": "customer",
+              "fields": [
+                "c_customer_sk"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_item",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_item"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-relationship": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "source": {
+              "name": "store_sales",
+              "fields": [
+                "ss_item_sk"
+              ]
+            },
+            "target": {
+              "name": "item",
+              "fields": [
+                "i_item_sk"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_store",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_store"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-relationship": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "source": {
+              "name": "store_sales",
+              "fields": [
+                "ss_store_sk"
+              ]
+            },
+            "target": {
+              "name": "store",
+              "fields": [
+                "s_store_sk"
               ]
             }
           }
@@ -290,164 +585,212 @@
   ],
   "entryLinks": [
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-date-dim",
-      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-link-96748aac09bf3b12a07111b51e84a6de",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-link",
       "entryReferences": [
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "SOURCE"
         },
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.date_dim",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/date_dim",
+          "type": "TARGET"
         }
       ],
       "aspects": {
-        "dataplex-types.global.schema-join": {
-          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+        "dataplex-types.global.semantic-link": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-link",
           "data": {
-            "joins": [
-              {
-                "source": {
-                  "name": "tpcds.public.store_sales",
-                  "fields": [
-                    "ss_sold_date_sk"
-                  ]
-                },
-                "target": {
-                  "name": "sqlgen-testing.demo.date_dim",
-                  "fields": [
-                    "ss_sold_date_sk"
-                  ]
-                },
-                "type": "FOREIGN_KEY",
-                "inferenceSource": "USER"
-              }
-            ],
-            "userManaged": true
+            "relationships": [
+              "store_sales_to_date_dim"
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-customer",
-      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-link-731b13b97db464174d3053f7bc44c515",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-link",
       "entryReferences": [
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "SOURCE"
         },
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.customer",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/customer",
+          "type": "TARGET"
         }
       ],
       "aspects": {
-        "dataplex-types.global.schema-join": {
-          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+        "dataplex-types.global.semantic-link": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-link",
           "data": {
-            "joins": [
-              {
-                "source": {
-                  "name": "tpcds.public.store_sales",
-                  "fields": [
-                    "ss_customer_sk"
-                  ]
-                },
-                "target": {
-                  "name": "tpcds.public.customer",
-                  "fields": [
-                    "c_customer_sk"
-                  ]
-                },
-                "type": "FOREIGN_KEY",
-                "inferenceSource": "USER"
-              }
-            ],
-            "userManaged": true
+            "relationships": [
+              "store_sales_to_customer"
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-item",
-      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-link-66394b59e7fa64f028beb1b357826ead",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-link",
       "entryReferences": [
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "SOURCE"
         },
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.item",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/item",
+          "type": "TARGET"
         }
       ],
       "aspects": {
-        "dataplex-types.global.schema-join": {
-          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+        "dataplex-types.global.semantic-link": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-link",
           "data": {
-            "joins": [
-              {
-                "source": {
-                  "name": "tpcds.public.store_sales",
-                  "fields": [
-                    "ss_item_sk"
-                  ]
-                },
-                "target": {
-                  "name": "tpcds.public.item",
-                  "fields": [
-                    "i_item_sk"
-                  ]
-                },
-                "type": "FOREIGN_KEY",
-                "inferenceSource": "USER"
-              }
-            ],
-            "userManaged": true
+            "relationships": [
+              "store_sales_to_item"
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-store",
-      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-link-58f41c93546a4d957c58c7b423d7f943",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/semantic-link",
       "entryReferences": [
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "SOURCE"
         },
         {
-          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store",
-          "type": "UNSPECIFIED"
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store",
+          "type": "TARGET"
         }
       ],
       "aspects": {
-        "dataplex-types.global.schema-join": {
-          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+        "dataplex-types.global.semantic-link": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-link",
           "data": {
-            "joins": [
-              {
-                "source": {
-                  "name": "tpcds.public.store_sales",
-                  "fields": [
-                    "ss_store_sk"
-                  ]
-                },
-                "target": {
-                  "name": "tpcds.public.store",
-                  "fields": [
-                    "s_store_sk"
-                  ]
-                },
-                "type": "FOREIGN_KEY",
-                "inferenceSource": "USER"
-              }
-            ],
-            "userManaged": true
+            "relationships": [
+              "store_sales_to_store"
+            ]
           }
         }
       }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-b7f2cd40d34df352c43517cd7e791b62",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_date_dim",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-b609725731e95b7b83b1c157092b866e",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_date_dim",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/date_dim",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-5d717f5058ff9c89a33923c4d02ac095",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_customer",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-ad1a7b612893518b55a5f8a25dadc44b",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_customer",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/customer",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-a17f4c073ad8940a4aa9575c814e0f80",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_item",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-00b97024d71e547f8b58af7d368356db",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_item",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/item",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-589fa5b35626d0885569450a6a424edc",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_store",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store_sales",
+          "type": "TARGET"
+        }
+      ]
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/semantic-relationship-4a6148ec24d378fab98d880f543a5487",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/reference",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/relationships/store_sales_to_store",
+          "type": "SOURCE"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model/entities/store",
+          "type": "TARGET"
+        }
+      ]
     }
   ],
   "warnings": []

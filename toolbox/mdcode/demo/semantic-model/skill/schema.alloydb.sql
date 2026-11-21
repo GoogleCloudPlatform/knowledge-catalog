@@ -19,8 +19,8 @@
 --
 -- Applied with `psql -f`; see the README for the command. As on the Spanner
 -- side, the tables exist before the model is pushed -- though on AlloyDB there
--- is no graph to push, which is why the `alloydb` profile's deployment target
--- names a database and stops there.
+-- is no graph to push, which is why the `alloydb` deployment in commerce.yaml
+-- targets a database and stops there.
 
 CREATE TABLE IF NOT EXISTS customer (
   customer_id bigint PRIMARY KEY,

@@ -1,6 +1,6 @@
-// Leaf helpers for action parameter optionality, scalar type checking, and
-// store type codes -- shared by deploy-time validation and run-time execution
-// without pulling store clients into the validation layer.
+// Leaf helpers for action parameter optionality, scalar type checking, store
+// type codes and message sentences -- shared by deploy-time validation and
+// run-time execution without pulling store clients into the validation layer.
 
 import {ActionParameter} from './ir';
 
@@ -35,12 +35,42 @@ export function sentence(text: string): string {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
+// The first line of a multi-line diagnosis. The lines after it echo the
+// statement and point a caret at the offending token, which is worth nothing
+// here: the author has the statement open in the profile, the position in
+// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
+// place once the message is embedded in a longer sentence.
+//
+// `\n` is matched in both its forms because Spanner's top-level `error.message`
+// arrives with its newlines ESCAPED -- a literal backslash and an n survive
+// JSON.parse -- while every other message uses real ones.
+function firstLine(message: string): string {
+  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
+}
+
+// An API error's message reduced to its first line as a sentence, such as
+// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]." With
+// `allLines`, it keeps every line, as the store sent it. Push sets it only for
+// BigQuery's answer to the dry run of a graph's DDL, whose later lines can say
+// which argument failed.
+export function storeMessage(
+    message: string|undefined, status: number,
+    {allLines = false} = {}): string {
+  const text = (message ?? '').trim();
+  if (!text) return `HTTP ${status}.`;
+  return sentence(allLines ? text : firstLine(text));
+}
+
 // What Spanner accepts for a DATE and a TIMESTAMP parameter. The zone is
 // required rather than defaulted, because a timestamp written without one
 // means a different instant to every reader who supplies the missing part.
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const RFC3339_TIMESTAMP =
     /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[-+]\d{2}:?\d{2})$/;
+// What a DateTime takes: a date and time, with a zone or without one. BigQuery
+// reads a DateTime as a DATETIME, a civil date and time with no zone.
+const DATE_TIME =
+    /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[-+]\d{2}:?\d{2})?$/;
 
 // Whether `text` is a day that exists, written the one way Spanner reads.
 // `Date.parse` answers neither question: it accepts '03/04/2026', and it reads
@@ -140,6 +170,14 @@ export function bindScalar(
       }
       return {value: text, code};
     case 'DateTime':
+      if (!DATE_TIME.test(text) || !isCalendarDay(text.slice(0, 10))) {
+        return {
+          error: `'${param.name}' is a DateTime, but '${
+              text}' is not a date and time. Write it like ` +
+              `2026-03-04T10:00:00.`,
+        };
+      }
+      return {value: text, code};
     case 'DateTimeTz':
       if (!RFC3339_TIMESTAMP.test(text) || !isCalendarDay(text.slice(0, 10))) {
         return {

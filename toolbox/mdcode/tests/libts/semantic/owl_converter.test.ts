@@ -13,15 +13,17 @@
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
+import {ApiContext} from '../../../src/libts/gcp/context';
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
 import {isTimeDimension} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
+import {loadModels, loadSemanticModels} from '../../../src/libts/semantic/loader';
+import {localChecks} from '../../../src/libts/semantic/validate';
 import {owl} from '../../../src/tool/commands';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'owl');
@@ -41,6 +43,18 @@ function load(yaml: string) {
 // focused rule tests below.
 function loadOwl(ttl: string) {
   return load(convertOwlToOsi(ttl, 'x').yaml).models[0];
+}
+
+// Expects the model document `text` to load and pass push's local checks.
+async function expectPushAccepts(text: string) {
+  const docs = [{name: 'model', text}];
+  const loaded = loadSemanticModels(docs, {bindingOptional: true});
+  expect(loaded.error).toBeUndefined();
+  const scope = {
+    docs, loaded, models: loaded.models, profileDocs: () => [],
+    declaredBy: () => [], load: {},
+  };
+  expect(await localChecks(scope, () => {})).toEqual({plans: []});
 }
 
 const PREFIXES = `
@@ -157,11 +171,12 @@ describe('sales-advanced is the user-guide unified advanced example', () => {
     expect(yaml).toEqual(readFixture('sales-advanced.osi.golden.yaml'));
   });
 
-  test('maps cleanly (hierarchy + carriage never warn)', () => {
+  test('warns only about the self-referential referredBy', () => {
     const {stats, warnings} = convertOwlToOsi(ttl, 'sales');
     expect(stats).toEqual(
-        {classes: 3, datatypeProperties: 9, objectProperties: 2});
-    expect(warnings).toEqual([]);
+        {classes: 3, datatypeProperties: 9, objectProperties: 1});
+    expect(warnings).toEqual(
+        [expect.stringContaining("'referredBy' is not imported")]);
   });
 
   test(
@@ -204,8 +219,9 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
     expect(yaml).toEqual(readFixture('org.osi.golden.yaml'));
   });
 
-  test('maps cleanly with no warnings', () => {
-    expect(convertOwlToOsi(ttl, 'org').warnings).toEqual([]);
+  test('warns only about the self-referential reportsTo', () => {
+    expect(convertOwlToOsi(ttl, 'org').warnings)
+        .toEqual([expect.stringContaining("'reportsTo' is not imported")]);
   });
 
   test('the generated OSI loads and covers the mapping', () => {
@@ -257,14 +273,11 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
     expect(isTimeDimension(employee.fields.find(f => f.name === 'salary')!))
         .toBe(false);
 
-    // Edges are logical: direction only, no join columns -- including the
-    // self-referential reportsTo. A binding profile fills the columns later.
+    // Edges are logical: direction only, no join columns. A binding profile
+    // fills the columns later.
     const byName =
         Object.fromEntries(model.relationships.map(r => [r.name, r]));
     expect(byName['worksIn'].destination.columns).toEqual([]);
-    expect(byName['reportsTo'].source.entity).toBe('Employee');
-    expect(byName['reportsTo'].destination.entity).toBe('Employee');
-    expect(byName['reportsTo'].destination.columns).toEqual([]);
     expect(byName['worksOn'].source.columns).toEqual([]);
     expect(byName['worksOn'].destination.columns).toEqual([]);
   });
@@ -313,22 +326,21 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
   test(
       'property inheritance (rdfs:subPropertyOf) is dropped, not carried', () => {
         // Only entity-level inheritance (rdfs:subClassOf -> extends) is native.
-        // A datatype/object property's rdfs:subPropertyOf has no native OSI
-        // home, so the importer drops it -- the field and relationship still
-        // map, with no custom extension and no warning.
+        // A datatype property's rdfs:subPropertyOf has no native OSI home, so
+        // the importer drops it -- the field still maps, with no custom
+        // extension and no warning. Both object properties connect Employee,
+        // which has a subclass, so they are not imported.
         const {warnings} = convertOwlToOsi(ttl, 'hierarchy');
-        expect(warnings).toEqual([]);
+        expect(warnings).toEqual([
+          expect.stringContaining("'managedBy' is not imported"),
+          expect.stringContaining("'worksWith' is not imported"),
+        ]);
         const model = load(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
 
         // The field survives but carries no superproperty fact.
         const employee = model.entities.find(e => e.name === 'Employee')!;
         const legalName = employee.fields.find(f => f.name === 'legalName')!;
         expect(legalName.customExtensions).toBeUndefined();
-
-        // The relationship survives but carries no superproperty fact.
-        const managedBy =
-            model.relationships.find(r => r.name === 'managedBy')!;
-        expect(managedBy.customExtensions).toBeUndefined();
       });
 
   test('an extends parent that is not a class is dropped with a warning', () => {
@@ -389,6 +401,84 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
             load(yaml).models[0].entities.find(e => e.name === 'Person')!;
         expect(person.extends).toBeUndefined();
       });
+
+  // Superclasses compare by full IRI, so no input here makes Person extend
+  // itself, and Person keeps its relationship.
+  test.each([
+    ['foaf:Person', [expect.stringContaining('(http://xmlns.com/foaf/0.1/Person)')]],
+    ['ex:Person', []],
+    ['foaf:Person . foaf:Person a owl:Class', [
+      `class 'Person' extends another class also named 'Person' ` +
+          `(http://xmlns.com/foaf/0.1/Person); import leaves out that ` +
+          `superclass, because a model cannot have two entities with the ` +
+          `same name.`,
+      expect.stringContaining('declared more than once'),
+    ]],
+    ['foaf:Agent . ex:Agent a owl:Class . foaf:Agent a owl:Class', [
+      `class 'Person' extends another class named 'Agent' ` +
+          `(http://xmlns.com/foaf/0.1/Agent); import leaves out that ` +
+          `superclass, because a model cannot have two entities with the ` +
+          `same name.`,
+      expect.stringContaining('declared more than once'),
+    ]],
+  ])('Person rdfs:subClassOf %s imports to a model push accepts', async (parent, expected) => {
+    const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class ; rdfs:subClassOf ${parent} .
+      ex:Org a owl:Class .
+      ex:worksFor a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Org .`, 'x');
+    expect(warnings).toEqual(expected);
+    expect(load(yaml).models[0].relationships.map(r => r.name)).toEqual([
+      'worksFor'
+    ]);
+    await expectPushAccepts(yaml);
+  });
+});
+
+
+describe('import leaves out each object property push would reject', () => {
+  test('a class with subclasses, a class to itself, the reverse of an edge', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:Customer a owl:Class ; rdfs:subClassOf ex:Person .
+      ex:Vip a owl:Class ; rdfs:subClassOf ex:Customer .
+      ex:Staff a owl:Class ; rdfs:subClassOf ex:Person .
+      ex:Order a owl:Class .
+      ex:referredBy a owl:ObjectProperty ; rdfs:domain ex:Customer ; rdfs:range ex:Person .
+      ex:replaces a owl:ObjectProperty ; rdfs:domain ex:Order , ex:Staff ; rdfs:range ex:Order .
+      ex:takenBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Staff .
+      ex:takes a owl:ObjectProperty ; rdfs:domain ex:Staff ; rdfs:range ex:Order .`;
+    const {warnings, stats, yaml} = convertOwlToOsi(ttl, 'x');
+    expect(warnings).toEqual([
+      `object property 'referredBy' is not imported: it connects ` +
+          `'Customer' and 'Person', which have subclasses, and a relationship ` +
+          `may connect only classes with no subclasses. The class under ` +
+          `'Customer' with no subclasses is 'Vip'. The classes under 'Person' ` +
+          `with no subclasses are 'Vip' and 'Staff'.`,
+      `object property 'replaces' is not imported: it runs from 'Order' to ` +
+          `itself, and a relationship must join two different classes.`,
+      `object property 'takes' is not imported: it runs from 'Staff' to ` +
+          `'Order', and object property 'takenBy' runs the other way. The ` +
+          `relationships between two classes must run in one direction.`,
+    ]);
+    expect(stats.objectProperties).toBe(1);
+    expect(load(yaml).models[0].relationships.map(r => r.name)).toEqual([
+      'takenBy'
+    ]);
+  });
+
+  test('a subclass cycle has no class with no subclasses', () => {
+    const cycle = `${PREFIXES}
+      ex:A a owl:Class ; rdfs:subClassOf ex:B . ex:B a owl:Class ; rdfs:subClassOf ex:A .
+      ex:X a owl:Class . ex:r a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:X .`;
+    expect(convertOwlToOsi(cycle, 'x').warnings).toEqual([
+      expect.stringContaining("Every class under 'A' has subclasses.")
+    ]);
+  });
+
+  const files = fs.readdirSync(FIXTURES).filter(f => f.endsWith('.owl.ttl'));
+  test.each(files)('%s imports to a model push accepts', async file => {
+    await expectPushAccepts(convertOwlToOsi(readFixture(file), 'model').yaml);
+  });
 });
 
 
@@ -568,9 +658,42 @@ describe('keys and edge binding', () => {
         const {warnings} = convertOwlToOsi(ttl, 'x');
         expect(loadOwl(ttl).entities[0].keys).toEqual([]);
         expect(warnings.some(
-                   w => w.includes(`'ghost'`) && w.includes('primary_key')))
+                   w => w.includes(`'http://example.com/x#ghost'`) &&
+                       w.includes('primary_key')))
             .toBe(true);
       });
+
+  // A key property matches by full IRI, so foaf:id never selects the field
+  // written for ex:id.
+  const keyDropped = (iri: string) => `class 'Person' owl:hasKey names ` +
+      `'${iri}' which is not a datatype property on the class; dropping the ` +
+      `entire primary_key (keeping only the remaining columns would change ` +
+      `the entity's grain).`;
+  test.each([
+    ['foaf:id',
+     'ex:id a owl:DatatypeProperty ; rdfs:domain ex:Person . foaf:id a owl:DatatypeProperty',
+     [], [
+       expect.stringContaining('no rdfs:domain'),
+       keyDropped('http://xmlns.com/foaf/0.1/id'),
+     ]],
+    ['ex:id',
+     'foaf:id a owl:DatatypeProperty ; rdfs:domain ex:Person . ex:id a owl:DatatypeProperty ; rdfs:domain ex:Person',
+     [], [
+       expect.stringContaining('duplicates an existing field name'),
+       keyDropped('http://example.com/x#id'),
+     ]],
+    ['foaf:id',
+     'ex:id a owl:DatatypeProperty, owl:InverseFunctionalProperty ; rdfs:domain ex:Person',
+     ['id'], [
+       keyDropped('http://xmlns.com/foaf/0.1/id'),
+       expect.stringContaining('no usable owl:hasKey'),
+     ]],
+  ])('owl:hasKey ( %s ) beside %s', (key, triples, keys, expected) => {
+    const {yaml, warnings} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class ; owl:hasKey ( ${key} ) . ${triples} .`, 'x');
+    expect(warnings).toEqual(expected);
+    expect(load(yaml).models[0].entities[0].keys).toEqual(keys);
+  });
 
   // A class whose only key material is a single inverse-functional property (no
   // owl:hasKey) has a natural identifier; it is promoted to primary_key so the
@@ -619,7 +742,8 @@ describe('keys and edge binding', () => {
     const person = loadOwl(ttl).entities[0];
     expect(person.keys).toEqual(['email']);
     expect(person.uniqueKeys).toBeUndefined();
-    expect(warnings.some(w => w.includes(`'ghost'`))).toBe(true);
+    expect(warnings.some(w => w.includes(`'http://example.com/x#ghost'`)))
+        .toBe(true);
     expect(warnings.some(w => w.includes('no usable owl:hasKey'))).toBe(true);
   });
 });
@@ -862,6 +986,76 @@ describe('mapping table rules (labels, comments, skips)', () => {
         .toHaveLength(0);
   });
 
+  // Domains and ranges compare by full IRI, as superclasses do, so foaf:Person
+  // never resolves to ex:Person.
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain foaf:Person',
+     `datatype property 'name' has domain 'http://xmlns.com/foaf/0.1/Person', ` +
+         `which is not an owl:Class in this ontology; skipped.`],
+    ['ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range foaf:Person',
+     `object property 'placedBy' references a non-class endpoint (domain ` +
+         `'Order', range 'http://xmlns.com/foaf/0.1/Person'); skipped.`],
+    ['ex:knows a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range foaf:Person',
+     `object property 'knows' references a non-class endpoint (domain ` +
+         `'Person', range 'http://xmlns.com/foaf/0.1/Person'); skipped.`],
+  ])('%s beside ex:Person is skipped', (property, warning) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class . ex:Order a owl:Class . ${property} .`, 'x');
+    expect(warnings).toEqual([warning]);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
+  // A domain or range that is a second class with a name already in use is
+  // named as that class, with its full IRI.
+  const leftOut = 'because a model cannot have two entities with the same name.';
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain foaf:Person',
+     `datatype property 'name' has domain 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), a second class with that name; ` +
+         `import leaves out that class and the field on it, ${leftOut}`],
+    ['ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range foaf:Person',
+     `object property 'placedBy' has range 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), a second class with that name; ` +
+         `import leaves out that class and the property, ${leftOut}`],
+    ['ex:knows a owl:ObjectProperty ; rdfs:domain foaf:Order ; rdfs:range foaf:Person',
+     `object property 'knows' has domain 'Order' ` +
+         `(http://xmlns.com/foaf/0.1/Order) and range 'Person' ` +
+         `(http://xmlns.com/foaf/0.1/Person), each a second class with that ` +
+         `name; import leaves out those classes and the property, ${leftOut}`],
+  ])('%s beside a second Person and Order is skipped', (property, warning) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:Person a owl:Class . ex:Order a owl:Class .
+      foaf:Person a owl:Class . foaf:Order a owl:Class . ${property} .`, 'x');
+    expect(warnings).toEqual([
+      ...Array(2).fill(expect.stringContaining('declared more than once')),
+      warning,
+    ]);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
+  // Import writes no entity or field for a blank node, and leaves out a
+  // property whose domain or range is an anonymous class.
+  const notRead = 'which import does not read; import leaves out the property.';
+  test.each([
+    ['ex:name a owl:DatatypeProperty ; rdfs:domain [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ] ; rdfs:range xsd:string',
+     [`datatype property 'name' has a union of classes as its domain, ${notRead}`]],
+    ['ex:owns a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range [ owl:intersectionOf ( ex:A ex:B ) ]',
+     [`object property 'owns' has an intersection of classes as its range, ${notRead}`]],
+    ['ex:owns a owl:ObjectProperty ; rdfs:domain [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ] ; rdfs:range [ owl:complementOf ex:A ]',
+     [`object property 'owns' has a union of classes as its domain and an ` +
+      `anonymous class as its range, ${notRead}`]],
+    ['ex:A owl:equivalentClass [ a owl:Class ; owl:unionOf ( ex:A ex:B ) ]', []],
+    ['[ a owl:DatatypeProperty ; rdfs:domain ex:A ]', []],
+  ])('%s imports only A and B', (triples, expected) => {
+    const {warnings, stats} = convertOwlToOsi(`${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class . ${triples} .`, 'x');
+    expect(warnings).toEqual(expected);
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 0});
+  });
+
   // Terms are named by their local name, so two terms sharing one (e.g.
   // across namespaces) would collapse to one OSI name. The first wins; the
   // rest are warned and skipped, so the output stays valid and loadable.
@@ -907,9 +1101,10 @@ describe('the carriage fixture imports only its native constructs', () => {
     const {yaml, warnings, stats} =
         convertOwlToOsi(readFixture('carriage.owl.ttl'), 'carriage');
     expect(yaml).toEqual(readFixture('carriage.osi.golden.yaml'));
-    // Dropping a non-native construct is never a warning.
-    expect(warnings).toEqual([]);
-    expect(stats).toEqual({classes: 3, datatypeProperties: 3, objectProperties: 3});
+    // Dropping a non-native construct is never a warning. Each object
+    // property runs from Person to itself, so it is not imported.
+    expect(warnings).toEqual(Array(3).fill(expect.stringContaining('itself')));
+    expect(stats).toEqual({classes: 3, datatypeProperties: 3, objectProperties: 0});
     // Stays schema-valid and loadable (a logical model, under bindingOptional).
     expect(() => load(yaml)).not.toThrow();
     // No custom_extensions carrier anywhere in the output.
@@ -1053,5 +1248,49 @@ describe('the owl import handler writes only a model that loads', () => {
     const ok = path.join(dir, 'retail_v2.ttl');
     fs.writeFileSync(ok, readFixture('sales.owl.ttl'));
     expect(await owl('import', ok, {out})).toBe(0);
+  });
+});
+
+
+describe('the owl import handler writes into the workspace without --out', () => {
+  test('a semantic-model workspace gets the model in its entry group folder, which holds one model', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-workspace-'));
+    const cwd = process.cwd();
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'), 'scope: semantic-model.test-project.us.sales\n');
+    fs.writeFileSync(path.join(dir, 'sales.owl.ttl'), readFixture('sales.owl.ttl'));
+    spyOn(ApiContext, 'default')
+        .mockReturnValue(new ApiContext('test-project', 'us', 'test-token'));
+    const logs: string[] = [];
+    spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.join(' '));
+    });
+    process.chdir(dir);
+    try {
+      expect(await owl('import', 'sales.owl.ttl', {})).toBe(0);
+      const written = path.join('catalog', 'EntryGroups', 'sales', 'sales.yaml');
+      expect(loadModels(fs.readFileSync(written, 'utf8'), {bindingOptional: true})
+                 .models[0].name).toBe('sales');
+      // Importing the same ontology again replaces its own file. Another
+      // model is refused, and written only where --out names.
+      expect(await owl('import', 'sales.owl.ttl', {})).toBe(0);
+      fs.copyFileSync('sales.owl.ttl', 'shop.owl.ttl');
+      const errors: string[] = [];
+      spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+        errors.push(a.join(' '));
+      });
+      logs.length = 0;
+      expect(await owl('import', 'shop.owl.ttl', {})).toBe(1);
+      expect(logs).toEqual([]);
+      expect(errors).toEqual([expect.stringContaining(
+          `Error: the entry group already holds another model's file (${written})`)]);
+      expect(fs.readdirSync(path.dirname(written))).toEqual(['sales.yaml']);
+      expect(await owl('import', 'shop.owl.ttl', {out: 'shop.yaml'})).toBe(0);
+      expect(fs.existsSync('shop.yaml')).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      mock.restore();
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
   });
 });

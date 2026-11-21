@@ -1,7 +1,10 @@
-// API client for Cloud Spanner, covering two surfaces the semantic-model push
-// leg needs: Database Admin (updateDatabaseDdl and getOperation) to deploy
-// Spanner Graph DDL, and the data plane (sessions and executeSql) to PLAN an
-// action's DML against the live database before publishing it.
+// API client for Cloud Spanner, covering three surfaces kcmd needs: Database
+// Admin (updateDatabaseDdl, getDatabase and getOperation) to check the
+// database and deploy Spanner Graph DDL; the data plane (sessions and
+// executeSql) to read the schema, and to PLAN what a graph reads and an
+// action's DML against the live database before publishing either; and
+// Instance Admin (getInstance and getInstanceConfig) to find the region where
+// Knowledge Catalog keeps a table's entry and to read an instance's edition.
 
 import * as api from './api';
 import * as context from './context';
@@ -28,19 +31,64 @@ export interface Session {
 }
 
 
-// The response to executeSql. Under queryMode PLAN nothing is executed, so the
-// only field that matters is `stats.queryPlan`: its presence is the signal that
-// Spanner parsed, resolved and type-checked the statement.
+// The response to executeSql. Under queryMode PLAN nothing is executed: the
+// presence of `stats.queryPlan` is the signal that Spanner parsed, resolved
+// and type-checked the statement, and `metadata.rowType` gives the type of
+// each column a query returns. A query run without PLAN returns `rows` too,
+// each a list of values, and leaves `rows` out when it returns none.
 export interface ResultSet {
+  metadata?: {rowType?: {fields?: Array<{name?: string; type?: SpannerType}>}};
+  rows?: unknown[][];
   stats?: {queryPlan?: {planNodes?: Array<{[key: string]: any}>}};
   [key: string]: any;
 }
 
 
-// A Spanner parameter type code (`INT64`, `STRING`, `TIMESTAMP`, ...), in the
-// shape the executeSql `paramTypes` map takes.
+// A Spanner type (`INT64`, `STRING`, `TIMESTAMP`, ...), in the shape the
+// executeSql `paramTypes` map takes and a row type gives. An ARRAY names the
+// type of its elements.
 export interface SpannerType {
   code: string;
+  arrayElementType?: SpannerType;
+  [key: string]: any;
+}
+
+
+// A Spanner instance, as getInstance returns it. `config` is the full name of
+// its instance config, `projects/<p>/instanceConfigs/<c>`.
+// `replicaComputeCapacity` names each region the instance has replicas in,
+// once, witness regions included, in no particular order and with no leader
+// marked: a nam3 instance listed us-east1, us-east4 and us-central1, though
+// its config's default leader is us-east4 (live, 2026-11-04). Reading it
+// needs only spanner.instances.get. `resourceLocation` is a broad location,
+// such as `us`, and not a Dataplex region.
+export interface Instance {
+  name?: string;
+  // STANDARD, ENTERPRISE or ENTERPRISE_PLUS.
+  edition?: string;
+  config?: string;
+  replicaComputeCapacity?: Array<{
+    replicaSelection?: {location?: string};
+    processingUnits?: number;
+    nodeCount?: number;
+  }>;
+  resourceLocation?: string;
+  [key: string]: any;
+}
+
+
+// An instance config, as getInstanceConfig returns it. Each replica names its
+// region, and exactly one is marked `defaultLeaderLocation`. For example,
+// `nam3` lists replicas in us-east4, us-east1 and us-central1, and marks
+// us-east4.
+export interface InstanceConfig {
+  name?: string;
+  replicas?: Array<{
+    location?: string;
+    type?: string;
+    defaultLeaderLocation?: boolean;
+  }>;
+  [key: string]: any;
 }
 
 
@@ -60,6 +108,28 @@ export class SpannerClient extends api.ApiClient {
     const name =
         `projects/${project}/instances/${instance}/databases/${database}/ddl`;
     return await this._patch<Operation>(name, {statements});
+  }
+
+  // Fetches a database's metadata, which includes its databaseDialect:
+  // GOOGLE_STANDARD_SQL or POSTGRESQL.
+  async getDatabase(project: string, instance: string, database: string):
+      Promise<api.ApiResult<
+          {name?: string; databaseDialect?: string; [key: string]: any}>> {
+    return await this._get(
+        `projects/${project}/instances/${instance}/databases/${database}`);
+  }
+
+  // Fetches an instance's metadata, which names its instance config and its
+  // edition.
+  async getInstance(project: string, instance: string):
+      Promise<api.ApiResult<Instance>> {
+    return await this._get<Instance>(`projects/${project}/instances/${instance}`);
+  }
+
+  // Fetches an instance config by its full name, as Instance.config gives it.
+  async getInstanceConfig(configName: string):
+      Promise<api.ApiResult<InstanceConfig>> {
+    return await this._get<InstanceConfig>(configName);
   }
 
   // Fetches a long-running operation by its resource name (as returned in
@@ -83,6 +153,25 @@ export class SpannerClient extends api.ApiClient {
   // of the read-write transactions it began and never committed.
   async deleteSession(sessionName: string): Promise<api.ApiResult<{}>> {
     return await this._delete<{}>(sessionName);
+  }
+
+  // Runs a query in a single-use read-only transaction, which is what
+  // executeSql gives a request that names no transaction, so it writes
+  // nothing. With `plan`, Spanner plans the query and runs none of it.
+  async executeQuery(
+      sessionName: string, sql: string,
+      options: {
+        plan?: boolean;
+        params?: Record<string, unknown>;
+        paramTypes?: Record<string, SpannerType>;
+      } = {}): Promise<api.ApiResult<ResultSet>> {
+    const body: Record<string, unknown> = {sql};
+    if (options.plan) body.queryMode = 'PLAN';
+    if (options.params) {
+      body.params = options.params;
+      body.paramTypes = options.paramTypes;
+    }
+    return await this._post<ResultSet>(`${sessionName}:executeSql`, body);
   }
 
   // Plans a DML statement WITHOUT executing it, and without writing anything.

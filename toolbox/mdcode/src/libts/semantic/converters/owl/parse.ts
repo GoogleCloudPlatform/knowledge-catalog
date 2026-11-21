@@ -10,9 +10,9 @@
 // their `rdf:type` triple is first seen in the document, so the generated OSI
 // is stable across runs (and matches its golden).
 
-import {Parser} from 'n3';
+import {Parser, Quad_Object} from 'n3';
 
-import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
+import {AnonymousClass, OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -58,6 +58,10 @@ const OWL_HAS_KEY = `${OWL}hasKey`;
 // of others. Both are carried verbatim (no native OSI home).
 const OWL_ONE_OF = `${OWL}oneOf`;
 const OWL_PROPERTY_CHAIN_AXIOM = `${OWL}propertyChainAxiom`;
+// The class expressions an anonymous domain or range is named after in a
+// warning.
+const OWL_UNION_OF = `${OWL}unionOf`;
+const OWL_INTERSECTION_OF = `${OWL}intersectionOf`;
 const OWL_INVERSE_OF = `${OWL}inverseOf`;
 const OWL_EQUIVALENT_PROPERTY = `${OWL}equivalentProperty`;
 const OWL_PROPERTY_DISJOINT_WITH = `${OWL}propertyDisjointWith`;
@@ -180,13 +184,13 @@ interface Annotations {
   skosDefinition?: string;
   dctermsDescription?: string;
   dcDescription?: string;
-  domains: string[];
-  ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
+  domains: Quad_Object[];  // rdfs:domain terms; a blank node is anonymous
+  ranges: Quad_Object[];   // rdfs:range terms; mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
   oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
   chainListHeads: string[];        // owl:propertyChainAxiom list heads
-  subClassOf: string[];            // local names (feed native `extends`)
+  subClassOf: string[];            // full IRIs (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
   inverseOf: string[];             // full IRIs (named object properties only)
@@ -339,7 +343,9 @@ export function parseOwl(turtle: string): OwlModel {
       continue;
     }
     const k = KIND_BY_TYPE[type];
-    if (!k) continue;
+    // Only a named term is a class or property. A blank node typed owl:Class is
+    // an anonymous class, such as a union, and import writes no entity for it.
+    if (!k || q.subject.termType !== 'NamedNode') continue;
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
@@ -359,11 +365,17 @@ export function parseOwl(turtle: string): OwlModel {
   // owl:distinctMembers on an owl:AllDisjoint* node is ignored rather than
   // carried.
   const membersHead = new Map<string, string>();
+  // The anonymous classes defined as a union or an intersection of classes.
+  const expressionKind = new Map<string, AnonymousClass>();
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST)
       listFirst.set(q.subject.value, q.object.value);
     else if (q.predicate.value === RDF_REST)
       listRest.set(q.subject.value, q.object.value);
+    else if (q.predicate.value === OWL_UNION_OF)
+      expressionKind.set(q.subject.value, 'union');
+    else if (q.predicate.value === OWL_INTERSECTION_OF)
+      expressionKind.set(q.subject.value, 'intersection');
     else if (q.predicate.value === OWL_MEMBERS)
       membersHead.set(q.subject.value, q.object.value);
     else if (
@@ -434,10 +446,10 @@ export function parseOwl(turtle: string): OwlModel {
         a.dcDescription = q.object.value;
         break;
       case RDFS_DOMAIN:
-        a.domains.push(localName(q.object.value));
+        a.domains.push(q.object);
         break;
       case RDFS_RANGE:
-        a.ranges.push(q.object.value);  // kept as IRI; mapper maps xsd:*
+        a.ranges.push(q.object);  // kept as a term; mapper maps xsd:*
         break;
       case OWL_VERSION_INFO:
         a.versionInfo = q.object.value;
@@ -468,7 +480,7 @@ export function parseOwl(turtle: string): OwlModel {
         // information.
         if (q.object.termType === 'NamedNode' &&
             !TOP_CLASS_IRIS.has(q.object.value))
-          a.subClassOf.push(localName(q.object.value));
+          a.subClassOf.push(q.object.value);
         break;
       case RDFS_SUBPROPERTY_OF:
         // Property hierarchy -> no native OSI home; carried verbatim by the
@@ -556,19 +568,43 @@ export function parseOwl(turtle: string): OwlModel {
   // base if one happened to appear first and silently invert the mapper's
   // in-namespace/cross-namespace shortening (see to_ir.refValue).
   let baseIri = dominantNamespace(order);
+  // The class IRI import writes under each local name: the first, as to_ir
+  // skips a later class with the same local name.
+  const classOfName = new Map<string, string>();
+  for (const iri of order) {
+    const name = localName(iri);
+    if (kind.get(iri) === 'class' && !classOfName.has(name)) {
+      classOfName.set(name, iri);
+    }
+  }
+  // How a superclass, domain or range names its class: by local name when
+  // import writes that class as an entity, and by full IRI otherwise. So
+  // foaf:Person never resolves to the entity written for ex:Person.
+  const classRef = (ref: string): string =>
+      classOfName.get(localName(ref)) === ref ? localName(ref) : ref;
+  // The domains or ranges that name a class, by classRef.
+  const namedRefs = (terms: Quad_Object[]): string[] =>
+      terms.filter(t => t.termType !== 'BlankNode').map(t => classRef(t.value));
+  // The kind of the first anonymous class among domains or ranges, if any.
+  const anonymousClass = (terms: Quad_Object[]): AnonymousClass|undefined => {
+    const node = terms.find(t => t.termType === 'BlankNode');
+    return node && (expressionKind.get(node.value) ?? 'other');
+  };
 
   for (const iri of order) {
     const a = annotations.get(iri) ?? emptyAnnotations();
     switch (kind.get(iri)) {
       case 'class':
         classes.push({
+          iri,
           localName: localName(iri),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
           examples: a.examples,
-          keys: a.keyListHeads.flatMap(resolveList).map(localName),
-          subClassOf: a.subClassOf,
+          keys: a.keyListHeads.flatMap(resolveList),
+          // The class itself is dropped, as owl:Thing is.
+          subClassOf: a.subClassOf.filter(s => s !== iri).map(classRef),
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
           // Full member IRIs of the enumeration set (a carried cross-reference;
@@ -581,9 +617,11 @@ export function parseOwl(turtle: string): OwlModel {
         break;
       case 'datatypeProperty':
         datatypeProperties.push({
+          iri,
           localName: localName(iri),
-          domains: a.domains,
-          rangeIri: a.ranges[0],
+          domains: namedRefs(a.domains),
+          anonymousDomain: anonymousClass(a.domains),
+          rangeIri: a.ranges[0]?.value,
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
@@ -599,11 +637,12 @@ export function parseOwl(turtle: string): OwlModel {
       case 'objectProperty':
         objectProperties.push({
           localName: localName(iri),
-          // a.domains are already local names; a.ranges are raw IRIs. Carry all
-          // of each so the mapper can warn about (and drop) the extras rather
-          // than silently keeping only the first.
-          domains: a.domains,
-          ranges: a.ranges.map(localName),
+          // Carry every domain and range so the mapper can warn about (and
+          // drop) the extras rather than silently keeping only the first.
+          domains: namedRefs(a.domains),
+          ranges: namedRefs(a.ranges),
+          anonymousDomain: anonymousClass(a.domains),
+          anonymousRange: anonymousClass(a.ranges),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,

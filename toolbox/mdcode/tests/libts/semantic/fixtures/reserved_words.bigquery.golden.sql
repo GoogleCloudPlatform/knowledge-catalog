@@ -6,7 +6,8 @@ NODE TABLES (
       order_id AS id,
       group_fk AS groupId,
       `order` AS rank,
-      MEASURE(COUNT(id)) AS `range`
+      order_id,
+      MEASURE(COUNT(order_id)) AS `range`
     ),
   `proj.ds.groups` AS `Group`
     KEY(group_id)
@@ -19,6 +20,7 @@ EDGE TABLES (
     KEY(order_id)
     SOURCE KEY(order_id) REFERENCES `Order`(order_id)
     DESTINATION KEY(group_fk) REFERENCES `Group`(group_id)
+    NO PROPERTIES
 );
 
 -- warnings --

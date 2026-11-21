@@ -1,5 +1,5 @@
 name: push_custom
-description: Push Custom entry modifications
+description: Push Custom entry modifications right after init and pull
 setup:
   catalog:
     entryGroups:
@@ -12,12 +12,8 @@ setup:
         entrySource:
           description: Old custom description
 
-  fileSystem:
-    catalog.yaml: |
-      scope: entryGroup.p.us.custom-group
-      snapshot:
-        entries:
-          - p.global.custom-type
+init:
+  entryGroup: p.us.custom-group
 
 actions:
   - action: pull

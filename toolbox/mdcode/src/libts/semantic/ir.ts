@@ -49,10 +49,8 @@ export interface CustomExtension {
  * (edges), with model-level metrics defined over them.
  *
  * The IR is primarily semantics. The loader reads a model's named
- * `deployments:` list onto `deployments`. In the Google flavor it also folds
- * their target URIs into a model-level GOOGLE `custom_extensions` block for the
- * consumers that read it. A vanilla model lists its deployments in its GOOGLE
- * block, which the loader reads and does not fold.
+ * `deployments:` list onto `deployments` (from `deployments:` in the Google
+ * flavor or from the model-level GOOGLE `custom_extensions` block in vanilla).
  */
 export interface SemanticModel {
   name: string;
@@ -77,8 +75,7 @@ export interface SemanticModel {
   // absent on models authored before constraints existed, so consumers read it
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), including a
-  // vanilla model's GOOGLE block that holds `deploymentTargets`.
+  // Vendor extension blocks carried verbatim (round-trip fidelity).
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
   // Named profiles. A Google-flavor model's come from its
@@ -91,6 +88,11 @@ export interface SemanticModel {
   // in `metrics`, so a catalog push still publishes them; pruning drops them.
   // Set when a profile is applied; absent otherwise.
   excludedMetrics?: string[];
+  // Set when kcmd import checks what it writes for a file another product
+  // wrote, unless it writes a GOOGLE block over that file, so that a message
+  // naming an import command names one that reads that file. Absent
+  // otherwise.
+  thirdPartyImport?: boolean;
 }
 
 /**
@@ -108,6 +110,11 @@ export interface Entity {
   // target's addressing scheme.
   dataSource: string;
   authoredSource?: string;  // the source string as typed
+  // The dialect a lookup gave for this entity's source: a Cloud SQL or
+  // third-party table's from its Knowledge Catalog entry, a Spanner table's
+  // from its database. Set only when the load was given those dialects
+  // (LoadOptions.sourceDialects).
+  sourceDialect?: string;
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
@@ -165,8 +172,12 @@ export interface Dimension {
 export const ALLOWED_DIALECTS = [
   'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
   'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS',
+  'OSSIE_SQL_2026',
 ] as const;
 export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
+
+// The dialect Apache Ossie 0.3.0.dev0 writes its `sql` texts in.
+export const OSSIE_SQL: SqlDialect = 'OSSIE_SQL_2026';
 
 export interface DialectExpression {
   dialect: SqlDialect;
@@ -296,8 +307,8 @@ export function isTimeDimension(field: Field): boolean {
 // `expression` wins; a field awaiting transpilation falls back to its imported
 // vendor expression, which still names a real column. Undefined here is not
 // the same as unbound: a field bound only through a `dialects` list has no
-// text here yet counts as bound (see isFieldBound). The BigQuery generator
-// asks for its own engine's text through `expressionForDialect` instead.
+// text here yet counts as bound (see isFieldBound). The graph generators ask
+// for their own engine's text through `expressionForDialect` instead.
 export function fieldBinding(
     field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
@@ -338,26 +349,40 @@ export function isFieldBound(
 }
 
 /**
- * The keys a relationship's `to_columns` cover, as "the primary key" and
- * "unique key k" (from 1), in that order. A key is covered when every one of
- * its columns is among `to_columns`, so a superset of a key covers it, since
- * each row still matches at most one target row. An empty result means the
- * join reaches no key. Column names compare as BigQuery compares them: ignoring
- * case, and without the backticks that only quote a name.
+ * Whether a relationship's `to_columns` cover the primary key or a unique key.
+ * A key is covered when every one of its columns is among `to_columns`, so a
+ * superset of a key covers it, since each row still matches at most one target
+ * row. Column names compare as BigQuery compares them: ignoring case, and
+ * without the backticks that only quote a name.
  */
-export function keysCoveredBy(
+export function coversKey(
     toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
-    string[] {
-  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
+    boolean {
   const has = new Set(toColumns.map(columnKey));
-  const covers = (key: string[]) =>
-      key.length > 0 && key.every(c => has.has(columnKey(c)));
-  const out: string[] = [];
-  if (covers(primaryKey)) out.push('the primary key');
-  uniqueKeys.forEach((key, i) => {
-    if (covers(key)) out.push(`unique key ${i + 1}`);
-  });
-  return out;
+  return [primaryKey, ...uniqueKeys].some(
+      key => key.length > 0 && key.every(c => has.has(columnKey(c))));
+}
+
+/**
+ * Whether a relationship's `to_columns` name exactly the columns of
+ * `primaryKey`, in any order and each once. BigQuery treats a graph edge as
+ * ambiguous when querying measures unless it joins on its destination node's
+ * `primary_key` columns alone: a unique key, or a superset of the primary key,
+ * covers a key (see coversKey) without matching it. Column names compare as in
+ * coversKey.
+ */
+export function matchesKey(
+    toColumns: string[], primaryKey: string[]): boolean {
+  const to = new Set(toColumns.map(columnKey));
+  const key = new Set(primaryKey.map(columnKey));
+  return key.size > 0 && to.size === toColumns.length &&
+      to.size === key.size && [...key].every(c => to.has(c));
+}
+
+// A key or join column as BigQuery compares it: ignoring case, and without the
+// backticks that only quote a name.
+function columnKey(column: string): string {
+  return column.replace(/^`(.*)`$/, '$1').toLowerCase();
 }
 
 /**
@@ -433,8 +458,8 @@ export interface RelationshipEnd {
  * produces -- a junction edge is backed by its OWN table (`dataSource`) with
  * its OWN key (`keys`) and may carry edge `fields` (properties of the
  * association itself, e.g. an enrollment's grade). Each side names the columns
- * ON THE JUNCTION TABLE that reference the corresponding endpoint entity's
- * declared `keys`. The open format has no association-table syntax yet, so this
+ * ON THE JUNCTION TABLE that reference the key of the endpoint entity's node
+ * (see nodeKey). The open format has no association-table syntax yet, so this
  * is produced by hand-built IR (or a future format extension), not the loader.
  */
 export interface Association {
@@ -853,7 +878,7 @@ export interface Constraint {
 
 export interface DeploymentSpec {
   name: string;      // unique among the model's deployments
-  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // A GCP resource name, as written. Three kinds are
   // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
   // `deployment_target.ts` already parses all three. Keep this opaque.
   target: string;

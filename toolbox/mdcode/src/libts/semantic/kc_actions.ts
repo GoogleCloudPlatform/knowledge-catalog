@@ -70,14 +70,9 @@ export interface ActionEmitContext {
   // Reserves an entry id, returning false when it collides with one already
   // emitted (knowledge_catalog.claim).
   claim(entryId: string, label: string): boolean;
-  // Names of the entities this push actually publishes an entry for. An
-  // abstract entity, or one a binding profile pruned, is absent, so a
-  // parameter typed by it would name an entry that does not exist.
-  publishedEntities: Set<string>;
 }
 
-// The entry id of one action: `<model>.actions.<name>`, alongside
-// `<model>.entities.<name>` and `<model>.metrics.<name>`.
+// The entry id of one action: `<model>.actions.<name>`.
 export function actionEntryId(modelId: string, actionName: string): string {
   return `${modelId}.actions.${slug(actionName)}`;
 }
@@ -89,29 +84,25 @@ export function actionOwnedPrefix(modelId: string): string {
 }
 
 // Why a pull will not recover the field a parameter projects from, or '' when
-// it will. Three ways to lose it, and naming which one is the difference
+// it will. Two ways to lose it, and naming which one is the difference
 // between an author deleting the projection and an author binding a column:
 //
-//   - the concept is not published at all (pruned, or abstract);
 //   - the concept is published but the FIELD is not -- `pruneUnavailable`
 //     drops an unbound field while keeping the entity whose key still binds,
 //     and a projected parameter no longer prunes its action, so the entry goes
 //     out naming a field the `schema` aspect does not carry;
-//   - the concept is a relationship. Pull rebuilds relationships from
-//     `schema-join` entry links alone, and a link records its two endpoints
-//     and nothing else, so an association's own fields come back from no
-//     entry. The parameter still publishes intact either way -- the loader
-//     resolved its type and wording before any of this -- so what is lost is
-//     only the projection, and only on the way back.
+//   - the concept is a relationship. A relationship's entry records its
+//     endpoints and join columns but no fields of its own, and an association
+//     has no entry, so an association's own fields come back from no entry.
+//     The parameter still publishes intact either way -- the loader resolved
+//     its type and wording before any of this -- so what is lost is only the
+//     projection, and only on the way back.
 function unrecoverable(
-    concept: string, field: string|undefined, relationships: Set<string>,
-    published: Map<string, DeclaredConcept>|null,
-    ctx: ActionEmitContext): string {
-  if (!ctx.publishedEntities.has(concept) && relationships.has(concept)) {
+    concept: string, field: string|undefined, entities: Set<string>,
+    relationships: Set<string>,
+    published: Map<string, DeclaredConcept>|null): string {
+  if (!entities.has(concept) && relationships.has(concept)) {
     return `'${concept}' is a relationship, whose fields no entry records`;
-  }
-  if (!ctx.publishedEntities.has(concept)) {
-    return `this push does not publish '${concept}' (abstract or unavailable)`;
   }
   if (published && field !== undefined &&
       !published.get(concept)?.fields.has(field)) {
@@ -136,16 +127,14 @@ export function actionEntries(
   const actions = model.actions ?? [];
   if (!actions.length) return [];
 
-  // A relationship is a perfectly good `affects` concept but is never in
-  // publishedEntities, so the check below reads the model's own edges for it.
-  // Pruning drops a whole relationship from the model, so a dropped one is
-  // absent from this set for the same reason a dropped entity is absent from
-  // publishedEntities.
+  // A parameter can project from an entity or a relationship. The check below
+  // tells them apart by the model's own names.
+  const entityNames = new Set((model.entities ?? []).map(e => e.name));
   const relationshipNames =
       new Set((model.relationships ?? []).map(r => r.name));
 
-  // The fields this push actually writes into a `schema` aspect, which is
-  // what a later pull reads back. Asked of the loader's own resolver so the
+  // The fields of each concept with inheritance resolved, which a later pull
+  // rebuilds from the catalog. Asked of the loader's own resolver so the
   // answer accounts for `extends`; a model that will not resolve returns null
   // and the field half of the check is skipped, since an emitter is not the
   // place to discover that a model does not load.
@@ -160,37 +149,21 @@ export function actionEntries(
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
     if (!ctx.claim(id, `action '${action.name}'`)) continue;
-    // A derived parameter -- one projected from a field -- leaves the catalog
-    // naming a concept it has no entry for when that concept is not part of
-    // this push. The parameter itself still publishes intact, type and wording
-    // and all, because the loader already resolved them; what a later pull
-    // cannot do is find the field the projection came from, so re-authoring
-    // that model would have to state the type by hand.
+    // A derived parameter -- one projected from a field -- still publishes
+    // intact, type and wording and all, because the loader already resolved
+    // them. What a later pull may not do is find the field the projection
+    // came from (see unrecoverable), so re-authoring that model would have to
+    // state the type by hand.
     for (const p of action.parameters ?? []) {
       if (!p.concept) continue;
       const why = unrecoverable(
-          p.concept, p.field, relationshipNames, published, ctx);
+          p.concept, p.field, entityNames, relationshipNames, published);
       if (!why) continue;
       warnings.push(
           `model '${model.name}': action '${action.name}' parameter ` +
           `'${p.name}' is projected from '${p.concept}.${p.field}', ` +
           `${why}, so a pull will recover the parameter but not the field ` +
           `it came from.`);
-    }
-    // The same hazard for the concepts the action declares it changes. The
-    // entry is still published -- the action does change that concept, and
-    // dropping the claim would understate the blast radius -- but the catalog
-    // then names a concept it has no entry for, and pulling that model and
-    // pushing it unpruned fails hard on the same name. Say it where the
-    // divergence is created rather than two commands later.
-    for (const affected of action.affects ?? []) {
-      if (ctx.publishedEntities.has(affected.concept)) continue;
-      if (relationshipNames.has(affected.concept)) continue;
-      warnings.push(
-          `model '${model.name}': action '${action.name}' affects ` +
-          `'${affected.concept}', which this push does not publish ` +
-          `(abstract or unavailable), so the catalog records a blast radius ` +
-          `naming a concept it has no entry for.`);
     }
     entries.push({
       name: ctx.entry(id),
@@ -461,10 +434,10 @@ function parseDefaultFromAspect(raw: unknown): unknown {
 // so there is nothing to recover.
 //
 // Unlike readParameter, this resolves nothing against the pulled model. It
-// could not do so honestly if it tried: a pull recovers relationships from the
-// schema-join entry links, so a many-to-many edge is never among them, and
-// every entry naming one would look unresolvable on a model that is perfectly
-// well-formed. Nothing here needs the answer, so nothing asks.
+// could not do so honestly if it tried: a pull recovers relationships from
+// their own entries, and a many-to-many edge has none, so every entry naming
+// one would look unresolvable on a model that is perfectly well-formed.
+// Nothing here needs the answer, so nothing asks.
 function readAffectedConcept(raw: any, actionName: string, warnings: string[]):
     AffectedConcept|undefined {
   const concept = typeof raw?.concept === 'string' ? raw.concept : '';

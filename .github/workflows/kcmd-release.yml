@@ -1,0 +1,150 @@
+name: Release @google-cloud/kcmd
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'toolbox/mdcode/package.json'
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: 'npm distribution tag (e.g. latest, next, beta)'
+        required: false
+        default: 'latest'
+        type: string
+      expected_version:
+        description: 'Optional version check against toolbox/mdcode/package.json (e.g. 0.1.0)'
+        required: false
+        default: ''
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-kcmd
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'GoogleCloudPlatform/knowledge-catalog' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: toolbox/mdcode
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: toolbox/mdcode/package-lock.json
+
+      - name: Check whether package version needs publishing
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_VERSION: ${{ inputs.expected_version || '' }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          case "${VERSION}" in
+            *-semantic*)
+              echo "Error: refusing to publish '${VERSION}' to public npm." >&2
+              exit 1
+              ;;
+          esac
+          if [ -n "${EXPECTED_VERSION}" ] && [ "${EXPECTED_VERSION}" != "${VERSION}" ]; then
+            echo "Error: expected_version '${EXPECTED_VERSION}' does not match package.json version '${VERSION}'." >&2
+            exit 1
+          fi
+          set +e
+          VIEW_OUT="$(npm view "@google-cloud/kcmd@${VERSION}" version --registry=https://registry.npmjs.org 2>&1)"
+          VIEW_RC=$?
+          set -e
+          if [ "${VIEW_RC}" -eq 0 ]; then
+            if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+              echo "Error: @google-cloud/kcmd@${VERSION} is already published on npmjs.org. Bump toolbox/mdcode/package.json on main first." >&2
+              exit 1
+            fi
+            echo "@google-cloud/kcmd@${VERSION} is already published on npmjs.org; skipping automatic release."
+            echo "should_publish=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! printf '%s' "${VIEW_OUT}" | grep -q 'E404'; then
+            echo "Error querying npmjs.org for @google-cloud/kcmd@${VERSION}:" >&2
+            printf '%s\n' "${VIEW_OUT}" >&2
+            exit 1
+          fi
+          echo "Unpublished version detected: @google-cloud/kcmd@${VERSION}"
+          echo "should_publish=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Setup Bun
+        if: steps.check.outputs.should_publish == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install dependencies, compile, build, and test
+        if: steps.check.outputs.should_publish == 'true'
+        run: |
+          npm ci
+          npm run compile
+          npm run build
+          CLOUDSDK_CONFIG="$(mktemp -d)" npm test
+
+      - name: Authenticate with OSS Exit Gate (WIF)
+        if: steps.check.outputs.should_publish == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: 'projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github'
+
+      - name: Setup gcloud CLI
+        if: steps.check.outputs.should_publish == 'true'
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+
+      - name: Publish @google-cloud/kcmd to Artifact Registry and trigger OSS Exit Gate
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "Publishing @google-cloud/kcmd@${VERSION} (tag: ${DIST_TAG}) to OSS Exit Gate..."
+
+          cat > .npmrc << 'NPMRC'
+          @google-cloud:registry=https://us-npm.pkg.dev/oss-exit-gate-prod/knowledge-catalog--npm/
+          //us-npm.pkg.dev/oss-exit-gate-prod/knowledge-catalog--npm/:always-auth=true
+          NPMRC
+          trap 'rm -f .npmrc manifest.json' EXIT
+
+          npx --no-install google-artifactregistry-auth
+          npm publish
+          echo "Artifact published to Artifact Registry."
+
+          node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            const tag = process.argv[2];
+            const manifest = {
+              publishing_groups: [
+                {
+                  namespace: "@google-cloud",
+                  packages: [{ name: "kcmd", version }],
+                },
+              ],
+              ...(tag && tag !== "latest"
+                ? { registry_config: { npm: { tags: [tag] } } }
+                : {}),
+            };
+            fs.writeFileSync("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          ' "${VERSION}" "${DIST_TAG}"
+
+          gcloud storage cp manifest.json gs://oss-exit-gate-prod-projects-bucket/knowledge-catalog/npm/manifests/manifest.json
+          echo "Manifest uploaded to GCS; OSS Exit Gate release triggered."

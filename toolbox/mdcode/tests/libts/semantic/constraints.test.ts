@@ -22,12 +22,12 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
 };
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text, {allowLegacyBareSource: true}).models[0];
+  return loadModels(text).models[0];
 }
 
 // A one-entity document with a constraints array, for focused loader tests.
@@ -39,7 +39,7 @@ function withConstraints(constraints: any[], over: any = {}) {
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -50,8 +50,7 @@ function withConstraints(constraints: any[], over: any = {}) {
           constraints,
           ...over,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 
@@ -82,13 +81,12 @@ describe('loader parses constraints', () => {
             name: 'm',
             datasets: [{
               name: 'customer',
-              source: 'p.d.c',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
               primary_key: ['id'],
               fields: [],
             }],
           }],
-        },
-        {allowLegacyBareSource: true});
+        });
     expect(models[0].constraints).toBeUndefined();
   });
 
@@ -144,7 +142,11 @@ describe('loader parses constraints', () => {
              name: 'C',
              judgment: 'The customer.balance must not go below zero.',
              on_violation: 'reject',
-             expression: 'customer.balance >= 0',
+             expression: {
+               dialects: [
+                 {dialect: 'BIGQUERY', expression: 'customer.balance >= 0'},
+               ],
+             },
            }]))
         .toThrow(/constraint 'C' states an expression/);
   });
@@ -192,11 +194,7 @@ describe('loader parses constraints', () => {
 
 describe('validatePushRequirements gates constraints', () => {
   const target =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-  const googleExt = {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: [target]})
-  };
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   function loaded(constraints: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -210,7 +208,7 @@ describe('validatePushRequirements gates constraints', () => {
       relationships: [],
       metrics: [],
       constraints,
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -302,10 +300,12 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'Trace the balance through customer.OwnedBy before approving.',
       onViolation: 'warn',
     }]);
+    m.model.entities.push(
+        {name: 'owner', dataSource: 'p.d.w', keys: ['id'], fields: []});
     m.model.relationships = [{
       name: 'OwnedBy',
       source: {entity: 'customer', columns: ['id']},
-      destination: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'owner', columns: ['id']},
     }];
     expect(validatePushRequirements([m])).toEqual([]);
   });
@@ -345,10 +345,12 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'The customer.blance must stay positive.',
       onViolation: 'warn',
     }]);
+    m.model.entities.push(
+        {name: 'owner', dataSource: 'p.d.w', keys: ['id'], fields: []});
     m.model.relationships = [{
       name: 'OwnedBy',
       source: {entity: 'customer', columns: ['id']},
-      destination: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'owner', columns: ['id']},
     }];
     m.model.metrics = [{
       name: 'total_owed',
@@ -410,7 +412,7 @@ describe('validatePushRequirements gates constraints', () => {
       relationships: [],
       metrics: [],
       constraints: [{name: 'C', judgment, onViolation: 'reject'}],
-      customExtensions: [googleExt],
+      deployments: [{name: 'default', target}],
     };
     return {document: 'doc', model};
   }
@@ -598,7 +600,7 @@ describe('OSI round trip', () => {
     expect(model.constraints).toHaveLength(5);
     const {yaml} = serializeModel(model);
     expect(yaml).toContain('constraints:');
-    const reloaded = loadModels(yaml, {allowLegacyBareSource: true}).models[0];
+    const reloaded = loadModels(yaml).models[0];
     expect(reloaded.constraints).toEqual(model.constraints);
   });
 
@@ -696,9 +698,10 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // The emit side above and this read side are what make the annotation
     // survive a round trip; dropping either would lose a declared field
     // silently, since the pull rewrites the document it read.
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
-    expect(models[0].constraints![0].aiContext).toEqual({
+    const {entries} = generateCatalogResources(model, OPTS);
+    const {models} = modelsFromCatalogResources(entries);
+    const byName = new Map(models[0].constraints!.map(c => [c.name, c]));
+    expect(byName.get('NonNegativeOrderTotal')!.aiContext).toEqual({
       instructions:
           'Quote the shortfall in the customer\'s own currency when refusing.',
       synonyms: ['NoNegativeTotals', 'NonNegativeTotal'],
@@ -706,7 +709,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     });
     // The constraint that declares none stays clean rather than gaining an
     // empty record.
-    expect(models[0].constraints![1].aiContext).toBeUndefined();
+    expect(byName.get('PositiveQuantity')!.aiContext).toBeUndefined();
   });
 
   test('a model with no constraints publishes no constraint entry', () => {
@@ -723,24 +726,22 @@ describe('Knowledge Catalog publish/pull round trip', () => {
          expect(ownedPrefixes).toContain('sales.constraints.');
        });
 
-  test('a pull recovers the constraints', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
-    expect(models[0].constraints).toEqual(model.constraints);
-  });
-
-  test('a pull recovers actions and constraints together', () => {
-    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(entries, entryLinks);
-    expect(models[0].actions).toEqual(model.actions);
-    expect(models[0].constraints).toEqual(model.constraints);
+  test('a pull recovers actions and constraints together, in name order',
+       () => {
+    const {entries} = generateCatalogResources(model, OPTS);
+    // Listed in reverse, so pull's order cannot come from the catalog's.
+    const {models} = modelsFromCatalogResources([...entries].reverse());
+    const inNameOrder = <T extends {name: string}>(items: T[] = []) =>
+        [...items].sort((a, b) => a.name < b.name ? -1 : 1);
+    expect(models[0].actions).toEqual(inNameOrder(model.actions));
+    expect(models[0].constraints).toEqual(inNameOrder(model.constraints));
   });
 
   test('a second push of the pulled model produces the same entries', () => {
     // Push -> pull -> push has to be a fixed point: if it were not, a pull
     // followed by a push would rewrite entries that nobody edited.
     const first = generateCatalogResources(model, OPTS);
-    const {models} = modelsFromCatalogResources(first.entries, first.entryLinks);
+    const {models} = modelsFromCatalogResources(first.entries);
     const second = generateCatalogResources(models[0], OPTS);
 
     const constraintsOf = (entries: typeof first.entries) =>
@@ -865,10 +866,10 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     broken.aspects![CONSTRAINT_ASPECT].data!.judgment = '  ';
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name)).toEqual([
-      'NonNegativeOrderTotal',
-      'OrderWithinStandingLimit',
-      'OrderWithinCustomerCredit',
       'LargeOrderIsJustified',
+      'NonNegativeOrderTotal',
+      'OrderWithinCustomerCredit',
+      'OrderWithinStandingLimit',
     ]);
     expect(warnings.some(
                w => w.includes('constraint \'PositiveQuantity\'') &&
@@ -910,6 +911,8 @@ describe('judged constraints', () => {
     entities: [{
       name: 'credit',
       dataSource: 'p.d.credit',
+      authoredSource:
+          'bigquery.googleapis.com/projects/p/datasets/d/tables/credit',
       keys: ['id'],
       fields: [{name: 'memo'}, {name: 'amount'}],
     }],
@@ -966,16 +969,15 @@ describe('judged constraints', () => {
   });
 
   test('a pull recovers the judgment', () => {
-    const {entries, entryLinks} = generateCatalogResources(judged, OPTS);
-    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    const {entries} = generateCatalogResources(judged, OPTS);
+    const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints).toEqual(judged.constraints);
     expect(warnings.filter(w => w.includes('MemoNamesAFailure'))).toEqual([]);
   });
 
   test('push -> pull -> push is a fixed point', () => {
     const first = generateCatalogResources(judged, OPTS);
-    const {models} =
-        modelsFromCatalogResources(first.entries, first.entryLinks);
+    const {models} = modelsFromCatalogResources(first.entries);
     const second = generateCatalogResources(models[0], OPTS);
     expect(second.entries).toEqual(first.entries);
   });
@@ -985,8 +987,7 @@ describe('judged constraints', () => {
     expect(yaml).toContain('judgment:');
     // Never authored, and now never published either.
     expect(yaml).not.toContain('evaluation:');
-    expect(loadModels(yaml, {allowLegacyBareSource: true}).models[0].constraints)
-        .toEqual(judged.constraints);
+    expect(loadModels(yaml).models[0].constraints).toEqual(judged.constraints);
   });
 });
 

@@ -13,7 +13,7 @@ Follow the instructions on that page on using the `kcmd` tool.
 
 ### CLI
 
-The package provides the `kcenrich` CLI tool. This is distributed as a standalone binary.
+The package provides the `kcagent` CLI tool. This is distributed as a standalone binary.
 
 ```bash
 # Initialize a new catalog snapshot for a bigquery dataset

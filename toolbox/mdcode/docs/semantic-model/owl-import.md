@@ -135,7 +135,9 @@ wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
 document is written into the semantic-model layout dir so the next `kcmd push`
-picks it up; pass `--out <path>` to write it elsewhere. The output uses the
+picks it up; pass `--out <path>` to write it elsewhere. An entry group holds
+one model, so without `--out` the import is refused when the entry group folder
+already holds another model's file. The output uses the
 block layout shown below; pass `--compact` for the compact flow layout
 (`primary_key: [id]`, inline `{ name, datatype }` field and relationship maps)
 instead. Either way it is a purely **logical** model — `kcmd push` publishes it
@@ -232,12 +234,22 @@ appears nowhere above.
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
 | term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
-A datatype property whose domain is not a class, or an object property missing an
-endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import. An object property that declares *more than one* `rdfs:domain`
-or `rdfs:range` is kept — a relationship maps one source to one destination, so
-the first of each is used and the extra endpoints are dropped with a warning
-(unlike a multi-domain *datatype* property, which lands on every domain).
+A datatype property whose domain is not a class, or an object property with a
+missing or non-class endpoint, cannot be placed; it is **skipped with a warning**
+rather than failing the whole import. Import matches a domain or range to a class
+by its full IRI, as it does a superclass. A domain or range of `foaf:Person` does
+not match a local `Person`, and its warning names the full IRI. Import writes no
+entity for an anonymous class, a blank node such as
+`[ a owl:Class ; owl:unionOf ( ex:A ex:B ) ]`. A property whose `rdfs:domain` or
+`rdfs:range` is an anonymous class is left out with a warning. Import also
+leaves out each object property push would reject,
+with a warning: one on a class with subclasses, one whose `rdfs:domain` and
+`rdfs:range` are one class, and one that runs opposite to an object property
+imported before it. An object property that declares *more than one*
+`rdfs:domain` or `rdfs:range` is kept — a relationship maps one source to one
+destination, so the first of each is used and the extra endpoints are dropped
+with a warning (unlike a multi-domain *datatype* property, which lands on every
+domain).
 
 ### Datatypes (`rdfs:range`)
 
@@ -270,7 +282,9 @@ BigQuery Graph / BI treats it as one.
   it has no field to back it; because keeping only the columns that do exist
   would silently narrow a composite key to a possibly non-unique one, the
   **entire `primary_key` is dropped** with a warning rather than left to fail
-  later at graph generation.
+  later at graph generation. Import matches a key property to a field by its
+  full IRI, as it does a domain or range. A key of `foaf:id` does not select the
+  field `id` written for `ex:id`, and the warning names the full IRI.
 - An **`owl:InverseFunctionalProperty`** (a datatype property that uniquely
   identifies its subject) becomes a `unique_keys` constraint — unless it is
   already the `primary_key`, in which case it is not repeated. If a class
@@ -283,6 +297,10 @@ Keys are **logical grain**, not a binding — they are the entity's identity, so
 they come across even though the model has no physical binding. They also tell
 you which columns an edge's `to_columns` must reference when you add join columns
 to the model; see [binding](#4-going-from-ontology-to-a-running-graph-binding).
+A BigQuery or Spanner Graph deploy needs a `primary_key` on every concrete leaf
+class, including one the import left without one, and on BigQuery each edge's
+`to_columns` must name exactly its target's `primary_key` columns, not a unique
+key.
 
 ### Class hierarchies (`rdfs:subClassOf`)
 
@@ -331,9 +349,12 @@ the `Person` and `Customer` entities come out as (`Customer` carrying
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
 order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
-similar) is not a named class, so it is ignored, as are the implicit universal
-superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
-carry no inheritance information).
+similar) is not a named class, so it is ignored, as are the class itself and the
+implicit universal superclasses `owl:Thing` / `rdfs:Resource` (every class
+subclasses them, so they carry no inheritance information). A superclass import
+does not write as an entity is dropped with a warning that names its full IRI.
+That covers `foaf:Person` above a local `Person`, whether or not the ontology
+declares `foaf:Person` as a class.
 
 Two boundaries to be clear about:
 
@@ -342,12 +363,13 @@ Two boundaries to be clear about:
   A **BigQuery** push then resolves that inheritance: it emits a `LABEL Person`
   clause on the `Customer` node table and flattens `Person`'s fields down (fields
   flow down; edges do not) — see [Class hierarchies (`extends` →
-  labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push is
-  unchanged: it still publishes each entry with exactly the fields it declares
-  (KC-side inheritance is a separate, later opt-in). Every push accepts a
-  relationship only between concrete leaf entities. An object property whose
-  `rdfs:domain` or `rdfs:range` is a class with subclasses imports as written,
-  and push rejects it until you move it onto the leaf classes.
+  labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push
+  publishes each entity with exactly the fields it declares, records its
+  `extends` on its entry, and links the entry to each parent's with a
+  `reference` link. Every push accepts a
+  relationship only between concrete leaf entities. Import leaves out an object
+  property whose `rdfs:domain` or `rdfs:range` is a class with subclasses, and
+  its warning names the classes under that class with no subclasses.
 - **Native inheritance is entity-level only.** `extends` lives on `entities`,
   never on relationships — the boundary is structural. `rdfs:subPropertyOf`
   (property / relationship inheritance) has no such native slot, so it is **not
@@ -358,72 +380,100 @@ Two boundaries to be clear about:
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in. The exception is a relationship
-on a class with subclasses, which push rejects as described above:
+fields, and keys) with nothing more to fill in.
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog
 ```
 
-A relationship publishes as a catalog link only once it has join columns (added
-to the model, below); a column-less edge is skipped with a warning, so the
-entities and fields still publish while the edge waits.
+A relationship with no join columns still publishes, with its entry and its
+links, so the whole logical model reaches the catalog.
 
-A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
-and they belong in different places:
+A **BigQuery or Spanner Graph** deploy needs three things the import leaves
+open, and they belong in different places:
 
 1. **The join columns on each edge — in the model.** The import gives every
-   relationship its endpoints (`from`/`to`) but no join columns; which columns an
-   edge joins on is a *logical* fact the model owns, not a physical binding, so
-   you add it to the imported model itself. The keys the import already recovered
-   (`primary_key`, `unique_keys`) tell you which columns an edge's `to_columns`
-   must reference:
+   relationship its endpoints (`from`/`to`) but no join columns; join columns
+   are a binding, like `source`: the model file's are its inline `default`
+   binding, and each named profile states its own (step 2). A key and a join
+   column each name a column of the table, and the import names each key after
+   the property it came from. So change each imported key to the column its
+   property is bound to, and join on that column:
 
    ```yaml
-   # sales.yaml — add the join columns to the imported relationship
+   # sales.yaml: key each entity by its column, and add the join columns
+   entities:
+     - name: Customer
+       primary_key: [c_custkey]    # imported as [customerId]
+       unique_keys: [[c_email]]    # imported as [[email]]
+     - name: Order
+       primary_key: [o_orderkey]   # imported as [orderId]
    relationships:
      - name: placedBy
        from: Order
        to: Customer
        from_columns: [o_custkey]   # the Order-side foreign key
-       to_columns: [customerId]    # Customer's key column
+       to_columns: [c_custkey]     # Customer's key column
    ```
 
 2. **The physical binding — in a profile.** Which table each entity reads, which
-   column each field reads, and the deployment target go in a
-   [binding profile](profiles.md): a document in the same schema, kept beside the
-   model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
-   leaves the logical model untouched. A profile may set `source`, field
-   `expression`, and `deployment_target` — nothing logical (a `relationships`
-   block in a profile is rejected). A field the profile does not bind is left
-   unbound; there is no separate flag. The model and the profile merge by name at
+   column each field reads, and each relationship's join columns go in a
+   [binding profile](profiles.md): a sibling file kept beside the model as
+   `<model>.profile.<name>.yaml` that adds *only* the binding and leaves the
+   logical model untouched, while the model's `deployments` list pairs the
+   deployment target with that profile. A profile may set `source`,
+   `primary_key`, `unique_keys`, field `expression`, `fields_exclude`,
+   relationship `from_columns`/`to_columns`, `metrics_exclude`, and action
+   `executor` — nothing logical. The model and the profile merge by name at
    push time:
 
    ```yaml
-   # sales.profiles/warehouse.yaml — physical binding for the sales model
-   version: 0.2.0.dev0/google
-   semantic_model:
-     - name: sales
-       deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
-       datasets:
-         - name: Customer
-           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
-           fields:
-             - { name: customerId, expression: c_custkey }
-             - { name: email,      expression: c_email }
-             # ... the remaining Customer fields ...
-         - name: Order
-           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
-           fields:
-             - { name: orderId, expression: o_orderkey }
-             # ... the remaining Order fields ...
+   # sales.yaml: add the deployment entry
+   deployments:
+     - name: warehouse
+       target: bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
+       profile: warehouse
    ```
 
-With the join columns in the model and the profile in place, a single push
-deploys the graph:
+   ```yaml
+   # sales.profile.warehouse.yaml — physical binding for the sales model
+   name: warehouse
+   entities:
+     - name: Customer
+       source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
+       primary_key: [c_custkey]
+       unique_keys: [[c_email]]
+       fields:
+         - { name: customerId, expression: c_custkey }
+         - { name: email,      expression: c_email }
+         # ... the remaining Customer fields ...
+     - name: Order
+       source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
+       primary_key: [o_orderkey]
+       fields:
+         - { name: orderId, expression: o_orderkey }
+         # ... the remaining Order fields ...
+   relationships:
+     - name: placedBy
+       from_columns: [o_custkey]
+       to_columns: [c_custkey]
+   ```
+
+3. **A primary key on every concrete leaf class — in the model or the profile.**
+   A graph node is keyed by its entity's `primary_key`, so every concrete leaf
+   class needs one on BigQuery and Spanner. The import leaves a class without
+   one when it has no usable `owl:hasKey` and not exactly one
+   inverse-functional property (see
+   [Keys](#keys-owlhaskey-owlinversefunctionalproperty)). Declare its
+   `primary_key` in the model, or in each profile a graph deployment uses. On
+   BigQuery, each edge's `to_columns` must name exactly that key's columns: a
+   BigQuery deploy rejects a join on a unique key such as `[c_email]`.
+
+With the deployment in the model and the sibling profile file in place, a single
+push publishes the model and deploys the graph:
 
 ```console
-$ kcmd push --profile warehouse   # merges the binding, then CREATE OR REPLACE PROPERTY GRAPH + KC entries
+$ kcmd push --deployment warehouse   # publishes to KC + deploys CREATE OR REPLACE PROPERTY GRAPH
 ```
 
 See [One logical model, many physical bindings](profiles.md) for the full profile
@@ -432,20 +482,20 @@ one logical model binds to several stores.
 
 ## Limitations
 
-Three different situations hide in "not covered": constructs already read but not
-yet resolved all the way downstream, constructs not read but reachable next, and
-constructs out of scope.
+Two different situations hide in "not covered": constructs not read but
+reachable next, and constructs out of scope. What the importer reads comes
+first.
 
-**Read now — only downstream resolution is pending.** The **class hierarchy**
-(`rdfs:subClassOf`) maps to entity `extends` (see [Class
-hierarchies](#class-hierarchies-rdfssubclassof)); the importer handles it today
-and the remaining work is downstream, not in the import:
+**Read now.** The **class hierarchy** (`rdfs:subClassOf`) maps to entity
+`extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)). Each
+push target handles it as follows:
 
-- **BigQuery** push resolves it into node-table labels, inherited fields
-  flattened down (see [Class hierarchies (`extends` →
+- **BigQuery** and **Spanner** push resolve it into node-table labels,
+  inherited fields flattened down (see [Class hierarchies (`extends` →
   labels)](reference.md#class-hierarchies-extends--labels)).
-- **Knowledge Catalog** is the follow-on — KC push still publishes each entry
-  with only its own fields.
+- **Knowledge Catalog** records the hierarchy as written: each entity's entry
+  holds only its own fields and its `extends`, with a `reference` link to each
+  parent's entry.
 
 **Not imported — dropped.** OWL can state things the semantic model has no native
 slot for. The importer reads them but does **not** carry them (an earlier version

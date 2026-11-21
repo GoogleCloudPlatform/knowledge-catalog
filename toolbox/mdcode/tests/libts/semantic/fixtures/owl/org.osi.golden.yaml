@@ -74,11 +74,6 @@ semantic_model:
           instructions: The department an employee belongs to.
           synonyms:
             - member of
-      - name: reportsTo
-        from: Employee
-        to: Employee
-        ai_context:
-          instructions: The manager an employee reports to.
       - name: worksOn
         from: Employee
         to: Project
