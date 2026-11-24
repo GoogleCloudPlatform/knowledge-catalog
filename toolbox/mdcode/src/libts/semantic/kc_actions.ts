@@ -17,7 +17,7 @@
 // type by its id suffix, so they do not care which project it lives in.
 //
 // The call sites are `knowledge_catalog.ts` (emit the entries),
-// `kc_converter.ts` (read them back), and `pull_kc.ts` (hydrate the aspect).
+// `kc_converter.ts` (read them back), and `kc_read.ts` (hydrate the aspect).
 //
 // `instructions` rides the action's own aspect rather than the built-in
 // `guidelines` aspect that an entity or metric uses. A pull derives which
@@ -96,34 +96,10 @@ export function actionEntries(
   const actions = model.actions ?? [];
   if (!actions.length) return [];
 
-  // A parameter can project from an entity or a relationship. The check below
-  // tells them apart by the model's own names.
-  const entityNames = new Set((model.entities ?? []).map(e => e.name));
-  const relationshipNames =
-      new Set((model.relationships ?? []).map(r => r.name));
-
   const entries: Entry[] = [];
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
     if (!ctx.claim(id, `action '${action.name}'`)) continue;
-    // A derived parameter -- one projected from a field -- still publishes
-    // intact, type and wording and all, because the loader already resolved
-    // them. A relationship's entry records its endpoints and join columns but
-    // no fields of its own, and an association has no entry, so a pull will
-    // not find the field it came from and re-authoring would have to state
-    // the type by hand.
-    for (const p of action.parameters ?? []) {
-      if (!p.concept || entityNames.has(p.concept) ||
-          !relationshipNames.has(p.concept)) {
-        continue;
-      }
-      warnings.push(
-          `model '${model.name}': action '${action.name}' parameter ` +
-          `'${p.name}' is projected from '${p.concept}.${p.field}', ` +
-          `'${p.concept}' is a relationship, whose fields no entry records, ` +
-          `so a pull will recover the parameter but not the field it came ` +
-          `from.`);
-    }
     entries.push({
       name: ctx.entry(id),
       entryType: actionEntryTypeName(ctx),

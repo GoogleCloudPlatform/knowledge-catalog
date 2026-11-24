@@ -1577,73 +1577,7 @@ describe('a lone projection is not blamed for a duplication', () => {
 });
 
 
-describe('a projection the catalog cannot give back', () => {
-  test('the concept is a relationship, whose fields no entry records', () => {
-    // A relationship entry records its endpoints and join columns, not fields
-    // of its own, and push gives an association no entry at all -- so an
-    // association's own fields come back from no entry.
-    const model: SemanticModel = {
-      name: 'm',
-      entities: [
-        {name: 'student', dataSource: 'p.d.s', keys: ['id'],
-         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
-        {name: 'course', dataSource: 'p.d.co', keys: ['id'],
-         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
-      ],
-      relationships: [{
-        name: 'enrollment',
-        source: {entity: 'student', columns: ['id']},
-        destination: {entity: 'course', columns: ['id']},
-        association: {
-          dataSource: 'p.d.e',
-          keys: ['student_id', 'course_id'],
-          sourceColumns: ['student_id'],
-          destinationColumns: ['course_id'],
-          fields: [{name: 'grade', type: 'String', expression: 'grade'}],
-        },
-      }],
-      metrics: [],
-      actions: [{
-        name: 'Regrade',
-        executor: {kind: 'mcp', mcp: MCP.mcp},
-        parameters: [{
-          name: 'grade',
-          concept: 'enrollment',
-          field: 'grade',
-          type: 'String',
-        }],
-      }],
-    };
-    const {warnings} = generateCatalogResources(model, OPTS);
-    expect(warnings.some(
-               w => w.includes('parameter \'grade\'') &&
-                   w.includes('is a relationship')))
-        .toBe(true);
-  });
-
-  test('a published concept and a published field warn about nothing', () => {
-    const model: SemanticModel = {
-      name: 'm',
-      entities: [{
-        name: 'customer',
-        dataSource: 'p.d.c',
-        keys: ['id'],
-        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
-      }],
-      relationships: [],
-      metrics: [],
-      actions: [{
-        name: 'Notify',
-        executor: {kind: 'mcp', mcp: MCP.mcp},
-        parameters: [
-          {name: 'who', concept: 'customer', field: 'id', type: 'Integer'}
-        ],
-      }],
-    };
-    const {warnings} = generateCatalogResources(model, OPTS);
-    expect(warnings.some(w => w.includes('parameter \'who\''))).toBe(false);
-  });
-
+describe('docs/semantic-model/actions.md', () => {
   test('Section 1 of docs/semantic-model/actions.md loads, validates, and publishes', () => {
     // Read straight out of the guide rather than copied in here: a duplicate
     // would keep passing while the doc drifted, which is the one failure this
