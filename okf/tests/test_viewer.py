@@ -187,3 +187,37 @@ def test_v02_signals_appear_in_graph_payload(tmp_path: Path):
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
+
+
+def test_percent_encoded_links_become_edges(tmp_path: Path):
+    """File names with spaces are percent-encoded in links (SPEC section 5)."""
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "notes" / "weekly report.md",
+        """
+        ---
+        type: Reference
+        title: Weekly report
+        description: A file name with spaces.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Standalone note.
+        """,
+    )
+    _write(
+        bundle / "notes" / "summary.md",
+        """
+        ---
+        type: Reference
+        title: Summary
+        description: Links to a percent-encoded target.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        See the [weekly report](weekly%20report.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("notes/summary", "notes/weekly report") in pairs
