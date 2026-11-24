@@ -17,7 +17,7 @@
 // type by its id suffix, so they do not care which project it lives in.
 //
 // The call sites are `knowledge_catalog.ts` (emit the entries),
-// `kc_converter.ts` (read them back), and `pull_kc.ts` (hydrate the aspect).
+// `kc_converter.ts` (read them back), and `kc_read.ts` (hydrate the aspect).
 //
 // `instructions` rides the action's own aspect rather than the built-in
 // `guidelines` aspect that an entity or metric uses. A pull derives which
@@ -35,7 +35,6 @@ import {Entry} from '../gcp/dataplex';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, ConceptOperation, DATA_TYPES, Executor, SemanticModel} from './ir';
 import {ACTION_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
-import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 
 // Full resource name of the action entry type for a destination.
 export function actionEntryTypeName(dest: {project: string}): string {
@@ -83,36 +82,6 @@ export function actionOwnedPrefix(modelId: string): string {
   return `${modelId}.actions.`;
 }
 
-// Why a pull will not recover the field a parameter projects from, or '' when
-// it will. Two ways to lose it, and naming which one is the difference
-// between an author deleting the projection and an author binding a column:
-//
-//   - the concept is published but the FIELD is not -- `pruneUnavailable`
-//     drops an unbound field while keeping the entity whose key still binds,
-//     and a projected parameter no longer prunes its action, so the entry goes
-//     out naming a field the `schema` aspect does not carry;
-//   - the concept is a relationship. A relationship's entry records its
-//     endpoints and join columns but no fields of its own, and an association
-//     has no entry, so an association's own fields come back from no entry.
-//     The parameter still publishes intact either way -- the loader resolved
-//     its type and wording before any of this -- so what is lost is only the
-//     projection, and only on the way back.
-function unrecoverable(
-    concept: string, field: string|undefined, entities: Set<string>,
-    relationships: Set<string>,
-    published: Map<string, DeclaredConcept>|null): string {
-  if (!entities.has(concept) && relationships.has(concept)) {
-    return `'${concept}' is a relationship, whose fields no entry records`;
-  }
-  if (published && field !== undefined &&
-      !published.get(concept)?.fields.has(field)) {
-    return `this push publishes '${concept}' without its '${field}' field ` +
-        `(unbound under this profile)`;
-  }
-  return '';
-}
-
-
 /**
  * One entry per action, to append to the model's entries.
  *
@@ -127,44 +96,10 @@ export function actionEntries(
   const actions = model.actions ?? [];
   if (!actions.length) return [];
 
-  // A parameter can project from an entity or a relationship. The check below
-  // tells them apart by the model's own names.
-  const entityNames = new Set((model.entities ?? []).map(e => e.name));
-  const relationshipNames =
-      new Set((model.relationships ?? []).map(r => r.name));
-
-  // The fields of each concept with inheritance resolved, which a later pull
-  // rebuilds from the catalog. Asked of the loader's own resolver so the
-  // answer accounts for `extends`; a model that will not resolve returns null
-  // and the field half of the check is skipped, since an emitter is not the
-  // place to discover that a model does not load.
-  let published: Map<string, DeclaredConcept>|null;
-  try {
-    published = declaredConceptFields(model);
-  } catch {
-    published = null;
-  }
-
   const entries: Entry[] = [];
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
     if (!ctx.claim(id, `action '${action.name}'`)) continue;
-    // A derived parameter -- one projected from a field -- still publishes
-    // intact, type and wording and all, because the loader already resolved
-    // them. What a later pull may not do is find the field the projection
-    // came from (see unrecoverable), so re-authoring that model would have to
-    // state the type by hand.
-    for (const p of action.parameters ?? []) {
-      if (!p.concept) continue;
-      const why = unrecoverable(
-          p.concept, p.field, entityNames, relationshipNames, published);
-      if (!why) continue;
-      warnings.push(
-          `model '${model.name}': action '${action.name}' parameter ` +
-          `'${p.name}' is projected from '${p.concept}.${p.field}', ` +
-          `${why}, so a pull will recover the parameter but not the field ` +
-          `it came from.`);
-    }
     entries.push({
       name: ctx.entry(id),
       entryType: actionEntryTypeName(ctx),
