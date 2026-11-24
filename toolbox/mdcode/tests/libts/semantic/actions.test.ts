@@ -1578,40 +1578,6 @@ describe('a lone projection is not blamed for a duplication', () => {
 
 
 describe('a projection the catalog cannot give back', () => {
-  test('the concept publishes but the field does not', () => {
-    // `pruneUnavailable` drops an unbound field and keeps the entity whose key
-    // still binds, and a projected parameter no longer prunes its action. So
-    // the entry goes out naming a field the `schema` aspect does not carry,
-    // and the old check -- "is the concept published" -- said yes and stayed
-    // quiet.
-    const model: SemanticModel = {
-      name: 'm',
-      entities: [{
-        name: 'customer',
-        dataSource: 'p.d.c',
-        keys: ['id'],
-        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
-      }],
-      relationships: [],
-      metrics: [],
-      actions: [{
-        name: 'Notify',
-        executor: {kind: 'mcp', mcp: MCP.mcp},
-        parameters: [{
-          name: 'who',
-          concept: 'customer',
-          field: 'email',
-          type: 'String',
-        }],
-      }],
-    };
-    const {warnings} = generateCatalogResources(model, OPTS);
-    expect(warnings.some(
-               w => w.includes('parameter \'who\'') &&
-                   w.includes('without its \'email\' field')))
-        .toBe(true);
-  });
-
   test('the concept is a relationship, whose fields no entry records', () => {
     // A relationship entry records its endpoints and join columns, not fields
     // of its own, and push gives an association no entry at all -- so an

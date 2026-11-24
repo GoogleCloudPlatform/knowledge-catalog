@@ -52,7 +52,7 @@ import {constraintEntries} from './kc_constraints';
 import {Namer, ownedEntryIdPrefixes, semanticLinkId} from './kc_ids';
 import {GOOGLE_VERSION} from './loader';
 import {nonEmpty} from './osi_converter';
-import {DEFAULT_PROFILE, inheritedNamesOf, statesKey, withoutExclusions} from './resolve_profiles';
+import {DEFAULT_PROFILE, inheritedNamesOf, statesKey} from './resolve_profiles';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -192,9 +192,8 @@ export function generateCatalogResources(
   // One entry per action, alongside the entities and metrics. Actions have no
   // built-in system type, so they reference the custom pair declared in
   // `kc_custom_types.ts`, and `kc_actions.ts` fills the aspect; it returns
-  // nothing when the model declares no actions. The schema keeps a field a
-  // profile excludes, so actionEntries reads the model without exclusions.
-  entries.push(...actionEntries(withoutExclusions(model), modelId, {
+  // nothing when the model declares no actions.
+  entries.push(...actionEntries(model, modelId, {
     project: opts.project,
     entry: (id: string) => names.entry(id),
     anchor: modelEntryName,
