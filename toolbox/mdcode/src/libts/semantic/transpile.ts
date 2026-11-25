@@ -1402,7 +1402,7 @@ function functionSum(name: string, args: any[], read: string, table: DateTable):
   if (how === 'interval' || args.length !== (byPart ? 3 : 2) || added) return name;
   const whole = functionAmount(amount, read, table);
   if (typeof whole === 'string') return `${name} ${whole}`;
-  const spelling = byPart ? `${name} with part '${partName(part) ?? '?'}'` : name;
+  const spelling = byPart ? `${name} with part '${partSpelling(part, read)}'` : name;
   // A part is a name, or a string where the dialect takes one.
   const named = !bare(part)?.column?.name?.quoted && (table.quotedParts !== false || !bare(part)?.literal);
   const words = table.parts ?? table.words;
@@ -2130,26 +2130,96 @@ function unknownConstruct(engine: PolyglotEngine, node: any, read: string):
 }
 
 // `found.name`, which names `found.node`, a construct of `text`, an
-// expression in `dialect` the engine reads as `read`, with the function and
-// the date part as the author wrote them. `rules` is the dialect whose rules
-// named it (see unknownConstruct). The engine reads some calls as another
-// function, such as MySQL's CHAR_LENGTH as LENGTH, and some date parts by
-// another name, such as SQL Server's `w` as WEEK. The name stays as it is when
-// it does not start with the node's own, or the node is not a call found in
-// `text`.
+// expression in `dialect` the engine reads as `read`, with the function, the
+// date part and a cast's sized type as the author wrote them. `rules` is the
+// dialect whose rules named it (see unknownConstruct). The engine reads some
+// calls as another function, such as MySQL's CHAR_LENGTH as LENGTH, and some
+// date parts by another name, such as SQL Server's `w` as WEEK. The name stays
+// as it is when it does not start with the node's own, or the node is not a
+// call found in `text`.
 function writtenName(
     engine: PolyglotEngine, text: string, dialect: string, read: string,
     rules: string, found: {name: string; node: any}): string {
+  const named = writtenCast(engine, text, dialect, read, rules, found);
   const own = constructName(engine, found.node, rules);
-  const lead = /^[A-Za-z_]\w*/.exec(found.name)?.[0];
-  if (!lead || lead.toUpperCase() !== own.toUpperCase()) return found.name;
+  const lead = /^[A-Za-z_]\w*/.exec(named)?.[0];
+  if (!lead || lead.toUpperCase() !== own.toUpperCase()) return named;
   const call = writtenCall(engine, text, dialect, read, found.node);
-  if (!call) return found.name;
-  const name = call.name + found.name.slice(lead.length);
+  if (!call) return named;
+  const name = call.name + named.slice(lead.length);
   const part = / with part '(.*)'$/.exec(name);
-  const written = part ? writtenPart(found.node, part[1], call) : undefined;
+  const written =
+      part ? writtenPart(found.node, part[1], call, rules) : undefined;
   return written === undefined ? name :
       `${name.slice(0, part!.index)} with part '${written}'`;
+}
+
+// `found.name` with a refused cast's type and its size as the author wrote
+// them. The engine holds a type's size in 32 bits, so a larger written size
+// comes back wrapped, as 4294967297 comes back as 1, and it normalizes the
+// type's own name, as PostgreSQL's NUMERIC comes back as DECIMAL. The type's
+// spelling comes only from the refused cast's own text (see writtenType);
+// when that text is not found, as for a cast written with `::`, the engine's
+// spelling stays.
+function writtenCast(
+    engine: PolyglotEngine, text: string, dialect: string, read: string,
+    rules: string, found: {name: string; node: any}): string {
+  const kind = kindOf(found.node);
+  if (kind !== 'cast' && kind !== 'try_cast' && kind !== 'safe_cast') {
+    return found.name;
+  }
+  const to = (Object.values(found.node)[0] as any)?.to;
+  const tail = ` to ${sizedTypeName(to, rules)}`;
+  if (castSizes(to).length === 0 || !found.name.endsWith(tail)) {
+    return found.name;
+  }
+  const call = writtenCall(engine, text, dialect, read, found.node);
+  const written = call && writtenType(call, text, dialect, read, to);
+  return !written ? found.name :
+                    `${found.name.slice(0, -tail.length)} to ${written}`;
+}
+
+// The target type of the refused cast `call`, as its author wrote it, on one
+// line and without comments, or undefined. `call` is the cast's own written
+// text (see writtenCall), so its type is the run of tokens after the last AS
+// outside parentheses, as in CAST(x AS NUMERIC(10, 2)). The run must read
+// back as `to` through a CAST in `dialect`, read as `read`.
+function writtenType(
+    call: WrittenCall, text: string, dialect: string, read: string,
+    to: any): string|undefined {
+  const arg = call.args.at(-1) ?? [];
+  let depth = 0;
+  let at = -1;
+  arg.forEach((t, i) => {
+    if (t.token_type === 'L_PAREN') depth++;
+    else if (t.token_type === 'R_PAREN') depth--;
+    else if (t.token_type === 'AS' && depth === 0) at = i;
+  });
+  if (at < 0 || at + 1 >= arg.length) return undefined;
+  const spelled = oneLine(text, arg.slice(at + 1));
+  const tree = sourceTree(`CAST(x AS ${spelled})`, dialect, read);
+  return JSON.stringify(treeWithoutComments(tree?.cast?.to)) ===
+          JSON.stringify(treeWithoutComments(to)) ?
+      spelled :
+      undefined;
+}
+
+// The text of `tokens`, a run of a call's tokens in `text`, on one line:
+// each token as written. The comments, spaces and line breaks between two
+// tokens collapse to one space, dropped after an opening parenthesis and
+// before a parenthesis or a comma, so that CAST(x AS VARCHAR(10 /* max */))
+// echoes VARCHAR(10).
+function oneLine(text: string, tokens: SqlToken[]): string {
+  const chars = [...text];
+  const written = (t: SqlToken) =>
+      chars.slice(t.span.start, t.span.end).join('');
+  return tokens
+      .map((t, i) => {
+        const spaced = i > 0 && tokens[i - 1].span.end < t.span.start &&
+            !written(tokens[i - 1]).endsWith('(') && !/^[(),]/.test(written(t));
+        return (spaced ? ' ' : '') + written(t);
+      })
+      .join('');
 }
 
 // A call as written: its function name, and the tokens of each argument.
@@ -2203,11 +2273,18 @@ function writtenCall(
 // The date part a message names `part` in `node`, the tree of `call`, as the
 // author wrote it, without quotes or enclosing parentheses, or undefined when
 // no single argument gives it. A column named like the part is left out when
-// another argument names it too. In EXTRACT it is the text before FROM.
-function writtenPart(node: any, part: string, call: WrittenCall):
-    string|undefined {
+// another argument names it too. In EXTRACT it is the text before FROM. A
+// part that partSpelling wrote from the part node itself is final, so that
+// another argument spelled like it cannot stand in for it; `rules` is the
+// dialect partSpelling spelled it for.
+function writtenPart(node: any, part: string, call: WrittenCall,
+                     rules: string): string|undefined {
   const extract = kindOf(node) === 'extract';
   const args = (Object.values(node)[0] as any)?.args ?? [];
+  if (args.some((a: any) => partName(a) === undefined &&
+                    partSpelling(a, rules) === part)) {
+    return undefined;
+  }
   const named = args.flatMap((a: any, i: number) =>
       String(partName(a)).toUpperCase() === part.toUpperCase() ? [i] : []);
   const at = extract ? [0] :
@@ -2376,10 +2453,9 @@ function conditionValues(kind: string, value: any): unknown[] {
 // NULL for, such as '05-Mar-2016'.
 function castProblem(kind: string, value: any, read: string): string|undefined {
   const type = castType(value.to);
-  const size = [value.to.length ?? value.to.precision, value.to.scale].filter(n => n != null);
   const name = kind === 'try_cast' ? 'TRY_CAST' : 'CAST';
-  if (!CAST_TYPES[type]?.includes(read) || size.length) {
-    return `${name} to ${typeName(type, read)}${size.length ? `(${size.join(', ')})` : ''}`;
+  if (!CAST_TYPES[type]?.includes(read) || castSizes(value.to).length) {
+    return `${name} to ${sizedTypeName(value.to, read)}`;
   }
   if (kind === 'try_cast' && read === 'snowflake' && ['timestamp', 'TIMESTAMPNTZ'].includes(type)) {
     return `TRY_CAST to ${typeName(type, read)}`;
@@ -2877,7 +2953,7 @@ function functionArgs(fn: any, read: string): unknown[]|string|undefined {
   if (['DATE_TRUNC', 'DATE_PART', 'DATEDIFF', 'DATE_DIFF', 'TIMESTAMPDIFF'].includes(name)) {
     const unit = table.diffs?.includes(name) ? diffSql(args[0]) :
         name === 'DATE_TRUNC' ? truncUnit(args[0], read) : PARTS[part(args[0]).toLowerCase()];
-    if (!unit) return `${name} with part '${part(args[0])}'`;
+    if (!unit) return `${name} with part '${partSpelling(args[0], read)}'`;
     const values = args.slice(1).map(a => dateValue(name, a));
     return values.find(v => typeof v === 'string') ?? args.slice(1);
   }
@@ -3002,6 +3078,21 @@ function isDate(node: any): boolean {
 function castType(to: any): string {
   return to?.real_spelling ? 'real' : to?.data_type === 'custom' ? to.name :
       to?.data_type === 'timestamp' && to.timezone ? 'timestamptz' : to?.data_type;
+}
+
+// The size the author gave `to`, a cast's target type: a length, or a
+// precision and perhaps a scale. The engine holds each number in 32 bits, so
+// a written size of 2^32 or more comes back wrapped (see writtenCast).
+function castSizes(to: any): unknown[] {
+  return [to?.length ?? to?.precision, to?.scale].filter(n => n != null);
+}
+
+// `to`, a cast's target type, as a refusal prints it, such as VARCHAR or
+// NUMBER(40, 2), in the engine's dialect `read`.
+function sizedTypeName(to: any, read: string): string {
+  const size = castSizes(to);
+  return `${typeName(castType(to), read)}${
+      size.length ? `(${size.join(', ')})` : ''}`;
 }
 
 // `type`, a name in CAST_TYPES, as the engine's dialect `read` writes it, for
@@ -3467,6 +3558,25 @@ function partName(part: any): string|undefined {
   return day ? `${fn.name}(${day})` : undefined;
 }
 
+// The date part `part` names, for a refusal message: its name (see partName),
+// or, when it names no part, `part` itself as the engine writes it in its
+// dialect `read`, without its comments or enclosing parentheses, such as a
+// column `orders.day`. The engine keeps a column's name as written and
+// normalizes a call, so foo(1) prints as FOO(1), and it may print quotes
+// around a name an upstream rewrite marked quoted, such as a bare NOW or
+// GETDATE inside an expression part. '?' when the engine cannot write the
+// part.
+function partSpelling(part: any, read: string): string {
+  const name = partName(part);
+  if (name !== undefined) return name;
+  const engine = loadedSqlEngine();
+  const spelled = bare(part);
+  const sql = spelled &&
+      engine?.generate([treeWithoutComments(spelled)],
+                       read === 'spanner' ? 'bigquery' : read).sql?.[0];
+  return sql || '?';
+}
+
 // --- SPANNER texts --------------------------------------------------------------
 //
 // A SPANNER text is BigQuery's SQL, but Spanner reads the date and time of a
@@ -3656,7 +3766,7 @@ function spannerArgs(name: string, args: any[]): unknown[]|string|undefined {
   const partAt = ({TIMESTAMP_TRUNC: 1, TIMESTAMP_DIFF: 2, DATE_DIFF: 2, DATE_TRUNC: 1} as
                   Record<string, number>)[name];
   if (partAt !== undefined && !bare(args[partAt])?.var) {
-    return `${name} with part '${partName(args[partAt]) ?? '?'}'`;
+    return `${name} with part '${partSpelling(args[partAt], 'spanner')}'`;
   }
   const added = SPANNER_ADDS.has(name) ? bare(args[1])?.interval : undefined;
   if (added) return spannerAmount(added) ? [args[0], added.this] : `INTERVAL ${intervalText(added)}`;
