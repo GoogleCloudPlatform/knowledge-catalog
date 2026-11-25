@@ -312,6 +312,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SPANNER', 'EXTRACT(WEEK(MONDAY) FROM d)', {error: "kcmd does not translate EXTRACT with part 'WEEK(MONDAY)'"}],
     ['SPANNER', 'EXTRACT(TIMEZONE_HOUR FROM t)', {error: "kcmd does not translate EXTRACT with part 'TIMEZONE_HOUR'"}],
     ['SPANNER', 'DATE_TRUNC(d, WEEK(MONDAY))', {error: "kcmd does not translate DATE_TRUNC with part 'WEEK(MONDAY)'"}],
+    ['SPANNER', 'TIMESTAMP_TRUNC(t, orders.day)', {error: "kcmd does not translate TIMESTAMP_TRUNC with part 'orders.day'"}],
     ['SPANNER', 'CAST(t AS DATE)', {error: 'kcmd does not translate CAST to DATE of a value that may be a TIMESTAMP'}],
     ['SPANNER', 'CAST(ds AS TIMESTAMP)', {error: 'kcmd does not translate CAST to TIMESTAMP of a value that may be a string or a DATE'}],
     ['SPANNER', "PARSE_DATE('%F', CAST(CAST(t AS DATE) AS STRING))", {error: 'kcmd does not translate CAST to DATE of a value that may be a TIMESTAMP'}],
@@ -358,6 +359,7 @@ describe('polyglotTranspiler (transformations)', () => {
     ['DATABRICKS', 'substr(s, 1, 3)', {error: 'kcmd does not translate substr'}],
     ['SQLSERVER', 'DATEPART(w, d)', {error: "kcmd does not translate DATEPART with part 'w'"}],
     ['SQLSERVER', 'DATEPART(w, GETDATE)', {error: "kcmd does not translate DATEPART with part 'w'"}],
+    ['SNOWFLAKE', 'DATE_TRUNC(orders.day, orders.d)', {error: "kcmd does not translate DATE_TRUNC with part 'orders.day'"}],
     ['DATABRICKS', 'round(x, 2)', {error: 'kcmd does not translate round'}],
     ['DATABRICKS', 'dateadd(DAY, 1, d)', {error: "kcmd does not translate dateadd with part 'DAY' on a value that may be a TIMESTAMP"}],
     ['ANSI_SQL', '"a" / "b"', {error: 'kcmd does not translate /'}],
@@ -369,6 +371,13 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'CAST(a AS VARCHAR)', {error: 'kcmd does not translate CAST to VARCHAR'}],
     ['POSTGRES', 'a::double precision', {error: 'kcmd does not translate CAST to DOUBLE PRECISION'}],
     ['POSTGRES', 'a::timestamp(3)', {error: 'kcmd does not translate CAST to TIMESTAMP(3)'}],
+    // The engine holds a type's size in 32 bits. A cast written as a call
+    // echoes its type and size as the author wrote them; a cast written
+    // another way, as with `::`, keeps the engine's spelling, including a
+    // wrapped size.
+    ['POSTGRES', 'CAST(x AS VARCHAR(4294967297))', {error: 'kcmd does not translate CAST to VARCHAR(4294967297)'}],
+    ['POSTGRES', 'CAST(x AS character   varying(4294967297))', {error: 'kcmd does not translate CAST to character varying(4294967297)'}],
+    ['POSTGRES', 'x::varchar(4294967297)', {error: 'kcmd does not translate CAST to VARCHAR(1)'}],
     ['SNOWFLAKE', 'CAST(a AS TIMESTAMP_TZ)', {error: 'kcmd does not translate CAST to TIMESTAMP_TZ'}],
     ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP'}],
     ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP_NTZ)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP_NTZ'}],

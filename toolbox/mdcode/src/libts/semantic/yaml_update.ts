@@ -278,6 +278,12 @@ interface Update {
   /** Nodes whose text changed. */
   dirty: Set<unknown>;
   /**
+   * The document's directive lines, which reading a tag back needs. The yaml
+   * package walks the whole document to write them, so one update run computes
+   * them at most once, when it writes its first tagged scalar (see setScalar).
+   */
+  directives?: string;
+  /**
    * Each alias whose value stays, or that is a key that stays, with that value
    * or key and where it sits.
    */
@@ -696,14 +702,18 @@ function setScalar(
   // A tag stays when the new text reads back as the value under it. The
   // read-back puts the text at the column of its key or `-`, which a block
   // scalar's indentation indicator counts from, and takes the file's
-  // directives, since a `%TAG` shorthand needs them. A tag of YAML's core
-  // schema must read it back with no warning. The parser warns about any
+  // directives, since a `%TAG` shorthand needs them. The directives stay the
+  // same through an update run, and writing them walks the whole document, so
+  // the run computes them once, for its first tagged scalar. A tag of YAML's
+  // core schema must read it back with no warning. The parser warns about any
   // other tag, whose meaning kcmd cannot check, so that warning is ignored.
   const tag = (slot.props ?? []).filter(t => t.type === 'tag');
-  const directives = u.doc.directives?.toString(u.doc);
+  if (tag.length > 0 && u.directives === undefined) {
+    u.directives = u.doc.directives?.toString(u.doc) ?? '';
+  }
   const typed = tag.length > 0 &&
       readsInBlock(
-          (directives ? `${directives}\n---\n` : '') +
+          (u.directives ? `${u.directives}\n---\n` : '') +
               `${' '.repeat(slot.col)}_: ${tag[0].source} ${s}`,
           value, CORE_TAGS.has(node.tag ?? ''));
   const {start, cuts} =
