@@ -5,6 +5,7 @@ from importlib import resources
 from google.adk import Agent
 from google.adk.tools import FunctionTool
 
+from reference_agent.providers import build_model
 from reference_agent.tools.bundle_tools import read_existing_doc, write_concept_doc
 from reference_agent.tools.source_tools import (
     list_concepts,
@@ -27,7 +28,7 @@ def _load_prompt(filename: str) -> str:
 def build_bq_agent(model: str = DEFAULT_MODEL) -> Agent:
     return Agent(
         name="okf_bq_reference_agent",
-        model=model,
+        model=build_model(model),
         instruction=_load_prompt("reference_instruction.md"),
         tools=[
             FunctionTool(list_concepts),
@@ -42,7 +43,7 @@ def build_bq_agent(model: str = DEFAULT_MODEL) -> Agent:
 def build_web_agent(model: str = DEFAULT_MODEL) -> Agent:
     return Agent(
         name="okf_web_ingestion_agent",
-        model=model,
+        model=build_model(model),
         instruction=_load_prompt("web_ingestion_instruction.md"),
         tools=[
             FunctionTool(list_concepts),
