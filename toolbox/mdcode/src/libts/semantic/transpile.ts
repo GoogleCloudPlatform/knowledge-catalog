@@ -2157,10 +2157,12 @@ function writtenName(
 // `found.name` with a refused cast's type and its size as the author wrote
 // them. The engine holds a type's size in 32 bits, so a larger written size
 // comes back wrapped, as 4294967297 comes back as 1, and it normalizes the
-// type's own name, as PostgreSQL's NUMERIC comes back as DECIMAL. The type's
-// spelling comes only from the refused cast's own text (see writtenType);
-// when that text is not found, as for a cast written with `::`, the engine's
-// spelling stays.
+// type's own name, as PostgreSQL's NUMERIC comes back as DECIMAL. A type the
+// engine does not know is `custom` and carries its wrapped size inside its
+// name, as SQL Server's NVARCHAR(4294967297) comes back as NVARCHAR(1). The
+// type's spelling comes only from the refused cast's own text (see
+// writtenType); when that text is not found, as for a cast written with
+// `::`, the engine's spelling stays.
 function writtenCast(
     engine: PolyglotEngine, text: string, dialect: string, read: string,
     rules: string, found: {name: string; node: any}): string {
@@ -2170,7 +2172,9 @@ function writtenCast(
   }
   const to = (Object.values(found.node)[0] as any)?.to;
   const tail = ` to ${sizedTypeName(to, rules)}`;
-  if (castSizes(to).length === 0 || !found.name.endsWith(tail)) {
+  const sized = castSizes(to).length > 0 ||
+      (to?.data_type === 'custom' && String(to.name).includes('('));
+  if (!sized || !found.name.endsWith(tail)) {
     return found.name;
   }
   const call = writtenCall(engine, text, dialect, read, found.node);
@@ -3082,7 +3086,8 @@ function castType(to: any): string {
 
 // The size the author gave `to`, a cast's target type: a length, or a
 // precision and perhaps a scale. The engine holds each number in 32 bits, so
-// a written size of 2^32 or more comes back wrapped (see writtenCast).
+// a written size of 2^32 or more comes back wrapped (see writtenCast). A
+// `custom` type's size is part of its name, so nothing comes back here.
 function castSizes(to: any): unknown[] {
   return [to?.length ?? to?.precision, to?.scale].filter(n => n != null);
 }
