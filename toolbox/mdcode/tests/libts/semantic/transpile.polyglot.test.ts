@@ -378,6 +378,9 @@ describe('polyglotTranspiler (transformations)', () => {
     ['POSTGRES', 'CAST(x AS VARCHAR(4294967297))', {error: 'kcmd does not translate CAST to VARCHAR(4294967297)'}],
     ['POSTGRES', 'CAST(x AS character   varying(4294967297))', {error: 'kcmd does not translate CAST to character varying(4294967297)'}],
     ['POSTGRES', 'x::varchar(4294967297)', {error: 'kcmd does not translate CAST to VARCHAR(1)'}],
+    // A type the engine keeps as `custom` wraps the size inside its name.
+    ['SQLSERVER', 'CAST(x AS NVARCHAR(4294967297))', {error: 'kcmd does not translate CAST to NVARCHAR(4294967297)'}],
+    ['MYSQL', 'CAST(x AS NCHAR(4294967297))', {error: 'kcmd does not translate CAST to NCHAR(4294967297)'}],
     ['SNOWFLAKE', 'CAST(a AS TIMESTAMP_TZ)', {error: 'kcmd does not translate CAST to TIMESTAMP_TZ'}],
     ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP'}],
     ['SNOWFLAKE', 'TRY_CAST(a AS TIMESTAMP_NTZ)', {error: 'kcmd does not translate TRY_CAST to TIMESTAMP_NTZ'}],
