@@ -1,0 +1,190 @@
+# Questions that belong to no single model.
+#
+# Two kinds, and both measure something the per-model files cannot.
+#
+#   ambiguous  the question is answerable, but by more than one model, and
+#              they disagree. Good retrieval surfaces the competing concepts
+#              so the caller can disambiguate; bad retrieval silently picks
+#              one. `required` lists what should surface from EACH model.
+#
+#   negative   nothing in the corpus answers it, usually while sharing
+#              vocabulary with something that looks close. `forbidden` lists
+#              the entries that must NOT come back ranked as if they did.
+#              This is the precision half of the benchmark: a retriever that
+#              always returns its best five entries scores well everywhere
+#              else and fails here.
+#
+# Every ref is fully qualified -- `model.kind:name` -- because there is no
+# ambient model to resolve against.
+
+scope: cross-model
+
+questions:
+  - id: x1
+    kind: ambiguous
+    difficulty: hard
+    question: What is our churn rate?
+    expect:
+      required:
+        [
+          saas_subscriptions.metric:gross_revenue_churn_rate,
+          workforce_org.metric:attrition_rate,
+        ]
+      supporting:
+        [
+          saas_subscriptions.metric:churned_mrr,
+          workforce_org.metric:voluntary_attrition_rate,
+        ]
+    why: >-
+      Customers churning and employees leaving are both "churn". Only
+      saas_subscriptions uses the word, so lexical search returns it alone
+      and looks confident. The right behaviour is to surface both and say
+      which is meant.
+
+  - id: x2
+    kind: ambiguous
+    difficulty: hard
+    question: What is our collection rate?
+    expect:
+      required:
+        [
+          saas_subscriptions.metric:collection_rate,
+          clinical_encounters.metric:collection_ratio,
+        ]
+    why: >-
+      An exact-name match in one model and a one-word-off match in another,
+      measuring genuinely different things -- cash against invoices versus
+      payer remittance against contracted amount. The exact match will
+      dominate any lexical ranking even where the asker meant the other.
+
+  - id: x3
+    kind: ambiguous
+    difficulty: medium
+    question: What is our utilization?
+    expect:
+      required:
+        [
+          lending_credit.metric:card_utilization,
+          saas_subscriptions.metric:seat_utilization,
+        ]
+      supporting: [lending_credit.metric:revolving_utilization]
+    why: >-
+      Credit drawn against a limit, and seats used against seats bought.
+      Same word, no overlap in meaning, and the bare question carries no
+      signal for either.
+
+  - id: x4
+    kind: ambiguous
+    difficulty: medium
+    question: How many promotions last quarter?
+    expect:
+      required:
+        [
+          retail_sales.metric:promoted_line_count,
+          workforce_org.metric:promotion_count,
+        ]
+      supporting:
+        [retail_sales.entity:promotion, workforce_org.entity:employment_event]
+    why: >-
+      A marketing offer and a job change. Both models carry several entries
+      matching the word, so this tests whether competing senses are separated
+      rather than interleaved by score.
+
+  - id: x5
+    kind: ambiguous
+    difficulty: medium
+    question: How many accounts do we have?
+    expect:
+      required:
+        [
+          saas_subscriptions.metric:account_count,
+          lending_credit.entity:credit_account,
+        ]
+      supporting:
+        [
+          lending_credit.entity:card_account,
+          saas_subscriptions.entity:account,
+        ]
+    why: >-
+      A customer organization in one model, an extension of credit in the
+      other. saas has a metric named for it and lending does not, so the
+      lending sense is reachable only through its entities.
+
+  - id: x6
+    kind: negative
+    difficulty: medium
+    question: What is our stock price today?
+    expect:
+      required: []
+      forbidden:
+        [
+          supply_chain.metric:on_hand_units,
+          supply_chain.metric:inventory_value,
+          supply_chain.entity:inventory_snapshot,
+        ]
+    why: >-
+      The strongest negative in the set. "Stock" matches supply_chain's whole
+      inventory vocabulary, so a retriever with no notion of "nothing here
+      answers this" will return inventory entries with high scores. No model
+      carries a share price or any market data.
+
+  - id: x7
+    kind: negative
+    difficulty: medium
+    question: How many support tickets did we close last month?
+    expect:
+      required: []
+      forbidden:
+        [
+          saas_subscriptions.entity:account,
+          clinical_encounters.entity:claim,
+          workforce_org.entity:requisition,
+        ]
+    why: >-
+      No ticketing or support entity exists anywhere in the corpus. "Close"
+      and "last month" match plenty of things; the concept does not.
+
+  - id: x8
+    kind: negative
+    difficulty: easy
+    question: What is our market share in electronics?
+    expect:
+      required: []
+      forbidden:
+        [retail_sales.metric:net_revenue, retail_sales.entity:product]
+    why: >-
+      Market share needs total category sales across all sellers. The corpus
+      has one retailer's own transactions and no competitor or market-size
+      concept. "Electronics" is a real product.category value, which makes
+      the question look answerable.
+
+  - id: x9
+    kind: negative
+    difficulty: medium
+    question: What is the carbon footprint of our inbound freight?
+    expect:
+      required: []
+      forbidden:
+        [supply_chain.metric:total_freight_cost, supply_chain.entity:carrier]
+    why: >-
+      Freight cost and transport mode are both present; distance, weight and
+      emissions factors are not, so no footprint is derivable. Tests whether
+      adjacent-but-insufficient concepts are returned as if they sufficed.
+
+  - id: x10
+    kind: negative
+    difficulty: hard
+    question: How satisfied are the people we serve?
+    expect:
+      required: []
+      forbidden:
+        [
+          clinical_encounters.entity:patient,
+          workforce_org.metric:average_rating,
+          saas_subscriptions.entity:account,
+        ]
+    why: >-
+      No survey, sentiment or experience concept exists in any model.
+      workforce_org.average_rating is the dangerous near-miss: it is a
+      satisfaction-shaped number about an entirely different relationship,
+      a manager grading an employee.

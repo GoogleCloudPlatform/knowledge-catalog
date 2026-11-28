@@ -1,0 +1,82 @@
+# Retrieval questions for models/lending_credit.yaml.
+# See questions/retail_sales.yaml for what the fields mean.
+
+model: lending_credit
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What is our 30-plus DPD rate?
+    expect:
+      required: [metric:delinquency_rate_30plus, entity:delinquency_snapshot]
+      confusable: [metric:delinquency_rate_90plus, metric:late_payment_rate]
+    why: >-
+      "DPD" is industry shorthand carried only in synonyms and a field
+      description; the metric name says delinquency. The 90-plus sibling is
+      one character away in the name and a different number entirely.
+
+  - id: q2
+    difficulty: medium
+    question: How much money do we have out on the street?
+    expect:
+      required:
+        [
+          metric:total_exposure,
+          entity:card_account,
+          entity:installment_loan,
+          entity:line_of_credit,
+        ]
+      supporting: [entity:credit_account]
+      confusable: [metric:card_balance, metric:committed_credit]
+    why: >-
+      Pure idiom with zero lexical overlap: nothing in the model says
+      "street". The answer also spans all three subtypes of the abstract
+      credit_account, so retrieving card_account alone looks like a hit and
+      misses most of the book.
+
+  - id: q3
+    difficulty: medium
+    question: What is our utilization?
+    expect:
+      required: [metric:card_utilization, entity:card_account]
+      supporting: [metric:revolving_utilization, entity:line_of_credit]
+      confusable: [saas_subscriptions.metric:seat_utilization]
+    why: >-
+      A bare domain term that collides across models: saas_subscriptions has
+      seat_utilization, which matches the word just as well. With no other
+      signal in the question, ranking depends entirely on whether search can
+      use model context.
+
+  - id: q4
+    difficulty: hard
+    question: How many people did we turn down last quarter and why?
+    expect:
+      required:
+        [metric:decline_rate, entity:application]
+      supporting: [metric:application_count, entity:borrower]
+      confusable:
+        [metric:approval_rate, clinical_encounters.metric:denial_rate]
+    why: >-
+      "Turn down" has to reach decline. The cross-model trap is
+      denial_rate in clinical_encounters, which is semantically very close --
+      a payer refusing a claim -- and will score well on any embedding that
+      does not know the domain.
+
+  - id: q5
+    difficulty: hard
+    question: Which borrower segments are going bad, and what has it cost us so far?
+    expect:
+      required:
+        [
+          metric:delinquency_rate_90plus,
+          metric:charge_off_rate,
+          entity:borrower,
+          entity:delinquency_snapshot,
+        ]
+      supporting: [metric:charge_off_amount]
+      confusable: [metric:delinquency_rate_30plus, metric:late_payment_rate]
+    why: >-
+      "Going bad" is credit jargon for serious delinquency, and "cost us so
+      far" means realized charge-offs rather than current arrears. Two
+      metrics plus two entities, and the easy 30-plus answer is the wrong
+      severity.
