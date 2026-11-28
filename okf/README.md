@@ -225,8 +225,23 @@ The HTML embeds the bundle as a JSON blob and uses
 both loaded from a CDN. No data leaves the page; the bundle is parsed
 once at generation time and serialized into the file.
 
+## Ecosystem & Showcase
+
+OKF is a universal, vendor-neutral format designed for broad interoperability across tools, agents, and human interfaces.
+
+### Community Tools & Integrations
+
+- **Interactive Graph Visualizer** — Self-contained HTML viewer using Cytoscape.js and Marked.js (bundled in this repo).
+- **[okf-guard](https://github.com/GoogleCloudPlatform/open-knowledge-format)** — Integrity validator and linter for OKF bundles to enforce structural and schema consistency.
+- **Knowledge Management Tooling** — Native compatibility with Obsidian, MkDocs, Notion, Hugo, and Jekyll for browsing and editing OKF bundles.
+
+### Listing Your Project
+
+Have you built an agent, exporter, linter, or visualization tool for OKF? We welcome additions! Open a pull request to add your project to this list.
+
 ## Tests
 
 ```
 .venv/bin/pytest
 ```
+
