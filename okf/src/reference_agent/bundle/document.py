@@ -9,6 +9,10 @@ import yaml
 # OKF v0.2 §11: `type` is the only always-required frontmatter key.
 REQUIRED_FRONTMATTER_KEYS = ("type",)
 
+# OKF v0.2 §3.1: filenames with defined meaning at any level of the
+# hierarchy, which MUST NOT be used for concept documents.
+RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
+
 _FRONTMATTER_DELIM = "---"
 
 
