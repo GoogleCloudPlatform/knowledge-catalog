@@ -79,8 +79,9 @@ def _make_bundle(root: Path) -> None:
         COUNT(DISTINCT user_id) per day.
         """,
     )
-    # An auto-generated index that should NOT appear as a concept node.
+    # Reserved files that should NOT appear as concept nodes.
     _write(root / "index.md", "# My Bundle\n- tables/users\n- tables/events\n")
+    _write(root / "log.md", "# Update history\n")
 
 
 def _extract_bundle_data(html: str) -> dict:
@@ -113,6 +114,7 @@ def test_index_md_is_not_a_concept(tmp_path: Path):
     data = _extract_bundle_data(out.read_text(encoding="utf-8"))
     ids = {n["data"]["id"] for n in data["nodes"]}
     assert "index" not in ids
+    assert "log" not in ids
     assert ids == {
         "datasets/my_dataset",
         "tables/users",
